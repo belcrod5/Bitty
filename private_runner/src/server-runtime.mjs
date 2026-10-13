@@ -162,8 +162,6 @@ const CODEX_CLI_SESSIONS_DIR = path.resolve(
 );
 const OPENAI_OAUTH_ISSUER = process.env.OPENAI_OAUTH_ISSUER || "https://auth.openai.com";
 const OPENAI_OAUTH_TOKEN_URL = `${OPENAI_OAUTH_ISSUER.replace(/\/+$/, "")}/oauth/token`;
-const MAX_TRANSCRIPT_CHARS = Number(process.env.MAX_TRANSCRIPT_CHARS || 8000);
-const MAX_MESSAGES_TOTAL_CHARS = Number(process.env.MAX_MESSAGES_TOTAL_CHARS || 24000);
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || "";
 const ELEVENLABS_API_BASE_URL = process.env.ELEVENLABS_API_BASE_URL || "https://api.elevenlabs.io";
 const ELEVENLABS_TTS_MODEL = process.env.ELEVENLABS_TTS_MODEL || "eleven_multilingual_v2";
@@ -255,8 +253,6 @@ const LLM_FILE_MAX_READ_BYTES = Number(process.env.LLM_FILE_MAX_READ_BYTES || 65
 const LLM_FILE_DEFAULT_READ_BYTES = Number(process.env.LLM_FILE_DEFAULT_READ_BYTES || 8192);
 const CLIENT_FILE_CONTENT_MAX_BYTES = 5 * 1024 * 1024;
 const LLM_FILE_MAX_READ_LINES = Math.max(1, Number(process.env.LLM_FILE_MAX_READ_LINES || 400));
-const LLM_FILE_MAX_TOOL_ROUNDS_DEFAULT = Number(process.env.LLM_FILE_MAX_TOOL_ROUNDS || 500);
-let llmFileMaxToolRoundsRuntime = LLM_FILE_MAX_TOOL_ROUNDS_DEFAULT;
 let codexCliStatusCache = {
   authId: "",
   fetchedAtMs: 0,
@@ -272,12 +268,7 @@ const SCRIPT_JOB_MAX_STORED = Math.max(10, Number(process.env.SCRIPT_JOB_MAX_STO
 const SCRIPT_JOB_KILL_GRACE_MS = Math.max(200, Number(process.env.SCRIPT_JOB_KILL_GRACE_MS || 700));
 const LLM_FILE_MAX_EDIT_FILE_BYTES = Number(process.env.LLM_FILE_MAX_EDIT_FILE_BYTES || 2 * 1024 * 1024);
 const LLM_FILE_ENABLE_LEGACY_WRITE_TOOLS = String(process.env.LLM_FILE_ENABLE_LEGACY_WRITE_TOOLS || "0").trim() === "1";
-const LLM_FILE_ENABLE_MEDIA_TOOL = String(process.env.LLM_FILE_ENABLE_MEDIA_TOOL || "1").trim() !== "0";
 const LLM_EXECUTION_SESSION_ID_MAX_CHARS = 120;
-const LLM_FILE_AUDIT_LOG_PATH = path.resolve(
-  WORKSPACE_ROOT,
-  process.env.LLM_FILE_AUDIT_LOG_PATH || "private_runner/logs/llm_tool_audit.jsonl"
-);
 const LLM_REQUEST_LOG_ENABLED = process.env.LLM_REQUEST_LOG_ENABLED !== "0";
 const LLM_REQUEST_LOG_MAX_FILES = Math.max(1, Number(process.env.LLM_REQUEST_LOG_MAX_FILES || 10));
 const LLM_REQUEST_LOG_DIR = path.resolve(
@@ -363,13 +354,8 @@ const CLIENT_APP_LOG_SEND_TRACE_EVENTS = new Set([
   "reply_http_send_skipped",
   "reply_http_request_start",
 ]);
-const LLM_FILE_SKILL_SCAN_MAX = Number(process.env.LLM_FILE_SKILL_SCAN_MAX || 200);
 const LLM_FILE_SKIP_SCAN_DIRS = new Set([".git", "node_modules", ".expo"]);
 const LLM_FILE_GLOB_MATCHER_VERSION = "glob-v2";
-const TOOL_APPROVAL_TIMEOUT_MS = Number(
-  process.env.TOOL_APPROVAL_TIMEOUT_MS || 86400000
-);
-let toolApprovalTimeoutMsRuntime = TOOL_APPROVAL_TIMEOUT_MS;
 const LLM_JOB_RESULT_TTL_MS = Math.max(60000, Number(process.env.LLM_JOB_RESULT_TTL_MS || 86400000));
 const LLM_JOB_MAX_ACTIVE = Math.max(1, Number(process.env.LLM_JOB_MAX_ACTIVE || 3));
 const LLM_JOB_MAX_STORED = Math.max(10, Number(process.env.LLM_JOB_MAX_STORED || 50));
@@ -711,30 +697,6 @@ function parseAuthToken(req) {
   return token;
 }
 
-function buildPrompt(transcript) {
-  return String(transcript || "").trim();
-}
-
-function normalizeMessages(raw) {
-  if (!Array.isArray(raw)) return [];
-  return raw.map((item) => {
-    const role = String(item?.role || "").trim().toLowerCase();
-    const content = String(item?.content || "").trim();
-    if (!content) return null;
-    if (role !== "user" && role !== "assistant" && role !== "system") return null;
-    return { role, content };
-  }).filter(Boolean);
-}
-
-function buildPromptFromMessages(messages) {
-  const lines = messages.map((m) => {
-    if (m.role === "assistant") return `Assistant: ${m.content}`;
-    if (m.role === "system") return `System: ${m.content}`;
-    return `User: ${m.content}`;
-  });
-  return lines.join("\n");
-}
-
 function isCodexAuthErrorMessage(message) {
   const s = String(message || "").toLowerCase();
   if (!s) return false;
@@ -794,60 +756,6 @@ function parseOpenAICodexModelRef(rawModelRef) {
 
 const OPENAI_CODEX_MODEL_INFO = parseOpenAICodexModelRef(OPENAI_CODEX_MODEL_REF);
 const OPENAI_CODEX_DEFAULT_REASONING_EFFORT = normalizeReasoningEffort(OPENAI_CODEX_REASONING_EFFORT);
-const OPENAI_CODEX_CONTEXT_WINDOW_TOKENS_DEFAULT = Math.max(
-  1000,
-  Number(process.env.OPENAI_CODEX_CONTEXT_WINDOW_TOKENS_DEFAULT || 400000)
-);
-const OPENAI_CODEX_MODEL_CONTEXT_WINDOW_TOKENS = {
-  "gpt-5.6": Math.max(
-    1000,
-    Number(process.env.OPENAI_CODEX_CONTEXT_WINDOW_GPT_5_6 || 1050000)
-  ),
-  "gpt-5.4-mini": Math.max(
-    1000,
-    Number(process.env.OPENAI_CODEX_CONTEXT_WINDOW_GPT_5_4_MINI || OPENAI_CODEX_CONTEXT_WINDOW_TOKENS_DEFAULT)
-  ),
-  "gpt-5.4": Math.max(
-    1000,
-    Number(process.env.OPENAI_CODEX_CONTEXT_WINDOW_GPT_5_4 || 1050000)
-  ),
-  "gpt-5.3-codex": Math.max(
-    1000,
-    Number(process.env.OPENAI_CODEX_CONTEXT_WINDOW_GPT_5_3_CODEX || OPENAI_CODEX_CONTEXT_WINDOW_TOKENS_DEFAULT)
-  ),
-  "gpt-5.3-codex-spark": Math.max(
-    1000,
-    Number(process.env.OPENAI_CODEX_CONTEXT_WINDOW_GPT_5_3_CODEX_SPARK || 128000)
-  ),
-  "gpt-5-codex": Math.max(
-    1000,
-    Number(process.env.OPENAI_CODEX_CONTEXT_WINDOW_GPT_5_CODEX || OPENAI_CODEX_CONTEXT_WINDOW_TOKENS_DEFAULT)
-  ),
-  "gpt-5": Math.max(
-    1000,
-    Number(process.env.OPENAI_CODEX_CONTEXT_WINDOW_GPT_5 || OPENAI_CODEX_CONTEXT_WINDOW_TOKENS_DEFAULT)
-  ),
-  "gpt-5-chat-latest": Math.max(
-    1000,
-    Number(process.env.OPENAI_CODEX_CONTEXT_WINDOW_GPT_5_CHAT_LATEST || 128000)
-  ),
-  "gpt-5.3-chat-latest": Math.max(
-    1000,
-    Number(process.env.OPENAI_CODEX_CONTEXT_WINDOW_GPT_5_3_CHAT_LATEST || 128000)
-  ),
-};
-
-const OPENAI_CODEX_MODEL_CONTEXT_WINDOW_MATCHERS = [
-  { prefix: "gpt-5.6", key: "gpt-5.6" },
-  { prefix: "gpt-5.4-mini", key: "gpt-5.4-mini" },
-  { prefix: "gpt-5.4", key: "gpt-5.4" },
-  { prefix: "gpt-5.3-codex-spark", key: "gpt-5.3-codex-spark" },
-  { prefix: "gpt-5.3-codex", key: "gpt-5.3-codex" },
-  { prefix: "gpt-5-codex", key: "gpt-5-codex" },
-  { prefix: "gpt-5-chat-latest", key: "gpt-5-chat-latest" },
-  { prefix: "gpt-5.3-chat-latest", key: "gpt-5.3-chat-latest" },
-];
-
 function decodeJwtPayload(token) {
   const raw = String(token || "").trim();
   const parts = raw.split(".");
@@ -1085,43 +993,6 @@ function resolveCodexRequestOptions(rawModelRef, rawReasoningEffort) {
   };
 }
 
-function normalizeReplyExecutionRequest(raw) {
-  const body = raw && typeof raw === "object" ? raw : {};
-  const transcript = String(body.transcript || "").trim();
-  const systemPrompt = "";
-  const directory = String(body.directory || "").trim();
-  const rootDir = directory || String(body.rootDir || "").trim();
-  const sessionId = normalizeLlmExecutionSessionId(body.sessionId);
-  const messages = normalizeMessages(body.messages);
-
-  let codexOptions;
-  try {
-    codexOptions = resolveCodexRequestOptions(body.modelRef, body.reasoningEffort);
-  } catch (err) {
-    throw makeApiError(400, "invalid_llm_option", errorMessage(err));
-  }
-
-  if (!transcript && messages.length === 0) {
-    throw makeApiError(400, "transcript_required");
-  }
-  const totalMessageChars = messages.reduce((sum, m) => sum + m.content.length, 0);
-  if (totalMessageChars > MAX_MESSAGES_TOTAL_CHARS) {
-    throw makeApiError(400, "messages_too_long", "", { max: MAX_MESSAGES_TOTAL_CHARS });
-  }
-  if (transcript.length > MAX_TRANSCRIPT_CHARS) {
-    throw makeApiError(400, "transcript_too_long", "", { max: MAX_TRANSCRIPT_CHARS });
-  }
-
-  return {
-    transcript,
-    systemPrompt,
-    rootDir,
-    sessionId,
-    messages,
-    codexOptions,
-  };
-}
-
 function normalizeLlmExecutionSessionId(raw) {
   const value = String(raw || "").trim();
   if (!value) return "";
@@ -1185,7 +1056,6 @@ const {
   markAcpSessionsRead,
   migrateAcpSessionDirectoryIdentity,
   revokeAgentWorkspace,
-  resolveSessionIdForRootDir,
   settleAgentSessionLease,
   updateAgentSessionLeaseIdentity,
 } = createLlmAcpSessionStore({
@@ -3031,8 +2901,8 @@ function createRunnerStreamTtsSegments({ emit, signal, publicBaseUrl, ttsProvide
 
 function normalizeStreamTtsMode(raw) {
   const mode = String(raw || "").trim().toLowerCase();
-  if (mode === "text") return "text";
-  return "reply";
+  if (!mode || mode === "text") return "text";
+  throw makeApiError(400, "stream_tts_mode_invalid", "only mode=text is supported");
 }
 
 function parseOptionalSpeedScale(raw) {
@@ -4123,251 +3993,6 @@ async function runTtsByProvider(ttsProvider, text, opts = {}) {
 }
 
 let workspaceRealPathPromise = null;
-let agentSkillContextPromise = null;
-
-const LLM_FILE_TOOL_DEFINITIONS = [
-  {
-    type: "function",
-    name: "list_dir",
-    description: "指定ディレクトリ配下の一覧を取得します。",
-    parameters: {
-      type: "object",
-      properties: {
-        path: { type: "string", description: "ルートからの相対パス。省略時は '.'。" },
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    type: "function",
-    name: "find_files",
-    description: "glob でファイルを検索します。`**/name` は root直下の `name` にも一致します。",
-    parameters: {
-      type: "object",
-      properties: {
-        glob: { type: "string", description: "glob パターン。例: **/*.md" },
-        path: { type: "string", description: "探索開始ディレクトリ。" },
-      },
-      required: ["glob"],
-      additionalProperties: false,
-    },
-  },
-  {
-    type: "function",
-    name: "search_text",
-    description: "テキストを検索します。",
-    parameters: {
-      type: "object",
-      properties: {
-        pattern: { type: "string", description: "検索文字列。" },
-        path: { type: "string", description: "探索開始ディレクトリ。" },
-        glob: { type: "string", description: "対象ファイルglob。" },
-      },
-      required: ["pattern"],
-      additionalProperties: false,
-    },
-  },
-  {
-    type: "function",
-    name: "read_file_range",
-    description: "テキストファイルの行範囲を読み取ります（1-based、両端含む）。",
-    parameters: {
-      type: "object",
-      properties: {
-        path: { type: "string", description: "ファイルの相対パス。" },
-        start_line: { type: "number", minimum: 1, description: "開始行（1-based）。" },
-        end_line: { type: "number", minimum: 1, description: "終了行（1-based、両端含む）。" },
-      },
-      required: ["path", "start_line", "end_line"],
-      additionalProperties: false,
-    },
-  },
-  {
-    type: "function",
-    name: "apply_patch",
-    description: "Begin-End Patch または unified diff を適用します。",
-    parameters: {
-      type: "object",
-      properties: {
-        patch: { type: "string", description: "パッチ本文。" },
-      },
-      required: ["patch"],
-      additionalProperties: false,
-    },
-  },
-  {
-    type: "function",
-    name: "run_tests",
-    description: "テストコマンドを実行し、成功/失敗に関係なく結果を返します。",
-    parameters: {
-      type: "object",
-      properties: {
-        target: { type: "string", description: "任意。特定テスト対象やコマンド。" },
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    type: "function",
-    name: "run_command_sandboxed",
-    description: "allowlist に含まれるコマンドを制限付きで実行します。",
-    parameters: {
-      type: "object",
-      properties: {
-        command: { type: "string", description: "実行コマンド名。" },
-        args: {
-          type: "array",
-          description: "コマンド引数配列。shell展開はされません。",
-          items: { type: "string" },
-        },
-        cwd: { type: "string", description: "実行ディレクトリ（rootからの相対パス）。省略時は '.'。" },
-        timeoutMs: { type: "number", minimum: 1000, description: "タイムアウト(ms)。" },
-      },
-      required: ["command"],
-      additionalProperties: false,
-    },
-  },
-  {
-    type: "function",
-    name: "git_diff",
-    description: "git diff を取得します。",
-    parameters: {
-      type: "object",
-      properties: {
-        path: { type: "string", description: "対象パス（任意）。省略時は root 全体。" },
-        staged: { type: "boolean", description: "true の場合は --staged を使用。" },
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    type: "function",
-    name: "read_file",
-    description: "テキストファイルをページング読取します。失敗時は `ok:false` と `code` が返ります。",
-    parameters: {
-      type: "object",
-      properties: {
-        path: { type: "string", description: "ファイルの相対パス。" },
-        offset: { type: "number", minimum: 0, description: "読み取り開始オフセット。" },
-        limit: { type: "number", minimum: 1, description: `最大読取バイト数。上限 ${LLM_FILE_MAX_READ_BYTES}` },
-      },
-      required: ["path"],
-      additionalProperties: false,
-    },
-  },
-  {
-    type: "function",
-    name: "write_file",
-    description: "テキストファイルを書き込みます。",
-    parameters: {
-      type: "object",
-      properties: {
-        path: { type: "string", description: "ファイルの相対パス。" },
-        content: { type: "string", description: "書き込む内容。" },
-        mode: {
-          type: "string",
-          enum: ["overwrite", "append", "create"],
-          description: "overwrite=上書き, append=追記, create=新規作成のみ",
-        },
-      },
-      required: ["path", "content"],
-      additionalProperties: false,
-    },
-  },
-  {
-    type: "function",
-    name: "edit_file",
-    description: "oldText/newText 置換でファイルを編集します。",
-    parameters: {
-      type: "object",
-      properties: {
-        path: { type: "string", description: "ファイルの相対パス。" },
-        edits: {
-          type: "array",
-          minItems: 1,
-          items: {
-            type: "object",
-            properties: {
-              oldText: { type: "string" },
-              newText: { type: "string" },
-              replaceAll: { type: "boolean" },
-            },
-            required: ["oldText", "newText"],
-            additionalProperties: false,
-          },
-        },
-      },
-      required: ["path", "edits"],
-      additionalProperties: false,
-    },
-  },
-  {
-    type: "function",
-    name: "media",
-    description: "クライアント側のメディア再生を操作します（stop/next/prev）。",
-    parameters: {
-      type: "object",
-      properties: {
-        action: {
-          type: "string",
-          enum: ["stop", "next", "prev"],
-          description: "メディア操作。stop=停止, next=次へ, prev=前へ。",
-        },
-        target: {
-          type: "string",
-          enum: ["all", "youtube", "tts"],
-          description: "操作対象。省略時は stop=all, next/prev=youtube。",
-        },
-        reason: {
-          type: "string",
-          description: "操作理由のメモ（任意）。",
-        },
-      },
-      required: ["action"],
-      additionalProperties: false,
-    },
-  },
-];
-const LLM_FILE_TOOL_DEFINITION_MAP = new Map(
-  LLM_FILE_TOOL_DEFINITIONS.map((tool) => [String(tool.name), tool])
-);
-
-function getEnabledLlmFileToolNames() {
-  const names = [
-    "list_dir",
-    "search_text",
-    "find_files",
-    "read_file_range",
-    "apply_patch",
-    "run_tests",
-    "run_command_sandboxed",
-    "git_diff",
-  ];
-  if (LLM_FILE_ENABLE_MEDIA_TOOL) {
-    names.push("media");
-  }
-  if (LLM_FILE_ENABLE_LEGACY_WRITE_TOOLS) {
-    names.push("write_file");
-    names.push("edit_file");
-  }
-  return names;
-}
-
-function buildCodexBuiltinTools() {
-  return [];
-}
-
-function getCodexToolDefinitions() {
-  const enabledNames = getEnabledLlmFileToolNames();
-  const fileTools = [];
-  for (const name of enabledNames) {
-    const def = LLM_FILE_TOOL_DEFINITION_MAP.get(name);
-    if (def) fileTools.push(def);
-  }
-  const builtinTools = buildCodexBuiltinTools();
-  if (builtinTools.length <= 0) return fileTools;
-  return [...fileTools, ...builtinTools];
-}
 
 function toUnixPath(value) {
   return String(value || "").split(path.sep).join("/");
@@ -4598,71 +4223,6 @@ function extractYouTubeVideoIdsFromToolResult(toolName, normalizedArgs, output) 
   return out;
 }
 
-function extractMediaControlFromToolResult(toolName, output) {
-  const normalizedToolName = String(toolName || "").trim();
-  if (normalizedToolName !== "media") return null;
-  const result = output?.result && typeof output.result === "object" ? output.result : null;
-  const action = String(result?.action || "").trim().toLowerCase();
-  if (action !== "stop" && action !== "next" && action !== "prev") return null;
-  const target = String(result?.target || "").trim().toLowerCase();
-  if (target !== "all" && target !== "youtube" && target !== "tts") return null;
-  const reason = String(result?.reason || "").trim();
-  return {
-    action,
-    target,
-    reason: reason || undefined,
-  };
-}
-
-function classifyToolCategory(toolName) {
-  const name = String(toolName || "").trim();
-  if (
-    name === "list_dir" ||
-    name === "find_files" ||
-    name === "search_text" ||
-    name === "read_file" ||
-    name === "read_file_range"
-  ) {
-    return "observe";
-  }
-  if (
-    name === "apply_patch" ||
-    name === "write_file" ||
-    name === "edit_file"
-  ) {
-    return "edit";
-  }
-  if (name === "run_tests") {
-    return "verify";
-  }
-  if (name === "git_diff") {
-    return "diff";
-  }
-  return "safety";
-}
-
-function normalizeReplyExecutionRequestForLog(req) {
-  const normalized = req && typeof req === "object" ? req : {};
-  const codexOptions = normalized.codexOptions && typeof normalized.codexOptions === "object"
-    ? normalized.codexOptions
-    : {};
-  const modelInfo = codexOptions.modelInfo && typeof codexOptions.modelInfo === "object"
-    ? codexOptions.modelInfo
-    : {};
-  const messages = Array.isArray(normalized.messages) ? normalized.messages : [];
-  return {
-    transcript: String(normalized.transcript || ""),
-    systemPrompt: String(normalized.systemPrompt || ""),
-    directory: String(normalized.rootDir || ""),
-    rootDir: String(normalized.rootDir || ""),
-    sessionId: String(normalized.sessionId || ""),
-    messages,
-    modelRef: String(modelInfo.modelRef || ""),
-    model: String(modelInfo.model || ""),
-    reasoningEffort: String(codexOptions.reasoningEffort || ""),
-  };
-}
-
 async function pruneOldJsonlFiles(logDir, keepCount, preservePath = "") {
   if (!logDir) return;
   const resolvedPreservePath = preservePath ? path.resolve(preservePath) : "";
@@ -4738,12 +4298,6 @@ function appendLlmRequestLog(entry) {
       console.error("[llm-request-log] failed", err);
     });
   return llmRequestLogWriteQueue;
-}
-
-async function appendLlmToolAuditLog(entry) {
-  const dir = path.dirname(LLM_FILE_AUDIT_LOG_PATH);
-  await fs.mkdir(dir, { recursive: true });
-  await fs.appendFile(LLM_FILE_AUDIT_LOG_PATH, `${JSON.stringify(entry)}\n`, "utf8");
 }
 
 function truncateClientLogString(raw, max = CLIENT_APP_LOG_MAX_STRING_CHARS) {
@@ -5339,43 +4893,16 @@ async function executeLlmFileToolCall(name, rawArgs, ctx, opts = {}) {
   throw new Error(`unsupported tool: ${name}`);
 }
 
+function normalizeTokenCount(rawValue) {
+  const value = Number(rawValue);
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return Math.floor(value);
+}
+
 function extractResponseOutputItems(responsePayload) {
   if (Array.isArray(responsePayload?.output)) return responsePayload.output;
   if (Array.isArray(responsePayload?.response?.output)) return responsePayload.response.output;
   return [];
-}
-
-function summarizeResponsePayloadForDebug(responsePayload) {
-  const payload = responsePayload && typeof responsePayload === "object" ? responsePayload : {};
-  const items = extractResponseOutputItems(payload);
-  const itemTypes = items.map((item) => String(item?.type || "?"));
-  const messageContentTypes = [];
-  for (const item of items) {
-    if (item?.type !== "message") continue;
-    const content = Array.isArray(item?.content) ? item.content : [];
-    for (const c of content) {
-      messageContentTypes.push(String(c?.type || "?"));
-    }
-  }
-  const snapshot = {
-    topKeys: Object.keys(payload || {}).slice(0, 24),
-    id: String(payload?.id || ""),
-    object: String(payload?.object || ""),
-    status: String(payload?.status || ""),
-    model: String(payload?.model || ""),
-    error: payload?.error || null,
-    incompleteDetails: payload?.incomplete_details || null,
-    outputTextType: typeof payload?.output_text,
-    outputTextPreview: typeof payload?.output_text === "string" ? payload.output_text.slice(0, 120) : "",
-    outputLength: items.length,
-    outputItemTypes: itemTypes.slice(0, 24),
-    messageContentTypes: messageContentTypes.slice(0, 40),
-  };
-  try {
-    return JSON.stringify(snapshot);
-  } catch {
-    return String(snapshot);
-  }
 }
 
 function extractResponseOutputText(responsePayload) {
@@ -5424,975 +4951,6 @@ function extractResponseOutputText(responsePayload) {
     }
   }
   return chunks.join("").trim();
-}
-
-function extractResponseFunctionCalls(responsePayload) {
-  const items = extractResponseOutputItems(responsePayload);
-  const calls = [];
-  for (const item of items) {
-    if (item?.type !== "function_call") continue;
-    const name = String(item?.name || "").trim();
-    if (!name) continue;
-    calls.push({
-      name,
-      callId: String(item?.call_id || item?.id || randomUUID()),
-      argumentsText: typeof item?.arguments === "string"
-        ? item.arguments
-        : JSON.stringify(item?.arguments || {}),
-    });
-  }
-  return calls;
-}
-
-function normalizeTokenCount(rawValue) {
-  const value = Number(rawValue);
-  if (!Number.isFinite(value) || value <= 0) return 0;
-  return Math.floor(value);
-}
-
-function resolveCodexModelContextWindowTokens(modelNameRaw) {
-  const modelName = String(modelNameRaw || "").trim().toLowerCase();
-  if (!modelName) return OPENAI_CODEX_CONTEXT_WINDOW_TOKENS_DEFAULT;
-  if (OPENAI_CODEX_MODEL_CONTEXT_WINDOW_TOKENS[modelName]) {
-    return OPENAI_CODEX_MODEL_CONTEXT_WINDOW_TOKENS[modelName];
-  }
-  for (const matcher of OPENAI_CODEX_MODEL_CONTEXT_WINDOW_MATCHERS) {
-    if (modelName.startsWith(matcher.prefix)) {
-      return OPENAI_CODEX_MODEL_CONTEXT_WINDOW_TOKENS[matcher.key];
-    }
-  }
-  return OPENAI_CODEX_CONTEXT_WINDOW_TOKENS_DEFAULT;
-}
-
-function extractResponseContextUsage(responsePayload, modelNameRaw) {
-  const usage = responsePayload?.usage && typeof responsePayload.usage === "object"
-    ? responsePayload.usage
-    : null;
-  if (!usage) return null;
-  const inputTokens = normalizeTokenCount(usage.input_tokens);
-  const outputTokens = normalizeTokenCount(usage.output_tokens);
-  const totalTokens = normalizeTokenCount(usage.total_tokens) || Math.max(0, inputTokens + outputTokens);
-  const inputDetails = usage?.input_tokens_details && typeof usage.input_tokens_details === "object"
-    ? usage.input_tokens_details
-    : null;
-  const outputDetails = usage?.output_tokens_details && typeof usage.output_tokens_details === "object"
-    ? usage.output_tokens_details
-    : null;
-  const cachedInputTokens = normalizeTokenCount(inputDetails?.cached_tokens);
-  const reasoningOutputTokens = normalizeTokenCount(outputDetails?.reasoning_tokens);
-  const contextWindowTokens = resolveCodexModelContextWindowTokens(modelNameRaw);
-  const usedRatio = contextWindowTokens > 0
-    ? Math.max(0, Math.min(1, totalTokens / contextWindowTokens))
-    : 0;
-  const usedPct = Math.max(0, Math.min(100, Math.round(usedRatio * 100)));
-  return {
-    inputTokens,
-    outputTokens,
-    totalTokens,
-    cachedInputTokens,
-    reasoningOutputTokens,
-    contextWindowTokens,
-    usedRatio,
-    usedPct,
-  };
-}
-
-function parseResponsePayload(rawBody) {
-  const text = String(rawBody || "").trim();
-  if (!text) {
-    throw new Error("openai-codex responses returned empty body");
-  }
-  try {
-    return JSON.parse(text);
-  } catch {
-    let lastCompleted = null;
-    const outputItemsByIndex = new Map();
-    const outputItemsNoIndex = [];
-    const blocks = text.split(/\n\n+/);
-    for (const block of blocks) {
-      const parsed = parseSseEventBlock(block);
-      if (!parsed?.data || parsed.data === "[DONE]") continue;
-      let event;
-      try {
-        event = JSON.parse(parsed.data);
-      } catch {
-        continue;
-      }
-      if (
-        (event?.type === "response.output_item.done" || event?.type === "response.output_item.added") &&
-        event?.item &&
-        typeof event.item === "object"
-      ) {
-        const idx = Number(event?.output_index);
-        if (Number.isInteger(idx) && idx >= 0) {
-          outputItemsByIndex.set(idx, event.item);
-        } else {
-          outputItemsNoIndex.push(event.item);
-        }
-      }
-      if (event?.type === "response.completed" && event?.response) {
-        lastCompleted = event.response;
-      }
-    }
-    const reconstructedItems = [
-      ...Array.from(outputItemsByIndex.entries())
-        .sort((a, b) => a[0] - b[0])
-        .map((entry) => entry[1]),
-      ...outputItemsNoIndex,
-    ];
-    if (lastCompleted) {
-      const hasOutput = Array.isArray(lastCompleted?.output) && lastCompleted.output.length > 0;
-      if (!hasOutput && reconstructedItems.length > 0) {
-        return {
-          ...lastCompleted,
-          output: reconstructedItems,
-        };
-      }
-      return lastCompleted;
-    }
-    if (reconstructedItems.length > 0) {
-      return {
-        output: reconstructedItems,
-        status: "completed",
-      };
-    }
-    throw new Error("failed to parse openai-codex response payload");
-  }
-}
-
-async function createOpenAICodexResponseJson(payload) {
-  return withCodexAuthLease(() => createOpenAICodexResponseJsonLeased(payload));
-}
-
-async function createOpenAICodexResponseJsonLeased(payload) {
-  let triedAuthRefresh = false;
-  let upstreamRetryCount = 0;
-  while (true) {
-    const auth = await resolveCodexResponseAuth({ forceRefresh: triedAuthRefresh });
-    const requestId = randomUUID();
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), OPENAI_CODEX_TIMEOUT_MS);
-    try {
-      const response = await fetch(`${OPENAI_CODEX_RESPONSES_BASE_URL}/responses`, {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${auth.accessToken}`,
-          "chatgpt-account-id": auth.accountId,
-          "content-type": "application/json",
-          accept: "application/json, text/event-stream",
-          originator: OPENAI_CODEX_ORIGINATOR,
-          version: OPENAI_CODEX_VERSION,
-          "x-client-request-id": requestId,
-          "x-openai-codex-route": OPENAI_CODEX_ROUTE,
-        },
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      });
-      const rawBody = await response.text().catch(() => "");
-      if (!response.ok) {
-        const status = Number(response.status || 0);
-        if (!triedAuthRefresh && (status === 401 || status === 403)) {
-          triedAuthRefresh = true;
-          continue;
-        }
-        if (
-          isOpenAICodexRetryableStatus(status) &&
-          upstreamRetryCount < OPENAI_CODEX_UPSTREAM_MAX_RETRIES
-        ) {
-          upstreamRetryCount += 1;
-          const keepGoing = await waitForOpenAICodexRetry(`status=${status}`, upstreamRetryCount);
-          if (!keepGoing) {
-            throw new Error("openai-codex retry aborted");
-          }
-          continue;
-        }
-        throw new Error(`openai-codex responses failed (${status}): ${rawBody}`);
-      }
-      return parseResponsePayload(rawBody);
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      if (!triedAuthRefresh && isCodexAuthErrorMessage(errMsg)) {
-        triedAuthRefresh = true;
-        continue;
-      }
-      if (
-        isOpenAICodexRetryableMessage(errMsg) &&
-        upstreamRetryCount < OPENAI_CODEX_UPSTREAM_MAX_RETRIES
-      ) {
-        upstreamRetryCount += 1;
-        const keepGoing = await waitForOpenAICodexRetry(errMsg, upstreamRetryCount);
-        if (!keepGoing) {
-          throw new Error("openai-codex retry aborted");
-        }
-        continue;
-      }
-      throw err;
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-}
-
-function parseSkillMeta(content, skillPathAbs) {
-  const lines = String(content || "").split(/\r?\n/);
-  let name = "";
-  let description = "";
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    if (trimmed.startsWith("#")) {
-      if (!name) {
-        name = trimmed.replace(/^#+\s*/, "").trim();
-      }
-      continue;
-    }
-    if (!description) {
-      description = trimmed.replace(/^[-*]\s*/, "").trim();
-    }
-    if (name && description) break;
-  }
-  return {
-    name: name || path.basename(path.dirname(skillPathAbs)),
-    description: description || "No description",
-  };
-}
-
-async function findRepoRoot(startDir) {
-  let current = path.resolve(startDir);
-  while (true) {
-    if (await pathExists(path.join(current, ".git"))) {
-      return current;
-    }
-    const parent = path.dirname(current);
-    if (parent === current) {
-      return path.resolve(startDir);
-    }
-    current = parent;
-  }
-}
-
-function collectAncestorDirsToRoot(startDir, stopDir) {
-  const out = [];
-  let current = path.resolve(startDir);
-  const stop = path.resolve(stopDir);
-  while (true) {
-    out.push(current);
-    if (current === stop) break;
-    const parent = path.dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
-  return out.reverse();
-}
-
-async function scanSkillCatalog(repoRootAbs) {
-  const catalog = [];
-  const stack = [repoRootAbs];
-  while (stack.length > 0) {
-    const dir = stack.pop();
-    let entries;
-    try {
-      entries = await fs.readdir(dir, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    entries.sort((a, b) => a.name.localeCompare(b.name));
-    for (const entry of entries) {
-      const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (entry.name.startsWith(".") && entry.name !== ".agents") continue;
-        if (LLM_FILE_SKIP_SCAN_DIRS.has(entry.name)) continue;
-        stack.push(fullPath);
-        continue;
-      }
-      if (!entry.isFile() || entry.name !== "SKILL.md") continue;
-      let content = "";
-      try {
-        content = await fs.readFile(fullPath, "utf8");
-      } catch {
-        continue;
-      }
-      const meta = parseSkillMeta(content, fullPath);
-      catalog.push({
-        name: meta.name,
-        description: meta.description,
-        absPath: fullPath,
-        relPath: toUnixPath(path.relative(repoRootAbs, fullPath)),
-      });
-      if (catalog.length >= LLM_FILE_SKILL_SCAN_MAX) {
-        return catalog;
-      }
-    }
-  }
-  return catalog;
-}
-
-async function loadAgentSkillContext() {
-  const cwd = path.resolve(process.cwd());
-  const repoRootAbs = await findRepoRoot(cwd);
-  const repoRootReal = await fs.realpath(repoRootAbs).catch(() => repoRootAbs);
-  const dirs = collectAncestorDirsToRoot(cwd, repoRootAbs);
-  const agentDocs = [];
-  for (const dir of dirs) {
-    for (const fileName of ["AGENT.md", "AGENTS.md"]) {
-      const absPath = path.join(dir, fileName);
-      if (!(await pathExists(absPath))) continue;
-      let content = "";
-      try {
-        content = await fs.readFile(absPath, "utf8");
-      } catch {
-        continue;
-      }
-      agentDocs.push({
-        absPath,
-        relPath: toUnixPath(path.relative(repoRootAbs, absPath)),
-        content,
-      });
-    }
-  }
-  const skillCatalog = await scanSkillCatalog(repoRootAbs);
-  return {
-    cwd,
-    repoRootAbs,
-    repoRootReal,
-    agentDocs,
-    skillCatalog,
-  };
-}
-
-async function getAgentSkillContext() {
-  if (!agentSkillContextPromise) {
-    agentSkillContextPromise = loadAgentSkillContext().catch((err) => {
-      agentSkillContextPromise = null;
-      throw err;
-    });
-  }
-  return agentSkillContextPromise;
-}
-
-function renderAgentDocs(agentDocs) {
-  if (!Array.isArray(agentDocs) || agentDocs.length === 0) return "";
-  const blocks = [];
-  for (const doc of agentDocs) {
-    blocks.push(`[${doc.relPath}]`);
-    blocks.push(String(doc.content || "").trim());
-  }
-  return blocks.join("\n\n---\n\n");
-}
-
-function renderSkillCatalogSummary(skillCatalog) {
-  if (!Array.isArray(skillCatalog) || skillCatalog.length === 0) {
-    return "SKILL catalog: (none)";
-  }
-  const lines = skillCatalog.slice(0, LLM_FILE_SKILL_SCAN_MAX).map((skill) => (
-    `- ${skill.name}: ${skill.description} (${skill.relPath})`
-  ));
-  return `SKILL catalog:\n${lines.join("\n")}`;
-}
-
-function scoreSkillMatch(skill, userText) {
-  const text = String(userText || "").toLowerCase();
-  if (!text) return 0;
-  let score = 0;
-  const name = String(skill?.name || "").toLowerCase();
-  const desc = String(skill?.description || "").toLowerCase();
-  const relPath = String(skill?.relPath || "").toLowerCase();
-  if (name && text.includes(name)) score += 8;
-  if (relPath && text.includes(relPath)) score += 6;
-  const keywords = desc
-    .split(/[\s、。,.!?:;()"'`]+/)
-    .map((w) => w.trim())
-    .filter((w) => w.length >= 2)
-    .slice(0, 8);
-  for (const keyword of keywords) {
-    if (text.includes(keyword)) score += 1;
-  }
-  return score;
-}
-
-function selectSingleBestSkill(skillCatalog, userText) {
-  if (!Array.isArray(skillCatalog) || skillCatalog.length === 0) return null;
-  const scored = skillCatalog.map((skill) => ({
-    skill,
-    score: scoreSkillMatch(skill, userText),
-    depth: String(skill?.relPath || "").split("/").length,
-  })).filter((item) => item.score > 0);
-  if (scored.length === 0) return null;
-  scored.sort((a, b) => {
-    if (b.score !== a.score) return b.score - a.score;
-    return b.depth - a.depth;
-  });
-  const best = scored[0];
-  const second = scored[1];
-  if (best.score < 4) return null;
-  if (second && best.score <= second.score + 1) return null;
-  return best.skill;
-}
-
-async function maybeReadSelectedSkill({ agentSkillContext, userText }) {
-  const selected = selectSingleBestSkill(agentSkillContext.skillCatalog, userText);
-  if (!selected) {
-    return { selectedSkill: null, selectedSkillContent: "" };
-  }
-  const skillRealPath = await fs.realpath(selected.absPath).catch(() => selected.absPath);
-  if (!isPathInsideRoot(agentSkillContext.repoRootReal, skillRealPath)) {
-    return { selectedSkill: null, selectedSkillContent: "" };
-  }
-  const relToRepo = toUnixPath(path.relative(agentSkillContext.repoRootReal, skillRealPath));
-  const readResult = await runReadFileTool(
-    { path: relToRepo, offset: 0, limit: LLM_FILE_MAX_READ_BYTES },
-    { rootReal: agentSkillContext.repoRootReal }
-  );
-  const selectedSkillContent = readResult && typeof readResult.content === "string"
-    ? readResult.content
-    : "";
-  return {
-    selectedSkill: selected,
-    selectedSkillContent,
-  };
-}
-
-function buildLlmFileToolInstructions({
-  systemPrompt = "",
-}) {
-  return resolveOpenAICodexInstructions(systemPrompt);
-}
-
-function buildReplyInputText({ transcript, messages }) {
-  return messages.length > 0
-    ? buildPromptFromMessages(messages)
-    : buildPrompt(transcript);
-}
-
-async function loadRootAgentMarkdown(rootReal) {
-  const filePath = path.join(rootReal, "AGENT.md");
-  let content = "";
-  try {
-    content = await fs.readFile(filePath, "utf8");
-  } catch {
-    return "";
-  }
-  return String(content || "").trim();
-}
-
-function mergeSystemPrompts(_appSystemPrompt, rootAgentPrompt) {
-  return String(rootAgentPrompt || "").trim();
-}
-
-function buildEffectiveMessages({ transcript, messages }) {
-  const baseMessages = Array.isArray(messages) ? messages : [];
-  const normalizedBase = baseMessages.filter((m) => (
-    m &&
-    (m.role === "user" || m.role === "assistant" || m.role === "system") &&
-    String(m.content || "").trim()
-  ));
-  const conversation = normalizedBase.length > 0
-    ? normalizedBase
-    : (String(transcript || "").trim() ? [{ role: "user", content: String(transcript || "").trim() }] : []);
-  const nonSystemMessages = conversation.filter((m) => m.role !== "system");
-  return nonSystemMessages;
-}
-
-function extractLastUserText({ transcript, messages }) {
-  if (messages.length > 0) {
-    for (let i = messages.length - 1; i >= 0; i -= 1) {
-      if (messages[i].role === "user") return messages[i].content;
-    }
-    return messages[messages.length - 1].content;
-  }
-  return transcript;
-}
-
-async function runCodexWithFileTools({
-  transcript,
-  messages,
-  instructions,
-  sessionId: requestedSessionId,
-  codexOptions,
-  resolvedRoot,
-  requestToolApproval,
-  onToolCall,
-  onProgress,
-  testHooks,
-}) {
-  const root = resolvedRoot || await resolveToolRoot("");
-  const normalizedRootRel = toUnixPath(root.relativeRoot || "");
-  const basenameAlias = toUnixPath(path.basename(root.rootReal || ""));
-  const rootPathAliases = Array.from(
-    new Set(
-      [
-        normalizedRootRel && normalizedRootRel !== "." ? normalizedRootRel : "",
-        normalizedRootRel && !normalizedRootRel.includes("/") ? basenameAlias : "",
-      ].filter(Boolean)
-    )
-  );
-  const runnerInstructions = buildLlmFileToolInstructions({
-    systemPrompt: instructions,
-  });
-  const inputText = buildReplyInputText({ transcript, messages });
-  const initialInput = [
-    {
-      role: "user",
-      content: [
-        {
-          type: "input_text",
-          text: inputText,
-        },
-      ],
-    },
-  ];
-
-  const sessionId = normalizeLlmExecutionSessionId(requestedSessionId) || generateLlmExecutionSessionId();
-  const toolContext = {
-    rootReal: root.rootReal,
-    rootPathAliases,
-    sessionId,
-    requestToolApproval: typeof requestToolApproval === "function"
-      ? requestToolApproval
-      : null,
-  };
-  const emitToolCall = typeof onToolCall === "function" ? onToolCall : null;
-  const emitProgress = typeof onProgress === "function" ? onProgress : null;
-  const createCodexResponse = typeof testHooks?.createCodexResponse === "function"
-    ? testHooks.createCodexResponse
-    : createOpenAICodexResponseJson;
-  const executeToolCall = typeof testHooks?.executeToolCall === "function"
-    ? testHooks.executeToolCall
-    : executeLlmFileToolCall;
-  const maxToolRounds = Number.isInteger(Number(testHooks?.maxToolRounds)) && Number(testHooks.maxToolRounds) > 0
-    ? Number(testHooks.maxToolRounds)
-    : llmFileMaxToolRoundsRuntime;
-  const emitProgressEvent = (stage, payload = {}) => {
-    if (!emitProgress) return;
-    emitProgress({
-      stage: String(stage || ""),
-      at: new Date().toISOString(),
-      ...payload,
-    });
-  };
-  let toolCalls = 0;
-  let latestContextUsage = null;
-  const history = [...initialInput];
-
-  for (let round = 0; round < maxToolRounds; round += 1) {
-    const roundIndex = round + 1;
-    emitProgressEvent("round_start", {
-      round: roundIndex,
-      maxToolRounds,
-      toolCalls,
-      message: `round ${roundIndex}/${maxToolRounds} started`,
-    });
-    const payload = {
-      model: codexOptions.modelInfo.model,
-      input: history,
-      tools: getCodexToolDefinitions(),
-      tool_choice: "auto",
-      store: false,
-      stream: true,
-    };
-    payload.instructions = runnerInstructions;
-    const effort = normalizeReasoningEffort(codexOptions.reasoningEffort, { warnInvalid: false });
-    if (effort) {
-      payload.reasoning = { effort };
-    }
-    emitProgressEvent("model_request_started", {
-      round: roundIndex,
-      maxToolRounds,
-      toolCalls,
-      message: `round ${roundIndex}: waiting model response`,
-    });
-    void appendLlmRequestLog({
-      type: "codex_request_payload",
-      source: "runCodexWithFileTools",
-      sessionId,
-      round,
-      modelRef: codexOptions.modelInfo.modelRef,
-      reasoningEffort: codexOptions.reasoningEffort,
-      payload,
-    });
-    const responsePayload = await createCodexResponse(payload);
-    const contextUsage = extractResponseContextUsage(responsePayload, codexOptions?.modelInfo?.model);
-    if (contextUsage) {
-      latestContextUsage = contextUsage;
-    }
-    const functionCalls = extractResponseFunctionCalls(responsePayload);
-    emitProgressEvent("model_response_received", {
-      round: roundIndex,
-      maxToolRounds,
-      toolCalls,
-      pendingToolCalls: functionCalls.length,
-      message: functionCalls.length > 0
-        ? `round ${roundIndex}: ${functionCalls.length} tool call(s) requested`
-        : `round ${roundIndex}: final response received`,
-    });
-    if (functionCalls.length === 0) {
-      const reply = extractResponseOutputText(responsePayload);
-      if (!reply) {
-        if (RUNNER_LOG_REQUESTS) {
-          console.warn(`[reply-empty] payload=${summarizeResponsePayloadForDebug(responsePayload)}`);
-        }
-        throw new Error("openai-codex returned empty response");
-      }
-      emitProgressEvent("final_response_ready", {
-        round: roundIndex,
-        maxToolRounds,
-        toolCalls,
-        message: "final response ready",
-      });
-      return {
-        reply,
-        sessionId,
-        rootRelativePath: root.relativeRoot,
-        selectedSkillPath: "",
-        toolCalls,
-        contextUsage: latestContextUsage,
-      };
-    }
-
-    for (const call of functionCalls) {
-      toolCalls += 1;
-      let args = {};
-      let parseErrorMessage = "";
-      let normalizedArgsForAudit = {};
-      try {
-        args = call.argumentsText ? JSON.parse(call.argumentsText) : {};
-      } catch {
-        parseErrorMessage = "tool arguments must be valid JSON";
-      }
-      if (!parseErrorMessage) {
-        normalizedArgsForAudit = normalizeToolArgsForExecution(args, toolContext);
-      }
-      if (emitToolCall) {
-        emitToolCall({
-          phase: "start",
-          toolName: call.name,
-          callId: call.callId,
-          argsSummary: summarizeValueForAudit(parseErrorMessage ? args : normalizedArgsForAudit),
-          parseError: parseErrorMessage || undefined,
-        });
-      }
-      emitProgressEvent("tool_start", {
-        round: roundIndex,
-        maxToolRounds,
-        toolCalls,
-        toolName: call.name,
-        message: `tool ${call.name} started`,
-      });
-      const startedAt = Date.now();
-      let status = "ok";
-      let output;
-      if (parseErrorMessage) {
-        status = "error";
-        output = {
-          ok: false,
-          error: "invalid_tool_arguments",
-          code: "invalid_tool_arguments",
-          message: parseErrorMessage,
-        };
-      } else {
-        try {
-          const result = await executeToolCall(call.name, args, toolContext, {
-            callId: call.callId,
-            normalizedArgs: normalizedArgsForAudit,
-          });
-          output = { ok: true, result };
-        } catch (err) {
-          status = "error";
-          const normalized = normalizeToolExecutionError(
-            err,
-            "tool_execution_failed",
-            "tool execution failed",
-            {
-              toolName: call.name,
-            }
-          );
-          const normalizedMessage = String(normalized.message || "");
-          const requiresStreamApproval =
-            call.name === "run_command_sandboxed" &&
-            /requires interactive approval over \/stream-tts/i.test(normalizedMessage);
-          if (requiresStreamApproval && !toolContext.requestToolApproval) {
-            throw makeApiError(
-              409,
-              "interactive_approval_required",
-              normalizedMessage,
-              {
-                toolName: call.name,
-                requiredEndpoint: "/stream-tts",
-              }
-            );
-          }
-          output = {
-            ok: false,
-            error: "tool_execution_failed",
-            code: normalized.code,
-            message: normalized.message,
-            details: normalized.details,
-          };
-        }
-      }
-      const durationMs = Date.now() - startedAt;
-      const outputObj = output && typeof output === "object" ? output : null;
-      const resultCode = status === "ok"
-        ? String(outputObj?.result?.code || "ok")
-        : String(outputObj?.code || outputObj?.error || "tool_execution_failed");
-      const toolCategory = classifyToolCategory(call.name);
-      const youtubeVideoIds = status === "ok"
-        ? extractYouTubeVideoIdsFromToolResult(call.name, normalizedArgsForAudit, output)
-        : [];
-      const mediaControl = status === "ok"
-        ? extractMediaControlFromToolResult(call.name, output)
-        : null;
-      if (emitToolCall) {
-        emitToolCall({
-          phase: "done",
-          toolName: call.name,
-          callId: call.callId,
-          status,
-          durationMs,
-          resultSummary: summarizeValueForAudit(output),
-          youtubeVideoIds: youtubeVideoIds.length > 0 ? youtubeVideoIds : undefined,
-          mediaControl: mediaControl || undefined,
-          errorCode: status === "error" ? resultCode : undefined,
-          errorMessage: status === "error"
-            ? String(outputObj?.message || outputObj?.error || "tool_execution_failed")
-            : undefined,
-        });
-      }
-      emitProgressEvent("tool_done", {
-        round: roundIndex,
-        maxToolRounds,
-        toolCalls,
-        toolName: call.name,
-        status,
-        durationMs,
-        message: `tool ${call.name} ${status}`,
-      });
-      await appendLlmToolAuditLog({
-        timestamp: new Date().toISOString(),
-        sessionId,
-        callId: call.callId,
-        toolName: call.name,
-        tool_category: toolCategory,
-        argsRedacted: summarizeValueForAudit(args),
-        normalizedArgsRedacted: summarizeValueForAudit(normalizedArgsForAudit),
-        resultSummary: summarizeValueForAudit(output),
-        status,
-        resultCode,
-        durationMs,
-        rootRelativePath: root.relativeRoot,
-      }).catch((err) => {
-        console.error("[llm-tool-audit] failed", err);
-      });
-      history.push({
-        type: "function_call",
-        call_id: call.callId,
-        name: call.name,
-        arguments: call.argumentsText,
-      });
-      history.push({
-        type: "function_call_output",
-        call_id: call.callId,
-        output: JSON.stringify(output),
-      });
-    }
-    emitProgressEvent("round_complete", {
-      round: roundIndex,
-      maxToolRounds,
-      toolCalls,
-      message: `round ${roundIndex} completed`,
-    });
-  }
-  emitProgressEvent("tool_loop_exceeded", {
-    maxToolRounds,
-    toolCalls,
-    message: `tool loop exceeded max rounds (${maxToolRounds})`,
-  });
-  throw new Error(`tool loop exceeded max rounds (${maxToolRounds})`);
-}
-
-function buildMockReplyFromRequest(req) {
-  return `[mock] ${req.messages.length > 0 ? req.messages[req.messages.length - 1]?.content || "" : req.transcript}`;
-}
-
-function buildReplyHttpPayload(result) {
-  const payload = {
-    reply: result.reply,
-    provider: result.provider,
-    route: result.route,
-    modelRef: result.modelRef,
-  };
-  if (result.mode === "file-tools") {
-    payload.rootRelativePath = result.rootRelativePath;
-    payload.sessionId = result.sessionId;
-    payload.selectedSkillPath = result.selectedSkillPath || undefined;
-    payload.toolCalls = Number(result.toolCalls || 0);
-    payload.contextUsage = result.contextUsage && typeof result.contextUsage === "object"
-      ? result.contextUsage
-      : undefined;
-  }
-  return payload;
-}
-
-async function runReplyUsecase(req, opts = {}) {
-  const stream = Boolean(opts.stream);
-  const onText = typeof opts.onText === "function" ? opts.onText : null;
-  const onMode = typeof opts.onMode === "function" ? opts.onMode : null;
-  const onToolCall = typeof opts.onToolCall === "function" ? opts.onToolCall : null;
-  const onProgress = typeof opts.onProgress === "function" ? opts.onProgress : null;
-  const requestToolApproval = typeof opts.requestToolApproval === "function"
-    ? opts.requestToolApproval
-    : null;
-  const signal = opts.signal;
-  let validatedRoot = null;
-  try {
-    validatedRoot = await resolveToolRoot(req.rootDir);
-  } catch (err) {
-    throw makeApiError(500, "root_dir_invalid", errorMessage(err));
-  }
-  const rootAgentPrompt = await loadRootAgentMarkdown(validatedRoot.rootReal);
-  const mergedSystemPrompt = mergeSystemPrompts(req.systemPrompt, rootAgentPrompt);
-  const effectiveMessages = buildEffectiveMessages({
-    transcript: req.transcript,
-    messages: req.messages,
-  });
-  const effectiveSessionId = await resolveSessionIdForRootDir(req.sessionId, validatedRoot.rootReal);
-  await bindSessionToRootDir(effectiveSessionId, validatedRoot.rootReal);
-  const effectiveReq = {
-    ...req,
-    sessionId: effectiveSessionId,
-    instructions: mergedSystemPrompt,
-    messages: effectiveMessages,
-  };
-
-  if (RUNNER_MOCK) {
-    const reply = buildMockReplyFromRequest(effectiveReq);
-    const sessionId = effectiveSessionId;
-    const lastUserText = String(extractLastUserText({
-      transcript: effectiveReq.transcript,
-      messages: effectiveReq.messages,
-    }) || "").trim();
-    await appendAppConversationToCliRollout({
-      sessionId,
-      cwd: validatedRoot.rootReal,
-      directory: validatedRoot.rootReal,
-      userText: lastUserText,
-      assistantText: reply,
-      modelRef: "mock",
-      reasoningEffort: effectiveReq.codexOptions.reasoningEffort,
-    }).catch((err) => {
-      console.error("[session-rollout] append failed", err);
-    });
-    if (stream && onMode) onMode("mock_delta");
-    if (stream && onText) {
-      const chunks = splitMockStreamChunks(reply);
-      for (const chunk of chunks) {
-        if (signal?.aborted) break;
-        onText(chunk, "mock");
-        await sleep(40);
-      }
-    }
-    return {
-      mode: "file-tools",
-      reply,
-      provider: "mock",
-      route: "mock",
-      modelRef: "mock",
-      rootRelativePath: validatedRoot?.relativeRoot,
-      toolCalls: 0,
-      sessionId,
-      selectedSkillPath: undefined,
-      contextUsage: null,
-    };
-  }
-
-  const fileResult = await runCodexWithFileTools({
-    transcript: effectiveReq.transcript,
-    messages: effectiveReq.messages,
-    instructions: effectiveReq.instructions,
-    sessionId: effectiveReq.sessionId,
-    codexOptions: effectiveReq.codexOptions,
-    resolvedRoot: validatedRoot,
-    requestToolApproval,
-    onToolCall,
-    onProgress,
-  });
-  const lastUserText = String(extractLastUserText({
-    transcript: effectiveReq.transcript,
-    messages: effectiveReq.messages,
-  }) || "").trim();
-  await appendAppConversationToCliRollout({
-    sessionId: fileResult.sessionId || effectiveSessionId,
-    cwd: validatedRoot.rootReal,
-    directory: validatedRoot.rootReal,
-    userText: lastUserText,
-    assistantText: String(fileResult.reply || "").trim(),
-    contextUsage: fileResult.contextUsage || null,
-    modelRef: effectiveReq.codexOptions.modelInfo.modelRef,
-    reasoningEffort: effectiveReq.codexOptions.reasoningEffort,
-  }).catch((err) => {
-    console.error("[session-rollout] append failed", err);
-  });
-  if (stream && onMode) onMode("file_tools_pseudo");
-  const reply = fileResult.reply;
-  if (stream && onText && reply && !signal?.aborted) onText(reply, "pseudo");
-  return {
-    mode: "file-tools",
-    reply,
-    provider: OPENAI_CODEX_PROVIDER,
-    route: OPENAI_CODEX_ROUTE,
-    modelRef: effectiveReq.codexOptions.modelInfo.modelRef,
-    rootRelativePath: fileResult.rootRelativePath || validatedRoot.relativeRoot,
-    sessionId: fileResult.sessionId || effectiveSessionId,
-    selectedSkillPath: fileResult.selectedSkillPath || "",
-    toolCalls: fileResult.toolCalls,
-    contextUsage: fileResult.contextUsage || null,
-  };
-}
-
-async function handleReplyHttpEndpoint(req, res, opts = {}) {
-  const logLabel = String(opts.logLabel || "reply");
-  const internalErrorCode = String(opts.internalErrorCode || "runner_failed");
-
-  try {
-    const body = await readJsonBody(req);
-    const normalized = normalizeReplyExecutionRequest(body);
-    void appendLlmRequestLog({
-      type: "app_request_normalized",
-      channel: "http",
-      endpoint: `/${logLabel}`,
-      remoteAddress: req.socket?.remoteAddress || "",
-      request: normalizeReplyExecutionRequestForLog(normalized),
-    });
-    if (RUNNER_LOG_REQUESTS) {
-      console.log(
-        `[${logLabel}] mode=file-tools transcriptChars=${normalized.transcript.length}`
-      );
-    }
-
-    const result = await runReplyUsecase(normalized, { stream: false });
-    if (RUNNER_LOG_REQUESTS) {
-      console.log(
-        `[${logLabel}] success mode=file-tools root=${result.rootRelativePath} toolCalls=${Number(result.toolCalls || 0)} sessionId=${result.sessionId}`
-      );
-    }
-    return json(res, 200, buildReplyHttpPayload(result));
-  } catch (err) {
-    console.error(`[${logLabel}] failed`, err);
-    if (isApiError(err)) {
-      return json(res, err.apiStatus, err.apiPayload);
-    }
-    if (!RUNNER_MOCK && isCodexAuthErrorMessage(errorMessage(err))) {
-      return json(res, 503, {
-        error: "codex_auth_required",
-        message: "Codex authentication is required on the runner host",
-        help: codexAuthHelp(),
-      });
-    }
-    return json(res, 500, {
-      error: internalErrorCode,
-      message: errorMessage(err),
-    });
-  }
 }
 
 function notFound(res) {
@@ -7125,66 +5683,16 @@ function cancelCodexQueuedTurn(queuedTurnIdRaw) {
 
 async function handleStreamTtsSession(startPayload, opts = {}) {
   const signal = opts.signal;
-  const endpoint = String(opts.endpoint || "/stream-tts");
-  const remoteAddress = String(opts.remoteAddress || "");
   const publicBaseUrl = String(opts.publicBaseUrl || "").trim() || `http://${HOST}:${PORT}`;
-  const requestToolApproval = typeof opts.requestToolApproval === "function"
-    ? opts.requestToolApproval
-    : null;
   const emit = typeof opts.emit === "function" ? opts.emit : (() => false);
-  const emitEvent = (payload) => {
-    if (!payload || typeof payload !== "object") return false;
-    return emit(payload);
-  };
-  const sessionMode = normalizeStreamTtsMode(startPayload?.mode);
-  let normalizedReplyReq;
-  let transcript = "";
-  let directText = "";
-  if (sessionMode === "reply") {
-    try {
-      normalizedReplyReq = normalizeReplyExecutionRequest(startPayload);
-    } catch (err) {
-      if (isApiError(err)) {
-        emitEvent({
-          type: "error",
-          ...err.apiPayload,
-        });
-        return;
-      }
-      emitEvent({
-        type: "error",
-        error: "invalid_request",
-        message: errorMessage(err),
-      });
-      return;
-    }
-    transcript = normalizedReplyReq.transcript;
-    void appendLlmRequestLog({
-      type: "app_request_normalized",
-      channel: "ws",
-      endpoint,
-      remoteAddress,
-      request: normalizeReplyExecutionRequestForLog(normalizedReplyReq),
-    });
-  } else {
-    directText = String(startPayload?.text || "").trim();
-    if (!directText) {
-      emitEvent({
-        type: "error",
-        error: "text_required",
-        message: "text is required when mode=text",
-      });
-      return;
-    }
-    if (directText.length > STREAM_TTS_MAX_CHARS) {
-      emitEvent({
-        type: "error",
-        error: "text_too_long",
-        max: STREAM_TTS_MAX_CHARS,
-      });
-      return;
-    }
-    transcript = directText;
+  const directText = String(startPayload?.text || "").trim();
+  if (!directText) {
+    emit({ type: "error", error: "text_required", message: "text is required when mode=text" });
+    return;
+  }
+  if (directText.length > STREAM_TTS_MAX_CHARS) {
+    emit({ type: "error", error: "text_too_long", max: STREAM_TTS_MAX_CHARS });
+    return;
   }
   const ttsProvider = resolveTtsProvider(startPayload?.ttsProvider);
   const voiceId = String(startPayload?.voiceId || "").trim();
@@ -7200,161 +5708,35 @@ async function handleStreamTtsSession(startPayload, opts = {}) {
   try {
     speedScale = parseOptionalSpeedScale(startPayload?.speedScale);
   } catch (err) {
-    emitEvent({
-      type: "error",
-      error: "speed_scale_invalid",
-      message: err instanceof Error ? err.message : String(err),
-    });
+    emit({ type: "error", error: "speed_scale_invalid", message: errorMessage(err) });
     return;
   }
   if (!isSupportedTtsProvider(ttsProvider)) {
-    emitEvent({
-      type: "error",
-      error: "tts_provider_invalid",
+    emit({
+      type: "error", error: "tts_provider_invalid",
       message: `Unsupported ttsProvider: ${ttsProvider}`,
       supportedProviders: Array.from(SUPPORTED_TTS_PROVIDERS),
     });
     return;
   }
-
   const ttsValidation = validateTtsProviderRequirements(ttsProvider, "/stream-tts");
   if (ttsValidation) {
-    emitEvent({ type: "error", ...ttsValidation.payload });
+    emit({ type: "error", ...ttsValidation.payload });
     return;
   }
-
   if (RUNNER_LOG_REQUESTS) {
-    console.log(
-      `[stream-tts] mode=${sessionMode === "reply" ? "file-tools" : "text"} transcriptChars=${transcript.length}`
-    );
+    console.log(`[stream-tts] mode=text transcriptChars=${directText.length}`);
   }
-
-  let reply = "";
-  let usecaseResult = null;
   const segments = createRunnerStreamTtsSegments({
-    emit: emitEvent, signal, publicBaseUrl, ttsProvider, voiceId, speedScale,
+    emit, signal, publicBaseUrl, ttsProvider, voiceId, speedScale,
     modelId, outputFormat, languageCode, audioEncoding, applyLanguageTextNormalization,
   });
-
-  const handleTextDelta = (delta, source = "unknown") => {
-    if (!delta) return;
-    reply += delta;
-    segments.append(delta);
-    emitEvent({ type: "text_delta", delta, source });
-  };
-
-  emitEvent({
-    type: "started",
-    provider: sessionMode === "reply" ? (RUNNER_MOCK ? "mock" : OPENAI_CODEX_PROVIDER) : ttsProvider,
-    route: sessionMode === "reply" ? (RUNNER_MOCK ? "mock" : OPENAI_CODEX_ROUTE) : "stream-tts:text",
-    modelRef: sessionMode === "reply"
-      ? (RUNNER_MOCK ? "mock" : normalizedReplyReq.codexOptions.modelInfo.modelRef)
-      : undefined,
-    mode: sessionMode === "reply" ? "file-tools" : "text",
-  });
-  if (sessionMode !== "reply") {
-    emitEvent({ type: "stream_mode", mode: "direct_text" });
-  }
-
-  try {
-    if (sessionMode === "reply") {
-      usecaseResult = await runReplyUsecase(normalizedReplyReq, {
-        stream: true,
-        signal,
-        requestToolApproval,
-        onText: handleTextDelta,
-        onProgress: (event) => {
-          const stage = String(event?.stage || "").trim();
-          if (!stage) return;
-          emitEvent({
-            type: "progress",
-            stage,
-            at: String(event?.at || ""),
-            message: String(event?.message || ""),
-            round: Number.isFinite(Number(event?.round)) ? Number(event.round) : undefined,
-            maxToolRounds: Number.isFinite(Number(event?.maxToolRounds))
-              ? Number(event.maxToolRounds)
-              : undefined,
-            toolCalls: Number.isFinite(Number(event?.toolCalls)) ? Number(event.toolCalls) : undefined,
-            pendingToolCalls: Number.isFinite(Number(event?.pendingToolCalls))
-              ? Number(event.pendingToolCalls)
-              : undefined,
-            toolName: String(event?.toolName || "") || undefined,
-            status: String(event?.status || "") || undefined,
-            durationMs: Number.isFinite(Number(event?.durationMs)) ? Number(event.durationMs) : undefined,
-          });
-        },
-        onMode: (mode) => {
-          emitEvent({ type: "stream_mode", mode });
-        },
-        onToolCall: (event) => {
-          const phase = String(event?.phase || "").trim().toLowerCase();
-          if (phase !== "start" && phase !== "done") return;
-          emitEvent({
-            type: "tool_call",
-            phase,
-            toolName: String(event?.toolName || ""),
-            callId: String(event?.callId || ""),
-            status: String(event?.status || ""),
-            durationMs: Number(event?.durationMs || 0),
-            argsSummary: event?.argsSummary,
-            resultSummary: event?.resultSummary,
-            youtubeVideoIds: Array.isArray(event?.youtubeVideoIds) ? event.youtubeVideoIds : undefined,
-            mediaControl: event?.mediaControl && typeof event.mediaControl === "object"
-              ? event.mediaControl
-              : undefined,
-            parseError: String(event?.parseError || ""),
-            errorMessage: String(event?.errorMessage || ""),
-          });
-        },
-      });
-    } else {
-      reply = directText;
-      segments.append(directText);
-    }
-  } catch (err) {
-    segments.cancel();
-    if (isApiError(err)) {
-      emitEvent({
-        type: "error",
-        ...err.apiPayload,
-      });
-      return;
-    }
-    throw err;
-  }
-
-  if (sessionMode === "reply" && RUNNER_LOG_REQUESTS) {
-    console.log(
-      `[stream-tts] success mode=file-tools root=${usecaseResult.rootRelativePath} toolCalls=${Number(usecaseResult.toolCalls || 0)} sessionId=${usecaseResult.sessionId}`
-    );
-  }
-
-  if (!reply.trim() && usecaseResult?.reply) {
-    reply = String(usecaseResult.reply);
-    segments.append(reply);
-  }
+  emit({ type: "started", provider: ttsProvider, route: "stream-tts:text", mode: "text" });
+  emit({ type: "stream_mode", mode: "direct_text" });
+  segments.append(directText);
   await segments.finish();
-
   if (signal?.aborted) return;
-  emitEvent({
-    type: "done",
-    reply: reply.trim(),
-    provider: usecaseResult?.provider || ttsProvider || (RUNNER_MOCK ? "mock" : OPENAI_CODEX_PROVIDER),
-    route: usecaseResult?.route || (sessionMode === "reply" ? (RUNNER_MOCK ? "mock" : OPENAI_CODEX_ROUTE) : "stream-tts:text"),
-    modelRef: usecaseResult?.modelRef || (
-      sessionMode === "reply"
-        ? (RUNNER_MOCK ? "mock" : normalizedReplyReq.codexOptions.modelInfo.modelRef)
-        : undefined
-    ),
-    rootRelativePath: usecaseResult?.rootRelativePath || undefined,
-    sessionId: usecaseResult?.sessionId || undefined,
-    selectedSkillPath: usecaseResult?.selectedSkillPath || undefined,
-    toolCalls: Number(usecaseResult?.toolCalls || 0),
-    contextUsage: usecaseResult?.contextUsage && typeof usecaseResult.contextUsage === "object"
-      ? usecaseResult.contextUsage
-      : undefined,
-  });
+  emit({ type: "done", reply: directText, provider: ttsProvider, route: "stream-tts:text", toolCalls: 0 });
 }
 
 function listLlmJobs(limit = 20) {
@@ -7439,54 +5821,6 @@ function startLlmStreamJob(startPayload, opts = {}) {
   if (normalizedSessionId) {
     job.sessionId = normalizedSessionId;
   }
-  const requestToolApproval = (request = {}) => new Promise((resolve, reject) => {
-    const toolName = String(request.toolName || "run_command_sandboxed");
-    const approvalKey = String(request.approvalKey || "").trim();
-    const sessionId = normalizeLlmExecutionSessionId(request.sessionId);
-    if (approvalKey && sessionId && hasToolApprovalInSession(sessionId, approvalKey)) {
-      if (RUNNER_LOG_REQUESTS) {
-        console.log(`[approval] skipped_by_session_cache jobId=${job.jobId} tool=${toolName} sessionId=${sessionId} key=${approvalKey}`);
-      }
-      resolve({ approved: true, cached: true });
-      return;
-    }
-    const requestId = randomUUID();
-    const timer = setTimeout(() => {
-      if (RUNNER_LOG_REQUESTS) {
-        console.warn(`[approval] timeout jobId=${job.jobId} requestId=${requestId} tool=${toolName}`);
-      }
-      settleJobPendingApproval(
-        job,
-        requestId,
-        new Error(`${toolName} approval timed out after ${toolApprovalTimeoutMsRuntime}ms`),
-        true
-      );
-    }, toolApprovalTimeoutMsRuntime);
-    job.pendingApprovals.set(requestId, {
-      resolve,
-      reject,
-      timer,
-      toolName,
-      approvalKey,
-      sessionId,
-    });
-    llmJobSetStatus(job, "waiting_approval");
-    llmJobEmit(job, {
-      type: "tool_approval_required",
-      requestId,
-      toolName,
-      callId: String(request.callId || ""),
-      command: String(request.command || ""),
-      args: Array.isArray(request.args) ? request.args.map((item) => String(item || "")) : [],
-      reason: String(request.reason || ""),
-      approvalKey,
-      approvalMode: String(request.approvalMode || "required"),
-      cwd: String(request.cwd || "."),
-      timeoutMs: Number(request.timeoutMs || SANDBOXED_RUN_DEFAULT_TIMEOUT_MS),
-      message: String(request.message || ""),
-    });
-  });
-
   const emitFromSession = (payload) => {
     if (!payload || typeof payload !== "object") return false;
     const type = String(payload.type || "");
@@ -7533,7 +5867,6 @@ function startLlmStreamJob(startPayload, opts = {}) {
     try {
       await handleStreamTtsSession(startPayload, {
         signal: job.abortController.signal,
-        requestToolApproval,
         endpoint,
         remoteAddress,
         publicBaseUrl,
@@ -7674,10 +6007,6 @@ const server = http.createServer(async (req, res) => {
         upstreamMaxRetries: OPENAI_CODEX_UPSTREAM_MAX_RETRIES,
         upstreamRetryBaseMs: OPENAI_CODEX_UPSTREAM_RETRY_BASE_MS,
         upstreamRetryMaxMs: OPENAI_CODEX_UPSTREAM_RETRY_MAX_MS,
-        toolMaxRounds: llmFileMaxToolRoundsRuntime,
-      },
-      approval: {
-        timeoutMs: toolApprovalTimeoutMsRuntime,
       },
       stt: { maxDurationSeconds: 290 },
       tts: {
@@ -7685,63 +6014,6 @@ const server = http.createServer(async (req, res) => {
         segmentMaxEstMs: STREAM_TTS_SEGMENT_MAX_EST_MS,
       },
     });
-  }
-
-  if (req.method === "POST" && pathname === "/config/limits") {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, {
-        error: "runner_token_missing",
-        message: "RUNNER_TOKEN is required",
-      });
-    }
-    if (parseAuthToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
-    try {
-      const body = await readJsonBody(req);
-      const rawToolMaxRounds = body?.llm?.toolMaxRounds ?? body?.toolMaxRounds;
-      const rawApprovalTimeoutMs = body?.approval?.timeoutMs ?? body?.approvalTimeoutMs;
-      if (typeof rawToolMaxRounds === "undefined" && typeof rawApprovalTimeoutMs === "undefined") {
-        return json(res, 400, {
-          error: "invalid_request",
-          message: "at least one of llm.toolMaxRounds/toolMaxRounds or approval.timeoutMs/approvalTimeoutMs is required",
-        });
-      }
-      if (typeof rawToolMaxRounds !== "undefined") {
-        const parsed = Number(rawToolMaxRounds);
-        if (!Number.isInteger(parsed) || parsed < 1 || parsed > 1000) {
-          return json(res, 400, {
-            error: "invalid_tool_max_rounds",
-            message: "toolMaxRounds must be an integer between 1 and 1000",
-          });
-        }
-        llmFileMaxToolRoundsRuntime = parsed;
-      }
-      if (typeof rawApprovalTimeoutMs !== "undefined") {
-        const parsedApprovalTimeoutMs = Number(rawApprovalTimeoutMs);
-        if (!Number.isInteger(parsedApprovalTimeoutMs) || parsedApprovalTimeoutMs < 1000 || parsedApprovalTimeoutMs > 86400000) {
-          return json(res, 400, {
-            error: "invalid_approval_timeout_ms",
-            message: "approvalTimeoutMs must be an integer between 1000 and 86400000",
-          });
-        }
-        toolApprovalTimeoutMsRuntime = parsedApprovalTimeoutMs;
-      }
-      return json(res, 200, {
-        ok: true,
-        llm: {
-          toolMaxRounds: llmFileMaxToolRoundsRuntime,
-        },
-        approval: {
-          timeoutMs: toolApprovalTimeoutMsRuntime,
-        },
-      });
-    } catch (err) {
-      return json(res, 400, {
-        error: "invalid_json",
-        message: err instanceof Error ? err.message : String(err),
-      });
-    }
   }
 
   if (req.method === "GET" && pathname === "/codex-cli/status") {
@@ -8652,40 +6924,6 @@ const server = http.createServer(async (req, res) => {
       await removeTtsMediaEntry(mediaKey, entry);
       return notFound(res);
     }
-  }
-
-  if (req.method === "POST" && pathname === "/reply") {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, {
-        error: "runner_token_missing",
-        message: "RUNNER_TOKEN is required",
-      });
-    }
-
-    if (parseAuthToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
-    return handleReplyHttpEndpoint(req, res, {
-      logLabel: "reply",
-      internalErrorCode: "runner_failed",
-    });
-  }
-
-  if (req.method === "POST" && pathname === "/reply-files") {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, {
-        error: "runner_token_missing",
-        message: "RUNNER_TOKEN is required",
-      });
-    }
-
-    if (parseAuthToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
-    return handleReplyHttpEndpoint(req, res, {
-      logLabel: "reply-files",
-      internalErrorCode: "runner_files_failed",
-    });
   }
 
   if (req.method === "POST" && pathname === "/client-logs") {
@@ -11921,9 +10159,8 @@ installRunnerWebSocketUpgradeHandler({
 async function initializeLlmFileRuntime() {
   try {
     const root = await resolveToolRoot("");
-    const context = await getAgentSkillContext();
     console.log(
-      `[llm-files] root=${root.relativeRoot} agentDocs=${context.agentDocs.length} skills=${context.skillCatalog.length}`
+      `[llm-files] root=${root.relativeRoot}`
     );
   } catch (err) {
     console.warn(
@@ -12152,10 +10389,7 @@ export const __TESTING__ = {
   runGitDiffTool,
   extractYouTubeVideoIdsFromToolResult,
   parseHttpBearerToken,
-  normalizeReplyExecutionRequest,
-  runReplyUsecase,
   runCodexStream,
-  runCodexWithFileTools,
   executeLlmFileToolCall,
   appendAppConversationToCliRollout,
   listLlmSessions,

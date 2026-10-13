@@ -208,8 +208,6 @@ export type SessionRuntimeStatus = {
 
 export type LlmRuntimeLimitsSnapshot = {
   llmTimeoutMs: number | null;
-  toolMaxRounds: number | null;
-  approvalTimeoutMs: number | null;
   fetchedAt: string;
 };
 

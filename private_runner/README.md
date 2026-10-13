@@ -8,7 +8,7 @@
 - setup フェーズでのみ `codex login` を実行する
 - deploy/backend フェーズではログイン処理を実行しない
 - backend は setup 済みの auth cache (`CODEX_HOME/auth.json`) を読むだけ
-- LLM 呼び出しは `openai-codex-responses` 経路（`/backend-api/codex/responses`）を使う
+- 通常チャットとオーケストレーションは Codex App Server を使う。Push要約とタイトル生成は `openai-codex-responses` 経路（`/backend-api/codex/responses`）を使う
 
 フローは OAuth 2.0 Authorization Code Flow with PKCE です。
 
@@ -133,7 +133,7 @@ rg -n '"source":"session_diag"' "$LATEST" | tail -n 200
 LLM本線:
 - iOS/Expo からは `/runner-ws` の `llm:rpc` envelope 経由で `thread/*` と `turn/start` を使います。runner から codex app-server への upstream は raw JSON-RPC のままです。
 - Expo側で常時接続の補助WebSocketは作りません。会話、診断、TTSなど実際の操作が必要な時だけ、同じ認証ヘッダー付きWebSocket生成経路を使います。
-- `/reply` と `/reply-files` は legacy 互換APIです。
+- 旧 `/reply`・`/reply-files` と `/stream-tts` の返信生成モードは廃止しました。通常チャットは App Server を利用し、TTS は生成済みテキストを受け取ります。
 - `/runner-ws` は `relay:resume` envelopeで、保持中イベントの未受信分を再送して live stream に合流します。
 
 resumable relay 環境変数:
@@ -186,23 +186,7 @@ private_runner/run-local.sh start --mode full
 curl -sS http://127.0.0.1:8788/health
 ```
 
-3. `/reply` 確認（legacy）
-```bash
-curl -sS -X POST http://127.0.0.1:8788/reply \
-  -H "Authorization: Bearer <RUNNER_TOKEN>" \
-  -H "Content-Type: application/json" \
-  -d '{"transcript":"こんにちは","systemPrompt":"返答は1文で"}'
-```
-
-4. `/reply-files` 確認（legacy）
-```bash
-curl -sS -X POST http://127.0.0.1:8788/reply-files \
-  -H "Authorization: Bearer <RUNNER_TOKEN>" \
-  -H "Content-Type: application/json" \
-  -d '{"transcript":"llm_root に hello.txt を作成して hello と書いて","rootDir":"llm_root"}'
-```
-
-5. `/tts` 確認（ElevenLabs）
+3. `/tts` 確認（ElevenLabs）
 ```bash
 curl -sS -X POST http://127.0.0.1:8788/tts \
   -H "Authorization: Bearer <RUNNER_TOKEN>" \
@@ -210,7 +194,7 @@ curl -sS -X POST http://127.0.0.1:8788/tts \
   -d '{"ttsProvider":"elevenlabs","text":"こんにちは、これはAPIテストです。","modelId":"eleven_multilingual_v2","voiceId":"JBFqnCBsd6RMkjVDRZzb"}'
 ```
 
-6. `/tts` 確認（Google Cloud TTS）
+4. `/tts` 確認（Google Cloud TTS）
 ```bash
 curl -sS -X POST http://127.0.0.1:8788/tts \
   -H "Authorization: Bearer <RUNNER_TOKEN>" \
@@ -218,7 +202,7 @@ curl -sS -X POST http://127.0.0.1:8788/tts \
   -d '{"ttsProvider":"google","text":"こんにちは、これはGoogle Cloud TTSテストです。","languageCode":"ja-JP","voiceId":"ja-JP-Neural2-B","audioEncoding":"MP3"}'
 ```
 
-8. `/tts` 確認（AivisSpeech / macOS localhost）
+5. `/tts` 確認（AivisSpeech / macOS localhost）
 ```bash
 curl -sS -X POST http://127.0.0.1:8788/tts \
   -H "Authorization: Bearer <RUNNER_TOKEN>" \
@@ -226,7 +210,7 @@ curl -sS -X POST http://127.0.0.1:8788/tts \
   -d '{"ttsProvider":"aivisspeech","text":"こんにちは、これはAivisSpeechテストです。","voiceId":"888753760"}'
 ```
 
-9. Expo アプリ起動
+6. Expo アプリ起動
 ```bash
 cd expo
 npm run ios
@@ -270,11 +254,7 @@ npm run ios
     "timeoutMs": 1800000,
     "upstreamMaxRetries": 3,
     "upstreamRetryBaseMs": 700,
-    "upstreamRetryMaxMs": 4000,
-    "toolMaxRounds": 500
-  },
-  "approval": {
-    "timeoutMs": 86400000
+    "upstreamRetryMaxMs": 4000
   },
   "stt": {
     "maxDurationSeconds": 290
@@ -285,23 +265,6 @@ npm run ios
   }
 }
 ```
-
-### POST /config/limits
-- Header: `Authorization: Bearer <RUNNER_TOKEN>`
-- 実行時の上限設定を更新します（runnerプロセス再起動で `.env` 値に戻ります）。
-- Body:
-```json
-{
-  "llm": {
-    "toolMaxRounds": 500
-  },
-  "approval": {
-    "timeoutMs": 86400000
-  }
-}
-```
-- `toolMaxRounds` は `1-1000` の整数。
-- `approval.timeoutMs` は `1000-86400000` の整数。
 
 ### GET /jobs
 - Header: `Authorization: Bearer <RUNNER_TOKEN>`
@@ -314,114 +277,6 @@ npm run ios
 ### POST /jobs/:jobId/cancel
 - Header: `Authorization: Bearer <RUNNER_TOKEN>`
 - 実行中ジョブをキャンセルします。
-
-### POST /reply (legacy)
-- Header: `Authorization: Bearer <RUNNER_TOKEN>`
-- Body:
-```json
-{
-  "transcript": "こんにちは",
-  "systemPrompt": "返答は1文で",
-  "rootDir": "llm_root",
-  "fileTools": true,
-  "modelRef": "openai-codex/gpt-5.4-mini",
-  "reasoningEffort": "low",
-  "messages": [
-    { "role": "user", "content": "こんにちは" },
-    { "role": "assistant", "content": "こんにちは。今日はどうしましたか？" },
-    { "role": "user", "content": "おすすめの昼ごはんは？" }
-  ]
-}
-```
-- `messages` は任意。指定した場合は会話履歴（古い順）として利用され、`transcript` 単体より優先されます。
-- `modelRef` は任意。省略時は `.env` の `OPENAI_CODEX_MODEL`（既定 `openai-codex/gpt-5.4-mini`）
-- `reasoningEffort` は任意。`none|low|medium|high|xhigh|max|ultra` を指定可能。省略時は `.env` の `OPENAI_CODEX_REASONING_EFFORT`
-- `fileTools` は任意。既定 `true`（`/reply` でも file tools を使います）。`false` の場合は通常会話モードのみ。
-- `rootDir` は任意。省略時は `.env` の `LLM_FILE_ROOT`（既定: `llm_root`）
-- `rootDir` は workspace 内のみ指定可能。workspace 外は拒否されます。
-- path は `rootDir` 基準の相対パスのみを使います（`..` / 絶対パスは禁止）。
-- `llm_root/...` のような root 名付き指定が来た場合はサーバー側で相対へ正規化して実行します。
-- 利用可能なツール:
-  - `list_dir`
-  - `search_text`
-  - `find_files`
-  - `read_file_range`（1-based、両端含む。`end_line` 超過時は末尾へ自動クリップ。`start_line` 超過はエラー）
-  - `apply_patch`
-  - `run_tests`（非0終了でも `exitCode/stdout/stderr` を返却）
-  - `run_command_sandboxed`（allowlist制限 + 既定承認必須。`which` は自動許可）
-  - `git_diff`
-  - `media`（`LLM_FILE_ENABLE_MEDIA_TOOL=1` のとき）
-- `run_command_sandboxed` の許可コマンドは `SANDBOXED_RUN_ALLOWED_COMMANDS` で調整できます。
-- `run_command_sandboxed` は `WS /stream-tts` の承認フローで実行します（同一 `sessionId` + `approvalKey` は再承認を省略）。
-- 既定では `write_file` / `edit_file` は公開しません。
-- `LLM_FILE_ENABLE_LEGACY_WRITE_TOOLS=1` で `write_file` / `edit_file` を再公開できます。
-- `LLM_FILE_MAX_TOOL_ROUNDS` 既定値は `500`。これは「tool loop の round 上限」であり、実際の tool call 回数上限とは一致しない場合があります。
-- 全 tool call は `LLM_FILE_AUDIT_LOG_PATH`（既定 `private_runner/logs/llm_tool_audit.jsonl`）へ監査ログ出力
-  - 監査ログには `tool_category`（`observe|edit|verify|diff|safety`）を含みます。
-- Response:
-```json
-{
-  "reply": "こんにちは。今日はどのようにお手伝いしましょうか？",
-  "provider": "openai-codex",
-  "route": "openai-codex-responses",
-  "modelRef": "openai-codex/gpt-5.4",
-  "rootRelativePath": "llm_root",
-  "sessionId": "uuid",
-  "toolCalls": 1,
-  "replyRepaired": false
-}
-```
-
-### POST /reply-files (legacy)
-- `/reply` と同じ file tools モードを明示的に使うための互換エンドポイントです。
-- Header: `Authorization: Bearer <RUNNER_TOKEN>`
-- Body:
-```json
-{
-  "transcript": "llm_root に TODO.md を作って1行書いて",
-  "systemPrompt": "必要ならファイルツールを使ってください",
-  "rootDir": "llm_root",
-  "modelRef": "openai-codex/gpt-5.4-mini",
-  "reasoningEffort": "low",
-  "messages": [
-    { "role": "user", "content": "プロジェクトのメモを書きたい" }
-  ]
-}
-```
-- `rootDir` は任意。省略時は `.env` の `LLM_FILE_ROOT`（既定: `llm_root`）
-- `rootDir` は workspace 内のみ指定可能。workspace 外は拒否されます。
-- path は `rootDir` 基準の相対パスのみを使います（`..` / 絶対パスは禁止）。
-- `llm_root/...` のような root 名付き指定が来た場合はサーバー側で相対へ正規化して実行します。
-- 利用可能なツール:
-  - `list_dir`
-  - `search_text`
-  - `find_files`
-  - `read_file_range`（1-based、両端含む。`end_line` 超過時は末尾へ自動クリップ。`start_line` 超過はエラー）
-  - `apply_patch`
-  - `run_tests`（非0終了でも `exitCode/stdout/stderr` を返却）
-  - `run_command_sandboxed`（allowlist制限 + 既定承認必須。`which` は自動許可）
-  - `git_diff`
-  - `media`（`LLM_FILE_ENABLE_MEDIA_TOOL=1` のとき）
-- `run_command_sandboxed` の許可コマンドは `SANDBOXED_RUN_ALLOWED_COMMANDS` で調整できます。
-- `run_command_sandboxed` は `WS /stream-tts` の承認フローで実行します（同一 `sessionId` + `approvalKey` は再承認を省略）。
-- 既定では `write_file` / `edit_file` は公開しません。
-- `LLM_FILE_ENABLE_LEGACY_WRITE_TOOLS=1` で `write_file` / `edit_file` を再公開できます。
-- `LLM_FILE_MAX_TOOL_ROUNDS` 既定値は `500`。これは「tool loop の round 上限」であり、実際の tool call 回数上限とは一致しない場合があります。
-- 全 tool call は `LLM_FILE_AUDIT_LOG_PATH`（既定 `private_runner/logs/llm_tool_audit.jsonl`）へ監査ログ出力
-  - 監査ログには `tool_category`（`observe|edit|verify|diff|safety`）を含みます。
-- Response:
-```json
-{
-  "reply": "TODO.md を作成しました。",
-  "provider": "openai-codex",
-  "route": "openai-codex-responses",
-  "modelRef": "openai-codex/gpt-5.4-mini",
-  "rootRelativePath": "llm_root",
-  "sessionId": "uuid",
-  "toolCalls": 2,
-  "replyRepaired": false
-}
-```
 
 ### POST /tts
 - Header: `Authorization: Bearer <RUNNER_TOKEN>`
@@ -500,45 +355,32 @@ npm run ios
   - `tts`: stream TTS job の `start` / `attach` / `tool_approval_decision` と job event
 - TTS 音声本体は WebSocket に載せず、従来どおり `audioUrl` を返します。
 
-### WS /stream-tts（legacy 互換）
+### WS /stream-tts（テキスト読み上げ）
 - URL: `ws://127.0.0.1:8788/stream-tts`
 - 認証: WebSocket handshakeの `Authorization: Bearer <RUNNER_TOKEN>`
 - 最初にクライアントから `start` メッセージを送信:
 ```json
 {
   "type": "start",
-  "transcript": "こんにちは",
-  "systemPrompt": "返答は1文で",
-  "rootDir": "llm_root",
-  "fileTools": true,
-  "modelRef": "openai-codex/gpt-5.4-mini",
-  "reasoningEffort": "low",
-  "messages": [
-    { "role": "user", "content": "こんにちは" }
-  ],
+  "mode": "text",
+  "text": "こんにちは",
   "ttsProvider": "aivisspeech",
   "voiceId": "888753760",
   "speedScale": 1.1
 }
 ```
-- `fileTools` は任意。既定 `true`。
-- `rootDir` は任意。省略時は `LLM_FILE_ROOT`（既定 `llm_root`）。
-- `fileTools=true` の場合、`/reply` と同じ file tools 実行ループを使います。
+- `mode` 省略時もテキスト読み上げです。旧 `mode=reply` や不明なモードは `stream_tts_mode_invalid` で拒否します。
+- `/runner-ws` の `tts:start` も同じテキスト読み上げ処理を使います。
 - サーバーから返る主なイベント:
   - `ready`: 接続完了
-  - `started`: 推論開始
-  - `progress`: file-tools 進捗（`stage`, `round`, `maxToolRounds`, `toolCalls`, `pendingToolCalls`, `toolName`, `status`, `durationMs`, `message`）
-  - `stream_mode`: `native_delta` / `pseudo_delta` / `file_tools_pseudo` / `mock_delta`
-  - `tool_approval_required`: `run_command_sandboxed` 実行前の承認要求（`requestId`, `command`, `args`, `reason`, `approvalKey`, `approvalMode`, `message`）
-  - `text_delta`: 逐次テキスト（`source: native|pseudo|mock`）
-  - `segment_queued`: 句読点区切りチャンクをキュー投入
-  - `segment_tts_started`: チャンクの音声生成開始
-  - `segment_tts_done`: チャンクの音声生成完了
-  - `audio_chunk`: 句読点（`。` / `、` / 改行）で区切った音声チャンク（`audioUrl` + `audioBytes`）
-  - `done`: 返答完了（`toolCalls`, `rootRelativePath`, `sessionId` を含む）
+  - `started`: 読み上げ開始
+  - `stream_mode`: `direct_text`
+  - `segment_queued`: 分割したテキストをキュー投入
+  - `segment_tts_started`: 音声生成開始
+  - `segment_tts_done`: 音声生成完了
+  - `audio_chunk`: 音声チャンク（`audioUrl` + `audioBytes`）
+  - `done`: 読み上げ完了
   - `error`: エラー
-- クライアントがサーバーへ返す承認イベント:
-  - `tool_approval_decision`: `{ "type":"tool_approval_decision", "requestId":"...", "approved": true|false }`
 
 ### run_command_sandboxed 承認ポリシー
 - `.env` で `COMMAND_APPROVAL_POLICY_PATH`（既定: `private_runner/command_approval_policy.json`）を指定できます。
@@ -623,5 +465,5 @@ RUNNER_MOCK=1 RUNNER_TOKEN=test node private_runner/server.mjs
 ```
 
 ## 認証エラー時の挙動
-- 未ログインや認証失効で `openai-codex-responses` が失敗した場合、`/runner-ws` および legacy `/reply` `/reply-files` は認証エラーを返します。
+- 未ログインや認証失効の場合、`/runner-ws` のCodex操作は認証エラーを返します。
 - 返却される `help` に沿って runner ホストで再ログインしてください。

@@ -66,37 +66,3 @@ test("Codex passes task instructions to the upstream request and keeps the defau
   assert.ok(requests[1].instructions);
   assert.notEqual(requests[1].instructions, requests[0].instructions);
 });
-
-test("file-tools completed reply emits once and keeps its reply identity", async () => {
-  globalThis.fetch = async () => new Response(JSON.stringify({ output_text: reply }));
-  const modes = [];
-  const deltas = [];
-  const request = __TESTING__.normalizeReplyExecutionRequest({ transcript: "hello", directory: testRoot });
-  const result = await __TESTING__.runReplyUsecase(request, {
-    stream: true,
-    onMode: (mode) => modes.push(mode),
-    onText: (text, source) => deltas.push({ text, source }),
-  });
-
-  assert.equal(result.reply, reply);
-  assert.equal(result.mode, "file-tools");
-  assert.ok(result.sessionId);
-  assert.deepEqual(modes, ["file_tools_pseudo"]);
-  assert.deepEqual(deltas, [{ text: reply, source: "pseudo" }]);
-});
-
-test("file-tools completed reply honors abort before text emission", async () => {
-  globalThis.fetch = async () => new Response(JSON.stringify({ output_text: reply }));
-  const controller = new AbortController();
-  const deltas = [];
-  const request = __TESTING__.normalizeReplyExecutionRequest({ transcript: "hello", directory: testRoot });
-  const result = await __TESTING__.runReplyUsecase(request, {
-    stream: true,
-    signal: controller.signal,
-    onMode: () => controller.abort(),
-    onText: (text) => deltas.push(text),
-  });
-
-  assert.equal(result.reply, reply);
-  assert.deepEqual(deltas, []);
-});
