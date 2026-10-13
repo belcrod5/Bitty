@@ -24,7 +24,7 @@ jest.mock("../../runnerWs/RunnerWebSocketContext", () => ({
 const conversationId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 const operationId = "11111111-2222-4333-8444-555555555555";
 const initialStats = {
-  estimatedContextUsagePercent: null,
+  contextUsagePercent: null,
   unsummarizedMessageCount: 0,
   memoryCharacterCount: 0,
 };
@@ -48,6 +48,46 @@ beforeEach(() => {
 });
 
 afterEach(() => cleanup());
+
+test("old Runner estimates cannot masquerade as measurements or hide memory stats", async () => {
+  mockManager.request.mockResolvedValue({ op: "voice.open.result", payload: {
+    logicalConversationId: conversationId, contextMode: "self_context_array",
+    estimatedContextUsagePercent: 89, unsummarizedMessageCount: 6, memoryCharacterCount: 123,
+  } });
+  const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
+  await waitFor(() => expect(result.current.ready).toBe(true));
+  expect(result.current.contextStats).toEqual({ contextUsagePercent: null,
+    unsummarizedMessageCount: 6, memoryCharacterCount: 123 });
+});
+
+test("new input keeps the last measurement through acknowledgement and replaces it on completion", async () => {
+  let acknowledge!: (value: unknown) => void;
+  mockManager.request.mockImplementation(async ({ op }: { op: string }) => {
+    if (op === "voice.open") return { op: "voice.open.result", payload: {
+      logicalConversationId: conversationId, contextMode: "self_context_array",
+      ...initialStats, contextUsagePercent: 42,
+    } };
+    return new Promise((resolve) => { acknowledge = resolve; });
+  });
+  const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
+  await waitFor(() => expect(result.current.contextStats?.contextUsagePercent).toBe(42));
+  let sent!: Promise<void>;
+  await act(async () => { sent = result.current.sendTranscript("new input", jest.fn()); });
+  void sent.catch(() => {});
+  expect(result.current.contextStats?.contextUsagePercent).toBe(42);
+  expect(result.current.turnStatus).toBe("sending");
+  await act(async () => { acknowledge({ op: "turn.accepted", payload: {
+    logicalConversationId: conversationId, clientOperationId: operationId, status: "accepted",
+    ...initialStats, contextUsagePercent: 42,
+  } }); });
+  expect(result.current.turnStatus).toBe("accepted");
+  expect(result.current.contextStats?.contextUsagePercent).toBe(42);
+  await act(async () => { handlers.get("voice.turn.completed")?.({ payload: {
+    logicalConversationId: conversationId, clientOperationId: operationId, text: "reply",
+    ...initialStats, contextUsagePercent: 55,
+  } }); await sent; });
+  expect(result.current.contextStats?.contextUsagePercent).toBe(55);
+});
 
 test("loads persisted voice history through Runner", async () => {
   const request = mockManager.request.getMockImplementation();
@@ -146,7 +186,7 @@ test("sends one final text block and reads aloud only after a completed turn", a
     channel: "agent", op: "voice.turn.completed",
     payload: { logicalConversationId: conversationId, clientOperationId: operationId, text: "返答",
       completedOrdinal: 2,
-      estimatedContextUsagePercent: 12, unsummarizedMessageCount: 2, memoryCharacterCount: 30 },
+      contextUsagePercent: 12, unsummarizedMessageCount: 2, memoryCharacterCount: 30 },
   }));
   await sent;
   expect(settled).toBe(true);
@@ -154,7 +194,7 @@ test("sends one final text block and reads aloud only after a completed turn", a
   expect(onCompleted).toHaveBeenCalledTimes(1);
   expect(onCompleted).toHaveBeenCalledWith("返答", operationId);
   expect(result.current.contextStats).toEqual({
-    estimatedContextUsagePercent: 12, unsummarizedMessageCount: 2, memoryCharacterCount: 30,
+    contextUsagePercent: 12, unsummarizedMessageCount: 2, memoryCharacterCount: 30,
   });
 });
 
@@ -334,7 +374,7 @@ test("recovers a completed turn after reconnect without regenerating it", async 
       channel: "agent", op: "voice.status.result",
       payload: { logicalConversationId: conversationId, clientOperationId: operationId,
         status: "completed", text: "回収した返答",
-        estimatedContextUsagePercent: 25, unsummarizedMessageCount: 4, memoryCharacterCount: 120 },
+        contextUsagePercent: 25, unsummarizedMessageCount: 4, memoryCharacterCount: 120 },
     };
     throw new Error(`unexpected ${op}`);
   });
@@ -351,7 +391,7 @@ test("recovers a completed turn after reconnect without regenerating it", async 
   expect(onAccepted).toHaveBeenCalledTimes(1);
   expect(onCompleted).toHaveBeenCalledTimes(1);
   expect(result.current.contextStats).toEqual({
-    estimatedContextUsagePercent: 25, unsummarizedMessageCount: 4, memoryCharacterCount: 120,
+    contextUsagePercent: 25, unsummarizedMessageCount: 4, memoryCharacterCount: 120,
   });
   expect(mockManager.request.mock.calls.filter(([message]) => message.op === "turn.start")).toHaveLength(1);
 });
@@ -490,13 +530,13 @@ test("updates voice-only stats on failure and reconnect", async () => {
     channel: "agent", op: "voice.turn.failed",
     payload: { logicalConversationId: conversationId, clientOperationId: operationId,
       status: "failed", code: "model_failed",
-      estimatedContextUsagePercent: 8, unsummarizedMessageCount: 0, memoryCharacterCount: 25 },
+      contextUsagePercent: 8, unsummarizedMessageCount: 0, memoryCharacterCount: 25 },
   }));
   await sent;
   expect(result.current.contextStats).toEqual({
-    estimatedContextUsagePercent: 8, unsummarizedMessageCount: 0, memoryCharacterCount: 25,
+    contextUsagePercent: null, unsummarizedMessageCount: 0, memoryCharacterCount: 25,
   });
-  currentStats = { estimatedContextUsagePercent: 9, unsummarizedMessageCount: 0, memoryCharacterCount: 40 };
+  currentStats = { contextUsagePercent: 9, unsummarizedMessageCount: 0, memoryCharacterCount: 40 };
   mockSnapshot = { connected: true, generation: 2 };
   await rerender(undefined);
   await waitFor(() => expect(result.current.contextStats).toEqual(currentStats));
@@ -509,7 +549,7 @@ test("refreshes a pending summary and keeps checking for a conversation reset", 
     mockManager.request.mockImplementation(async () => ({
       channel: "agent", op: "voice.open.result",
       payload: { logicalConversationId: conversationId, contextMode: "self_context_array",
-        estimatedContextUsagePercent: 30, unsummarizedMessageCount, memoryCharacterCount: 10 },
+        contextUsagePercent: 30, unsummarizedMessageCount, memoryCharacterCount: 10 },
     }));
     const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
     await act(async () => { await Promise.resolve(); });
@@ -540,13 +580,13 @@ test("does not overwrite a newer completed turn with an older idle open response
         return Promise.resolve({
           channel: "agent", op: "voice.open.result",
           payload: { logicalConversationId: conversationId, contextMode: "self_context_array",
-            estimatedContextUsagePercent: 20, unsummarizedMessageCount: 22, memoryCharacterCount: 10 },
+            contextUsagePercent: 20, unsummarizedMessageCount: 22, memoryCharacterCount: 10 },
         });
       }
       return Promise.resolve({
         channel: "agent", op: "turn.accepted", operationId,
         payload: { logicalConversationId: conversationId, clientOperationId: operationId,
-          status: "accepted", estimatedContextUsagePercent: 22,
+          status: "accepted", contextUsagePercent: 22,
           unsummarizedMessageCount: 22, memoryCharacterCount: 10 },
       });
     });
@@ -563,7 +603,7 @@ test("does not overwrite a newer completed turn with an older idle open response
     await act(async () => handlers.get("voice.turn.completed")?.({
       channel: "agent", op: "voice.turn.completed",
       payload: { logicalConversationId: conversationId, clientOperationId: operationId,
-        text: "新しい返答", estimatedContextUsagePercent: 24,
+        text: "新しい返答", contextUsagePercent: 24,
         unsummarizedMessageCount: 2, memoryCharacterCount: 50 },
     }));
     await sent;
@@ -573,11 +613,11 @@ test("does not overwrite a newer completed turn with an older idle open response
       channel: "agent", op: "voice.open.result",
       payload: { logicalConversationId: conversationId, contextMode: "self_context_array",
         clientOperationId: "older-turn", status: "completed", text: "古い返答",
-        estimatedContextUsagePercent: 90, unsummarizedMessageCount: 22, memoryCharacterCount: 1 },
+        contextUsagePercent: 90, unsummarizedMessageCount: 22, memoryCharacterCount: 1 },
     }));
     expect(result.current.reply?.text).toBe("新しい返答");
     expect(result.current.contextStats).toEqual({
-      estimatedContextUsagePercent: 24, unsummarizedMessageCount: 2, memoryCharacterCount: 50,
+      contextUsagePercent: 24, unsummarizedMessageCount: 2, memoryCharacterCount: 50,
     });
   } finally {
     cleanup();
@@ -594,7 +634,7 @@ test("ignores an old open response after the connection generation changes", asy
     return Promise.resolve({
       channel: "agent", op: "voice.open.result",
       payload: { logicalConversationId: conversationId, contextMode: "self_context_array",
-        estimatedContextUsagePercent: 10, unsummarizedMessageCount: 0, memoryCharacterCount: 99 },
+        contextUsagePercent: 10, unsummarizedMessageCount: 0, memoryCharacterCount: 99 },
     });
   });
   const { result, rerender } = await renderHook(() => useVoiceConversation(jest.fn()));
@@ -604,11 +644,11 @@ test("ignores an old open response after the connection generation changes", asy
   await act(async () => resolveFirst({
     channel: "agent", op: "voice.open.result",
     payload: { logicalConversationId: conversationId, contextMode: "self_context_array",
-      estimatedContextUsagePercent: 90, unsummarizedMessageCount: 20, memoryCharacterCount: 1 },
+      contextUsagePercent: 90, unsummarizedMessageCount: 20, memoryCharacterCount: 1 },
   }));
   await waitFor(() => expect(result.current.contextStats?.memoryCharacterCount).toBe(99));
   expect(opens).toBe(2);
-  expect(result.current.contextStats?.estimatedContextUsagePercent).toBe(10);
+  expect(result.current.contextStats?.contextUsagePercent).toBe(10);
 });
 
 test("does not update state or retry after unmounting with an open request in flight", async () => {
@@ -715,7 +755,7 @@ test.each(["response", "rejection"])("a completed turn during reopen status %s s
   await act(async () => handlers.get("voice.turn.completed")?.({
     channel: "agent", op: "voice.turn.completed", payload: {
       logicalConversationId: conversationId, clientOperationId: operationId, text: "再接続中の返答",
-      estimatedContextUsagePercent: 7, unsummarizedMessageCount: 1, memoryCharacterCount: 30,
+      contextUsagePercent: 7, unsummarizedMessageCount: 1, memoryCharacterCount: 30,
     },
   }));
   await act(async () => finishStatus());

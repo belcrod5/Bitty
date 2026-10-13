@@ -268,7 +268,7 @@ export type GitChangedFilesDirectoryState = {
 
 export type AppScreen = "skia_board" | "settings" | "cloudflare_tunnel_monitor";
 export type VoiceContextStats = {
-  estimatedContextUsagePercent: number | null;
+  contextUsagePercent: number | null;
   unsummarizedMessageCount: number;
   memoryCharacterCount: number;
   subagentRunningCount?: number;

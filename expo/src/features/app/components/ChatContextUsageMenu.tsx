@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { Platform, Pressable, Text, TouchableOpacity, View } from "react-native";
+import { Platform, Pressable, Text, TouchableOpacity } from "react-native";
 import { useAppStyles } from "../styles";
-import { CircularProgressRing } from "./CircularProgressRing";
+import { ContextUsageIndicator } from "./ContextUsageIndicator";
 import { AppModal } from "./AppModal";
 
 type ChatContextUsageMenuProps = {
@@ -31,26 +31,10 @@ export function ChatContextUsageMenu({
 
   return (
     <>
-      <View style={styles.chatContextRingWrap}>
-        <CircularProgressRing
-          size={36}
-          strokeWidth={3}
-          progress={progress}
-          trackColor={trackColor}
-          progressColor={progressColor}
-        />
-        <TouchableOpacity
-          style={styles.chatContextResetButton}
-          onLongPress={() => setMenuOpen(true)}
-          disabled={dismissed}
-          delayLongPress={450}
-          accessibilityRole="button"
-          accessibilityLabel={`コンテキスト使用量 ${contextPctText}`}
-          accessibilityHint="長押しすると新規セッションメニューを開きます"
-        >
-          <Text style={styles.chatContextPctText}>{contextPctText}</Text>
-        </TouchableOpacity>
-      </View>
+      <ContextUsageIndicator contextPctText={contextPctText} progress={progress}
+        trackColor={trackColor} progressColor={progressColor}
+        onLongPress={() => setMenuOpen(true)} disabled={dismissed}
+        accessibilityHint="長押しすると新規セッションメニューを開きます" />
       <AppModal
         visible={menuOpen && !dismissed}
         transparent

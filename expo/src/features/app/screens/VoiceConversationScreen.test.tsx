@@ -41,7 +41,7 @@ const mockVoice = {
     text: string; operationId: string; outputTokens?: number; completedOrdinal?: number;
   },
   error: "",
-  contextStats: { estimatedContextUsagePercent: 31, unsummarizedMessageCount: 8, memoryCharacterCount: 55 },
+  contextStats: { contextUsagePercent: 31 as number | null, unsummarizedMessageCount: 8, memoryCharacterCount: 55 },
   history: [] as { role: "user" | "assistant"; text: string; clientOperationId: string; at?: string; completedOrdinal?: number }[],
   historyError: "",
   refreshHistory: jest.fn(async () => undefined),
@@ -227,6 +227,7 @@ beforeEach(() => {
   mockVoice.turnStatus = "completed";
   mockVoice.reply = { text: "表示しない返答本文", operationId: "operation-1" };
   mockVoice.error = "";
+  mockVoice.contextStats.contextUsagePercent = 31;
   mockVoice.history = [];
   mockVoice.historyError = "";
   mockBackdropOpacity.value = 0;
@@ -273,6 +274,20 @@ test("notification target wins an in-flight list, opens history, and stays selec
   await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose}
     initialOrchestratorId="other" />);
   expect(mockHookOrchestratorIds.at(-1)).toBe("main");
+});
+
+test("history header shares the context indicator without exposing chat session actions", async () => {
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose}
+    initialOrchestratorId="main" />);
+  const history = within(screen.getByTestId("voice-conversation-history"));
+  expect(history.getByLabelText("コンテキスト使用量 31%")).toBeTruthy();
+  expect(history.queryByRole("button", { name: "コンテキスト使用量 31%" })).toBeNull();
+  expect(screen.queryByText("同じディレクトリーで新規セッション")).toBeNull();
+  mockVoice.contextStats.contextUsagePercent = null;
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose}
+    initialOrchestratorId="main" />);
+  expect(history.getByLabelText("コンテキスト使用量 --")).toBeTruthy();
+  expect(history.queryByText("--%")).toBeNull();
 });
 
 test("inactive voice history does not mark a reply read", async () => {
