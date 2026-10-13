@@ -30,20 +30,20 @@ function failureMessage(payload: Record<string, unknown>) {
 }
 
 function contextStatsOf(payload: Record<string, unknown>): VoiceContextStats | null {
-  const estimate = payload.estimatedContextUsagePercent;
+  const percent = payload.contextUsagePercent ?? null;
   const unsummarized = payload.unsummarizedMessageCount;
   const characters = payload.memoryCharacterCount;
   const running = payload.subagentRunningCount;
   const total = payload.subagentTotalCount;
-  if (estimate !== null && (typeof estimate !== "number" || !Number.isInteger(estimate)
-    || estimate < 0 || estimate > 100)) return null;
+  if (percent !== null && (typeof percent !== "number" || !Number.isInteger(percent)
+    || percent < 0 || percent > 100)) return null;
   if (typeof unsummarized !== "number" || !Number.isSafeInteger(unsummarized) || unsummarized < 0
     || typeof characters !== "number" || !Number.isSafeInteger(characters) || characters < 0) return null;
   if ((running !== undefined || total !== undefined)
     && (typeof running !== "number" || !Number.isSafeInteger(running) || running < 0
       || typeof total !== "number" || !Number.isSafeInteger(total) || total < running)) return null;
   return {
-    estimatedContextUsagePercent: estimate,
+    contextUsagePercent: percent,
     unsummarizedMessageCount: unsummarized,
     memoryCharacterCount: characters,
     ...(typeof running === "number" ? { subagentRunningCount: running, subagentTotalCount: total as number } : {}),
@@ -52,7 +52,7 @@ function contextStatsOf(payload: Record<string, unknown>): VoiceContextStats | n
 
 function sameContextStats(a: VoiceContextStats | null, b: VoiceContextStats | null) {
   return a === b || (!!a && !!b
-    && a.estimatedContextUsagePercent === b.estimatedContextUsagePercent
+    && a.contextUsagePercent === b.contextUsagePercent
     && a.unsummarizedMessageCount === b.unsummarizedMessageCount
     && a.memoryCharacterCount === b.memoryCharacterCount
     && a.subagentRunningCount === b.subagentRunningCount
@@ -120,6 +120,9 @@ export function useVoiceConversation(
       return;
     }
     pendingRef.current = null;
+    if (status !== "completed") {
+      setContextStats((current) => current ? { ...current, contextUsagePercent: null } : null);
+    }
     if (status === "interrupted" && payload.code === "voice_cancelled"
       || status === "preflight_failed" && payload.code === "voice_cancelled") {
       pending.resolve?.();
@@ -294,6 +297,7 @@ export function useVoiceConversation(
   useEffect(() => {
     if (connected) return;
     setLogicalConversationId("");
+    setContextStats((current) => current ? { ...current, contextUsagePercent: null } : null);
   }, [connected]);
 
   useEffect(() => {
@@ -362,6 +366,7 @@ export function useVoiceConversation(
     pending.resolve?.();
     setTurnStatus("idle");
     setError("");
+    setContextStats((current) => current ? { ...current, contextUsagePercent: null } : null);
     const request = {
       channel: "agent", op: "voice.turn.interrupt", operationId: pending.id,
       payload: { orchestratorId, logicalConversationId: conversationIdRef.current, clientOperationId: pending.id },

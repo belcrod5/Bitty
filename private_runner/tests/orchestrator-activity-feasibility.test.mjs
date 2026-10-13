@@ -141,7 +141,11 @@ async function nativeFixture(t, requests, parents, childToolThreadId) {
         if (method === "model/list") return { data: [{ model: "gpt-6-luna", supportedReasoningEfforts: [{ reasoningEffort: "low" }] }] };
         if (method === "thread/start") {
           if (params.approvalPolicy !== "never" && responseThreadStarts++ > 0) root = randomUUID();
-          return { thread: { id: root, ephemeral: true } };
+          return { thread: { id: root, ephemeral: params.ephemeral } };
+        }
+        if (method === "thread/resume") {
+          root = params.threadId;
+          return { thread: { id: root, ephemeral: false } };
         }
         if (method === "mcpServerStatus/list") return { data: [], nextCursor: null };
         if (method === "thread/read") {
@@ -253,7 +257,7 @@ test("HTTP shared bearer authenticates, while self-reported caller IDs do not be
     callerAttachment: "absent", selfReportedCallerAccepted: false }));
 });
 
-test("registered orchestrator hooks expose fresh synthetic native roots while public status omits them", async (t) => {
+test("registered orchestrator hooks retain each native root while public status omits them", async (t) => {
   const fixture = await nativeFixture(t, [], {});
   const service = createVoiceOrchestratorService({ rootDir: path.join(fixture.temp, "orchestrators"),
     createClient: fixture.createClient });
@@ -283,13 +287,14 @@ test("registered orchestrator hooks expose fresh synthetic native roots while pu
       && event.type === "native_started").map(({ threadId, turnId }) => ({ threadId, turnId })),
     [{ threadId: started.at(-1).threadId, turnId: started.at(-1).turnId }]);
   }
-  assert.equal(new Set(started.map(({ threadId }) => threadId)).size, 3);
+  assert.equal(new Set(started.map(({ threadId }) => threadId)).size, 2);
+  assert.equal(started[0].threadId, started[2].threadId);
   assert.deepEqual(started.map(({ orchestratorId }) => orchestratorId), [a.id, b.id, a.id]);
   const listed = (await service.list()).orchestrators;
   assert.equal(listed.find(({ id }) => id === a.id).icon, iconA);
   assert.equal(listed.find(({ id }) => id === b.id).icon, iconB);
   console.log(JSON.stringify({ gate: "synthetic_registered_native_started", status: "pass",
-    orchestrators: 2, started: 3, rootRotationObserved: true, publicStatusHasNativeId: false }));
+    orchestrators: 2, started: 3, nativeRootRetained: true, publicStatusHasNativeId: false }));
 });
 
 test("voice result filters synthetic child item notifications even when approval ancestry succeeds", async (t) => {

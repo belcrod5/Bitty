@@ -10,7 +10,6 @@ import { voiceSubagentTools } from "./voice-subagents.mjs";
 const CONTEXT_MODE = "self_context_array";
 const DEFAULT_MODEL = "gpt-6-luna";
 const DEFAULT_EFFORT = "low";
-const MODEL_CONTEXT_TOKENS = 1_050_000;
 // UTF-8 bytes bound text tokens conservatively; leave room for App Server instructions and output.
 const MAX_VISIBLE_BYTES = 800_000;
 const RECENT_PAIRS = 10;
@@ -214,6 +213,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
   let memoryStore;
   let inFlightId = "";
   let inFlightPartialText = "";
+  let contextUsagePercent = null;
   let inFlightController = null;
   let inFlightTask = null;
   let storeFailure = null;
@@ -366,6 +366,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
         || active.previousConversationId === active.logicalConversationId))
       || (active.model !== undefined && (typeof active.model !== "string" || !active.model))
       || (active.effort !== undefined && (typeof active.effort !== "string" || !active.effort))
+      || (active.nativeThreadId != null && (typeof active.nativeThreadId !== "string" || !active.nativeThreadId))
       || (active.prunedThroughPairSeq !== undefined && (!Number.isSafeInteger(active.prunedThroughPairSeq)
         || active.prunedThroughPairSeq < 0 || active.prunedThroughPairSeq === Number.MAX_SAFE_INTEGER))
       || (active.completedCount !== undefined && (!Number.isSafeInteger(active.completedCount) || active.completedCount < 0))
@@ -489,13 +490,9 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
 
   function usage() {
     const remaining = memoryStore.rawPairs.filter((pair) => pair.pairSeq > memoryStore.cursor);
-    const latestInput = inFlightId && ["accepted", "running"].includes(byId.get(inFlightId)?.status)
-      ? byId.get(inFlightId)?.userText || "" : "";
-    // Text bytes are an upper bound on text tokens, excluding App Server's own hidden input.
-    const estimatedTokens = visibleBytes(pairs.slice(-RECENT_PAIRS), latestInput, responseInstructions());
     return {
-      estimatedContextUsagePercent: settings().model === DEFAULT_MODEL
-        ? Math.min(100, Math.ceil(estimatedTokens * 100 / MODEL_CONTEXT_TOKENS)) : null,
+      contextUsagePercent,
+      estimatedContextUsagePercent: null, // Older clients show unknown instead of a text-byte estimate.
       storedMessageCount: byId.size + pairs.length,
       unsummarizedMessageCount: remaining.length * 2,
       memoryCharacterCount: memoryStore.memoryCharacterCount,
@@ -522,7 +519,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
     };
   }
 
-  async function modelTurn({ input, items = [], instructions, onStarted, onNativeRoot, onApproval, onUserInput, onText, onTextError, signal }) {
+  async function modelTurn({ input, items = [], instructions, onStarted, onNativeRoot, onApproval, onUserInput, onText, onTextError, onContextUsage, signal }) {
     if (signal?.aborted) throw invalid("turn_interrupted", "Voice turn was cancelled");
     const { model, effort } = settings();
     if (onApproval) {
@@ -545,6 +542,9 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
     let identity = null;
     let turnStartRequested = false;
     let cancellationSent = false;
+    const executionTiming = { tools: [] };
+    const toolTimings = new Map();
+    const modelStartedAt = Date.now();
     const requestControllers = new Map();
     function interruptForCancellation() {
       if (!signal?.aborted) return;
@@ -569,12 +569,14 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
         interruptForCancellation();
       }
       await client.openPromise;
+      executionTiming.connectedMs = Date.now() - modelStartedAt;
       stage = "initialize";
       await client.request("initialize", {
         clientInfo: { name: "bitty-voice", title: "Bitty Voice", version: "0.1.0" },
         capabilities: { experimentalApi: true, optOutNotificationMethods: [] },
       }, 30000);
       client.notify("initialized", {});
+      executionTiming.initializedMs = Date.now() - modelStartedAt;
       if (onApproval && managedSessions) {
         const capabilities = await client.request("modelProvider/capabilities/read", {}, 30000);
         if (capabilities?.namespaceTools !== true) {
@@ -591,9 +593,11 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
           mcp_servers: Object.fromEntries(Object.keys(configured).map((name) => [name, { enabled: false }])),
         };
       }
-      stage = "thread_start";
-      const started = await client.request("thread/start", {
-        cwd, ephemeral: true, serviceName: "bitty-voice",
+      const continuing = Boolean(onApproval && active.nativeThreadId);
+      stage = continuing ? "thread_resume" : "thread_start";
+      const started = await client.request(continuing ? "thread/resume" : "thread/start", {
+        ...(continuing ? { threadId: active.nativeThreadId } : { ephemeral: !onApproval }),
+        cwd, serviceName: "bitty-voice",
         approvalPolicy: onApproval ? "on-request" : "never",
         sandbox: onApproval ? "workspace-write" : "read-only",
         experimentalRawEvents: false, persistExtendedHistory: false,
@@ -602,9 +606,15 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
         developerInstructions: instructions,
       }, 30000);
       const threadId = started?.thread?.id;
-      if (typeof threadId !== "string" || !threadId || started.thread.ephemeral !== true) {
-        throw invalid("capability_unsupported", "Ephemeral Codex thread is unavailable", "ephemeral_unavailable");
+      if (typeof threadId !== "string" || !threadId || started.thread.ephemeral !== !onApproval
+        || (continuing && threadId !== active.nativeThreadId)) {
+        throw invalid("capability_unsupported", "Codex thread lifetime does not match the request", "thread_lifetime_unavailable");
       }
+      if (continuing && started.thread.status?.type === "active") {
+        throw invalid("session_busy", "Voice native thread is still running");
+      }
+      executionTiming.threadReadyMs = Date.now() - modelStartedAt;
+      executionTiming.continued = continuing;
       if (onNativeRoot) {
         try { removeActivityListener = onNativeRoot?.({ threadId, client }) || removeActivityListener; }
         catch { /* Display observation must not change voice execution. */ }
@@ -659,6 +669,19 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
       }
       stage = "inject_items";
       if (items.length) await client.request("thread/inject_items", { threadId, items }, 30000);
+      if (onApproval && !continuing) {
+        stage = "native_thread_store";
+        await exclusive(async () => {
+          const next = { ...active, nativeThreadId: threadId };
+          try { await atomicWrite(activeFile, JSON.stringify(next)); }
+          catch {
+            storeFailure = invalid("voice_store_unavailable", "Voice native thread could not be synced");
+            throw storeFailure;
+          }
+          active = next;
+        });
+      }
+      executionTiming.setupMs = Date.now() - modelStartedAt;
       const pendingNotifications = [];
       let output = [];
       let terminal = null;
@@ -671,6 +694,8 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
       let textDelivered = false;
       let measuredOutputTokens = 0;
       let hasMeasuredOutputTokens = false;
+      let outputTokenBaseline;
+      let hasCurrentTurnItem = false;
       function deliverText(text) {
         if (!text || !onText || textStreamingStopped || signal?.aborted) return;
         try { onText(text); textDelivered = true; }
@@ -694,16 +719,40 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
         }
         if (!identity) { pendingNotifications.push([method, params]); return; }
         if (!codexTurnEventMatches(params, identity)) return;
+        if (method === "item/started" || method === "item/completed" || method === "item/agentMessage/delta") hasCurrentTurnItem = true;
         if (method === "thread/tokenUsage/updated") {
-          // Every voice response uses a fresh ephemeral thread, so its total is
-          // already the current turn total.
+          const lastTokens = params?.tokenUsage?.last?.totalTokens;
+          const window = params?.tokenUsage?.modelContextWindow;
+          onContextUsage?.(Number.isSafeInteger(lastTokens) && lastTokens >= 0
+            && Number.isSafeInteger(window) && window > 0
+            ? Math.min(100, Math.round(lastTokens * 100 / window)) : null);
           const totalOutput = params?.tokenUsage?.total?.outputTokens;
           if (!Number.isSafeInteger(totalOutput) || totalOutput < 0) return;
+          const lastOutput = params?.tokenUsage?.last?.outputTokens;
+          if (outputTokenBaseline === undefined && hasCurrentTurnItem
+            && Number.isSafeInteger(lastOutput) && lastOutput >= 0 && totalOutput >= lastOutput) {
+            outputTokenBaseline = totalOutput - lastOutput;
+          }
+          if (outputTokenBaseline === undefined || totalOutput < outputTokenBaseline) return;
           hasMeasuredOutputTokens = true;
-          measuredOutputTokens = totalOutput;
+          measuredOutputTokens = totalOutput - outputTokenBaseline;
           return;
         }
         const itemType = String(params?.item?.type || "");
+        if (onApproval && TOOL_ITEM_TYPES.has(itemType)
+          && (method === "item/started" || method === "item/completed")) {
+          const id = params?.item?.id;
+          if (typeof id === "string" && id) {
+            let timing = toolTimings.get(id);
+            if (method === "item/started" && !timing) {
+              timing = { type: itemType, startedMs: Date.now() - modelStartedAt };
+              toolTimings.set(id, timing);
+              executionTiming.tools.push(timing);
+            } else if (method === "item/completed" && timing) {
+              timing.durationMs = Date.now() - modelStartedAt - timing.startedMs;
+            }
+          }
+        }
         if (!onApproval) {
           if ((method === "item/started" || method === "item/completed") && TOOL_ITEM_TYPES.has(itemType)) toolSeen = true;
           if (/approval|tool|commandExecution|fileChange|webSearch|imageView/i.test(method)) toolSeen = true;
@@ -809,6 +858,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
       const turnId = turn?.turn?.id;
       if (typeof turnId !== "string" || !turnId) throw invalid("capability_unsupported", "Codex turn ID is unavailable", "turn_id_unavailable");
       identity = { threadId, turnId };
+      executionTiming.nativeStartMs = Date.now() - modelStartedAt;
       interruptForCancellation();
       resolveIdentity();
       completion.expect(identity);
@@ -838,7 +888,8 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
       if (onText && textStreamingStopped && !textDelivered) {
         try { onText(text); } catch (error) { try { onTextError?.(error); } catch {} }
       }
-      return { text, threadId, turnId,
+      executionTiming.totalMs = Date.now() - modelStartedAt;
+      return { text, threadId, turnId, executionTiming,
         ...(hasMeasuredOutputTokens ? { outputTokens: measuredOutputTokens } : {}) };
     } catch (error) {
       if (error && typeof error === "object") error.voiceStage = stage;
@@ -953,7 +1004,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
           throw invalid("voice_context_too_large", "Voice context exceeds safe model input budget");
         }
         await append(clientOperationId, "dispatching");
-        return selected;
+        return active.nativeThreadId ? [] : selected;
       });
       const items = [];
       for (const pair of selected) {
@@ -967,6 +1018,9 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
         onUserInput: hooks.onUserInput,
         onNativeRoot: hooks.onNativeRoot,
         signal,
+        onContextUsage: (percent) => {
+          if (inFlightId === clientOperationId && !signal.aborted) contextUsagePercent = percent;
+        },
         onText: (delta) => {
           if (inFlightId === clientOperationId) inFlightPartialText += delta;
           hooks.onText?.(delta);
@@ -981,6 +1035,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
         await append(clientOperationId, "completed", {
           pairSeq: Math.max(active.prunedThroughPairSeq || 0, pairs.at(-1)?.pairSeq || 0, memoryStore.lastPairSeq) + 1,
           text: result.text,
+          executionTiming: result.executionTiming,
           ...(result.outputTokens !== undefined ? { outputTokens: result.outputTokens } : {}),
         });
       }));
@@ -989,6 +1044,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
       try { notify(stateOf(clientOperationId)); } catch {}
       try { hooks.onCompleted?.(result.text); } catch {}
     } catch (error) {
+      contextUsagePercent = null;
       if (!signal.aborted) { try { hooks.onFailed?.(error); } catch {} }
       const current = byId.get(clientOperationId);
       const type = current?.status === "accepted" ? "preflight_failed" : signal.aborted || error?.code === "turn_interrupted" ? "interrupted" : "failed";
@@ -998,9 +1054,9 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
       }
       try {
         if (storeFailure) return;
-        const failureStage = ["client_open", "initialize", "thread_start", "mcp_list", "inject_items", "turn_start", "native_started_store", "turn_completion"].includes(error?.voiceStage)
+        const failureStage = ["client_open", "initialize", "thread_start", "thread_resume", "native_thread_store", "mcp_list", "inject_items", "turn_start", "native_started_store", "turn_completion"].includes(error?.voiceStage)
           ? error.voiceStage : stage;
-        const reason = ["ephemeral_unavailable", "invalid_mcp_page", "turn_id_unavailable", "tool_or_approval"].includes(error?.voiceReason)
+        const reason = ["thread_lifetime_unavailable", "invalid_mcp_page", "turn_id_unavailable", "tool_or_approval"].includes(error?.voiceReason)
           ? error.voiceReason : "unexpected_error";
         await exclusive(() => append(clientOperationId, type, { code, stage: failureStage, reason }));
         inFlightPartialText = "";
@@ -1047,30 +1103,39 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
           throw invalid("turn_rejected", "Voice settings are invalid");
         }
         cancelSummary();
-        try { await atomicWrite(activeFile, JSON.stringify({ ...active, model, effort, systemInstruction: nextInstruction })); }
+        const unchanged = model === settings().model && effort === settings().effort
+          && nextInstruction === settings().systemInstruction;
+        const next = { ...active, model, effort, systemInstruction: nextInstruction,
+          nativeThreadId: unchanged ? active.nativeThreadId : null };
+        try { await atomicWrite(activeFile, JSON.stringify(next)); }
         catch {
           storeFailure = invalid("voice_store_unavailable", "Voice settings could not be synced");
           throw storeFailure;
         }
-        active = { ...active, model, effort, systemInstruction: nextInstruction };
+        active = next;
+        if (!unchanged) contextUsagePercent = null;
         if (!sharedMemoryStore) queueMicrotask(() => void exclusive(startSummary).catch(() => {}));
         return { ...settings(), models };
       });
     },
-    async clearMemory() {
+    async clearMemory({ clearStore = true } = {}) {
       return exclusive(async () => {
         await load();
         if (inFlightId) throw invalid("session_busy", "Voice conversation is busy");
         cancelSummary();
         const directory = path.join(root, active.logicalConversationId);
         try {
-          await memoryStore.clear();
+          if (clearStore) await memoryStore.clear();
+          const next = { ...active, nativeThreadId: null };
+          await atomicWrite(activeFile, JSON.stringify(next));
+          active = next;
         }
         catch {
           storeFailure = invalid("voice_store_unavailable", "Voice memory could not be synced");
           throw storeFailure;
         }
         await fs.rm(path.join(directory, "memory-pending.json"), { force: true });
+        contextUsagePercent = null;
         if (!sharedMemoryStore) queueMicrotask(() => void exclusive(startSummary).catch(() => {}));
         return { logicalConversationId: active.logicalConversationId, ...usage() };
       });
@@ -1090,6 +1155,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
           ...active, logicalConversationId,
           workspaceConversationId: active.workspaceConversationId || previousConversationId,
           previousConversationId, prunedThroughPairSeq: 0,
+          nativeThreadId: null,
           completedCount: 0, readCompletedCount: 0, countedThroughPairSeq: 0,
         };
         try { await atomicWrite(activeFile, JSON.stringify(next)); }
@@ -1105,6 +1171,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
             throw storeFailure;
           }
         }
+        contextUsagePercent = null;
         events = [];
         byId = new Map();
         pairs = [];
@@ -1184,6 +1251,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
           throw invalid("turn_rejected", "Voice conversation or operation ID is invalid");
         }
         if (inFlightId === clientOperationId) {
+          contextUsagePercent = null;
           inFlightPartialText = "";
           inFlightController.abort();
         }

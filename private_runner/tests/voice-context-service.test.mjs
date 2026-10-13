@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { createVoiceContextService } from "../src/voice-context-service.mjs";
 
-function fakeCodex({ reply = "answer", summaryReply, agentEvents, earlyAgentEvents = [], completionUsage, responseOutputTokensByTurn = [], failSummary = false, failSummaryCount = 0, holdTurns = false, holdThreadStart = false, holdSummaryTurnStart = false, finishOnInterrupt = false, holdInterrupt = false, holdInterruptRpc = false, holdSummaries = false, holdModelList = false, ignoreAbort = false, toolItem = false, toolCall = false, approvalMethod = "", userInput = false, resolveUserInput = false, nativeRequests = [], threadParents = {}, threadReadDelayMs = 0, userItem = false, ephemeral = true, mcpPage, configuredMcpServers = {}, missingTurnId = false, failMethod } = {}) {
+function fakeCodex({ reply = "answer", summaryReply, agentEvents, earlyAgentEvents = [], completionUsage, contextUsageByTurn = [], summaryContextUsage, responseOutputTokensByTurn = [], failSummary = false, failSummaryCount = 0, holdTurns = false, holdThreadStart = false, holdSummaryTurnStart = false, finishOnInterrupt = false, holdInterrupt = false, holdInterruptRpc = false, holdSummaries = false, holdModelList = false, ignoreAbort = false, toolItem = false, toolCall = false, approvalMethod = "", userInput = false, resolveUserInput = false, nativeRequests = [], threadParents = {}, threadReadDelayMs = 0, userItem = false, ephemeral = true, mcpPage, configuredMcpServers = {}, missingTurnId = false, failMethod } = {}) {
   const calls = [];
   const releases = [];
   const summaryReleases = [];
@@ -18,6 +18,7 @@ function fakeCodex({ reply = "answer", summaryReply, agentEvents, earlyAgentEven
   let summaryFailuresRemaining = failSummaryCount;
   let responseTurnIndex = 0;
   let responseThreadId = "";
+  const threadOutputTokens = new Map();
   const createClient = ({ signal } = {}) => {
     const connection = { signal, closed: false };
     clients.push(connection);
@@ -61,7 +62,11 @@ function fakeCodex({ reply = "answer", summaryReply, agentEvents, earlyAgentEven
           if (holdThreadStart) await new Promise((resolve) => threadReleases.push(resolve));
           const id = randomUUID();
           if (!isSummaryThread) responseThreadId = id;
-          return { thread: { id, ephemeral } };
+          return { thread: { id, ephemeral: ephemeral ? params.ephemeral : !params.ephemeral } };
+        }
+        if (method === "thread/resume") {
+          responseThreadId = params.threadId;
+          return { thread: { id: params.threadId, ephemeral: false } };
         }
         if (method === "thread/read") {
           if (threadReadDelayMs) await new Promise((resolve) => setTimeout(resolve, threadReadDelayMs));
@@ -83,7 +88,8 @@ function fakeCodex({ reply = "answer", summaryReply, agentEvents, earlyAgentEven
         if (method === "mcpServerStatus/list") return mcpPage ?? { data: [], nextCursor: null };
         if (method === "turn/start") {
           const isSummary = isSummaryThread;
-          const responseOutputTokens = isSummary ? [] : (responseOutputTokensByTurn[responseTurnIndex++] || []);
+          const responseIndex = isSummary ? -1 : responseTurnIndex++;
+          const responseOutputTokens = isSummary ? [] : (responseOutputTokensByTurn[responseIndex] || []);
           if (isSummary && (failSummary || summaryFailuresRemaining > 0)) {
             summaryFailuresRemaining--;
             throw new Error("private summary text and credential");
@@ -96,7 +102,7 @@ function fakeCodex({ reply = "answer", summaryReply, agentEvents, earlyAgentEven
             });
           }
           const finish = async () => {
-            let turnOutputTokens = 0;
+            let turnOutputTokens = threadOutputTokens.get(params.threadId) || 0;
             if (userItem) listener("item/completed", { threadId: params.threadId, turnId, item: { type: "userMessage" } });
             if (toolItem) listener("item/started", { threadId: params.threadId, turnId, item: { type: "commandExecution" } });
             if (userInput && !isSummary) {
@@ -176,8 +182,12 @@ function fakeCodex({ reply = "answer", summaryReply, agentEvents, earlyAgentEven
             }
             for (const outputTokens of responseOutputTokens) {
               turnOutputTokens += outputTokens;
+              threadOutputTokens.set(params.threadId, turnOutputTokens);
               listener("thread/tokenUsage/updated", { threadId: params.threadId, turnId,
                 tokenUsage: { total: { outputTokens: turnOutputTokens }, last: { outputTokens } } });
+            }
+            for (const tokenUsage of isSummary ? (summaryContextUsage ? [summaryContextUsage] : []) : (contextUsageByTurn[responseIndex] || [])) {
+              listener("thread/tokenUsage/updated", { threadId: params.threadId, turnId, tokenUsage });
             }
             listener("turn/completed", { threadId: params.threadId, turnId,
               turn: { status: "completed", ...(completionUsage ? { usage: completionUsage } : {}) } });
@@ -346,6 +356,118 @@ test("response injects the latest ten completed pairs without topic memory", asy
   assert.deepEqual(JSON.parse(await fs.readFile(path.join(workspace, "recent.json"), "utf8")).at(-1),
     { pairSeq: 12, user: "newest correction", assistant: "answer" });
   await service.clearMessages();
+});
+
+test("native parent and injected history survive successive utterances and Runner restart", async (t) => {
+  const { rootDir, conversation, codex } = await fixture(t);
+  await seedPairs(rootDir, conversation.logicalConversationId, 3);
+  const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  await service.open();
+  const first = await complete(service, conversation, "remember the target");
+  assert.equal(first.result.status, "completed");
+  const nativeThread = JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8")).nativeThreadId;
+  await complete(service, conversation, "send to that target");
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  await restarted.open();
+  assert.equal((await complete(restarted, conversation, "read the reply")).result.status, "completed");
+  const turns = codex.calls.filter(({ method }) => method === "turn/start");
+  assert.equal(turns.length, 3);
+  assert.ok(turns.every(({ params }) => params.threadId === nativeThread));
+  assert.equal(codex.calls.filter(({ method }) => method === "thread/start").length, 1);
+  assert.equal(codex.calls.filter(({ method }) => method === "thread/resume").length, 2);
+  const injected = codex.calls.filter(({ method }) => method === "thread/inject_items");
+  assert.equal(injected.length, 1);
+  assert.deepEqual(injected[0].params.items.map(({ content }) => content[0].text),
+    ["user-1", "assistant-1", "user-2", "assistant-2", "user-3", "assistant-3"]);
+  assert.equal((await restarted.start(first.message, () => {}, async () => "decline")).status, "completed");
+  assert.equal(codex.calls.filter(({ method }) => method === "turn/start").length, 3);
+});
+
+test("native parent rotates for changed instructions, memory clear and history clear only", async (t) => {
+  const { rootDir, codex, service, conversation } = await fixture(t);
+  await complete(service, conversation, "first");
+  const firstId = JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8")).nativeThreadId;
+  const settings = await service.getSettings();
+  await service.configure(settings.model, settings.effort, settings.systemInstruction);
+  await complete(service, conversation, "unchanged settings");
+  assert.equal(codex.calls.filter(({ method }) => method === "thread/resume").at(-1).params.threadId, firstId);
+  await service.configure(settings.model, settings.effort, "Use the updated instructions.");
+  await complete(service, conversation, "after instruction update");
+  const updatedStart = codex.calls.filter(({ method }) => method === "thread/start").at(-1);
+  assert.match(updatedStart.params.developerInstructions, /^Use the updated instructions\./);
+  assert.equal(codex.calls.filter(({ method }) => method === "thread/inject_items").at(-1).params.items.length, 4);
+  await service.clearMemory();
+  await complete(service, conversation, "after memory clear");
+  const cleared = await service.clearMessages();
+  const injections = codex.calls.filter(({ method }) => method === "thread/inject_items").length;
+  await complete(service, cleared, "new conversation");
+  const turns = codex.calls.filter(({ method }) => method === "turn/start");
+  assert.equal(new Set(turns.map(({ params }) => params.threadId)).size, 4);
+  assert.equal(codex.calls.filter(({ method }) => method === "thread/inject_items").length, injections);
+  assert.ok(turns.every(({ params }) => params.cwd === turns[0].params.cwd));
+});
+
+test("failed native resume never creates a replacement or replays a dispatched message", async (t) => {
+  const { rootDir, codex, service, conversation } = await fixture(t, { failMethod: "thread/resume" });
+  await complete(service, conversation, "first");
+  const before = JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8")).nativeThreadId;
+  const failed = await complete(service, conversation, "continuation");
+  assert.equal(failed.result.status, "failed");
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8")).nativeThreadId, before);
+  assert.equal(codex.calls.filter(({ method }) => method === "thread/start").length, 1);
+  assert.equal(codex.calls.filter(({ method }) => method === "turn/start").length, 1);
+  assert.equal((await service.start(failed.message, () => {}, async () => "decline")).status, "failed");
+  assert.equal(codex.calls.filter(({ method }) => method === "thread/resume").length, 1);
+});
+
+test("an active native parent after restart rejects the new turn without replacing it", async (t) => {
+  const { rootDir, codex, service, conversation } = await fixture(t);
+  await complete(service, conversation, "first");
+  const nativeThreadId = JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8")).nativeThreadId;
+  const restarted = createVoiceContextService({ rootDir, createClient: () => {
+    const client = codex.createClient();
+    const request = client.request;
+    client.request = (method, params, timeout) => method === "thread/resume"
+      ? Promise.resolve({ thread: { id: nativeThreadId, ephemeral: false, status: { type: "active" } } })
+      : request(method, params, timeout);
+    return client;
+  } });
+  await restarted.open();
+  const result = await complete(restarted, conversation, "after restart");
+  assert.equal(result.result.code, "session_busy");
+  assert.equal(codex.calls.filter(({ method }) => method === "turn/start").length, 1);
+  assert.equal(codex.calls.filter(({ method }) => method === "thread/start").length, 1);
+});
+
+test("per-turn output usage remains correct when App Server counters restart", async (t) => {
+  const { rootDir, service, conversation } = await fixture(t, { responseOutputTokensByTurn: [[100, 50, 30]] });
+  assert.equal((await complete(service, conversation, "first")).result.outputTokens, 180);
+  const freshCodex = fakeCodex({ responseOutputTokensByTurn: [[75, 25]] });
+  const restarted = createVoiceContextService({ rootDir, createClient: freshCodex.createClient });
+  await restarted.open();
+  assert.equal((await complete(restarted, conversation, "after counter restart")).result.outputTokens, 100);
+  assert.equal(freshCodex.calls.filter(({ method }) => method === "thread/start").length, 0);
+});
+
+test("execution timing records root tool durations without command or response text", async (t) => {
+  const { rootDir, service, conversation } = await fixture(t, {
+    earlyAgentEvents: [
+      { method: "item/started", params: { item: { id: "tool-1", type: "commandExecution", command: "private command" } } },
+      { method: "item/completed", params: { item: { id: "tool-1", type: "commandExecution", aggregatedOutput: "private output" } } },
+    ],
+  });
+  await complete(service, conversation, "private request");
+  const first = (await storedEvents(rootDir, conversation.logicalConversationId)).at(-1).executionTiming;
+  assert.equal(first.continued, false);
+  assert.equal(first.tools.length, 1);
+  assert.equal(first.tools[0].type, "commandExecution");
+  assert.ok(first.tools[0].durationMs >= 0);
+  assert.ok(first.connectedMs <= first.initializedMs && first.initializedMs <= first.threadReadyMs
+    && first.threadReadyMs <= first.setupMs && first.setupMs <= first.nativeStartMs
+    && first.nativeStartMs <= first.totalMs);
+  assert.equal(JSON.stringify(first).includes("private"), false);
+  await complete(service, conversation, "continuation");
+  assert.equal((await storedEvents(rootDir, conversation.logicalConversationId)).at(-1).executionTiming.continued, true);
 });
 
 test("removes obsolete MEMORY.md only after current voice memory opens safely", async (t) => {
@@ -534,11 +656,109 @@ test("a failed summary does not prevent the 100-line window from advancing", asy
   assert.equal((await service.open()).unsummarizedMessageCount, 62);
 });
 
+test("context usage measures the latest root request, including notifications before its acknowledgement", async (t) => {
+  const usage = { last: { totalTokens: 250 }, total: { inputTokens: 9000 }, modelContextWindow: 1000 };
+  const { service, conversation } = await fixture(t, {
+    earlyAgentEvents: [{ method: "thread/tokenUsage/updated", params: { tokenUsage: usage } }],
+    agentEvents: [
+      { method: "thread/tokenUsage/updated", params: { threadId: "foreign-child", tokenUsage: {
+        last: { totalTokens: 1000 }, modelContextWindow: 1000 } } },
+      { method: "thread/tokenUsage/updated", params: { turnId: "old-turn", tokenUsage: {
+        last: { totalTokens: 900 }, modelContextWindow: 1000 } } },
+      { method: "item/completed", params: { item: { type: "agentMessage", text: "measured" } } },
+    ],
+  });
+  const { accepted, result } = await complete(service, conversation, "hello");
+  assert.equal(accepted.contextUsagePercent, null);
+  assert.equal(result.contextUsagePercent, 25);
+  assert.equal((await service.open()).contextUsagePercent, 25);
+  assert.equal((await service.open()).estimatedContextUsagePercent, null);
+});
+
+test("context usage keeps the last measurement on new input and resets on settings, memory clear, history clear and restart", async (t) => {
+  const usage = { last: { totalTokens: 420 }, modelContextWindow: 1000 };
+  const nextUsage = { last: { totalTokens: 550 }, modelContextWindow: 1000 };
+  const { service, conversation, rootDir, codex } = await fixture(t, {
+    contextUsageByTurn: [[usage], [nextUsage], [usage], [usage]],
+  });
+  assert.equal((await complete(service, conversation, "first")).result.contextUsagePercent, 42);
+  const second = await complete(service, conversation, "second");
+  assert.equal(second.accepted.contextUsagePercent, 42);
+  assert.equal(second.result.contextUsagePercent, 55);
+  assert.equal((await service.clearMemory()).contextUsagePercent, null);
+  await complete(service, conversation, "third");
+  await service.configure("another-model", "high");
+  assert.equal((await service.open()).contextUsagePercent, null);
+  assert.equal((await complete(service, conversation, "fourth")).result.contextUsagePercent, 42);
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  assert.equal((await restarted.open()).contextUsagePercent, null);
+  assert.equal((await service.clearMessages()).contextUsagePercent, null);
+});
+
+test("context usage survives unchanged settings and resets when model, effort or instructions change", async (t) => {
+  for (const changes of [
+    { model: "gpt-6-luna", effort: "low" },
+    { effort: "high" },
+    { systemInstruction: "Use the updated instructions." },
+  ]) {
+    const { service, conversation } = await fixture(t, {
+      contextUsageByTurn: [[{ last: { totalTokens: 420 }, modelContextWindow: 1000 }]],
+    });
+    await service.configure("another-model", "medium");
+    await complete(service, conversation, "measure usage");
+    const settings = await service.getSettings();
+    await service.configure(settings.model, settings.effort, settings.systemInstruction);
+    assert.equal((await service.open()).contextUsagePercent, 42);
+    await service.configure(settings.model, settings.effort);
+    assert.equal((await service.open()).contextUsagePercent, 42);
+    const changed = { ...settings, ...changes };
+    await service.configure(changed.model, changed.effort, changed.systemInstruction);
+    assert.equal((await service.open()).contextUsagePercent, null);
+  }
+});
+
+test("missing or invalid measurements remain unknown, while over-window values clamp to 100", async (t) => {
+  const usages = [
+    { last: { totalTokens: 1200 }, modelContextWindow: 1000 },
+    { last: { totalTokens: 0 }, modelContextWindow: 1000 },
+    { last: { totalTokens: 10 }, modelContextWindow: 0 },
+    { last: { totalTokens: -1 }, modelContextWindow: 1000 },
+    { total: { inputTokens: 300 }, modelContextWindow: 1000 },
+    { last: { totalTokens: 10 }, modelContextWindow: null },
+  ];
+  const { service, conversation } = await fixture(t, { contextUsageByTurn: usages.map((usage) => [usage]) });
+  for (const [index, expected] of [100, 0, null, null, null, null].entries()) {
+    assert.equal((await complete(service, conversation, `request ${index}`)).result.contextUsagePercent, expected);
+  }
+  assert.equal((await complete(service, conversation, "no notification")).result.contextUsagePercent, null);
+});
+
+test("curator usage never replaces the response measurement", async (t) => {
+  const { service, conversation, codex } = await fixture(t, {
+    contextUsageByTurn: Array.from({ length: 11 }, () => [{ last: { totalTokens: 250 }, modelContextWindow: 1000 }]),
+    summaryContextUsage: { last: { totalTokens: 950 }, modelContextWindow: 1000 },
+  });
+  for (let index = 0; index < 11; index++) await complete(service, conversation, `request ${index}`);
+  await waitFor(() => codex.calls.some(({ method, params }) => method === "turn/start" && params.approvalPolicy === "never"));
+  await waitFor(async () => (await service.open()).unsummarizedMessageCount === 20);
+  assert.equal((await service.open()).contextUsagePercent, 25);
+});
+
+test("a failed response discards its partial measurement", async (t) => {
+  const { service, conversation } = await fixture(t, { reply: "", contextUsageByTurn: [
+    [{ last: { totalTokens: 250 }, modelContextWindow: 1000 }],
+  ] });
+  const { result } = await complete(service, conversation, "request");
+  assert.equal(result.status, "failed");
+  assert.equal(result.contextUsagePercent, null);
+  assert.equal((await service.open()).contextUsagePercent, null);
+});
+
 test("voice turns persist before acknowledgement and replay without generation", async (t) => {
   const { rootDir, codex, service, conversation } = await fixture(t);
   const { accepted, result, message } = await complete(service, conversation, "hello");
   assert.equal(accepted.status, "accepted");
-  assert.equal(typeof accepted.estimatedContextUsagePercent, "number");
+  assert.equal(accepted.contextUsagePercent, null);
   assert.equal(accepted.unsummarizedMessageCount, 0);
   assert.equal(accepted.storedMessageCount, 1);
   assert.equal(accepted.memoryCharacterCount, 0);
@@ -561,7 +781,11 @@ test("voice turns persist before acknowledgement and replay without generation",
 });
 
 test("interrupts an active voice turn upstream and never stores its late reply", async (t) => {
-  const { service, conversation, codex } = await fixture(t, { holdTurns: true, finishOnInterrupt: true });
+  const { service, conversation, codex } = await fixture(t, { holdTurns: true, finishOnInterrupt: true,
+    earlyAgentEvents: [{ method: "thread/tokenUsage/updated", params: {
+      tokenUsage: { last: { totalTokens: 250 }, modelContextWindow: 1000 },
+    } }],
+  });
   const id = randomUUID();
   let terminal;
   const finished = new Promise((resolve) => { terminal = resolve; });
@@ -570,8 +794,10 @@ test("interrupts an active voice turn upstream and never stores its late reply",
     clientOperationId: id, input: { blocks: [{ type: "text", text: "long story" }] },
   } }, terminal, async () => "decline");
   await waitFor(() => codex.calls.some(({ method }) => method === "turn/start"));
+  await waitFor(async () => (await service.open()).contextUsagePercent === 25);
   const accepted = await service.interrupt(conversation.logicalConversationId, id);
   assert.equal(accepted.clientOperationId, id);
+  assert.equal(accepted.contextUsagePercent, null);
   const cancelled = await service.open();
   assert.equal(cancelled.status, "interrupted");
   assert.equal(cancelled.code, "voice_cancelled");
@@ -580,6 +806,7 @@ test("interrupts an active voice turn upstream and never stores its late reply",
   codex.releases.shift()();
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal((await service.status(conversation.logicalConversationId, id)).status, "interrupted");
+  assert.equal((await service.open()).contextUsagePercent, null);
   assert.equal((await service.open()).unsummarizedMessageCount, 0);
   const nextId = randomUUID();
   const next = await service.start({ operationId: nextId, payload: {
@@ -789,7 +1016,7 @@ test("voice settings use the live catalog, validate effort, and survive restart"
   await assert.rejects(service.configure("another-model", "low"), { code: "turn_rejected" });
   await assert.rejects(service.configure("unknown-model", "high"), { code: "turn_rejected" });
   await service.configure("another-model", "high");
-  assert.equal((await service.open()).estimatedContextUsagePercent, null);
+  assert.equal((await service.open()).contextUsagePercent, null);
   const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient });
   assert.deepEqual(((await restarted.getSettings()).model), "another-model");
   assert.equal((await complete(restarted, conversation, "hello")).result.status, "completed");
@@ -821,7 +1048,7 @@ test("custom voice instructions cannot omit the context boundary from byte accou
   await service.configure("gpt-6-luna", "low", custom);
   const settings = await service.getSettings();
   assert.equal(settings.systemInstruction, custom);
-  assert.equal(settings.estimatedContextUsagePercent, 2);
+  assert.equal(settings.contextUsagePercent, null);
   const id = randomUUID();
   await assert.rejects(service.start({ operationId: id, payload: {
     backendId: "codex", logicalConversationId: conversation.logicalConversationId, clientOperationId: id,
@@ -912,7 +1139,7 @@ test("a turn can start during catalog discovery and blocks the pending settings 
   await assert.rejects(configuring, { code: "session_busy" });
   codex.releases.shift()();
   assert.equal((await turn).result.status, "completed");
-  assert.notEqual((await service.open()).estimatedContextUsagePercent, null);
+  assert.equal((await service.open()).contextUsagePercent, null);
 });
 
 test("clearing topic memory retains recent conversation injection", async (t) => {
@@ -1341,22 +1568,24 @@ test("forwarded child approvals close when the child resolves or the root turn c
   }
 });
 
-test("response injects only ten recent pairs while older pairs await topic update", async (t) => {
+test("response keeps one native parent without reinjecting pairs while topic updates wait", async (t) => {
   const { rootDir, codex, service, conversation } = await fixture(t, { holdSummaries: true });
   for (let number = 1; number <= 12; number++) {
     assert.equal((await complete(service, conversation, `user-${number}`)).result.status, "completed");
   }
   await waitFor(() => codex.summaryReleases.length > 0);
   assert.equal(await fs.stat(path.join(rootDir, conversation.logicalConversationId, "MEMORY.md")).then(() => true, () => false), false);
-  const lastInjection = codex.calls.filter(({ method }) => method === "thread/inject_items").at(-1);
-  assert.deepEqual(lastInjection.params.items.map(({ content }) => content[0].text),
-    Array.from({ length: 10 }, (_, index) => [`user-${index + 2}`, "answer"]).flat());
+  assert.equal(codex.calls.filter(({ method }) => method === "thread/inject_items").length, 0);
+  const responseStarts = codex.calls.filter(({ method, params }) => method === "turn/start" && params.approvalPolicy === "on-request");
+  assert.equal(new Set(responseStarts.map(({ params }) => params.threadId)).size, 1);
+  assert.deepEqual(responseStarts.map(({ params }) => params.input[0].text),
+    Array.from({ length: 12 }, (_, index) => `user-${index + 1}`));
   const pending = JSON.parse(await fs.readFile(path.join(rootDir, conversation.logicalConversationId, "memory-pending.json"), "utf8"));
   assert.deepEqual([pending.fromPairSeq, pending.throughPairSeq], [1, 2]);
   assert.deepEqual(pending.pairs.map(({ pairSeq }) => pairSeq), [1, 2]);
   assert.deepEqual(Object.keys(pending).sort(), ["existingMemory", "fromPairSeq", "pairs", "throughPairSeq"]);
   const threadStarts = codex.calls.filter(({ method }) => method === "thread/start");
-  assert.ok(threadStarts.every(({ params }) => params.ephemeral === true && params.model === "gpt-6-luna"));
+  assert.ok(threadStarts.every(({ params }) => params.ephemeral === (params.approvalPolicy === "never") && params.model === "gpt-6-luna"));
   assert.ok(threadStarts.some(({ params }) => params.sandbox === "workspace-write" && params.approvalPolicy === "on-request"
     && params.config.agents.enabled === true));
   assert.ok(threadStarts.some(({ params }) => params.sandbox === "read-only" && params.approvalPolicy === "never"
@@ -1390,7 +1619,7 @@ test("managed sessions remain in every voice turn beyond the ten-pair window", a
     assert.equal((await complete(service, conversation, `user-${number}`)).result.status, "completed");
   }
   const injection = codex.calls.filter(({ method }) => method === "thread/inject_items").at(-1).params.items;
-  assert.equal(injection.length, 21);
+  assert.equal(injection.length, 1);
   assert.match(injection.at(-1).content[0].text, /child-1/);
   assert.equal(injection.some(({ content }) => content[0].text === "user-1"), false);
   assert.equal(codex.calls.filter(({ method, params }) => method === "thread/start"
@@ -1531,9 +1760,7 @@ test("summary failure leaves backlog visible and does not block responses", asyn
   const pending = JSON.parse(await fs.readFile(path.join(rootDir, conversation.logicalConversationId, "memory-pending.json"), "utf8"));
   assert.deepEqual([pending.fromPairSeq, pending.throughPairSeq], [1, 1]);
   assert.equal((await service.status(conversation.logicalConversationId, next.message.operationId)).status, "completed");
-  const lastInjection = codex.calls.filter(({ method }) => method === "thread/inject_items").at(-1);
-  assert.deepEqual(lastInjection.params.items.map(({ content }) => content[0].text),
-    Array.from({ length: 10 }, (_, index) => [`user-${index + 2}`, "answer"]).flat());
+  assert.equal(codex.calls.filter(({ method }) => method === "thread/inject_items").length, 0);
 });
 
 test("failed summary retries while idle, records safe metadata, and commits only after success", async (t) => {
@@ -1725,7 +1952,7 @@ test("ordinary userMessage notifications do not trigger the tool guard", async (
   assert.equal((await complete(service, conversation, "hello")).result.status, "completed");
 });
 
-test("missing ephemeral capability fails without starting a native turn", async (t) => {
+test("wrong native thread lifetime fails without starting a native turn", async (t) => {
   const { service, conversation, codex } = await fixture(t, { ephemeral: false });
   const result = await complete(service, conversation, "hello");
   assert.equal(result.result.status, "failed");
@@ -1735,7 +1962,7 @@ test("missing ephemeral capability fails without starting a native turn", async 
 
 test("failed events identify the guarded voice stage without recording private details", async (t) => {
   const cases = [
-    [{ ephemeral: false }, "thread_start", "ephemeral_unavailable"],
+    [{ ephemeral: false }, "thread_start", "thread_lifetime_unavailable"],
     [{ missingTurnId: true }, "turn_start", "turn_id_unavailable"],
   ];
   for (const [options, stage, reason] of cases) {
@@ -1833,9 +2060,9 @@ test("a burst does not wait for a held summary and keeps the newest complete tur
     assert.equal((await complete(service, conversation, `burst-${number}`)).result.status, "completed");
   }
   assert.equal((await service.open()).unsummarizedMessageCount, 52);
-  assert.deepEqual(codex.calls.filter(({ method }) => method === "thread/inject_items").at(-1).params.items
-    .map(({ content }) => content[0].text),
-    Array.from({ length: 10 }, (_, index) => [`burst-${index + 16}`, "answer"]).flat());
+  assert.equal(codex.calls.filter(({ method }) => method === "thread/inject_items").length, 0);
+  assert.equal(new Set(codex.calls.filter(({ method, params }) => method === "turn/start"
+    && params.approvalPolicy === "on-request").map(({ params }) => params.threadId)).size, 1);
   assert.equal(await fs.stat(path.join(rootDir, conversation.logicalConversationId, "MEMORY.md")).then(() => true, () => false), false);
   await waitFor(() => codex.summaryReleases.length > 0);
   for (const finish of codex.summaryReleases.splice(0)) finish();
@@ -1887,7 +2114,7 @@ test("Unicode byte guard rejects near model input limit without pruning", async 
   assert.equal(codex.calls.filter(({ method }) => method === "turn/start").length, 1);
   const status = await service.status(conversation.logicalConversationId, first.message.operationId);
   assert.equal(status.unsummarizedMessageCount, 2);
-  assert.equal(status.estimatedContextUsagePercent, 1);
+  assert.equal(status.contextUsagePercent, null);
 });
 
 test("pending summary write failure makes the store fail closed", async (t) => {

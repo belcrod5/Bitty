@@ -31,8 +31,9 @@ function fakeCodex({ hold = false, failSummary = false, failTurn = false, approv
         if (method === "mcpServerStatus/list") return { data: [], nextCursor: null };
         if (method === "thread/start") {
           summary = params.approvalPolicy === "never";
-          return { thread: { id: randomUUID(), ephemeral: true } };
+          return { thread: { id: randomUUID(), ephemeral: params.ephemeral } };
         }
+        if (method === "thread/resume") return { thread: { id: params.threadId, ephemeral: false } };
         if (method === "turn/start") {
           if (summary && failSummary) throw new Error("summary unavailable");
           if (!summary && failTurn) throw Object.assign(new Error("native turn unavailable"), { code: "backend_unavailable" });
@@ -167,7 +168,21 @@ test("unread count survives bounded history pruning and a lost count checkpoint"
   assert.equal(await recovered.unreadState("main"), 1);
 });
 
-test("main migration keeps data; each orchestrator injects only its own pairs in one workspace", async (t) => {
+test("shared memory clear also drops every retained native parent", async (t) => {
+  const { rootDir, service, codex } = await fixture(t);
+  const child = await service.create("other");
+  for (const id of ["main", child.id]) {
+    const conversation = await service.open(id);
+    assert.equal((await (await turn(service, id, conversation.logicalConversationId, "remember")).finished).status, "completed");
+  }
+  const files = [path.join(rootDir, "active.json"), path.join(rootDir, "orchestrators", child.id, "active.json")];
+  for (const file of files) assert.ok(JSON.parse(await fs.readFile(file, "utf8")).nativeThreadId);
+  const restarted = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
+  await restarted.clearMemory();
+  for (const file of files) assert.equal(JSON.parse(await fs.readFile(file, "utf8")).nativeThreadId, null);
+});
+
+test("main migration keeps its native parent; each orchestrator has a separate parent in one workspace", async (t) => {
   const { rootDir, codex, service } = await fixture(t);
   const legacy = createVoiceContextService({ rootDir, createClient: codex.createClient });
   const main = await legacy.open();
@@ -188,8 +203,10 @@ test("main migration keeps data; each orchestrator injects only its own pairs in
   assert.equal((await b.finished).status, "completed");
 
   const injections = codex.calls.filter(({ method }) => method === "thread/inject_items");
-  assert.equal(injections.length, 1);
-  assert.deepEqual(injections[0].params.items.map(({ content }) => content[0].text), ["old main", "reply:old main"]);
+  assert.equal(injections.length, 0);
+  const turns = codex.calls.filter(({ method }) => method === "turn/start");
+  assert.equal(turns[0].params.threadId, turns[2].params.threadId);
+  assert.notEqual(turns[0].params.threadId, turns[1].params.threadId);
   const workspaces = codex.calls.filter(({ method, params }) => method === "thread/start"
     && params.approvalPolicy === "on-request").map(({ params }) => params.cwd);
   assert.equal(new Set(workspaces).size, 1);
@@ -393,8 +410,10 @@ test("voice schedules use the named orchestrator history and settings after rena
   assert.equal(call.params.effort, "high");
   const threadStart = codex.calls.find((entry) => entry.method === "thread/start" && entry.params.model === "another-model");
   assert.equal(threadStart.params.approvalPolicy, "on-request");
+  const previousCall = codex.calls.find((entry) => entry.method === "turn/start" && entry.params.input[0].text === "previous request");
+  assert.equal(call.params.threadId, previousCall.params.threadId);
   assert.equal(codex.calls.some((entry) => entry.method === "thread/inject_items"
-    && JSON.stringify(entry.params.items).includes("previous request")), true);
+    && JSON.stringify(entry.params.items).includes("previous request")), false);
   await waitFor(async () => (await service.history(item.id)).messages.some((message) => message.text === "reply:scheduled request"));
   await waitFor(() => completions.length === 2);
   assert.equal(completions[1].result.orchestratorId, item.id);

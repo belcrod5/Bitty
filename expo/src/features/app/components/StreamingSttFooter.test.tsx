@@ -210,15 +210,15 @@ describe("StreamingSttFooter", () => {
     const screen = await render(<StreamingSttFooter transcript="" phase="recording" onStop={onStop} />);
     expect(screen.queryByTestId("streaming-stt-voice-context-stats")).toBeNull();
     await screen.rerender(<StreamingSttFooter transcript="" phase="recording" onStop={onStop}
-      voiceContextStats={{ estimatedContextUsagePercent: 42, unsummarizedMessageCount: 6, memoryCharacterCount: 123 }} />);
+      voiceContextStats={{ contextUsagePercent: 42, unsummarizedMessageCount: 6, memoryCharacterCount: 123 }} />);
     expect(screen.getByTestId("streaming-stt-voice-context-stats").props.children)
-      .toBe("文脈 42% · 未要約 6件 · メモリー 123字");
+      .toBe("未要約 6件 · メモリー 123字");
     await screen.rerender(<StreamingSttFooter transcript="" phase="recording" onStop={onStop}
       voiceContextStats={null} />);
     expect(screen.getByTestId("streaming-stt-voice-context-stats").props.children)
-      .toBe("文脈 --% · 未要約 --件 · メモリー --字");
+      .toBe("未要約 --件 · メモリー --字");
     await screen.rerender(<StreamingSttFooter transcript="" phase="recording" onStop={onStop}
-      voiceContextStats={{ estimatedContextUsagePercent: 42, unsummarizedMessageCount: 6,
+      voiceContextStats={{ contextUsagePercent: 42, unsummarizedMessageCount: 6,
         memoryCharacterCount: 123, subagentRunningCount: 1, subagentTotalCount: 2 }} />);
     expect(screen.getByTestId("streaming-stt-subagent-count")).toBeTruthy();
     expect(screen.getByText("1/2")).toBeTruthy();
@@ -227,7 +227,7 @@ describe("StreamingSttFooter", () => {
   it("floats the orchestrator icon above the panel without a transcript gutter", async () => {
     const screen = await render(<StreamingSttFooter transcript="" phase="recording" onStop={jest.fn()}
       onChangeText={jest.fn()} leadingAccessory={<View testID="orchestrator-icon" style={{ width: 30, height: 30 }} />}
-      voiceContextStats={{ estimatedContextUsagePercent: 2, unsummarizedMessageCount: 0,
+      voiceContextStats={{ contextUsagePercent: 2, unsummarizedMessageCount: 0,
         memoryCharacterCount: 0, subagentRunningCount: 0, subagentTotalCount: 0 }} />);
     const panel = screen.getByTestId("streaming-stt-panel");
     expect(screen.getByTestId("orchestrator-icon")).toBeTruthy();

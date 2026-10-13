@@ -291,7 +291,7 @@ export function createAppLayoutStyles(theme: VisualTheme) {
     borderRadius: 999,
     overflow: "hidden",
   },
-  chatContextRingWrap: {
+  contextUsageRingWrap: {
     width: 36,
     height: 36,
     alignItems: "center",
@@ -536,13 +536,13 @@ export function createAppLayoutStyles(theme: VisualTheme) {
   chatDirectoryMarkerOptionDotNone: {
     backgroundColor: theme.colors.surface,
   },
-  chatContextPctText: {
+  contextUsageText: {
     fontSize: theme.typography.caption.fontSize,
     color: theme.colors.textPrimary,
     fontWeight: "700",
     textAlign: "center",
   },
-  chatContextResetButton: {
+  contextUsageLabelWrap: {
     position: "absolute",
     left: 0,
     top: 0,
