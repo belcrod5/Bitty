@@ -333,7 +333,7 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
               {voiceContextStats !== undefined ? (
                 <Text testID="streaming-stt-voice-context-stats" style={{ color: "#8e9bad", fontSize: 11,
                   marginLeft: phase === "finalizing" || usage ? 8 : 0 }}>
-                  {`文脈 ${voiceContextStats?.estimatedContextUsagePercent ?? "--"}% · 未要約 ${voiceContextStats?.unsummarizedMessageCount ?? "--"}件 · メモリー ${voiceContextStats?.memoryCharacterCount ?? "--"}字`}
+                  {`未要約 ${voiceContextStats?.unsummarizedMessageCount ?? "--"}件 · メモリー ${voiceContextStats?.memoryCharacterCount ?? "--"}字`}
                 </Text>
               ) : null}
               {voiceContextStats?.subagentTotalCount !== undefined ? (

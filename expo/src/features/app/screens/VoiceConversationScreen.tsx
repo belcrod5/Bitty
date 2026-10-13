@@ -6,6 +6,7 @@ import Reanimated, { FadeIn, FadeInDown, FadeOut, FadeOutDown, runOnJS } from "r
 import { useStreamingStt } from "../../stt/useStreamingStt";
 import { StreamingSttFooter, type StreamingSttFooterHandle } from "../components/StreamingSttFooter";
 import { VoiceHistoryBackdrop } from "../components/VoiceHistoryBackdrop";
+import { ContextUsageIndicator } from "../components/ContextUsageIndicator";
 import { CodexStatusSummaryMenu } from "../components/CodexStatusSummaryMenu";
 import { VoiceOrchestratorIcon, type VoiceOrchestrator } from "../components/VoiceOrchestratorIcon";
 import { VoiceOrchestratorManager } from "../components/VoiceOrchestratorManager";
@@ -416,6 +417,11 @@ function VoiceConversationSession({
                       ))}
                     </ScrollView>
                   </Pressable>
+                  <ContextUsageIndicator
+                    contextPctText={voice.contextStats?.contextUsagePercent == null ? "--" : `${voice.contextStats.contextUsagePercent}%`}
+                    progress={(voice.contextStats?.contextUsagePercent ?? 0) / 100}
+                    trackColor={theme.colors.infoMuted} progressColor={theme.colors.contextProgress}
+                    textColor="#ffffff" />
                   <Pressable testID="voice-history-close" accessibilityRole="button"
                     accessibilityLabel="履歴を閉じる" hitSlop={8}
                     onPress={() => setHistoryExpanded(false)}

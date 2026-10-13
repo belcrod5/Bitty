@@ -301,8 +301,14 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
     },
     async clearMemory() { return exclusive(async () => {
       await load();
-      for (const service of contexts.values()) if (await service.isBusy()) throw failure("Voice conversation is busy", "session_busy");
-      return main.clearMemory();
+      for (const { id } of registry.orchestrators) {
+        if (await (await loadedContext(id)).isBusy()) throw failure("Voice conversation is busy", "session_busy");
+      }
+      const result = await main.clearMemory();
+      for (const [id, service] of contexts) {
+        if (id !== "main") await service.clearMemory({ clearStore: false });
+      }
+      return result;
     }); },
     async clearMessages(id) { return exclusive(async () => {
       await load();
