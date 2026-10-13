@@ -10,7 +10,6 @@ import { voiceSubagentTools } from "./voice-subagents.mjs";
 const CONTEXT_MODE = "self_context_array";
 const DEFAULT_MODEL = "gpt-6-luna";
 const DEFAULT_EFFORT = "low";
-const MODEL_CONTEXT_TOKENS = 1_050_000;
 // UTF-8 bytes bound text tokens conservatively; leave room for App Server instructions and output.
 const MAX_VISIBLE_BYTES = 800_000;
 const RECENT_PAIRS = 10;
@@ -214,6 +213,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
   let memoryStore;
   let inFlightId = "";
   let inFlightPartialText = "";
+  let contextUsagePercent = null;
   let inFlightController = null;
   let inFlightTask = null;
   let storeFailure = null;
@@ -489,13 +489,8 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
 
   function usage() {
     const remaining = memoryStore.rawPairs.filter((pair) => pair.pairSeq > memoryStore.cursor);
-    const latestInput = inFlightId && ["accepted", "running"].includes(byId.get(inFlightId)?.status)
-      ? byId.get(inFlightId)?.userText || "" : "";
-    // Text bytes are an upper bound on text tokens, excluding App Server's own hidden input.
-    const estimatedTokens = visibleBytes(pairs.slice(-RECENT_PAIRS), latestInput, responseInstructions());
     return {
-      estimatedContextUsagePercent: settings().model === DEFAULT_MODEL
-        ? Math.min(100, Math.ceil(estimatedTokens * 100 / MODEL_CONTEXT_TOKENS)) : null,
+      contextUsagePercent,
       storedMessageCount: byId.size + pairs.length,
       unsummarizedMessageCount: remaining.length * 2,
       memoryCharacterCount: memoryStore.memoryCharacterCount,
@@ -522,7 +517,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
     };
   }
 
-  async function modelTurn({ input, items = [], instructions, onStarted, onNativeRoot, onApproval, onUserInput, onText, onTextError, signal }) {
+  async function modelTurn({ input, items = [], instructions, onStarted, onNativeRoot, onApproval, onUserInput, onText, onTextError, onTokenUsage, signal }) {
     if (signal?.aborted) throw invalid("turn_interrupted", "Voice turn was cancelled");
     const { model, effort } = settings();
     if (onApproval) {
@@ -693,8 +688,9 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
           return;
         }
         if (!identity) { pendingNotifications.push([method, params]); return; }
-        if (!codexTurnEventMatches(params, identity)) return;
+        if (terminal || !codexTurnEventMatches(params, identity)) return;
         if (method === "thread/tokenUsage/updated") {
+          if (!signal?.aborted) onTokenUsage?.(params?.tokenUsage);
           // Every voice response uses a fresh ephemeral thread, so its total is
           // already the current turn total.
           const totalOutput = params?.tokenUsage?.total?.outputTokens;
@@ -966,6 +962,14 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
       const result = await modelTurn({ input, items, instructions: responseInstructions(), onApproval,
         onUserInput: hooks.onUserInput,
         onNativeRoot: hooks.onNativeRoot,
+        onTokenUsage: (usage) => {
+          const used = usage?.last?.totalTokens;
+          const limit = usage?.modelContextWindow;
+          const percent = Number.isSafeInteger(used) && used >= 0
+            && Number.isSafeInteger(limit) && limit > 0
+            ? Math.min(100, Math.round(used * 100 / limit)) : null;
+          if (inFlightId === clientOperationId) contextUsagePercent = percent;
+        },
         signal,
         onText: (delta) => {
           if (inFlightId === clientOperationId) inFlightPartialText += delta;
@@ -989,6 +993,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
       try { notify(stateOf(clientOperationId)); } catch {}
       try { hooks.onCompleted?.(result.text); } catch {}
     } catch (error) {
+      contextUsagePercent = null;
       if (!signal.aborted) { try { hooks.onFailed?.(error); } catch {} }
       const current = byId.get(clientOperationId);
       const type = current?.status === "accepted" ? "preflight_failed" : signal.aborted || error?.code === "turn_interrupted" ? "interrupted" : "failed";
@@ -1053,6 +1058,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
           throw storeFailure;
         }
         active = { ...active, model, effort, systemInstruction: nextInstruction };
+        contextUsagePercent = null;
         if (!sharedMemoryStore) queueMicrotask(() => void exclusive(startSummary).catch(() => {}));
         return { ...settings(), models };
       });
@@ -1065,6 +1071,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
         const directory = path.join(root, active.logicalConversationId);
         try {
           await memoryStore.clear();
+          contextUsagePercent = null;
         }
         catch {
           storeFailure = invalid("voice_store_unavailable", "Voice memory could not be synced");
@@ -1098,6 +1105,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
           throw storeFailure;
         }
         active = next;
+        contextUsagePercent = null;
         if (!sharedMemory) {
           try { await memoryStore.resetConversation(logicalConversationId); }
           catch {
@@ -1185,6 +1193,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
         }
         if (inFlightId === clientOperationId) {
           inFlightPartialText = "";
+          contextUsagePercent = null;
           inFlightController.abort();
         }
         return stateOf(clientOperationId);
@@ -1219,6 +1228,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
         cancelSummary();
         await append(id, "accepted", { text });
         inFlightId = id;
+        contextUsagePercent = null;
         inFlightPartialText = "";
         inFlightController = new AbortController();
         const signal = inFlightController.signal;

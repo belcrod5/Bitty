@@ -21,6 +21,7 @@ function fakeCodex({ reply = "answer", summaryReply, agentEvents, earlyAgentEven
   const createClient = ({ signal } = {}) => {
     const connection = { signal, closed: false };
     clients.push(connection);
+    connection.emit = (method, params) => listener(method, { ...connection.identity, ...params });
     let listener = () => {};
     let serverHandler = () => undefined;
     let resolveCompletion = () => {};
@@ -538,7 +539,7 @@ test("voice turns persist before acknowledgement and replay without generation",
   const { rootDir, codex, service, conversation } = await fixture(t);
   const { accepted, result, message } = await complete(service, conversation, "hello");
   assert.equal(accepted.status, "accepted");
-  assert.equal(typeof accepted.estimatedContextUsagePercent, "number");
+  assert.equal(accepted.contextUsagePercent, null);
   assert.equal(accepted.unsummarizedMessageCount, 0);
   assert.equal(accepted.storedMessageCount, 1);
   assert.equal(accepted.memoryCharacterCount, 0);
@@ -781,6 +782,133 @@ test("delta mismatch stops speech while the completed reply remains canonical", 
   assert.match(errors[0].message, /differs/);
 });
 
+test("context percent follows measured active-turn usage and changing windows for any model", async (t) => {
+  const { service, conversation, codex } = await fixture(t, { holdTurns: true });
+  await service.configure("another-model", "high");
+  const pending = complete(service, conversation, "measure me");
+  await waitFor(() => codex.releases.length === 1);
+  const client = codex.clients.at(-1);
+  assert.equal((await service.open()).contextUsagePercent, null);
+  const usage = (totalTokens, modelContextWindow, identity = {}) => client.emit("thread/tokenUsage/updated", {
+    ...identity, tokenUsage: { last: { totalTokens }, modelContextWindow },
+  });
+  usage(100000, 400000);
+  assert.equal((await service.open()).contextUsagePercent, 25);
+  usage(100000, 1000000);
+  assert.equal((await service.open()).contextUsagePercent, 10);
+  for (const identity of [{ threadId: "foreign" }, { turnId: "foreign" }, { threadId: "" }, { turnId: "" }]) {
+    usage(990000, 1000000, identity);
+    assert.equal((await service.open()).contextUsagePercent, 10);
+  }
+  usage(0, 1000000);
+  assert.equal((await service.open()).contextUsagePercent, 0);
+  usage(500000, 400000);
+  assert.equal((await service.open()).contextUsagePercent, 100);
+  codex.releases.shift()();
+  const { accepted, result } = await pending;
+  assert.equal(accepted.contextUsagePercent, null);
+  assert.equal(result.contextUsagePercent, 100);
+  assert.equal(result.outputTokens, undefined);
+});
+
+test("missing or invalid measured usage clears a previous percentage without guessing", async (t) => {
+  const { service, conversation, codex } = await fixture(t, { holdTurns: true });
+  const pending = complete(service, conversation, "measure me");
+  await waitFor(() => codex.releases.length === 1);
+  const client = codex.clients.at(-1);
+  for (const invalid of [undefined, {}, { last: { totalTokens: 100000 } },
+    { last: { totalTokens: 100000 }, modelContextWindow: null },
+    { last: { totalTokens: 100000 }, modelContextWindow: 0 },
+    { last: { totalTokens: 100000 }, modelContextWindow: -1 },
+    { last: { totalTokens: 100000 }, modelContextWindow: "400000" },
+    { last: { totalTokens: 100000 }, modelContextWindow: 1.5 },
+    { last: { totalTokens: -1 }, modelContextWindow: 400000 },
+    { last: { totalTokens: NaN }, modelContextWindow: 400000 },
+    { last: { totalTokens: "100000" }, modelContextWindow: 400000 },
+    { total: { totalTokens: 100000 }, modelContextWindow: 400000 },
+  ]) {
+    client.emit("thread/tokenUsage/updated", {
+      tokenUsage: { last: { totalTokens: 100000 }, modelContextWindow: 400000 },
+    });
+    assert.equal((await service.open()).contextUsagePercent, 25);
+    client.emit("thread/tokenUsage/updated", { tokenUsage: invalid });
+    assert.equal((await service.open()).contextUsagePercent, null);
+  }
+  codex.releases.shift()();
+  assert.equal((await pending).result.contextUsagePercent, null);
+});
+
+const measuredUsageEvent = { method: "thread/tokenUsage/updated", params: {
+  tokenUsage: { last: { totalTokens: 100000 }, modelContextWindow: 400000 },
+} };
+
+test("early usage is replayed after turn identity and reset by settings, clears and restart", async (t) => {
+  const { service, conversation, rootDir, codex } = await fixture(t, { earlyAgentEvents: [measuredUsageEvent] });
+  const measured = async (conversation) => assert.equal((await complete(service, conversation, "hello")).result.contextUsagePercent, 25);
+  await measured(conversation);
+  await service.configure("another-model", "high");
+  assert.equal((await service.open()).contextUsagePercent, null);
+  await measured(conversation);
+  assert.equal((await service.clearMemory()).contextUsagePercent, null);
+  await measured(conversation);
+  const cleared = await service.clearMessages();
+  assert.equal(cleared.contextUsagePercent, null);
+  await measured(cleared);
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  assert.equal((await restarted.open()).contextUsagePercent, null);
+});
+
+test("a new response resets old usage, and a failed response cannot retain measured usage", async (t) => {
+  const { service, conversation, codex } = await fixture(t, { holdTurns: true });
+  const first = complete(service, conversation, "first");
+  await waitFor(() => codex.releases.length === 1);
+  codex.clients.at(-1).emit(measuredUsageEvent.method, measuredUsageEvent.params);
+  codex.releases.shift()();
+  assert.equal((await first).result.contextUsagePercent, 25);
+  const second = complete(service, conversation, "second");
+  await waitFor(() => codex.releases.length === 1);
+  assert.equal((await service.open()).contextUsagePercent, null);
+  const client = codex.clients.at(-1);
+  client.emit(measuredUsageEvent.method, measuredUsageEvent.params);
+  assert.equal((await service.open()).contextUsagePercent, 25);
+  client.emit("turn/completed", { turn: { status: "failed" } });
+  client.emit("thread/tokenUsage/updated", { tokenUsage: {
+    last: { totalTokens: 400000 }, modelContextWindow: 400000,
+  } });
+  codex.releases.shift()();
+  assert.equal((await second).result.contextUsagePercent, null);
+  assert.equal((await service.open()).contextUsagePercent, null);
+});
+
+test("cancelled responses clear usage immediately and ignore subsequent usage notifications", async (t) => {
+  const { service, conversation, codex } = await fixture(t, { holdTurns: true, finishOnInterrupt: true });
+  const id = randomUUID();
+  const pending = complete(service, conversation, "first", id);
+  await waitFor(() => codex.releases.length === 1);
+  const client = codex.clients.at(-1);
+  client.emit(measuredUsageEvent.method, measuredUsageEvent.params);
+  assert.equal((await service.open()).contextUsagePercent, 25);
+  assert.equal((await service.interrupt(conversation.logicalConversationId, id)).contextUsagePercent, null);
+  client.emit(measuredUsageEvent.method, measuredUsageEvent.params);
+  assert.equal((await pending).result.contextUsagePercent, null);
+});
+
+test("summary token usage never replaces the last response context percentage", async (t) => {
+  const { service, conversation, codex } = await fixture(t, {
+    earlyAgentEvents: [measuredUsageEvent], holdSummaries: true,
+  });
+  for (let i = 0; i < 11; i++) await complete(service, conversation, `pair ${i}`);
+  await waitFor(() => codex.summaryReleases.length === 1);
+  const summary = codex.clients.at(-1);
+  summary.emit("thread/tokenUsage/updated", { tokenUsage: {
+    last: { totalTokens: 990000 }, modelContextWindow: 1000000,
+  } });
+  assert.equal((await service.open()).contextUsagePercent, 25);
+  codex.summaryReleases.shift()();
+  await waitFor(() => summary.closed);
+  assert.equal((await service.open()).contextUsagePercent, 25);
+});
+
 test("voice settings use the live catalog, validate effort, and survive restart", async (t) => {
   const { rootDir, codex, service, conversation } = await fixture(t);
   const initial = await service.getSettings();
@@ -789,7 +917,7 @@ test("voice settings use the live catalog, validate effort, and survive restart"
   await assert.rejects(service.configure("another-model", "low"), { code: "turn_rejected" });
   await assert.rejects(service.configure("unknown-model", "high"), { code: "turn_rejected" });
   await service.configure("another-model", "high");
-  assert.equal((await service.open()).estimatedContextUsagePercent, null);
+  assert.equal((await service.open()).contextUsagePercent, null);
   const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient });
   assert.deepEqual(((await restarted.getSettings()).model), "another-model");
   assert.equal((await complete(restarted, conversation, "hello")).result.status, "completed");
@@ -821,7 +949,7 @@ test("custom voice instructions cannot omit the context boundary from byte accou
   await service.configure("gpt-6-luna", "low", custom);
   const settings = await service.getSettings();
   assert.equal(settings.systemInstruction, custom);
-  assert.equal(settings.estimatedContextUsagePercent, 2);
+  assert.equal(settings.contextUsagePercent, null);
   const id = randomUUID();
   await assert.rejects(service.start({ operationId: id, payload: {
     backendId: "codex", logicalConversationId: conversation.logicalConversationId, clientOperationId: id,
@@ -912,7 +1040,7 @@ test("a turn can start during catalog discovery and blocks the pending settings 
   await assert.rejects(configuring, { code: "session_busy" });
   codex.releases.shift()();
   assert.equal((await turn).result.status, "completed");
-  assert.notEqual((await service.open()).estimatedContextUsagePercent, null);
+  assert.equal((await service.open()).contextUsagePercent, null);
 });
 
 test("clearing topic memory retains recent conversation injection", async (t) => {
@@ -1887,7 +2015,7 @@ test("Unicode byte guard rejects near model input limit without pruning", async 
   assert.equal(codex.calls.filter(({ method }) => method === "turn/start").length, 1);
   const status = await service.status(conversation.logicalConversationId, first.message.operationId);
   assert.equal(status.unsummarizedMessageCount, 2);
-  assert.equal(status.estimatedContextUsagePercent, 1);
+  assert.equal(status.contextUsagePercent, null);
 });
 
 test("pending summary write failure makes the store fail closed", async (t) => {

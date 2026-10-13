@@ -22,7 +22,7 @@
 - 送信IDはアプリが確定発話ごとに発行する UUID。受理確認を得るまで保持し、通信再送では同じIDと同じ本文を使う。Runner はIDと本文の組を照合し、同一なら現在状態または保存済み結果を返し、本文が異なれば競合エラーにする。別IDのターンは同一論理会話内で同時実行せず `busy` を返す。
 - `turn.start` は永続化後に既存と同じ外枠 `{ channel: "agent", op: "turn.accepted", requestId, operationId, streamId, payload }` を返す。音声では外枠の `operationId` と payload の `clientOperationId` を送信IDにし、`streamId`／`payload.runId` も送信IDとする。payload に `logicalConversationId` と保存済み `status`（初回は `accepted`、同ID再送では terminal も可）、完了済みなら `text` を付ける。完了時は `op: "voice.turn.completed"` と `payload: { logicalConversationId, clientOperationId, text }`、失敗時は `op: "voice.turn.failed"` と `payload: { logicalConversationId, clientOperationId, status, code }` を送る。切断後は `voice.status` に論理IDと送信IDを渡し、`requestId` を引き継いだ `voice.status.result` にその送信IDの `status` と完了済みなら `text` を返す。送信ID未発見は `op: "error"`／`code: "not_found"` とし、この場合だけ同ID・同本文を再送する。`voice.open` の応答は `voice.open.result`。新 op は `agent.hello` の対応操作にも列挙する。画面は差分テキストを描画しないので音声側の delta 配信は v1 に不要。`voice.open`／`voice.status` は保存済み状態を返すだけで新しい生成を始めない。通常チャットの event 契約は変更しない。
 
-`voice.open.result`、`voice.status.result`、`turn.accepted`、`voice.turn.completed/failed` の payload には `estimatedContextUsagePercent`、`unsummarizedMessageCount`、`memoryCharacterCount` を載せる。算定と表示の境界は後述する。
+`voice.open.result`、`voice.status.result`、`turn.accepted`、`voice.turn.completed/failed` の payload には `contextUsagePercent`、`unsummarizedMessageCount`、`memoryCharacterCount` を載せる。算定と表示の境界は後述する。
 
 ## 設定とクリア
 
@@ -32,7 +32,7 @@
 
 `voice.memory.clear` は項目別メモリーを空にし、保持中の raw ペアから再処理できる cursor へ戻す。`voice.messages.clear` は項目別メモリーを保ち、旧出典を旧会話IDで名前空間化してから、空の正本ログと cursor 0 を持つ新しい論理会話IDへ切り替える。旧ログと旧 raw は削除し、切断中の端末による旧IDの再送は拒否する。応答用の作業領域は保持する。どちらのクリアも実行中ターンを拒否し、進行中の更新を中止する。
 
-モデル一覧に文脈窓の値はないため、`estimatedContextUsagePercent` は初期モデル以外では `null` と表示する。800,000 bytes の入力境界はどのモデルでも token 上限を保証しない。実モデルが文脈超過を返した場合はターン失敗として扱う。
+`contextUsagePercent` はモデル名に依存せず、応答用の active thread／turn に一致する `thread/tokenUsage/updated` の `last.totalTokens` と `modelContextWindow` から実測する。800,000 bytes の入力境界はどのモデルでも token 上限を保証しない。実モデルが文脈超過を返した場合はターン失敗として扱う。
 
 実装箇所の目安: [`server-runtime.mjs`](../private_runner/src/server-runtime.mjs) の認証済み Runner WS 入口で上記の一回の分岐を置き、音声専用の受付・保存・App Server 処理を別ファイルにまとめる。[`agent-transport.mjs`](../private_runner/src/agent/agent-transport.mjs) は対応 op の広告だけ追加し、[`codex-turn-execution.mjs`](../private_runner/src/codex-turn-execution.mjs) の通常チャット処理は変更しない。既存の `createCodexRpcClient` による認証・App Server 接続を再利用する。
 
@@ -57,7 +57,7 @@
 
 未処理ペアが10件を超えたら、古い超過分と既存topicを `memory-pending.json` に原子的に書き、別の ephemeral thread で非同期更新する。未処理tailは渡さず、今回の処理範囲だけをcuratorの根拠にする。通常の一時的な会話はtopicを増やさずcursorだけ進めてよい。curatorは変更topicだけをJSONで返し、Runnerがファイル名、サイズ、出典、indexとの一致を検証する。候補世代の全ファイルを同期後に有効pointerを原子的に切り替え、その後だけ処理済みで直近30ペアより古いraw segmentを削除する。失敗時はcursorとrawを維持して再試行し、40ペアに達したら原文を捨てず新規受付を `voice_memory_full` で止める。
 
-Runner の3指標は、初期モデルについて最新10完了ペア、今回発話、指示の UTF-8 bytes を token 数の保守的な代用値として算出する割合（他モデルは `null`）、未処理ペア数×2、現行topic本文の Unicode コードポイント数である。推定使用率はモデルが必要時に読むファイルや App Server 側の隠れた入力を含まない。
+Runner の3指標は、応答の直近モデル呼び出しで通知された文脈使用率（`last.totalTokens / modelContextWindow * 100` を四捨五入、上限100％）、未処理ペア数×2、現行topic本文の Unicode コードポイント数である。使用率は実行中の既存 open/status 問い合わせと完了応答へ載せ、次のターン受付・設定変更・クリア・中断・失敗・Runner 再起動で未取得の `null` に戻す。使用量または有効な上限がない通知も `null` とし、固定値や文字数から補完しない。curator と別 thread／turn の通知は応答の指標に含めない。
 
 毎回、空の ephemeral thread に最新10完了ペアを `thread/inject_items` で置き、`turn/start.input` に今回発話を一度だけ置く。system instructionも毎回適用する。項目別メモリーの場所と必要時に読む方針は、設定画面のsystem instructionでユーザーが管理する。curatorも応答とは別の ephemeral thread で実行する。
 

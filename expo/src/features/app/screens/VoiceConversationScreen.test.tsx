@@ -41,7 +41,7 @@ const mockVoice = {
     text: string; operationId: string; outputTokens?: number; completedOrdinal?: number;
   },
   error: "",
-  contextStats: { estimatedContextUsagePercent: 31, unsummarizedMessageCount: 8, memoryCharacterCount: 55 },
+  contextStats: { contextUsagePercent: 31, unsummarizedMessageCount: 8, memoryCharacterCount: 55 },
   history: [] as { role: "user" | "assistant"; text: string; clientOperationId: string; at?: string; completedOrdinal?: number }[],
   historyError: "",
   refreshHistory: jest.fn(async () => undefined),
