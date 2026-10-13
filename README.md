@@ -148,7 +148,8 @@ when Claude Code is available on `PATH`.
 
 With `RUNNER_TOKEN_MODE=random`, `run-local.sh` generates a fresh
 `RUNNER_TOKEN` on each start and passes it to the mobile app through a Pairing
-QR. For a real iOS device on your local network, also set `HOST=0.0.0.0`.
+QR. For local iOS connections, the QR also pairs the Mac-specific CA for
+HTTPS/WSS on port 8789. Plain HTTP is always restricted to loopback.
 
 Use a fixed token only for local debugging:
 
@@ -232,13 +233,13 @@ In the app settings, either scan the Pairing QR from the left menu's
 `Cloudflare Tunnel` screen, or set local values manually:
 
 - iOS Simulator: `Runner URL = http://127.0.0.1:8788`
-- Real device: `Runner URL = http://<your Mac LAN IP>:8788`
+- Real device: scan the QR to pair `https://<Mac LocalHostName>.local:8789`
 - `Runner Token`: the token from the Pairing QR, or the fixed `RUNNER_TOKEN`
   only when `RUNNER_TOKEN_MODE=env`
 - iOS Simulator:
   `Codex WS URL = ws://127.0.0.1:8788/runner-ws`
 - Real device:
-  `Codex WS URL = ws://<your Mac LAN IP>:8788/runner-ws`
+  `Codex WS URL = wss://<Mac LocalHostName>.local:8789/runner-ws`
 - `Codex WS Token`: normally the same runner token; it is sent as
   `Authorization: Bearer <RUNNER_TOKEN>`, not as a URL query.
 

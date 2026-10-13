@@ -8,7 +8,8 @@ import {
   type TtsProvider,
 } from "../utils/audioConfig";
 import { parseOptionalSessionId } from "../utils/llmSession";
-import { sanitizePersistedHttpUrl } from "../utils/urlResolvers";
+import { persistedCloudflareRunnerUrl, resolveRunnerUrl, runnerHttpsOrigin } from "../utils/urlResolvers";
+import { configureLocalRunnerTls } from "../utils/localRunnerTls";
 import { parseCodexApprovalPolicy, parseLlmDirectory, parseModelRef, parseReasoningEffort, type CodexApprovalPolicy, type ReasoningEffort } from "../utils/settingsParsers";
 import type { LlmBackend } from "../types/appTypes";
 import type { RegisteredDirectoryEntry } from "../types/directorySessions";
@@ -34,6 +35,7 @@ type UseAppSettingsPersistenceControllerArgs = {
   runnerUrl: string;
   cloudflareRunnerUrl: string;
   localRunnerUrl: string;
+  localRunnerCertificate: string;
   llmBackend: LlmBackend;
   llmDirectory: string;
   expandedDirectoryIds: string[];
@@ -57,6 +59,7 @@ type UseAppSettingsPersistenceControllerArgs = {
   setCloudflareAccessClientSecret: Dispatch<SetStateAction<string>>;
   setCloudflareRunnerUrl: Dispatch<SetStateAction<string>>;
   setLocalRunnerUrl: Dispatch<SetStateAction<string>>;
+  setLocalRunnerCertificate: Dispatch<SetStateAction<string>>;
   setLlmBackend: Dispatch<SetStateAction<LlmBackend>>;
   setLlmDirectory: Dispatch<SetStateAction<string>>;
   setExpandedDirectoryIds: Dispatch<SetStateAction<string[]>>;
@@ -91,6 +94,7 @@ export function useAppSettingsPersistenceController({
   runnerUrl,
   cloudflareRunnerUrl,
   localRunnerUrl,
+  localRunnerCertificate,
   llmBackend,
   llmDirectory,
   expandedDirectoryIds,
@@ -114,6 +118,7 @@ export function useAppSettingsPersistenceController({
   setCloudflareAccessClientSecret,
   setCloudflareRunnerUrl,
   setLocalRunnerUrl,
+  setLocalRunnerCertificate,
   setLlmBackend,
   setLlmDirectory,
   setExpandedDirectoryIds,
@@ -164,6 +169,7 @@ export function useAppSettingsPersistenceController({
       runnerUrl,
       cloudflareRunnerUrl,
       localRunnerUrl,
+      localRunnerCertificate,
       llmBackend,
       llmDirectory,
       directoryUiState: {
@@ -198,6 +204,7 @@ export function useAppSettingsPersistenceController({
     llmBackend,
     llmDirectory,
     localRunnerUrl,
+    localRunnerCertificate,
     modelRef,
     reasoningEffort,
     runnerUrl,
@@ -208,16 +215,19 @@ export function useAppSettingsPersistenceController({
     ttsSpeed,
   ]);
 
-  const applyPersistedSettings = useCallback((parsed: Record<string, unknown>) => {
-    // URL値はhttp(s)として解釈できるものだけ採用する。誤ってtokenが貼られた
-    // runnerUrl(UIに編集欄がなく自己修復不能)などの壊れた値は捨て、既定値へ
-    // フォールバックさせる。次回autosaveで設定ファイル側も直る。
-    const savedRunnerUrl = sanitizePersistedHttpUrl(parsed.runnerUrl);
+  const applyPersistedSettings = useCallback(async (parsed: Record<string, unknown>) => {
+    // Install the paired CA before any saved LAN route or bootstrap consumer
+    // becomes usable. Legacy HTTP LAN settings can only fall back to HTTPS.
+    const savedRunnerUrl = String(parsed.runnerUrl || "").trim();
     const savedRunnerToken = String(parsed.runnerToken || "").trim();
     const legacyCloudflareAccessClientId = String(parsed.cloudflareAccessClientId || "").trim();
     const legacyCloudflareAccessClientSecret = String(parsed.cloudflareAccessClientSecret || "").trim();
-    const savedCloudflareRunnerUrl = sanitizePersistedHttpUrl(parsed.cloudflareRunnerUrl || parsed.tunnelRunnerUrl);
-    const savedLocalRunnerUrl = sanitizePersistedHttpUrl(parsed.localRunnerUrl);
+    const savedCloudflareRunnerUrl = persistedCloudflareRunnerUrl(parsed);
+    const savedLocalRunnerUrl = runnerHttpsOrigin(parsed.localRunnerUrl);
+    const savedLocalRunnerCertificate = String(parsed.localRunnerCertificate || "").trim();
+    let localReady = false;
+    try { localReady = await configureLocalRunnerTls(savedLocalRunnerUrl, savedLocalRunnerCertificate); }
+    catch { console.warn("[settings] local Runner trust unavailable; using secure Tunnel"); }
 
     const savedVoiceIds = {
       ...defaultSelectedVoiceIds,
@@ -235,19 +245,11 @@ export function useAppSettingsPersistenceController({
       savedVoiceIds.aivisspeech = String(voiceIds.aivisspeech || "").trim();
     }
 
-    if (savedRunnerUrl) {
-      setRunnerUrl(savedRunnerUrl);
-    }
-    if (savedCloudflareRunnerUrl) {
-      setCloudflareRunnerUrl(savedCloudflareRunnerUrl);
-    } else if (savedRunnerUrl.startsWith("https://")) {
-      setCloudflareRunnerUrl(savedRunnerUrl);
-    }
-    if (savedLocalRunnerUrl) {
-      setLocalRunnerUrl(savedLocalRunnerUrl);
-    } else if (savedRunnerUrl.startsWith("http://") && savedRunnerUrl.includes(".local")) {
-      setLocalRunnerUrl(savedRunnerUrl);
-    }
+    setRunnerUrl(resolveRunnerUrl({ runnerUrl: savedRunnerUrl, cloudflareRunnerUrl: savedCloudflareRunnerUrl,
+      localRunnerUrl: savedLocalRunnerUrl, localReady }));
+    setCloudflareRunnerUrl(savedCloudflareRunnerUrl);
+    setLocalRunnerUrl(savedLocalRunnerUrl);
+    setLocalRunnerCertificate(savedLocalRunnerCertificate);
     // The runner token lives in SecureStore, not in the settings JSON, so the
     // parsed value is normally empty (only legacy exports carried it). Never
     // overwrite a SecureStore-provided token with that empty string.
@@ -340,6 +342,7 @@ export function useAppSettingsPersistenceController({
     setLlmBackend,
     setLlmDirectory,
     setLocalRunnerUrl,
+    setLocalRunnerCertificate,
     setModelRef,
     setReasoningEffort,
     setRunnerToken,
@@ -418,7 +421,7 @@ export function useAppSettingsPersistenceController({
                   }
                   return next;
                 });
-                applyPersistedSettings(importedSettings);
+                await applyPersistedSettings(importedSettings);
                 Alert.alert("インポート完了", "移行対象の端末設定を反映しました。");
               } catch (error) {
                 const message = error instanceof Error ? error.message : String(error);
@@ -447,7 +450,7 @@ export function useAppSettingsPersistenceController({
       if (settingsResult.status === "fulfilled") {
         writablePersistenceRef.current.settings = true;
         if (settingsResult.value) {
-          applyPersistedSettings(settingsResult.value);
+          await applyPersistedSettings(settingsResult.value);
         }
       } else {
         console.warn("[settings] failed to read persisted settings", settingsResult.reason);

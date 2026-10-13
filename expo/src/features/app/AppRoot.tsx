@@ -307,7 +307,8 @@ import {
   type ReasoningEffort,
 } from "./utils/settingsParsers";
 import { buildApprovalCommandLabel } from "./utils/tooling";
-import { suggestRunnerWsUrlFromRunnerUrl } from "./utils/urlResolvers";
+import { resolveRunnerUrl, runnerHttpsOrigin, suggestRunnerWsUrlFromRunnerUrl } from "./utils/urlResolvers";
+import { isLocalRunnerTlsReady } from "./utils/localRunnerTls";
 import { RunnerWebSocketManager } from "../runnerWs/RunnerWebSocketManager";
 import { RunnerWebSocketProvider } from "../runnerWs/RunnerWebSocketContext";
 import {
@@ -570,7 +571,12 @@ export default function App({ onReady }: { onReady?: () => void }) {
 function AppContent({ onReady }: { onReady?: () => void }) {
   const { theme: visualTheme, themeId: visualThemeId, selectTheme: setVisualThemeId } = useVisualTheme();
   const styles = useAppStyles();
-  const [runnerUrl, setRunnerUrl] = useState(DEFAULT_RUNNER_URL);
+  const [configuredRunnerUrl, setRunnerUrl] = useState(DEFAULT_RUNNER_URL);
+  const [cloudflareRunnerUrl, setCloudflareRunnerUrl] = useState("");
+  const [localRunnerUrl, setLocalRunnerUrl] = useState("");
+  const [localRunnerCertificate, setLocalRunnerCertificate] = useState("");
+  const runnerUrl = resolveRunnerUrl({ runnerUrl: configuredRunnerUrl, cloudflareRunnerUrl, localRunnerUrl,
+    localReady: isLocalRunnerTlsReady(localRunnerUrl, localRunnerCertificate) });
   const [llmBackend, setLlmBackend] = useState<LlmBackend>(DEFAULT_LLM_BACKEND);
   const [llmDirectory, setLlmDirectory] = useState(DEFAULT_LLM_DIRECTORY);
   const codexWsUrl = suggestRunnerWsUrlFromRunnerUrl(runnerUrl);
@@ -585,8 +591,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   }, [runnerWebSocketManager]);
   const [cloudflareAccessClientId, setCloudflareAccessClientId] = useState("");
   const [cloudflareAccessClientSecret, setCloudflareAccessClientSecret] = useState("");
-  const [cloudflareRunnerUrl, setCloudflareRunnerUrl] = useState("");
-  const [localRunnerUrl, setLocalRunnerUrl] = useState("");
   const auxServerBaseUrl = useCallback(() => runnerUrl.trim().replace(/\/$/, ""), [runnerUrl]);
   const baseUrl = useCallback(() => auxServerBaseUrl(), [auxServerBaseUrl]);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
@@ -627,7 +631,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     cloudflareAccessClientSecret
   ), [cloudflareAccessClientId, cloudflareAccessClientSecret]);
   const cloudflareAccessEnabled = hasCloudflareAccessCredentials(cloudflareAccessCredentials);
-  const effectiveCloudflareRunnerUrl = cloudflareRunnerUrl || runnerUrl;
+  const effectiveCloudflareRunnerUrl = runnerHttpsOrigin(cloudflareRunnerUrl);
   configureCloudflareAccessFetch({
     runnerUrl: effectiveCloudflareRunnerUrl,
     credentials: cloudflareAccessCredentials,
@@ -880,6 +884,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   const runnerRouteSelection = useRunnerRouteSelection({
     enabled: settingsLoaded,
     localRunnerUrl,
+    localRunnerCertificate,
     cloudflareRunnerUrl,
     runnerToken,
     runnerUrl,
@@ -3684,6 +3689,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     runnerUrl,
     cloudflareRunnerUrl,
     localRunnerUrl,
+    localRunnerCertificate,
     llmBackend,
     setLlmBackend,
     llmDirectory,
@@ -3708,6 +3714,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     setCloudflareAccessClientSecret,
     setCloudflareRunnerUrl,
     setLocalRunnerUrl,
+    setLocalRunnerCertificate,
     setLlmDirectory,
     setExpandedDirectoryIds,
     setSelectedLlmSessionId,
@@ -4532,6 +4539,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     setCloudflareAccessClientSecret,
     setCloudflareRunnerUrl,
     setLocalRunnerUrl,
+    setLocalRunnerCertificate,
     setCodexApprovalPolicy,
     setModelSelectOpen,
     setThinkSelectOpen,

@@ -1,4 +1,5 @@
 import Foundation
+import BittyRunnerTLS
 import UIKit
 import UserNotifications
 
@@ -15,7 +16,7 @@ final class PushApprovalResponder {
 
   private let session: URLSession
 
-  init(session: URLSession = .shared) {
+  init(session: URLSession = BittyRunnerTLS.shared().session(withDelegate: nil, queue: nil)) {
     self.session = session
   }
 
@@ -100,7 +101,10 @@ final class PushApprovalResponder {
     request.setValue("Bearer \(token)", forHTTPHeaderField: "authorization")
     let cfClientId = PushApprovalConfigStore.readSecureStoreValue(PushApprovalConfigStore.cloudflareAccessClientIdKey)
     let cfClientSecret = PushApprovalConfigStore.readSecureStoreValue(PushApprovalConfigStore.cloudflareAccessClientSecretKey)
-    if !cfClientId.isEmpty && !cfClientSecret.isEmpty {
+    let pairedLocal = BittyRunnerTLS.shared().handlesURL(url)
+    if let cloudflareOrigin = URL(string: PushApprovalConfigStore.readCloudflareRunnerUrl()),
+        !pairedLocal && PushApprovalConfigStore.sameOrigin(url, cloudflareOrigin) &&
+        !cfClientId.isEmpty && !cfClientSecret.isEmpty {
       request.setValue(cfClientId, forHTTPHeaderField: "CF-Access-Client-Id")
       request.setValue(cfClientSecret, forHTTPHeaderField: "CF-Access-Client-Secret")
     }

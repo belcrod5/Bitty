@@ -1,5 +1,6 @@
 #import <AVFoundation/AVFoundation.h>
 #import <React/RCTBridgeModule.h>
+#import <BittyRunnerTLS/BittyRunnerTLS.h>
 
 static NSString *BittyTtsTempPath(NSString *extension)
 {
@@ -105,8 +106,10 @@ RCT_REMAP_METHOD(process,
     return;
   }
 
-  NSURLSessionDownloadTask *task = [NSURLSession.sharedSession downloadTaskWithURL:url
+  NSURLSession *session = [[BittyRunnerTLS shared] sessionWithDelegate:nil queue:nil];
+  NSURLSessionDownloadTask *task = [session downloadTaskWithURL:url
       completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
+        [session finishTasksAndInvalidate];
         BOOL cancelled = [self isCancelled:requestId];
         if (cancelled || !location || error ||
             ([response isKindOfClass:NSHTTPURLResponse.class] &&

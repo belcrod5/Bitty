@@ -88,6 +88,34 @@ tail -f private_runner/logs/run-local.log
 
 `start` / `restart` は起動直前に既存の実行ログを初期化します。セッション索引などの状態ファイルは保持されます。
 
+LAN直結はHTTPS/WSSです。macOSの `LocalHostName.local` とHTTPポート+1
+（既定 `https://<Mac名>.local:8789`）をPairing QRで渡します。
+HTTPの `127.0.0.1:8788` はCloudflare TunnelとMac内CLI専用で、
+以前の `HOST=0.0.0.0` 設定でもLANには公開しません。
+古い `RUNNER_LOCAL_URL=http://…` のホスト名は維持し、ポートをHTTPS用へ移行します。
+明示的なHTTPS URLはoriginのみ指定でき、HTTP用と別のポートが必要です。
+
+初回起動またはQR表示時に、OpenSSLでMac専用のECDSA CAとサーバー証明書を生成します。
+QRの `localRunnerCertificate` は公開CA証明書のDER base64で、秘密鍵を含みません。
+CAはペアリングしたアプリ内だけで信頼し、iPhoneのOS信頼設定は変更しません。
+無料で動作し、公開CA、ドメイン購入、証明書インストールは不要です。
+変更後はアプリを更新し、QRで再ペアリングしてください。
+
+秘密鍵と証明書はGit管理外の `private_runner/logs/local-tls` に保存します
+（ディレクトリ700、ファイル600）。worktree間でも共有されるため、
+通常の再起動やworktree切替でCAは変わりません。
+サーバー証明書は1年間有効で、起動時またはQR表示時に残り30日未満なら更新します。
+Mac名変更時もCAを維持して証明書だけ更新します。
+CAは10年間有効です。CAを失った場合や期限切れの場合は自動で差し替えず停止します。
+バックアップから復元するか、意図的に再生成してアプリを再ペアリングしてください。
+証明書をQR表示時に更新した場合、Runnerにも新しい証明書を読み込ませるため再起動が必要です。
+
+macOS標準の `/usr/bin/openssl` とHomebrew OpenSSLを利用できます。
+macOS以外では既定でloopback HTTPとCloudflare接続のみ提供します。
+LAN HTTPSも使う場合は `RUNNER_LOCAL_HOSTNAME` または `RUNNER_LOCAL_URL=https://…` を指定してください。
+保存先を変更する場合は `RUNNER_LOCAL_TLS_DIR` をRunnerとQR表示の両方に設定します。
+不正なURLや安全でない保存先では起動・QR表示を停止し、平文接続へ戻りません。
+
 ## クライアント診断ログ
 `POST /client-logs` で受けたイベントは JSONL で保存されます。
 
@@ -126,9 +154,9 @@ rg -n '"source":"session_diag"' "$LATEST" | tail -n 200
 ## サーバー構成（現在）
 - runner（既定: 8788）: `/runner-ws` `/stream-tts` `/stream-stt` `/tts` `/voices` `/client-logs` `/youtube-videos` など
 - codex app-server（既定: 4500）: JSON-RPC本体
-- 推奨接続先（iOS）: `ws://<MacのLocalHostName>.local:8788/runner-ws`
+- LAN接続先（iOS）: QRでCAをペアリングした `wss://<MacのLocalHostName>.local:8789/runner-ws`
 - iOS/Expo は `RUNNER_TOKEN` をURL queryへ載せず、WebSocket handshakeの `Authorization: Bearer <RUNNER_TOKEN>` で送ります。
-- 実機からローカル接続する場合、runner は `HOST=0.0.0.0` で待ち受けます。`.local` が使えないネットワークでは、Expo側が `/health` の1回確認に失敗した時だけCloudflare Tunnel接続へ戻します。
+- 実機向けはHTTPS listenerが `0.0.0.0` で待ち受けます。証明書検証またはローカル `/health` 確認に失敗した場合はCloudflare Tunnel接続へ戻します。
 
 LLM本線:
 - iOS/Expo からは `/runner-ws` の `llm:rpc` envelope 経由で `thread/*` と `turn/start` を使います。runner から codex app-server への upstream は raw JSON-RPC のままです。
@@ -234,7 +262,7 @@ npm run ios
 
 10. アプリ入力値
 - iOS Simulator: `Runner URL = http://127.0.0.1:8788`
-- 実機: `Runner URL = http://<MacのLocalHostName>.local:8788`
+- 実機: QRで再ペアリングして `https://<MacのLocalHostName>.local:8789` を設定
 - `Runner Token` は Pairing QR の token。固定token検証時だけ、`RUNNER_TOKEN_MODE=env` にして `.env` の `RUNNER_TOKEN` と同じ値を使う
 - Appには次のUXオプションがあります:
   - `LLM Model` プルダウンで Codex App Server が現在のアカウントへ公開しているモデルを選択

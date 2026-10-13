@@ -3,6 +3,7 @@ import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import * as Clipboard from "../clipboard";
 import { useAppSettings } from "../contexts/AppSettingsContext";
 import { suggestRunnerWsUrlFromRunnerUrl } from "../utils/urlResolvers";
+import { isLocalRunnerTlsReady } from "../utils/localRunnerTls";
 import { tokenFingerprint } from "../../ws/tokenFingerprint";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
@@ -81,7 +82,7 @@ function routeDiagnosis(localRunnerUrl: string, cloudflareRunnerUrl: string, sel
     return "QRからlocalRunnerUrlが保存されていません。pairing-qrのlocalRunnerUrl行を確認して再スキャンしてください。";
   }
   if (selectedRoute === "cloudflare" && localRunnerUrl) {
-    return "local候補はあります。local /health with Authorization がNGならtokenまたはiOSのローカル通信を確認してください。";
+    return "ローカルHTTPS候補があります。接続できない場合は最新QRで再ペアリングし、Macの起動状態とローカル通信を確認してください。";
   }
   if (selectedRoute === "local") {
     return "local候補が選択されています。";
@@ -218,7 +219,7 @@ export function RouteDebugPanel({
     const localUrl = normalizeRunnerBaseUrl(localRunnerUrl);
     const cloudflareUrl = normalizeRunnerBaseUrl(cloudflareRunnerUrl);
     const token = String(runnerToken || "").trim();
-    const localHealthUrl = buildHealthUrl(localUrl);
+    const localHealthUrl = isLocalRunnerTlsReady(localUrl) ? buildHealthUrl(localUrl) : "";
     const currentEventsUrl = currentRunnerUrl
       ? `${currentRunnerUrl}/runner/connection-events?limit=1`
       : "";

@@ -1,0 +1,33 @@
+diff --git a/node_modules/expo-av/ios/EXAV.podspec b/node_modules/expo-av/ios/EXAV.podspec
+--- a/node_modules/expo-av/ios/EXAV.podspec
++++ b/node_modules/expo-av/ios/EXAV.podspec
+@@ -18,6 +18,7 @@
+   s.static_framework = true
+ 
+   s.dependency 'ExpoModulesCore'
++  s.dependency 'BittyRunnerTLS'
+   s.dependency 'ReactCommon/turbomodule/core'
+ 
+   # Swift/Objective-C compatibility
+diff --git a/node_modules/expo-av/ios/EXAV/EXAVPlayerData.m b/node_modules/expo-av/ios/EXAV/EXAVPlayerData.m
+--- a/node_modules/expo-av/ios/EXAV/EXAVPlayerData.m
++++ b/node_modules/expo-av/ios/EXAV/EXAVPlayerData.m
+@@ -2,6 +2,8 @@
+ 
+ #import <EXAV/EXAVPlayerData.h>
+ #import <MobileCoreServices/MobileCoreServices.h>
++#import <BittyRunnerTLS/BittyRunnerTLS.h>
++#import <BittyRunnerTLS/BittyRunnerMediaLoader.h>
+ 
+ // This struct is passed between the MTAudioProcessingTap callbacks.
+ typedef struct AVAudioTapProcessorContext {
+@@ -154,7 +156,9 @@
+     assetUrl = temporaryFileUrl;
+   }
+ 
++  assetUrl = [[BittyRunnerTLS shared] mediaURL:assetUrl];
+   AVURLAsset *avAsset = [AVURLAsset URLAssetWithURL:assetUrl options:@{AVURLAssetHTTPCookiesKey : cookies, @"AVURLAssetHTTPHeaderFieldsKey": _headers}];
++  [BittyRunnerMediaLoader attachToAsset:avAsset headers:_headers];
+   // unless we preload, the asset will not necessarily load the duration by the time we try to play it.
+   // http://stackoverflow.com/questions/20581567/avplayer-and-avfoundationerrordomain-code-11819
+   EX_WEAKIFY(self);

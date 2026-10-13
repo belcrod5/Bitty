@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import qrcode from "qrcode-terminal";
 
 import { tokenFingerprint } from "./token-fingerprint.mjs";
+import { loadLocalRunnerTls, resolveLocalRunnerTlsConfig } from "./local-runner-tls.mjs";
 
 function readKeychain(service) {
   if (!service || process.platform !== "darwin") return "";
@@ -44,47 +45,9 @@ function normalizeHttpUrl(raw) {
   }
 }
 
-function normalizeLocalHttpUrl(raw) {
-  const value = String(raw || "").trim().replace(/\/+$/, "");
-  if (!value) return "";
-  try {
-    const url = new URL(value);
-    if (url.protocol !== "http:" || url.username || url.password) return "";
-    url.pathname = "/";
-    url.search = "";
-    url.hash = "";
-    return url.toString().replace(/\/+$/, "");
-  } catch {
-    return "";
-  }
-}
-
-function readMacLocalHostName() {
-  const configured = String(process.env.RUNNER_LOCAL_HOSTNAME || "").trim();
-  if (configured) return configured.replace(/\.local$/i, "");
-  if (process.platform !== "darwin") return "";
-  const result = spawnSync("scutil", ["--get", "LocalHostName"], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-  });
-  if (result.status !== 0) return "";
-  return String(result.stdout || "").trim().replace(/\.local$/i, "");
-}
-
-function buildLocalRunnerUrl() {
-  const configured = normalizeLocalHttpUrl(process.env.RUNNER_LOCAL_URL);
-  if (configured) return configured;
-  const localHostName = readMacLocalHostName();
-  if (!localHostName || /[/\s:]/.test(localHostName)) return "";
-  const port = String(process.env.RUNNER_LOCAL_PORT || process.env.RUNNER_PORT || process.env.PORT || "8788").trim();
-  if (!/^\d+$/.test(port)) return "";
-  return normalizeLocalHttpUrl(`http://${localHostName}.local:${port}`);
-}
-
 const runnerUrl = normalizeHttpUrl(
   process.env.RUNNER_PUBLIC_URL || process.env.CLOUDFLARE_RUNNER_PUBLIC_URL
 );
-const localRunnerUrl = buildLocalRunnerUrl();
 const runnerToken = readToken();
 const cloudflareAccessClientId = readEnvOrKeychain(
   "CLOUDFLARE_ACCESS_CLIENT_ID",
@@ -111,11 +74,23 @@ if (!cloudflareAccessClientId || !cloudflareAccessClientSecret) {
   process.exit(0);
 }
 
+let localTlsConfig;
+let localRunnerCertificate = "";
+try {
+  localTlsConfig = resolveLocalRunnerTlsConfig();
+  if (localTlsConfig) ({ localRunnerCertificate } = loadLocalRunnerTls(localTlsConfig));
+} catch (error) {
+  console.error(`[pairing-qr] LAN TLS configuration failed: ${error.message}`);
+  process.exit(1);
+}
+const localRunnerUrl = localTlsConfig?.url || "";
+
 const payload = {
   type: "bitty.runner.pairing",
   version: 1,
   runnerUrl,
   localRunnerUrl,
+  localRunnerCertificate,
   runnerToken,
   cloudflareAccessClientId,
   cloudflareAccessClientSecret,
@@ -124,10 +99,7 @@ const payload = {
 
 console.error("[pairing-qr] Scan this QR from the Expo Cloudflare Tunnel screen.");
 console.error(`[pairing-qr] runnerUrl=${runnerUrl}`);
-console.error(`[pairing-qr] localRunnerUrl=${localRunnerUrl || "(missing)"}`);
-if (!localRunnerUrl) {
-  console.error("[pairing-qr] local route will not be configured; set RUNNER_LOCAL_URL or RUNNER_LOCAL_HOSTNAME.");
-}
+console.error(`[pairing-qr] localRunnerUrl=${localRunnerUrl}`);
 console.error(`[pairing-qr] accessClientId=${cloudflareAccessClientId.slice(0, 8)}...`);
 console.error("[pairing-qr] Treat the QR as a secret. Do not screenshot or share it.");
 qrcode.generate(JSON.stringify(payload), { small: true });

@@ -6,6 +6,7 @@ export type CloudflareAccessCredentials = {
 export type CloudflareRunnerPairing = {
   runnerUrl: string;
   localRunnerUrl: string;
+  localRunnerCertificate: string;
   runnerToken: string;
   cloudflareAccessClientId: string;
   cloudflareAccessClientSecret: string;
@@ -66,6 +67,7 @@ export function parseCloudflareRunnerPairingPayload(raw: string): CloudflareRunn
 
   const runnerUrl = readString(record, "runnerUrl");
   const localRunnerUrl = readString(record, "localRunnerUrl");
+  const localRunnerCertificate = readString(record, "localRunnerCertificate");
   const runnerToken = readString(record, "runnerToken");
   const cloudflareAccessClientId = readString(record, "cloudflareAccessClientId");
   const cloudflareAccessClientSecret = readString(record, "cloudflareAccessClientSecret");
@@ -92,25 +94,28 @@ export function parseCloudflareRunnerPairingPayload(raw: string): CloudflareRunn
     parsedRunnerUrl.username ||
     parsedRunnerUrl.password ||
     parsedRunnerUrl.search ||
-    parsedRunnerUrl.hash
+    parsedRunnerUrl.hash || parsedRunnerUrl.pathname !== "/"
   ) {
     throw new Error("Pairing requires an HTTPS runner origin");
   }
   if (parsedLocalRunnerUrl) {
     if (
-      parsedLocalRunnerUrl.protocol !== "http:" ||
+      !["http:", "https:"].includes(parsedLocalRunnerUrl.protocol) ||
       parsedLocalRunnerUrl.username ||
       parsedLocalRunnerUrl.password ||
       parsedLocalRunnerUrl.search ||
-      parsedLocalRunnerUrl.hash
+      parsedLocalRunnerUrl.hash || parsedLocalRunnerUrl.pathname !== "/"
     ) {
-      throw new Error("Pairing local runner requires an HTTP origin");
+      throw new Error("Pairing local runner requires an HTTPS origin");
     }
   }
 
   return {
     runnerUrl: originWithNormalizedHost(parsedRunnerUrl),
-    localRunnerUrl: parsedLocalRunnerUrl ? originWithNormalizedHost(parsedLocalRunnerUrl) : "",
+    // Legacy plaintext QR remains usable for the Tunnel, but cannot enable LAN.
+    localRunnerUrl: parsedLocalRunnerUrl?.protocol === "https:" && localRunnerCertificate
+      ? originWithNormalizedHost(parsedLocalRunnerUrl) : "",
+    localRunnerCertificate: parsedLocalRunnerUrl?.protocol === "https:" ? localRunnerCertificate : "",
     runnerToken,
     cloudflareAccessClientId,
     cloudflareAccessClientSecret,

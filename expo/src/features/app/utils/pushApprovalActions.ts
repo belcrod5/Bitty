@@ -2,7 +2,9 @@ import * as LocalAuthentication from "expo-local-authentication";
 import * as Notifications from "expo-notifications";
 import { loadSecureRunnerCredentials } from "./secureRunnerCredentials";
 import { buildCloudflareAccessHeaders, normalizeCloudflareAccessCredentials } from "./cloudflareAccess";
-import { readPersistedSettingsField } from "./persistedSettingsFile";
+import { readPersistedSettings, readPersistedSettingsField } from "./persistedSettingsFile";
+import { configureLocalRunnerTls, isLocalRunnerTlsReady } from "./localRunnerTls";
+import { persistedCloudflareRunnerUrl, resolveRunnerUrl, runnerHttpsOrigin } from "./urlResolvers";
 import { APPROVAL_REQUEST_CATEGORY, APPROVE_ACTION } from "./pushApprovalNotifications";
 
 // Notification action handlers can run while the app is freshly launched in the background,
@@ -12,8 +14,12 @@ import { APPROVAL_REQUEST_CATEGORY, APPROVE_ACTION } from "./pushApprovalNotific
 // read straight from the persisted settings file (persistedSettingsFile.ts) and secrets
 // from expo-secure-store.
 
-export async function readRunnerUrlFromDisk(): Promise<string> {
-  return String((await readPersistedSettingsField("runnerUrl")) || "").trim();
+export async function readRunnerUrlFromDisk(settings?: Record<string, unknown>): Promise<string> {
+  settings ??= await readPersistedSettings() || {};
+  let localReady = false;
+  try { localReady = await configureLocalRunnerTls(settings.localRunnerUrl, settings.localRunnerCertificate); }
+  catch { /* Tunnel fallback remains available when native trust cannot load. */ }
+  return resolveRunnerUrl({ ...settings, cloudflareRunnerUrl: persistedCloudflareRunnerUrl(settings), localReady });
 }
 
 export async function readFaceIdRequiredFromDisk(): Promise<boolean> {
@@ -31,6 +37,7 @@ export async function respondToPushApproval({
   approved,
   cloudflareAccessClientId,
   cloudflareAccessClientSecret,
+  cloudflareRunnerUrl,
 }: {
   runnerUrl: string;
   runnerToken: string;
@@ -38,8 +45,9 @@ export async function respondToPushApproval({
   approved: boolean;
   cloudflareAccessClientId?: string;
   cloudflareAccessClientSecret?: string;
+  cloudflareRunnerUrl?: string;
 }): Promise<boolean> {
-  const baseUrl = String(runnerUrl || "").trim().replace(/\/$/, "");
+  const baseUrl = resolveRunnerUrl({ runnerUrl });
   const token = String(runnerToken || "").trim();
   const id = String(approvalId || "").trim();
   if (!baseUrl || !token || !id) return false;
@@ -54,10 +62,11 @@ export async function respondToPushApproval({
     headers: {
       "content-type": "application/json",
       authorization: `Bearer ${token}`,
-      ...buildCloudflareAccessHeaders(normalizeCloudflareAccessCredentials(
+      ...(runnerHttpsOrigin(cloudflareRunnerUrl) === baseUrl && !isLocalRunnerTlsReady(baseUrl)
+        ? buildCloudflareAccessHeaders(normalizeCloudflareAccessCredentials(
         cloudflareAccessClientId,
         cloudflareAccessClientSecret
-      )),
+      )) : {}),
     },
     body: JSON.stringify({ approved }),
   });
@@ -94,10 +103,12 @@ async function respondInBackground({
   approved: boolean;
 }): Promise<void> {
   try {
-    const [runnerUrl, credentials] = await Promise.all([
-      readRunnerUrlFromDisk(),
+    const [settings, credentials] = await Promise.all([
+      readPersistedSettings(),
       loadSecureRunnerCredentials(),
     ]);
+    const cloudflareRunnerUrl = persistedCloudflareRunnerUrl(settings || {});
+    const runnerUrl = await readRunnerUrlFromDisk(settings || {});
     const ok = await respondToPushApproval({
       runnerUrl,
       runnerToken: credentials.runnerToken,
@@ -105,6 +116,7 @@ async function respondInBackground({
       approved,
       cloudflareAccessClientId: credentials.cloudflareAccessClientId,
       cloudflareAccessClientSecret: credentials.cloudflareAccessClientSecret,
+      cloudflareRunnerUrl,
     });
     if (!ok) throw new Error("push approval respond returned ok=false");
   } catch (error) {

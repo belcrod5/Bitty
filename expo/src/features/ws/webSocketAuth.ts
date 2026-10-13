@@ -1,4 +1,6 @@
 import { getCloudflareAccessHeadersForUrl } from "../app/utils/cloudflareAccessFetch";
+import { createLocalRunnerWebSocket } from "../app/utils/localRunnerTls";
+import { runnerDevelopmentOrigin } from "../app/utils/urlResolvers";
 
 export type WebSocketCloudflareAccess = {
   runnerUrl: string;
@@ -74,6 +76,13 @@ export function createWebSocketWithOptionalAuth(
     throw new Error("runner_token_required");
   }
   const headers = buildWebSocketHeaders(url, token, cloudflareAccess);
+  const parsed = new URL(url);
+  if (parsed.protocol === "ws:") {
+    parsed.protocol = "http:";
+    if (!runnerDevelopmentOrigin(parsed.origin)) throw new Error("runner_plaintext_connection_rejected");
+  }
+  const localSocket = createLocalRunnerWebSocket(url, headers);
+  if (localSocket) return localSocket;
   if (Object.keys(headers).length <= 0) {
     return new WebSocket(url);
   }

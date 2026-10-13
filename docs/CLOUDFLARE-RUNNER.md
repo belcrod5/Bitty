@@ -69,10 +69,11 @@ Expo側で常時接続の補助WebSocketは作りません。会話、診断、T
 
 Cloudflare Tunnel は、同一LAN内の端末を自動的にローカル経路へ切り替えません。Expoアプリは、Pairing QRに含まれるCloudflare接続先とローカル接続先を保存し、アプリ側で接続先を選びます。
 
-- ローカル接続: `http://<MacのLocalHostName>.local:<port>` / `ws://<MacのLocalHostName>.local:<port>/runner-ws`
+- ローカル接続: QRでMac専用CAをペアリングした `https://<MacのLocalHostName>.local:<HTTP port+1>` / `wss://<MacのLocalHostName>.local:<HTTP port+1>/runner-ws`（既定8789）
 - 外部接続: `https://<Cloudflare Tunnelのドメイン>` / `wss://<Cloudflare Tunnelのドメイン>/runner-ws`
 
-ローカル接続を使う場合、runner は `127.0.0.1` ではなく `0.0.0.0` で待ち受けます。`.local` が解決できないネットワークもあるため、Expoアプリはローカルrunnerの `/health` へ1回だけ疎通確認し、成功した場合だけローカル接続へ切り替えます。失敗した場合はCloudflare Tunnel接続を使います。
+ローカルHTTPS listenerは `0.0.0.0`、Tunnel・CLI用HTTP listenerは `127.0.0.1` で待ち受けます。
+ExpoアプリはQRで渡したCAをアプリ内で信頼した後だけローカル `/health` を確認し、証明書検証と疎通確認に成功した場合だけローカル接続へ切り替えます。失敗時はCloudflare Tunnel接続を使います。旧HTTPローカルURLは試しません。
 
 再判定のタイミングは、アプリ初回起動時、iOSのネットワーク変更イベント発生時、アプリがbackground/inactiveからactiveへ戻った時だけです。ネットワーク変更イベントと復帰イベントが重なった場合は約500msのデバウンスで1回にまとめます。定期ポーリングは行いません。同じ接続先がすでに選択されている場合、ExpoアプリはURLを更新せず、WebSocketの再接続も発生させません。
 

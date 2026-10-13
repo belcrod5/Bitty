@@ -3,16 +3,18 @@ import { parseCloudflareRunnerPairingPayload } from "./cloudflareAccess";
 const validPayload = {
   type: "bitty.runner.pairing",
   runnerUrl: "https://runner.example.com",
-  localRunnerUrl: "http://d5-macbook.local:8788",
+  localRunnerUrl: "https://d5-macbook.local:8789",
+  localRunnerCertificate: "paired-ca",
   runnerToken: "runner-secret",
   cloudflareAccessClientId: "access-id",
   cloudflareAccessClientSecret: "access-secret",
 };
 
-test("accepts HTTPS and local HTTP runner origins", () => {
+test("accepts HTTPS runner origins and QR-paired local CA", () => {
   expect(parseCloudflareRunnerPairingPayload(JSON.stringify(validPayload))).toMatchObject({
     runnerUrl: "https://runner.example.com",
-    localRunnerUrl: "http://d5-macbook.local:8788",
+    localRunnerUrl: "https://d5-macbook.local:8789",
+    localRunnerCertificate: "paired-ca",
   });
 });
 
@@ -24,9 +26,9 @@ test("requires the current pairing contract", () => {
 test("accepts local endpoints when .local host casing differs", () => {
   expect(parseCloudflareRunnerPairingPayload(JSON.stringify({
     ...validPayload,
-    localRunnerUrl: "http://nakamurataigonoMac-mini.local:8788",
+    localRunnerUrl: "https://nakamurataigonoMac-mini.local:8789",
   }))).toMatchObject({
-    localRunnerUrl: "http://nakamurataigonomac-mini.local:8788",
+    localRunnerUrl: "https://nakamurataigonomac-mini.local:8789",
   });
 });
 
@@ -37,9 +39,16 @@ test("rejects pairing secrets over plaintext HTTP", () => {
   }))).toThrow("HTTPS");
 });
 
-test("rejects a non-HTTP local runner origin", () => {
+test("rejects a non-HTTPS local runner origin", () => {
   expect(() => parseCloudflareRunnerPairingPayload(JSON.stringify({
     ...validPayload,
-    localRunnerUrl: "https://d5-macbook.local:8788",
-  }))).toThrow("local runner requires an HTTP origin");
+    localRunnerUrl: "ftp://d5-macbook.local:8788",
+  }))).toThrow("local runner requires an HTTPS origin");
+});
+
+test("legacy HTTP QR pairs only Cloudflare and discards local trust", () => {
+  expect(parseCloudflareRunnerPairingPayload(JSON.stringify({ ...validPayload,
+    localRunnerUrl: "http://mac.local:8788" }))).toMatchObject({
+    runnerUrl: validPayload.runnerUrl, localRunnerUrl: "", localRunnerCertificate: "",
+  });
 });

@@ -1,16 +1,39 @@
-// 設定から読み込むURL値の検証。http(s)として解釈できない値(実例: URL欄へ誤って
-// 貼られたRunner token)は空文字にして捨てる。runnerUrlはUIに直接の編集欄がなく、
-// 経路選択も両URL設定時しか動かないため、ここで捨てないと壊れた値が自己修復されない。
-export function sanitizePersistedHttpUrl(rawUrl: unknown): string {
-  const normalized = String(rawUrl || "").trim().replace(/\/$/, "");
-  if (!normalized) return "";
+export function runnerHttpsOrigin(rawUrl: unknown): string {
+  const value = String(rawUrl || "").trim();
   try {
-    const url = new URL(normalized);
-    if (url.protocol !== "http:" && url.protocol !== "https:") return "";
-    return normalized;
-  } catch {
-    return "";
-  }
+    const url = new URL(value);
+    if (url.protocol !== "https:" || url.username || url.password || url.pathname !== "/"
+      || url.search || url.hash || /[\u0000-\u0020]/.test(value)) return "";
+    return url.origin;
+  } catch { return ""; }
+}
+
+export function runnerDevelopmentOrigin(rawUrl: unknown): string {
+  try {
+    const url = new URL(String(rawUrl || "").trim());
+    if (url.protocol !== "http:" || !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)
+      || url.username || url.password || url.pathname !== "/" || url.search || url.hash) return "";
+    return url.origin;
+  } catch { return ""; }
+}
+
+export function persistedCloudflareRunnerUrl(settings: Record<string, unknown>): string {
+  return String(settings.cloudflareRunnerUrl || settings.tunnelRunnerUrl
+    || (settings.runnerUrl !== settings.localRunnerUrl ? runnerHttpsOrigin(settings.runnerUrl) : ""));
+}
+
+// All foreground/background clients consume this origin contract. A saved LAN
+// selection cannot become usable before its paired native trust is installed.
+export function resolveRunnerUrl({ runnerUrl, cloudflareRunnerUrl, localRunnerUrl, localReady = false }: {
+  runnerUrl?: unknown; cloudflareRunnerUrl?: unknown; localRunnerUrl?: unknown; localReady?: boolean;
+}): string {
+  const cloudflare = runnerHttpsOrigin(cloudflareRunnerUrl);
+  if (String(cloudflareRunnerUrl || "").trim() && !cloudflare) return "";
+  const selected = runnerHttpsOrigin(runnerUrl);
+  const local = runnerHttpsOrigin(localRunnerUrl);
+  if (local && selected === local) return localReady ? local : cloudflare;
+  if (cloudflare) return cloudflare;
+  return selected || runnerDevelopmentOrigin(runnerUrl);
 }
 
 export function suggestRunnerWsUrlFromRunnerUrl(rawRunnerUrl: unknown): string {

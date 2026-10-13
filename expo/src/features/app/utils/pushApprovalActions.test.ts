@@ -63,6 +63,14 @@ describe("readRunnerUrlFromDisk / readFaceIdRequiredFromDisk", () => {
     expect(await readFaceIdRequiredFromDisk()).toBe(true);
   });
 
+  it("falls back from saved plaintext LAN to HTTPS Cloudflare before sending bearer", async () => {
+    mockSettingsFileContent = JSON.stringify({ runnerUrl: "http://mac.local:8788",
+      localRunnerUrl: "http://mac.local:8788", cloudflareRunnerUrl: "https://runner.example.com" });
+    expect(await readRunnerUrlFromDisk()).toBe("https://runner.example.com");
+    mockSettingsFileContent = JSON.stringify({ runnerUrl: "http://mac.local:8788" });
+    expect(await readRunnerUrlFromDisk()).toBe("");
+  });
+
   it("treats a missing or non-boolean faceIdRequiredForApproval as false", async () => {
     mockSettingsFileContent = JSON.stringify({ runnerUrl: "https://runner.example.com" });
     expect(await readFaceIdRequiredFromDisk()).toBe(false);
@@ -87,6 +95,22 @@ describe("respondToPushApproval", () => {
     });
     expect(result).toBe(false);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects plaintext LAN without sending authorization or Cloudflare headers", async () => {
+    const fetchMock = jest.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+    expect(await respondToPushApproval({ runnerUrl: "http://192.168.1.5:8788", runnerToken: "secret-token",
+      approvalId: "relay:rpc", approved: true, cloudflareAccessClientId: "cf-id", cloudflareAccessClientSecret: "cf-secret" })).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does not send Cloudflare secrets to a different HTTPS origin", async () => {
+    const fetchMock = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true }) });
+    global.fetch = fetchMock as unknown as typeof fetch;
+    await respondToPushApproval({ runnerUrl: "https://mac.local:8789", cloudflareRunnerUrl: "https://runner.example.com",
+      runnerToken: "token", approvalId: "relay:rpc", approved: true, cloudflareAccessClientId: "cf-id", cloudflareAccessClientSecret: "cf-secret" });
+    expect(fetchMock.mock.calls[0][1].headers["CF-Access-Client-Id"]).toBeUndefined();
   });
 
   it("POSTs to /push/approvals/:approvalId/respond with a bearer token and URL-encoded id", async () => {
@@ -130,6 +154,7 @@ describe("respondToPushApproval", () => {
 
     await respondToPushApproval({
       runnerUrl: "https://runner.example.com",
+      cloudflareRunnerUrl: "https://runner.example.com",
       runnerToken: "secret-token",
       approvalId: "relay:rpc",
       approved: false,
