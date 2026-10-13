@@ -1404,6 +1404,24 @@ index 3da7fe6..a1360be 100644
  @end
  
  #endif
+diff --git a/node_modules/react-native-enriched-markdown/lib/module/EnrichedMarkdownNativeComponent.ts b/node_modules/react-native-enriched-markdown/lib/module/EnrichedMarkdownNativeComponent.ts
+index 06024b4..67f60a6 100644
+--- a/node_modules/react-native-enriched-markdown/lib/module/EnrichedMarkdownNativeComponent.ts
++++ b/node_modules/react-native-enriched-markdown/lib/module/EnrichedMarkdownNativeComponent.ts
+@@ -226,7 +226,13 @@ export interface Md4cFlagsInternal {
+   latexMath: boolean;
+ }
+ 
++interface ImageHeader { name: string; value: string; }
++interface ImageSource { url: string; uri: string; headers: ReadonlyArray<ImageHeader>; }
++interface ImageSourcesEvent { markdown: string; urls: string[]; }
+ export interface NativeProps extends ViewProps {
++  resolveImages?: CodegenTypes.WithDefault<boolean, false>;
++  imageSources?: ReadonlyArray<ImageSource>;
++  onImageSources?: CodegenTypes.DirectEventHandler<ImageSourcesEvent>;
+   /**
+    * Markdown content to render.
+    */
 diff --git a/node_modules/react-native-enriched-markdown/lib/module/native/EnrichedMarkdownText.js b/node_modules/react-native-enriched-markdown/lib/module/native/EnrichedMarkdownText.js
 index 490b567..4750e57 100644
 --- a/node_modules/react-native-enriched-markdown/lib/module/native/EnrichedMarkdownText.js
