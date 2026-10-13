@@ -1113,7 +1113,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
           throw storeFailure;
         }
         active = next;
-        contextUsagePercent = null;
+        if (!unchanged) contextUsagePercent = null;
         if (!sharedMemoryStore) queueMicrotask(() => void exclusive(startSummary).catch(() => {}));
         return { ...settings(), models };
       });
