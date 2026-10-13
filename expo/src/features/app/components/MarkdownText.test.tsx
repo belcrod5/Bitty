@@ -4,10 +4,12 @@ import { MarkdownText } from "./MarkdownText";
 
 let mockThemeId: VisualThemeId = "standard";
 let mockMarkdownProps: Record<string, any> = {};
+let mockAllMarkdownProps: Record<string, any>[] = [];
 
 jest.mock("react-native-enriched-markdown", () => ({
   EnrichedMarkdownText: (props: Record<string, any>) => {
     mockMarkdownProps = props;
+    mockAllMarkdownProps.push(props);
     return null;
   },
 }));
@@ -55,5 +57,30 @@ describe("MarkdownText theme colors", () => {
     expect(style.math.color).toBe(theme.colors.textPrimary);
     expect(style.blockquote.backgroundColor).toBe(theme.colors.userCodeSurface);
     expect(style.strong.color).toBeUndefined();
+  });
+});
+
+describe("Markdown image sources", () => {
+  it("passes original reference Markdown and the generic resolver to the native renderer", async () => {
+    const content = "![画面][screen]\n\n[screen]: /private/tmp/screen.jpg\n\n```md\n![example](/ignore.jpg)\n```";
+    const resolveImageSource = jest.fn();
+    await render(<MarkdownText content={content} tone="assistant" textStyle={{}}
+      resolveImageSource={resolveImageSource} />);
+    expect(mockMarkdownProps.markdown).toBe(content);
+    expect(mockMarkdownProps.resolveImageSource).toBe(resolveImageSource);
+    expect(mockMarkdownProps.selectable).toBe(true);
+    expect(resolveImageSource).not.toHaveBeenCalled();
+  });
+
+  it("passes the same resolver to native Markdown segments around Mermaid", async () => {
+    mockAllMarkdownProps = [];
+    const resolveImageSource = jest.fn();
+    await render(<MarkdownText content={"![a](/tmp/a.jpg)\n\n```mermaid\ngraph TD; A-->B\n```\n\n![b](/tmp/b.jpg)"}
+      tone="assistant" textStyle={{}} resolveImageSource={resolveImageSource} />);
+    expect(mockAllMarkdownProps).toHaveLength(2);
+    for (const props of mockAllMarkdownProps) {
+      expect(props.resolveImageSource).toBe(resolveImageSource);
+      expect(props.selectable).toBe(true);
+    }
   });
 });

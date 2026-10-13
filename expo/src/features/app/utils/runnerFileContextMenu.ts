@@ -1,3 +1,5 @@
+import { normalizeRunnerPath, isAbsoluteRunnerPath, isRunnerPathInsideDirectory, getRunnerFileLocation, buildRunnerMediaFileUrl } from "./runnerFileResources";
+export { normalizeRunnerPath, isRunnerPathInsideDirectory, getRunnerFileLocation, buildRunnerMediaFileUrl } from "./runnerFileResources";
 import { Alert } from "react-native";
 import * as Clipboard from "../clipboard";
 import { fetchRunnerTextFileContent } from "./runnerFileContent";
@@ -499,80 +501,6 @@ export function openRunnerFileContextMenu(params: RunnerFileActionParams, includ
   Alert.alert(fileName, filePath, buttons);
 }
 
-export function normalizeRunnerPath(value: unknown) {
-  return String(value || "").trim().replace(/\\/g, "/");
-}
-
-function normalizeRunnerDirectoryPath(value: unknown) {
-  const normalized = normalizeRunnerPath(value);
-  if (/^\/+$/u.test(normalized)) return "/";
-  const driveRoot = /^([a-zA-Z]:)\/+$/u.exec(normalized);
-  if (driveRoot) return `${driveRoot[1]}/`;
-  return normalized.replace(/\/+$/, "") || ".";
-}
-
-function normalizeRunnerComparablePath(value: unknown) {
-  const path = normalizeRunnerDirectoryPath(value);
-  const driveMatch = /^([a-zA-Z]:)(\/.*)?$/.exec(path);
-  const drive = driveMatch ? driveMatch[1] : "";
-  const pathWithoutDrive = driveMatch ? (driveMatch[2] || "/") : path;
-  const isAbsolute = pathWithoutDrive.startsWith("/");
-  const parts: string[] = [];
-  for (const part of pathWithoutDrive.split("/")) {
-    if (!part || part === ".") continue;
-    if (part === "..") {
-      if (parts.length > 0 && parts[parts.length - 1] !== "..") {
-        parts.pop();
-      } else if (!isAbsolute) {
-        parts.push(part);
-      }
-      continue;
-    }
-    parts.push(part);
-  }
-  const normalized = `${isAbsolute ? "/" : ""}${parts.join("/")}`.replace(/\/+$/, "");
-  if (drive) return `${drive}${normalized || "/"}`;
-  return normalized || (isAbsolute ? "/" : ".");
-}
-
-function isAbsoluteRunnerPath(pathRaw: unknown) {
-  const targetPath = normalizeRunnerPath(pathRaw);
-  return targetPath.startsWith("/") || /^[a-zA-Z]:\//.test(targetPath);
-}
-
-export function isRunnerPathInsideDirectory(pathRaw: unknown, directoryRaw: unknown) {
-  const targetPath = normalizeRunnerComparablePath(pathRaw);
-  const directory = normalizeRunnerComparablePath(directoryRaw);
-  if (!directory || directory === ".") return true;
-  if (directory === "/") return targetPath.startsWith("/");
-  if (/^[a-zA-Z]:\/$/u.test(directory)) {
-    return targetPath.toLowerCase().startsWith(directory.toLowerCase());
-  }
-  return targetPath === directory || targetPath.startsWith(`${directory}/`);
-}
-
-export function getRunnerFileLocation(pathRaw: unknown, rootDirectoryRaw: unknown) {
-  const path = normalizeRunnerPath(pathRaw);
-  const rootDirectory = normalizeRunnerDirectoryPath(rootDirectoryRaw);
-  if (!isAbsoluteRunnerPath(path) || isRunnerPathInsideDirectory(path, rootDirectory)) {
-    return { path, rootDirectory };
-  }
-  const separatorIndex = path.lastIndexOf("/");
-  if (separatorIndex < 0 || separatorIndex === path.length - 1) {
-    return { path, rootDirectory };
-  }
-  const parentPath = path.slice(0, separatorIndex);
-  const locationRoot = separatorIndex === 0
-    ? "/"
-    : /^[a-zA-Z]:$/u.test(parentPath)
-      ? `${parentPath}/`
-      : parentPath;
-  return {
-    path,
-    rootDirectory: locationRoot,
-  };
-}
-
 function getRunnerScriptExecutionWarning(filePath: string, rootDir: string) {
   const isAbsolute = isAbsoluteRunnerPath(filePath);
   const isOutsideSelectedDirectory = !isRunnerPathInsideDirectory(filePath, rootDir);
@@ -661,24 +589,4 @@ function normalizeRunnerMediaItems(
   }
   pushItem(currentItem);
   return next.length > 0 ? next : [currentItem];
-}
-
-export function buildRunnerMediaFileUrl(params: {
-  runnerUrl: string;
-  rootDir: string;
-  path: string;
-}) {
-  const baseUrl = String(params.runnerUrl || "").trim().replace(/\/$/, "");
-  const targetPath = normalizeRunnerPath(params.path);
-  if (!baseUrl || !targetPath) return "";
-  try {
-    const url = new URL(`${baseUrl}/files/media`);
-    url.searchParams.set("path", targetPath);
-    if (params.rootDir) {
-      url.searchParams.set("rootDir", params.rootDir);
-    }
-    return url.toString();
-  } catch {
-    return "";
-  }
 }

@@ -1,3 +1,4 @@
+import { getRunnerMediaSource } from "../utils/runnerFileResources";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Image,
@@ -98,14 +99,9 @@ export function RunnerMediaViewer({ media, onRequestClose }: RunnerMediaViewerPr
     setError("");
   }, [activeItem?.url]);
 
-  const sourceForItem = useCallback((item: RunnerMediaItem) => ({
-    uri: item.url,
-    headers: media?.runnerToken
-      ? {
-        authorization: `Bearer ${media.runnerToken}`,
-      }
-      : undefined,
-  }), [media?.runnerToken]);
+  const sourceForItem = useCallback((item: RunnerMediaItem) => (
+    getRunnerMediaSource(item.url, media?.runnerToken ?? "") ?? { uri: "" }
+  ), [media?.runnerToken]);
 
   const renderMediaItem = useCallback((item: RunnerMediaItem, index: number) => {
     const source = sourceForItem(item);
