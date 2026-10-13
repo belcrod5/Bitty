@@ -75,9 +75,7 @@ export function useSlashStatusCommandController({
       `- think: ${reasoningEffort}`,
       `- approvalPolicy: ${codexApprovalPolicy}`,
       `- contextUsedPct: ${chatContextUsedPct === null ? "--" : `${chatContextUsedPct}%`}`,
-      `- toolMaxRounds: ${snapshot?.toolMaxRounds ?? "-"}`,
       `- llmTimeoutMs: ${snapshot?.llmTimeoutMs ?? "-"}`,
-      `- approvalTimeoutMs: ${snapshot?.approvalTimeoutMs ?? "-"}`,
     ];
     appendSlashCommandResult(commandText, lines.join("\n"), options);
     if (projectDebugToActiveSession) {

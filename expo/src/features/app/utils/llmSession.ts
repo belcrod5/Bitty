@@ -8,8 +8,6 @@ export type LlmSessionMessageRole = "user" | "assistant";
 
 export type LlmRuntimeLimitsSnapshot = {
   llmTimeoutMs: number | null;
-  toolMaxRounds: number | null;
-  approvalTimeoutMs: number | null;
   fetchedAt: string;
 };
 
@@ -166,11 +164,8 @@ export function dedupeSessionHistoryEntries<T extends LlmSessionHistoryEntryLike
 export function parseLlmRuntimeLimitsSnapshot(raw: unknown): LlmRuntimeLimitsSnapshot {
   const payload = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   const llm = payload.llm && typeof payload.llm === "object" ? payload.llm : {};
-  const approval = payload.approval && typeof payload.approval === "object" ? payload.approval : {};
   return {
     llmTimeoutMs: parseOptionalFiniteNumber((llm as { timeoutMs?: unknown }).timeoutMs),
-    toolMaxRounds: parseOptionalFiniteNumber((llm as { toolMaxRounds?: unknown }).toolMaxRounds),
-    approvalTimeoutMs: parseOptionalFiniteNumber((approval as { timeoutMs?: unknown }).timeoutMs),
     fetchedAt: new Date().toISOString(),
   };
 }
