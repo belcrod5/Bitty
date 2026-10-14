@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { randomUUID } from "expo-crypto";
+import { Alert } from "react-native";
 import { useRunnerWebSocketManager, useRunnerWebSocketSnapshot } from "../../runnerWs/RunnerWebSocketContext";
 import type { RunnerWsMessage } from "../../runnerWs/types";
 import type { VoiceContextStats } from "../types/appTypes";
@@ -59,6 +60,18 @@ function sameContextStats(a: VoiceContextStats | null, b: VoiceContextStats | nu
     && a.subagentTotalCount === b.subagentTotalCount);
 }
 
+function resetDecision(required: boolean) {
+  return new Promise<"reset" | "continue">((resolve) => {
+    Alert.alert(required ? "セッションのリセットが必要です" : "セッションをリセットしていいですか？",
+      "最近の会話は引き継ぎます。",
+      required
+        ? [{ text: "リセットする", onPress: () => resolve("reset") }]
+        : [{ text: "続ける", style: "cancel", onPress: () => resolve("continue") },
+          { text: "リセットする", onPress: () => resolve("reset") }],
+      { cancelable: false });
+  });
+}
+
 export function useVoiceConversation(
   onCompleted: (text: string, operationId: string) => void,
   onJob?: (jobId: string, operationId: string) => void,
@@ -77,6 +90,7 @@ export function useVoiceConversation(
   const [historyError, setHistoryError] = useState("");
   const historyRequestRef = useRef(0);
   const pendingRef = useRef<PendingTurn | null>(null);
+  const startTurnTasksRef = useRef(new Map<string, Promise<void>>());
   const turnRevisionRef = useRef(0);
   const conversationIdRef = useRef("");
   const onCompletedRef = useRef(onCompleted);
@@ -108,6 +122,12 @@ export function useVoiceConversation(
         pending.onAccepted?.();
         pending.onAccepted = undefined;
       }
+    }
+    if (status === "unknown") {
+      pending.resolve?.();
+      setTurnStatus("running");
+      setError(failureMessage(payload));
+      return;
     }
     if (status === "accepted" || status === "running") {
       const partialText = typeof payload.partialText === "string" ? payload.partialText : "";
@@ -147,34 +167,66 @@ export function useVoiceConversation(
     setError(message);
   }, [orchestratorId]);
 
-  const startTurn = useCallback(async (pending: PendingTurn) => {
-    if (!pending.text || !conversationIdRef.current || !aliveRef.current) return;
-    try {
-      const response = await manager.request({
-        channel: "agent",
-        op: "turn.start",
-        operationId: pending.id,
-        payload: {
-          backendId: "codex",
-          orchestratorId,
-          logicalConversationId: conversationIdRef.current,
-          clientOperationId: pending.id,
-          input: { blocks: [{ type: "text", text: pending.text }] },
-          ...(pending.tts ? { tts: pending.tts } : {}),
-        },
-      }, { timeoutMs: 30_000 });
-      if (response.op === "turn.accepted") {
-        const result = payloadOf(response);
-        applyStatus({ ...result, clientOperationId: pending.id, status: result.status || "accepted" }, true);
-      } else if (response.op === "error") {
-        applyStatus({ clientOperationId: pending.id, status: "failed", ...payloadOf(response) });
-      } else {
-        throw new Error("音声会話の受付応答が不正です。");
+  const startTurn = useCallback((pending: PendingTurn) => {
+    const existing = startTurnTasksRef.current.get(pending.id);
+    if (existing) return existing;
+    const task = (async () => {
+      if (!pending.text || !conversationIdRef.current || !aliveRef.current) return;
+      try {
+        while (aliveRef.current && pendingRef.current === pending) {
+          const response = await manager.request({
+            channel: "agent",
+            op: "turn.start",
+            operationId: pending.id,
+            payload: {
+              backendId: "codex",
+              orchestratorId,
+              logicalConversationId: conversationIdRef.current,
+              clientOperationId: pending.id,
+              input: { blocks: [{ type: "text", text: pending.text }] },
+              ...(pending.tts ? { tts: pending.tts } : {}),
+            },
+          }, { timeoutMs: 30_000 });
+          if (response.op === "turn.accepted") {
+            const result = payloadOf(response);
+            if (result.status === "confirmation_required") {
+              const confirmation = result.resetConfirmation;
+              if (!confirmation || typeof confirmation !== "object" || Array.isArray(confirmation)) {
+                throw new Error("セッション確認を開始できません。");
+              }
+              const value = confirmation as Record<string, unknown>;
+              const decision = await resetDecision(value.required === true);
+              if (!aliveRef.current || pendingRef.current !== pending) return;
+              const confirmed = await manager.request({ channel: "agent", op: "voice.session-reset.respond",
+                operationId: pending.id, payload: {
+                  orchestratorId, logicalConversationId: conversationIdRef.current,
+                  clientOperationId: pending.id, parentGeneration: value.parentGeneration,
+                  turnSeq: value.turnSeq, decision,
+                } }, { timeoutMs: 30_000 });
+              if (confirmed.op !== "voice.session-reset.respond.result") {
+                throw new Error("セッション確認を保存できません。");
+              }
+              continue;
+            }
+            applyStatus({ ...result, clientOperationId: pending.id, status: result.status || "accepted" }, true);
+            break;
+          }
+          if (response.op === "error") {
+            applyStatus({ clientOperationId: pending.id, status: "failed", ...payloadOf(response) });
+            break;
+          }
+          throw new Error("音声会話の受付応答が不正です。");
+        }
+      } catch {
+        // The request may have reached Runner. Resolve it by operation ID before resending.
+        if (aliveRef.current && pendingRef.current === pending) setTurnStatus("sending");
       }
-    } catch {
-      // The request may have reached Runner. Resolve it by operation ID before resending.
-      if (aliveRef.current && pendingRef.current === pending) setTurnStatus("sending");
-    }
+    })();
+    startTurnTasksRef.current.set(pending.id, task);
+    void task.finally(() => {
+      if (startTurnTasksRef.current.get(pending.id) === task) startTurnTasksRef.current.delete(pending.id);
+    });
+    return task;
   }, [applyStatus, manager, orchestratorId]);
 
   const sync = useCallback(async () => {
@@ -216,8 +268,11 @@ export function useVoiceConversation(
       setError("");
       let pending = pendingRef.current;
       if (!pending && typeof openPayload.clientOperationId === "string" && openPayload.clientOperationId
-        && (openPayload.status === "accepted" || openPayload.status === "running")) {
-        pending = { id: openPayload.clientOperationId, readAloud: false, accepted: true };
+        && (openPayload.status === "accepted" || openPayload.status === "running"
+          || openPayload.status === "confirmation_required" || openPayload.status === "unknown")) {
+        pending = { id: openPayload.clientOperationId,
+          ...(typeof openPayload.inputText === "string" ? { text: openPayload.inputText } : {}),
+          readAloud: false, accepted: openPayload.status !== "confirmation_required" };
         pendingRef.current = pending;
         setTurnStatus("sending");
       }

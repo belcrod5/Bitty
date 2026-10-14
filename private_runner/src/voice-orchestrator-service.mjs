@@ -45,6 +45,9 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
     refresh: () => subagents.refresh(id), contextOf: subagents.contextOf,
     handleTool: (request) => subagents.handleTool(id, request),
   } : undefined;
+  const hasOutstandingActivity = (id) => (threadId) => Boolean(activity?.hasOutstanding?.({
+    orchestratorId: id, rootThreadId: threadId,
+  }));
   const withCounts = async (id, value) => {
     if (!subagents) return value;
     const { runningCount, totalCount } = await subagents.refresh(id);
@@ -172,7 +175,8 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
       selectedId: "main", memoryConversationId: recoveredMemoryConversationId };
     main = createVoiceContextService({ rootDir: root, createClient,
       memoryConversationId: registry.memoryConversationId || undefined,
-      memoryEventPairs: allEventPairs, pairExclusive, managedSessions: managedSessions("main") });
+      memoryEventPairs: allEventPairs, pairExclusive, managedSessions: managedSessions("main"),
+      hasOutstandingActivity: hasOutstandingActivity("main") });
     try {
       const opened = await main.open();
       memoryStore = await main.getMemoryStore();
@@ -195,7 +199,7 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
     if (contexts.has(id)) return contexts.get(id);
     const service = createVoiceContextService({ rootDir: path.join(orchestratorRoot, id), createClient,
       sharedWorkspaceDirectory: workspaceDirectory, sharedMemoryStore: memoryStore, pairExclusive,
-      managedSessions: managedSessions(id) });
+      managedSessions: managedSessions(id), hasOutstandingActivity: hasOutstandingActivity(id) });
     contexts.set(id, service);
     try { await service.open(); }
     catch (error) { contexts.delete(id); throw error; }
@@ -232,19 +236,21 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
         return publicList();
       });
     },
-    async create(name, icon = "", model, effort, systemInstruction) {
+    async create(name, icon = "", model, effort, systemInstruction, topicModel, topicEffort) {
       const item = { id: randomUUID(), name: validateName(name), icon: validateIcon(icon) };
       return exclusive(async () => {
         await load();
         await fs.mkdir(orchestratorRoot, { recursive: true, mode: 0o700 });
         const service = createVoiceContextService({ rootDir: path.join(orchestratorRoot, item.id), createClient,
           sharedWorkspaceDirectory: workspaceDirectory, sharedMemoryStore: memoryStore, pairExclusive,
-          managedSessions: managedSessions(item.id) });
+          managedSessions: managedSessions(item.id), hasOutstandingActivity: hasOutstandingActivity(item.id) });
         await service.open();
-        if (model !== undefined || effort !== undefined || systemInstruction !== undefined) {
+        if (model !== undefined || effort !== undefined || systemInstruction !== undefined
+          || topicModel !== undefined || topicEffort !== undefined) {
           const defaults = await service.getSettings();
           await service.configure(model ?? defaults.model, effort ?? defaults.effort,
-            systemInstruction ?? defaults.systemInstruction);
+            systemInstruction ?? defaults.systemInstruction,
+            topicModel ?? defaults.topicModel, topicEffort ?? defaults.topicEffort);
         }
         await saveRegistry({ ...registry, orchestrators: [...registry.orchestrators, item] });
         contexts.set(item.id, service);
@@ -258,10 +264,12 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
       return exclusive(async () => {
         await load();
         const service = await loadedContext(id);
-        if (changes.model !== undefined || changes.effort !== undefined || changes.systemInstruction !== undefined) {
+        if (changes.model !== undefined || changes.effort !== undefined || changes.systemInstruction !== undefined
+          || changes.topicModel !== undefined || changes.topicEffort !== undefined) {
           const current = await service.getSettings();
           await service.configure(changes.model ?? current.model, changes.effort ?? current.effort,
-            changes.systemInstruction ?? current.systemInstruction);
+            changes.systemInstruction ?? current.systemInstruction,
+            changes.topicModel ?? current.topicModel, changes.topicEffort ?? current.topicEffort);
         }
         const orchestrators = registry.orchestrators.map((item) => item.id === id ? { id, name, icon } : item);
         await saveRegistry({ ...registry, orchestrators });
@@ -275,10 +283,6 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
         await load();
         const service = await loadedContext(id);
         if (await service.isBusy()) throw failure("Orchestrator is busy", "session_busy");
-        if (subagents && (await subagents.refresh(id)).records.some((record) =>
-          !["completed", "failed", "interrupted"].includes(record.status))) {
-          throw failure("Orchestrator has an outstanding delegated session", "session_busy");
-        }
         const next = { ...registry, selectedId: registry.selectedId === id ? "main" : registry.selectedId,
           orchestrators: registry.orchestrators.filter((item) => item.id !== id) };
         await saveRegistry(next);
@@ -293,10 +297,10 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
       const item = registry.orchestrators.find((entry) => entry.id === id);
       return { ...await service.getSettings(), ...item, orchestratorId: id };
     },
-    async configure(id, model, effort, systemInstruction) {
+    async configure(id, model, effort, systemInstruction, topicModel, topicEffort) {
       return exclusive(async () => {
         await load();
-        return (await loadedContext(idOf(id))).configure(model, effort, systemInstruction);
+        return (await loadedContext(idOf(id))).configure(model, effort, systemInstruction, topicModel, topicEffort);
       });
     },
     async clearMemory() { return exclusive(async () => {
@@ -322,6 +326,9 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
     },
     async interrupt(id, conversationId, operationId) {
       return (await context(idOf(id))).interrupt(conversationId, operationId);
+    },
+    async respondToResetConfirmation(id, payload) {
+      return (await context(idOf(id))).respondToResetConfirmation(payload);
     },
     async start(message, notify, onApproval, hooks) {
       const id = idOf(message.payload?.orchestratorId);

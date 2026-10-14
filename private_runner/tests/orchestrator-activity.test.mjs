@@ -36,12 +36,15 @@ test("native parent lookup assigns the registered root and observes tool start/e
   let tool = activity.snapshot().activities.find((entry) => entry.kind === "tool");
   assert.equal(tool.orchestratorId, "voice-a");
   assert.equal(tool.status, "running");
+  assert.equal(activity.hasOutstanding({ orchestratorId: "voice-a", rootThreadId: "root" }), true);
+  assert.equal(activity.hasOutstanding({ orchestratorId: "voice-b", rootThreadId: "root" }), false);
   assert.equal(client.reads, 1);
   client.emit("item/completed", { threadId: "child", turnId: "turn",
     item: { ...item, status: "completed", exitCode: 0 } });
   await tick();
   tool = activity.snapshot().activities.find((entry) => entry.kind === "tool");
   assert.equal(tool.status, "completed");
+  assert.equal(activity.hasOutstanding({ orchestratorId: "voice-a", rootThreadId: "root" }), false);
   release();
   assert.equal(client.listenerCount, 0);
 });

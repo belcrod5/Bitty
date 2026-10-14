@@ -121,6 +121,7 @@ test("runner-ws advertises and negotiates the provider-neutral agent protocol", 
   assert.equal(ready.requestId, "hello-1");
   assert.equal(ready.payload.protocolVersion, 2);
   assert.equal(ready.payload.backends.some((backend) => backend.backendId === "codex"), true);
+  assert.equal(ready.payload.operations.includes("voice.session-reset.respond"), true);
   ws.close();
 });
 
@@ -358,6 +359,44 @@ test("voice interrupt routes to the voice turn instead of the generic agent turn
   const result = ws.sent.find((message) => message.op === "voice.turn.interrupt.result");
   assert.equal(result.requestId, "stop-voice");
   assert.equal(result.payload.status, "interrupted");
+});
+
+test("voice reset confirmation routes the generation-bound decision", async (t) => {
+  const service = __TESTING__.voiceContextService;
+  const originalRespond = service.respondToResetConfirmation;
+  const operationId = "55555555-6666-4777-8888-999999999999";
+  const conversationId = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
+  service.respondToResetConfirmation = async (receivedOrchestratorId, decision) => {
+    assert.equal(receivedOrchestratorId, "main");
+    assert.deepEqual(decision, {
+      logicalConversationId: conversationId,
+      clientOperationId: operationId,
+      parentGeneration: 3,
+      turnSeq: 12,
+      decision: "reset",
+    });
+    return { clientOperationId: operationId, status: "accepted" };
+  };
+  const ws = createRunnerWsConnectionForTest();
+  t.after(() => { service.respondToResetConfirmation = originalRespond; ws.close(); });
+  ws.emit("message", JSON.stringify({
+    channel: "agent",
+    op: "voice.session-reset.respond",
+    requestId: "reset-response",
+    operationId,
+    payload: {
+      logicalConversationId: conversationId,
+      clientOperationId: operationId,
+      parentGeneration: 3,
+      turnSeq: 12,
+      decision: "reset",
+    },
+  }), false);
+  await waitFor(() => ws.sent.some((message) => message.op === "voice.session-reset.respond.result"));
+  const result = ws.sent.find((message) => message.op === "voice.session-reset.respond.result");
+  assert.equal(result.requestId, "reset-response");
+  assert.equal(result.operationId, operationId);
+  assert.equal(result.payload.status, "accepted");
 });
 
 test("voice TTS sends audio before turn completion and stays cancelled while generation continues", async (t) => {

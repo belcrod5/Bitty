@@ -12,6 +12,7 @@ const mockRequest = jest.fn(async (message: { op: string; payload?: Record<strin
     orchestratorId: payload?.orchestratorId,
     name: payload?.orchestratorId === "main" ? "メイン" : "調査",
     icon: "", model: "gpt-6-luna", effort: "low", systemInstruction: "Be helpful.",
+    topicModel: "gpt-6-luna", topicEffort: "low",
     models: [
       { modelId: "gpt-6-luna", label: "Luna", effortOptions: ["low"] },
       { modelId: "another-model", label: "Another", effortOptions: ["medium", "high"] },
@@ -91,11 +92,14 @@ test("list opens detail; name, uploaded icon, model, effort, and instructions sa
   await waitFor(() => expect(mockPickIcon).toHaveBeenCalledTimes(1));
   await fireEvent.press(screen.getByTestId("select-モデル"));
   await fireEvent.press(screen.getByTestId("select-エフォート"));
+  await fireEvent.press(screen.getByTestId("select-話題判定モデル"));
+  await fireEvent.press(screen.getByTestId("select-話題判定エフォート"));
   await fireEvent.changeText(screen.getByTestId("orchestrator-system-instruction"), "Research carefully.");
   await fireEvent.press(screen.getByTestId("orchestrator-save"));
   await waitFor(() => expect(mockRequest).toHaveBeenCalledWith({ channel: "agent", op: "voice.orchestrators.update",
     payload: { orchestratorId: "other", name: "新しい名前", icon, model: "another-model",
-      effort: "high", systemInstruction: "Research carefully." } }));
+      effort: "high", systemInstruction: "Research carefully.",
+      topicModel: "another-model", topicEffort: "high" } }));
   expect(onListChanged).toHaveBeenCalled();
   await screen.unmount();
 });
@@ -112,7 +116,7 @@ test("new detail creates with full settings and main has no delete control", asy
   await fireEvent.press(screen.getByTestId("orchestrator-save"));
   await waitFor(() => expect(mockRequest).toHaveBeenCalledWith({ channel: "agent", op: "voice.orchestrators.create",
     payload: { name: "新規", icon: "", model: "gpt-6-luna", effort: "low",
-      systemInstruction: "Be helpful." } }));
+      systemInstruction: "Be helpful.", topicModel: "gpt-6-luna", topicEffort: "low" } }));
   await screen.unmount();
 });
 

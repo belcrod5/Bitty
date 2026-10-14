@@ -40,6 +40,12 @@ export function createOrchestratorActivity({ broadcast = () => {}, now = () => D
     }) => item) };
   }
 
+  function hasOutstanding({ orchestratorId, rootThreadId } = {}) {
+    return [...activities.values()].some((item) => !item.expiresAt && item.status === "running"
+      && item.orchestratorId === orchestratorId
+      && (!rootThreadId || item.rootId === rootThreadId || !item.rootId));
+  }
+
   function changed() {
     revision++;
     try { broadcast(snapshot()); } catch {}
@@ -281,5 +287,6 @@ export function createOrchestratorActivity({ broadcast = () => {}, now = () => D
     };
   }
 
-  return { snapshot, observeHttp, startRunRequest, observeRun, finishRunRequest: finish, registerRoot };
+  return { snapshot, hasOutstanding, observeHttp, startRunRequest, observeRun,
+    finishRunRequest: finish, registerRoot };
 }

@@ -7275,7 +7275,8 @@ runnerWsServer.on("connection", (ws, req) => {
         : message.op === "voice.orchestrators.select" ? voiceContextService.select(orchestratorId)
           : message.op === "voice.orchestrators.create"
             ? voiceContextService.create(message.payload?.name, message.payload?.icon,
-              message.payload?.model, message.payload?.effort, message.payload?.systemInstruction)
+              message.payload?.model, message.payload?.effort, message.payload?.systemInstruction,
+              message.payload?.topicModel, message.payload?.topicEffort)
             : message.op === "voice.orchestrators.update"
               ? voiceContextService.update(orchestratorId, message.payload)
               : voiceContextService.remove(orchestratorId);
@@ -7326,12 +7327,26 @@ runnerWsServer.on("connection", (ws, req) => {
         }).catch((error) => sendVoiceError(message, error));
       return true;
     }
+    if (message.op === "voice.session-reset.respond") {
+      void voiceContextService.respondToResetConfirmation(orchestratorId, {
+        logicalConversationId: message.payload?.logicalConversationId,
+        clientOperationId: message.payload?.clientOperationId,
+        parentGeneration: message.payload?.parentGeneration,
+        turnSeq: message.payload?.turnSeq,
+        decision: message.payload?.decision,
+      }).then((payload) => sendRunnerWsEnvelope(ws, {
+        channel: "agent", op: "voice.session-reset.respond.result",
+        requestId: message.requestId || "", operationId: message.operationId || "", payload,
+      })).catch((error) => sendVoiceError(message, error));
+      return true;
+    }
     if (["voice.settings", "voice.settings.update", "voice.memory.clear", "voice.messages.clear"].includes(message.op)) {
       let operation;
       if (message.op === "voice.settings") operation = voiceContextService.getSettings(orchestratorId);
       else if (message.op === "voice.settings.update") {
         operation = voiceContextService.configure(orchestratorId, message.payload?.model,
-          message.payload?.effort, message.payload?.systemInstruction);
+          message.payload?.effort, message.payload?.systemInstruction,
+          message.payload?.topicModel, message.payload?.topicEffort);
       } else if (message.op === "voice.memory.clear") operation = voiceContextService.clearMemory();
       else operation = voiceContextService.clearMessages(orchestratorId);
       void operation.then((payload) => {

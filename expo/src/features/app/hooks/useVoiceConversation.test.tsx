@@ -1,4 +1,5 @@
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react-native";
+import { Alert } from "react-native";
 import { useVoiceConversation } from "./useVoiceConversation";
 import type { VoiceContextStats } from "../types/appTypes";
 
@@ -198,6 +199,82 @@ test("sends one final text block and reads aloud only after a completed turn", a
   });
 });
 
+test("holds the same operation while reset confirmation is answered", async () => {
+  const alert = jest.spyOn(Alert, "alert").mockImplementation(() => undefined);
+  let starts = 0;
+  mockManager.request.mockImplementation(async ({ op }: { op: string }) => {
+    if (op === "voice.open") return { op: "voice.open.result", payload: {
+      logicalConversationId: conversationId, contextMode: "self_context_array", ...initialStats,
+      ...(mockSnapshot.generation > 1 ? { clientOperationId: operationId, inputText: "境界の発話",
+        status: "confirmation_required", resetConfirmation: { parentGeneration: 2, turnSeq: 12, required: false } } : {}),
+    } };
+    if (op === "voice.status") return { op: "error", payload: { code: "not_found" } };
+    if (op === "voice.session-reset.respond") return { op: "voice.session-reset.respond.result", payload: { accepted: true } };
+    if (op === "turn.start" && starts++ === 0) return { op: "turn.accepted", payload: {
+      logicalConversationId: conversationId, clientOperationId: operationId,
+      status: "confirmation_required", ...initialStats,
+      resetConfirmation: { parentGeneration: 2, turnSeq: 12, required: false },
+    } };
+    if (op === "turn.start") return { op: "turn.accepted", payload: {
+      logicalConversationId: conversationId, clientOperationId: operationId, status: "accepted", ...initialStats,
+    } };
+    throw new Error(`unexpected ${op}`);
+  });
+  const onAccepted = jest.fn();
+  const { result, rerender } = await renderHook(() => useVoiceConversation(jest.fn()));
+  await waitFor(() => expect(result.current.ready).toBe(true));
+  let sent!: Promise<void>;
+  await act(async () => { sent = result.current.sendTranscript("境界の発話", onAccepted); await Promise.resolve(); });
+  await waitFor(() => expect(alert).toHaveBeenCalledTimes(1));
+  expect(onAccepted).not.toHaveBeenCalled();
+  mockSnapshot = { connected: true, generation: 2 };
+  await act(async () => { rerender({}); await Promise.resolve(); });
+  await waitFor(() => expect(mockManager.request).toHaveBeenCalledWith(expect.objectContaining({ op: "voice.status" })));
+  expect(alert).toHaveBeenCalledTimes(1);
+  await act(async () => { alert.mock.calls[0][2]?.[1]?.onPress?.(); });
+  await waitFor(() => expect(result.current.turnStatus).toBe("accepted"));
+  const startsSent = mockManager.request.mock.calls.filter(([message]) => message.op === "turn.start");
+  expect(startsSent).toHaveLength(2);
+  expect(startsSent[0][0]).toEqual(startsSent[1][0]);
+  expect(mockManager.request).toHaveBeenCalledWith({ channel: "agent", op: "voice.session-reset.respond",
+    operationId, payload: { orchestratorId: "main", logicalConversationId: conversationId,
+      clientOperationId: operationId, parentGeneration: 2, turnSeq: 12, decision: "reset" } },
+  { timeoutMs: 30_000 });
+  expect(mockManager.request.mock.calls.filter(([message]) => message.op === "voice.session-reset.respond")).toHaveLength(1);
+  expect(onAccepted).toHaveBeenCalledTimes(1);
+  await act(async () => handlers.get("voice.turn.completed")?.({ payload: {
+    logicalConversationId: conversationId, clientOperationId: operationId, text: "返答", ...initialStats,
+  } }));
+  await sent;
+  alert.mockRestore();
+});
+
+test("a stale reset alert cannot send a decision after the operation settles", async () => {
+  const alert = jest.spyOn(Alert, "alert").mockImplementation(() => undefined);
+  mockManager.request.mockImplementation(async ({ op }: { op: string }) => {
+    if (op === "voice.open") return { op: "voice.open.result", payload: {
+      logicalConversationId: conversationId, contextMode: "self_context_array", ...initialStats,
+    } };
+    if (op === "turn.start") return { op: "turn.accepted", payload: {
+      logicalConversationId: conversationId, clientOperationId: operationId,
+      status: "confirmation_required", ...initialStats,
+      resetConfirmation: { parentGeneration: 2, turnSeq: 12, required: false },
+    } };
+    throw new Error(`unexpected ${op}`);
+  });
+  const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
+  await waitFor(() => expect(result.current.ready).toBe(true));
+  let sent!: Promise<void>;
+  await act(async () => { sent = result.current.sendTranscript("境界の発話", jest.fn()); await Promise.resolve(); });
+  await waitFor(() => expect(alert).toHaveBeenCalledTimes(1));
+  await act(async () => handlers.get("voice.turn.completed")?.({ payload: {
+    logicalConversationId: conversationId, clientOperationId: operationId, text: "別端末で完了", ...initialStats,
+  } }));
+  await act(async () => { alert.mock.calls[0][2]?.[1]?.onPress?.(); await sent; });
+  expect(mockManager.request.mock.calls.some(([message]) => message.op === "voice.session-reset.respond")).toBe(false);
+  alert.mockRestore();
+});
+
 test("streams only the matching voice reply and reconciles it with the completed text", async () => {
   const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
   await waitFor(() => expect(result.current.ready).toBe(true));
@@ -253,6 +330,51 @@ test("stopping a voice turn interrupts the matching operation and ignores its la
   expect(result.current.reply).toBeNull();
   expect(onCompleted).not.toHaveBeenCalled();
 });
+test("an unknown operation remains interruptible after reopening", async () => {
+  mockManager.request.mockImplementation(async ({ op }: { op: string }) => {
+    if (op === "voice.open") return { op: "voice.open.result", payload: {
+      logicalConversationId: conversationId, contextMode: "self_context_array", clientOperationId: operationId,
+      status: "unknown", ...initialStats,
+    } };
+    if (op === "voice.status") return { op: "voice.status.result", payload: {
+      clientOperationId: operationId, status: "unknown", ...initialStats,
+    } };
+    if (op === "voice.turn.interrupt") return { op: "voice.turn.interrupt.result", payload: { status: "interrupted" } };
+    throw new Error(`unexpected ${op}`);
+  });
+  const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
+  await waitFor(() => expect(result.current.ready).toBe(true));
+  expect(result.current.turnStatus).toBe("running");
+  expect(result.current.error).toBe("前の返答を確認できません。");
+  await act(async () => result.current.interrupt());
+  expect(mockManager.request).toHaveBeenCalledWith(expect.objectContaining({ op: "voice.turn.interrupt",
+    payload: expect.objectContaining({ clientOperationId: operationId }) }), { timeoutMs: 30_000 });
+  expect(mockManager.request.mock.calls.filter(([request]) => request.op === "turn.start")).toHaveLength(0);
+});
+
+test("stopping during the reset alert ignores its late answer", async () => {
+  const alert = jest.spyOn(Alert, "alert").mockImplementation(() => undefined);
+  const original = mockManager.request.getMockImplementation();
+  mockManager.request.mockImplementation(async (message: { op: string }) => {
+    if (message.op === "turn.start") return { op: "turn.accepted", payload: { clientOperationId: operationId,
+      status: "confirmation_required", resetConfirmation: { parentGeneration: 0, turnSeq: 12 } } };
+    if (message.op === "voice.turn.interrupt") return { op: "voice.turn.interrupt.result" };
+    return original?.(message);
+  });
+  const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
+  await waitFor(() => expect(result.current.ready).toBe(true));
+  let sent!: Promise<void>;
+  await act(async () => { sent = result.current.sendTranscript("held", jest.fn()); });
+  await waitFor(() => expect(alert).toHaveBeenCalledTimes(1));
+  await act(async () => result.current.interrupt());
+  await sent;
+  await act(async () => { alert.mock.calls[0][2]?.[1]?.onPress?.(); });
+  expect(mockManager.request.mock.calls.filter(([request]) => request.op === "voice.session-reset.respond")).toHaveLength(0);
+  expect(mockManager.request.mock.calls.filter(([request]) => request.op === "turn.start")).toHaveLength(1);
+  expect(result.current.turnStatus).toBe("idle");
+  alert.mockRestore();
+});
+
 test("reopening after an intentional voice interruption is ready for recording", async () => {
   mockManager.request.mockResolvedValue({ op: "voice.open.result", payload: {
     logicalConversationId: conversationId, contextMode: "self_context_array",

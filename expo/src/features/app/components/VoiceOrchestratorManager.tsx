@@ -14,6 +14,7 @@ import { VoiceOrchestratorIcon, type VoiceOrchestrator } from "./VoiceOrchestrat
 type VoiceModel = { modelId: string; label: string; effortOptions: ReasoningEffort[] };
 type Detail = {
   name: string; icon: string; model: string; effort: ReasoningEffort; systemInstruction: string;
+  topicModel: string; topicEffort: ReasoningEffort;
   models: VoiceModel[]; storedMessageCount: number; memoryCharacterCount: number;
 };
 type List = { orchestrators: VoiceOrchestrator[]; selectedId: string };
@@ -54,6 +55,7 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
       .then((value) => {
         if (!current) return;
         if (typeof value.model !== "string" || !isReasoningEffort(value.effort)
+          || typeof value.topicModel !== "string" || !isReasoningEffort(value.topicEffort)
           || typeof value.systemInstruction !== "string" || !Array.isArray(value.models)) {
           throw new Error("設定を読み込めません。");
         }
@@ -67,6 +69,7 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
           name: detailId === "new" ? "" : String(value.name || ""),
           icon: detailId === "new" ? "" : String(value.icon || ""),
           model: value.model, effort: value.effort, systemInstruction: value.systemInstruction,
+          topicModel: value.topicModel, topicEffort: value.topicEffort,
           models, storedMessageCount: Number(value.storedMessageCount || 0),
           memoryCharacterCount: Number(value.memoryCharacterCount || 0),
         });
@@ -90,6 +93,7 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
         ...(detailId === "new" ? {} : { orchestratorId: detailId }),
         name: detail.name, icon: detail.icon, model: detail.model,
         effort: detail.effort, systemInstruction: detail.systemInstruction,
+        topicModel: detail.topicModel, topicEffort: detail.topicEffort,
       });
       applyList(result);
       setDetailId(null);
@@ -143,6 +147,9 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
 
   const currentModel = detail?.models.find((model) => model.modelId === detail.model);
   const efforts = effortOptionsForModel(currentModel && { supportsReasoningEffort: true, effortOptions: currentModel.effortOptions });
+  const currentTopicModel = detail?.models.find((model) => model.modelId === detail.topicModel);
+  const topicEfforts = effortOptionsForModel(currentTopicModel
+    && { supportsReasoningEffort: true, effortOptions: currentTopicModel.effortOptions });
 
   return (
     <AppModal visible={visible} animationType="slide" onRequestClose={() => detailId === null ? onClose() : setDetailId(null)}>
@@ -201,6 +208,19 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
                 <SettingsSelect icon="options-outline" label="エフォート"
                   options={efforts.map((effort) => ({ value: effort, label: EFFORT_LABELS[effort] }))}
                   selectedValue={detail.effort} onSelect={(effort) => setDetail({ ...detail, effort: effort as ReasoningEffort })} />
+                <SettingsSelect icon="git-branch-outline" label="話題判定モデル"
+                  options={detail.models.map((model) => ({ value: model.modelId, label: model.label }))}
+                  selectedValue={detail.topicModel} onSelect={(topicModel) => {
+                    const option = detail.models.find((item) => item.modelId === topicModel);
+                    if (option) setDetail({ ...detail, topicModel,
+                      topicEffort: option.effortOptions.includes(detail.topicEffort)
+                        ? detail.topicEffort : option.effortOptions[0] });
+                  }} />
+                <SettingsSelect icon="speedometer-outline" label="話題判定エフォート"
+                  options={topicEfforts.map((effort) => ({ value: effort, label: EFFORT_LABELS[effort] }))}
+                  selectedValue={detail.topicEffort}
+                  onSelect={(topicEffort) => setDetail({ ...detail, topicEffort: topicEffort as ReasoningEffort })} />
+                {!currentTopicModel ? <Text style={styles.settingsErrorText}>話題判定モデルは現在利用できません。</Text> : null}
                 <View style={[styles.settingsRow, styles.settingsRowDivider, { flexDirection: "column", alignItems: "stretch" }]}>
                   <Text style={styles.settingsRowLabel}>システム指示</Text>
                   <TextInput testID="orchestrator-system-instruction" accessibilityLabel="システム指示"
