@@ -1,4 +1,5 @@
 import { spawn, execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { createTranscriptInactivityTimer } from "./stt-transcript-inactivity.mjs";
@@ -35,6 +36,12 @@ function audioLevel(buffer) {
   return Math.sqrt(squareSum / (buffer.length / 2));
 }
 
+const NATIVE_ERROR_DOMAINS = new Set([
+  "kAFAssistantErrorDomain", "kLSRErrorDomain", "SFSpeechErrorDomain",
+  "NSCocoaErrorDomain", "NSPOSIXErrorDomain", "NSOSStatusErrorDomain",
+  "NSURLErrorDomain", "AVFoundationErrorDomain",
+]);
+
 const NATIVE_ERRORS = {
   macos_locale_unavailable: "このMacでは日本語の音声認識を利用できません。",
   macos_on_device_unavailable: "このMacでは日本語のオンデバイス音声認識を利用できません。",
@@ -69,7 +76,28 @@ export function createMacosStreamingSttHandler({
     let silentMs = 0;
     let lastRms = null;
     let maxSilentRms = 0;
+    const streamId = randomUUID();
     const startedAt = performance.now();
+    let readyAt = null;
+    let firstAudioAt = null;
+    let lastAudioAt = null;
+    let maxRms = 0;
+    const diagnose = (event, details = {}) => {
+      const now = performance.now();
+      log.info?.(`[stream-stt] ${event}`, {
+        streamId, helperPid: child?.pid ?? null, phase,
+        elapsedMs: Math.round(now - startedAt),
+        audioMs: Math.round(sentBytes / BYTES_PER_SECOND * 1000),
+        pendingAudioMs: Math.round(pendingBytes / BYTES_PER_SECOND * 1000),
+        firstAudioAfterReadyMs: firstAudioAt === null || readyAt === null ? null : Math.round(firstAudioAt - readyAt),
+        lastAudioAgoMs: lastAudioAt === null ? null : Math.round(now - lastAudioAt),
+        inputEnded, endReason, speechBegan, finalHadText, finalChars,
+        lastPartialChars: lastPartialText.length,
+        finalizationMs: inputEndedAt === null ? null : Math.round(now - inputEndedAt),
+        maxRms: Number(maxRms.toFixed(4)),
+        ...details,
+      });
+    };
     let output = "";
     let work = Promise.resolve();
     let startupTimer;
@@ -95,9 +123,9 @@ export function createMacosStreamingSttHandler({
       child?.stdin.destroy();
       child?.kill();
     };
-    const finishError = (code, message, retryable = false) => {
+    const finishError = (code, message, retryable = false, nativeDetails = {}) => {
       if (terminal) return;
-      log.info?.("[stream-stt] macos_failed", { code, phase, inputEnded, endReason, finalHadText });
+      diagnose("macos_failed", { code, retryable, ...nativeDetails });
       send({ type: "error", code, message, retryable });
       terminal = true;
       clearTimers();
@@ -106,12 +134,9 @@ export function createMacosStreamingSttHandler({
     };
     const finishDone = () => {
       if (terminal) return;
-      log.info?.("[stream-stt] macos_done_attempted", {
+      diagnose("macos_done_attempted", {
         reason: endReason || (speechBegan ? "speech_end_timeout" : "no_speech_timeout"),
         hasSpeech: finalHadText,
-        finalChars,
-        lastPartialChars: lastPartialText.length,
-        finalizationMs: inputEndedAt === null ? null : Math.round(performance.now() - inputEndedAt),
         socketOpen: ws.readyState === 1,
       });
       send({ type: "done", reason: endReason || (speechBegan ? "speech_end_timeout" : "no_speech_timeout"), hasSpeech: finalHadText });
@@ -127,11 +152,8 @@ export function createMacosStreamingSttHandler({
       inputEndedAt = performance.now();
       endReason = reason;
       phase = "finalizing";
-      log.info?.("[stream-stt] macos_input_ended", {
+      diagnose("macos_input_ended", {
         trigger,
-        elapsedMs: Math.round(performance.now() - startedAt),
-        audioMs: Math.round(sentBytes / BYTES_PER_SECOND * 1000),
-        speechBegan,
         silentMs: Math.round(silentMs),
         lastRms: lastRms === null ? null : Number(lastRms.toFixed(4)),
         maxSilentRms: Number(maxSilentRms.toFixed(4)),
@@ -158,6 +180,8 @@ export function createMacosStreamingSttHandler({
       if (message.type === "ready" && phase === "starting") {
         clearTimeout(startupTimer);
         phase = "ready";
+        readyAt = performance.now();
+        diagnose("macos_ready");
         send({ type: "ready" });
         noSpeechTimer = setTimeout(() => endInput("no_speech_timeout"), noSpeechTimeoutMs);
         noSpeechTimer.unref?.();
@@ -178,10 +202,8 @@ export function createMacosStreamingSttHandler({
             finalHadText = true;
             finalChars += transcript.length;
           }
-          log.info?.("[stream-stt] macos_final_transcript", {
-            chars: message.text.length, nativeHadText, cumulativeChars: finalChars, lastPartialChars: lastPartialText.length,
-            usedPartialFallback, inputEnded,
-            finalizationMs: inputEndedAt === null ? null : Math.round(performance.now() - inputEndedAt),
+          diagnose("macos_final_transcript", {
+            chars: message.text.length, nativeHadText, cumulativeChars: finalChars, usedPartialFallback,
           });
         }
         send({ type: "transcript", text: transcript, isFinal: message.isFinal, stability: message.isFinal ? 1 : 0 });
@@ -196,13 +218,24 @@ export function createMacosStreamingSttHandler({
           finishError("macos_helper_protocol", "Macの音声認識から不正な応答を受信しました。", true);
           return;
         }
+        const nativeDetails = {};
+        for (const prefix of ["native", "underlying"]) {
+          const domain = message[`${prefix}ErrorDomain`];
+          const code = message[`${prefix}ErrorCode`];
+          if (typeof domain === "string" && Number.isSafeInteger(code)) {
+            nativeDetails[`${prefix}ErrorDomain`] = NATIVE_ERROR_DOMAINS.has(domain) ? domain : "unknown";
+            nativeDetails[`${prefix}ErrorCode`] = code;
+          }
+        }
+        if (typeof message.recognizerAvailable === "boolean") nativeDetails.recognizerAvailable = message.recognizerAvailable;
         if (message.code === "macos_recognition_failed" && phase === "finalizing"
           && endReason === "no_speech_timeout" && !speechBegan) {
+          diagnose("macos_no_speech_error", nativeDetails);
           finishDone();
           return;
         }
         finishError(message.code, NATIVE_ERRORS[message.code],
-          message.code === "macos_recognition_failed");
+          message.code === "macos_recognition_failed", nativeDetails);
         return;
       }
       finishError("macos_helper_protocol", "Macの音声認識から不正な応答を受信しました。", true);
@@ -213,6 +246,7 @@ export function createMacosStreamingSttHandler({
         return;
       }
       phase = "starting";
+      diagnose("macos_starting");
       startupTimer = setTimeout(() => finishError("macos_start_timeout", "Macの音声認識を開始できませんでした。", true), startupTimeoutMs);
       startupTimer.unref?.();
       try {
@@ -253,9 +287,13 @@ export function createMacosStreamingSttHandler({
       }
       await new Promise((resolve, reject) => child.stdin.write(audio, (error) => error ? reject(error) : resolve()));
       sentBytes += audio.length;
+      const now = performance.now();
+      firstAudioAt ??= now;
+      lastAudioAt = now;
       if (terminal || inputEnded) return;
       const durationMs = audio.length / BYTES_PER_SECOND * 1000;
       lastRms = audioLevel(audio);
+      maxRms = Math.max(maxRms, lastRms);
       if (lastRms >= VAD_THRESHOLD) {
         loudMs += durationMs;
         silentMs = 0;
@@ -309,7 +347,7 @@ export function createMacosStreamingSttHandler({
     });
     ws.on("close", () => {
       if (terminal) return;
-      log.info?.("[stream-stt] macos_closed_before_done", { phase, inputEnded, endReason, finalHadText, finalChars });
+      diagnose("macos_closed_before_done");
       terminal = true;
       clearTimers();
       closeChild();

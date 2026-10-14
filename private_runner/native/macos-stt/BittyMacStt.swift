@@ -83,8 +83,18 @@ struct BittyMacStt {
                     return
                 }
             }
-            if error != nil {
-                output.send(["type": "error", "code": "macos_recognition_failed"])
+            if let error {
+                let nativeError = error as NSError
+                var message: [String: Any] = [
+                    "type": "error", "code": "macos_recognition_failed",
+                    "nativeErrorDomain": nativeError.domain, "nativeErrorCode": nativeError.code,
+                    "recognizerAvailable": recognizer.isAvailable,
+                ]
+                if let underlyingError = nativeError.userInfo[NSUnderlyingErrorKey] as? NSError {
+                    message["underlyingErrorDomain"] = underlyingError.domain
+                    message["underlyingErrorCode"] = underlyingError.code
+                }
+                output.send(message)
                 completion.finish()
             }
         }
