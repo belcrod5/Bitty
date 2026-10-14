@@ -39,7 +39,7 @@
 @end
 static TestMediaLoading *mediaRequest(NSString *origin, NSString *path, NSInteger offset, NSInteger length) {
   TestMediaLoading *loading = [TestMediaLoading new];
-  NSURL *url = [[BittyRunnerTLS shared] mediaURL:[NSURL URLWithString:[origin stringByAppendingString:path]]];
+  NSURL *url = [[BittyRunnerTLS shared] mediaURL:[NSURL URLWithString:[origin stringByAppendingString:path]] headers:@{}];
   loading.request = [NSURLRequest requestWithURL:url];
   loading.dataRequest = [TestMediaData new];
   loading.dataRequest.requestedOffset = offset;
@@ -54,6 +54,31 @@ static BOOL waitUntil(BOOL (^done)(void)) {
   return done();
 }
 static NSString *storagePath;
+static NSData *fixtureAnchor;
+static NSInteger fixtureCloudPort, fixtureRedirectPort;
+static BOOL cloudUsesDefaultTrust;
+static IMP originalChallenge;
+static void fixturePublicCA(id self, SEL selector, NSURLAuthenticationChallenge *challenge,
+    void (^completion)(NSURLSessionAuthChallengeDisposition, NSURLCredential *)) {
+  if ([challenge.protectionSpace.host isEqual:@"localhost"] &&
+      (challenge.protectionSpace.port == fixtureCloudPort || challenge.protectionSpace.port == fixtureRedirectPort)) {
+    ((void (*)(id, SEL, NSURLAuthenticationChallenge *, void (^)(NSURLSessionAuthChallengeDisposition, NSURLCredential *)))originalChallenge)
+      (self, selector, challenge, ^(NSURLSessionAuthChallengeDisposition disposition, NSURLCredential *credential) {
+        cloudUsesDefaultTrust = disposition == NSURLSessionAuthChallengePerformDefaultHandling;
+        SecTrustRef trust = challenge.protectionSpace.serverTrust;
+        SecCertificateRef anchor = SecCertificateCreateWithData(NULL, (__bridge CFDataRef)fixtureAnchor);
+        SecTrustSetAnchorCertificates(trust, (__bridge CFArrayRef)@[(__bridge id)anchor]);
+        SecTrustSetAnchorCertificatesOnly(trust, true);
+        BOOL accepted = cloudUsesDefaultTrust && SecTrustEvaluateWithError(trust, NULL);
+        CFRelease(anchor);
+        completion(accepted ? NSURLSessionAuthChallengeUseCredential : NSURLSessionAuthChallengeCancelAuthenticationChallenge,
+          accepted ? [NSURLCredential credentialForTrust:trust] : nil);
+      });
+    return;
+  }
+  ((void (*)(id, SEL, NSURLAuthenticationChallenge *, void (^)(NSURLSessionAuthChallengeDisposition, NSURLCredential *)))originalChallenge)
+    (self, selector, challenge, completion);
+}
 static NSURL *testConfigurationFile(id self, SEL selector) { return [NSURL fileURLWithPath:storagePath]; }
 static NSError *fetch(NSURL *url, NSInteger *status, BOOL defaultSession) {
   __block BOOL done = NO;
@@ -148,7 +173,7 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
   check(largeReceived, @"Production WebSocket preserves envelopes larger than one MiB");
   check(closed && socket.terminal, @"Production WebSocket cancellation closes its session");
   socket.emit = nil;
-  NSURL *media = [[BittyRunnerTLS shared] mediaURL:[NSURL URLWithString:[origin stringByAppendingString:@"/test.mp4"]]];
+  NSURL *media = [[BittyRunnerTLS shared] mediaURL:[NSURL URLWithString:[origin stringByAppendingString:@"/test.mp4"]] headers:@{}];
   AVURLAsset *asset = [AVURLAsset URLAssetWithURL:media options:nil];
   [BittyRunnerMediaLoader attachToAsset:asset headers:@{@"Authorization":@"Bearer temporary-native-test-only",@"CF-Access-Client-Secret":@"temporary-test-only"}];
   __block BOOL mediaDone = NO;
@@ -192,5 +217,53 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
   }];
   check(waitUntil(^BOOL{ return [(NSDictionary *)[loader valueForKey:@"requests"] count] == 0; }) && !slow.isFinished,
         @"Active media cancellation removes and cancels its network request");
+  NSString *cloudOrigin = [NSString stringWithFormat:@"https://localhost:%@", ports[@"cloud"]];
+  NSDictionary *cloudHeaders = @{@"cf-access-client-id":@"test-cloud-id", @"CF-Access-Client-Secret":@"test-cloud-secret"};
+  NSURL *cloudURL = [NSURL URLWithString:[cloudOrigin stringByAppendingString:@"/cloud.mp4"]];
+  check([[[BittyRunnerTLS shared] mediaURL:cloudURL headers:@{}] isEqual:cloudURL], @"Uncredentialed nonpaired media keeps the native AV path");
+  check(![[BittyRunnerTLS shared] handlesURL:cloudURL], @"Authenticated Cloudflare media does not gain paired CA trust");
+  check(fetch(cloudURL, &status, NO) != nil, @"Unpaired private CA remains rejected by normal OS trust");
+  fixtureAnchor = [NSData dataWithContentsOfFile:[base stringByAppendingPathComponent:@"ca.der"]];
+  fixtureCloudPort = [ports[@"cloud"] integerValue];
+  fixtureRedirectPort = [ports[@"redirected"] integerValue];
+  Method trustMethod = class_getInstanceMethod(BittyRunnerTLS.class, @selector(handleChallenge:completion:));
+  originalChallenge = method_setImplementation(trustMethod, (IMP)fixturePublicCA);
+  AVURLAsset *cloudAsset = [AVURLAsset URLAssetWithURL:[[BittyRunnerTLS shared] mediaURL:cloudURL headers:cloudHeaders] options:nil];
+  [BittyRunnerMediaLoader attachToAsset:cloudAsset headers:cloudHeaders];
+  __block BOOL cloudDone = NO;
+  [cloudAsset loadValuesAsynchronouslyForKeys:@[@"playable"] completionHandler:^{ cloudDone = YES; }];
+  check(waitUntil(^BOOL{ return cloudDone; }) && cloudAsset.playable && cloudUsesDefaultTrust,
+        @"Authenticated media loads through source-scoped transport (test-only CA fixture)");
+  BittyRunnerMediaLoader *cloudLoader = objc_getAssociatedObject(cloudAsset, @selector(attachToAsset:headers:));
+  NSOperationQueue *cloudQueue = [cloudLoader valueForKey:@"queue"];
+  TestMediaLoading *redirected = mediaRequest(origin, @"/cloud-redirect.mp4", 0, 2);
+  redirected.request = [NSURLRequest requestWithURL:[[BittyRunnerTLS shared] mediaURL:
+      [NSURL URLWithString:[cloudOrigin stringByAppendingString:@"/cloud-redirect.mp4"]] headers:cloudHeaders]];
+  [cloudQueue addOperationWithBlock:^{
+    [cloudLoader resourceLoader:cloudAsset.resourceLoader shouldWaitForLoadingOfRequestedResource:(id)redirected];
+  }];
+  check(waitUntil(^BOOL{ return redirected.isFinished; }) && redirected.error && redirected.dataRequest.received.length == 0,
+        @"Credentialled media rejects a cross-origin redirect before delivery");
+  TestMediaLoading *changedOrigin = mediaRequest(origin, @"/cloud.mp4", 0, 2);
+  NSURLComponents *changedURL = [NSURLComponents componentsWithURL:cloudAsset.URL resolvingAgainstBaseURL:NO];
+  changedURL.port = @(fixtureRedirectPort);
+  changedOrigin.request = [NSURLRequest requestWithURL:changedURL.URL];
+  [cloudQueue addOperationWithBlock:^{
+    [cloudLoader resourceLoader:cloudAsset.resourceLoader shouldWaitForLoadingOfRequestedResource:(id)changedOrigin];
+  }];
+  check(waitUntil(^BOOL{ return changedOrigin.isFinished; }) && changedOrigin.error && changedOrigin.dataRequest.received.length == 0,
+        @"Credentialled asset refuses a requested resource at a different source port");
+  TestMediaLoading *missingAuth = mediaRequest(origin, @"/cloud.mp4", 0, 2);
+  missingAuth.request = [NSURLRequest requestWithURL:[[BittyRunnerTLS shared] mediaURL:cloudURL headers:cloudHeaders]];
+  AVURLAsset *unauthAsset = [AVURLAsset URLAssetWithURL:missingAuth.request.URL options:nil];
+  [BittyRunnerMediaLoader attachToAsset:unauthAsset headers:@{}];
+  BittyRunnerMediaLoader *unauthLoader = objc_getAssociatedObject(unauthAsset, @selector(attachToAsset:headers:));
+  [[unauthLoader valueForKey:@"queue"] addOperationWithBlock:^{
+    [unauthLoader resourceLoader:unauthAsset.resourceLoader shouldWaitForLoadingOfRequestedResource:(id)missingAuth];
+  }];
+  check(waitUntil(^BOOL{ return missingAuth.isFinished; }) && missingAuth.error,
+        @"Missing media credentials fail the dummy Access gate");
+  [cloudAsset cancelLoading];
+  method_setImplementation(trustMethod, originalChallenge);
   printf("ALL NATIVE HTTP, WEBSOCKET AND MEDIA TESTS PASSED\n");
 }}

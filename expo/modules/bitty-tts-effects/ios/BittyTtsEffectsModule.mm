@@ -68,6 +68,7 @@ RCT_REMAP_METHOD(process,
                  processUri:(NSString *)uri
                  effect:(NSDictionary *)effect
                  requestId:(NSString *)requestId
+                 headers:(NSDictionary<NSString *, NSString *> *)headers
                  resolver:(RCTPromiseResolveBlock)resolve
                  rejecter:(RCTPromiseRejectBlock)reject)
 {
@@ -107,7 +108,13 @@ RCT_REMAP_METHOD(process,
   }
 
   NSURLSession *session = [[BittyRunnerTLS shared] sessionWithDelegate:nil queue:nil];
-  NSURLSessionDownloadTask *task = [session downloadTaskWithURL:url
+  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+  BOOL pairedLocal = [[BittyRunnerTLS shared] handlesURL:url];
+  for (NSString *name in headers) {
+    if (pairedLocal && [name.lowercaseString hasPrefix:@"cf-access-"]) continue;
+    if ([headers[name] isKindOfClass:NSString.class]) [request setValue:headers[name] forHTTPHeaderField:name];
+  }
+  NSURLSessionDownloadTask *task = [session downloadTaskWithRequest:request
       completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
         [session finishTasksAndInvalidate];
         BOOL cancelled = [self isCancelled:requestId];

@@ -153,8 +153,16 @@ extern void RCTSetCustomNSURLSessionConfigurationProvider(NSURLSessionConfigurat
   completion(nil);
 }
 
-- (NSURL *)mediaURL:(NSURL *)url {
-  if (![self handlesURL:url] || ![url.scheme.lowercaseString isEqual:@"https"]) return url;
+- (NSURL *)mediaURL:(NSURL *)url headers:(NSDictionary<NSString *, NSString *> *)headers {
+  if (![url.scheme.lowercaseString isEqual:@"https"] || url.user || url.password) return url;
+  BOOL accessId = NO, accessSecret = NO;
+  for (NSString *name in headers) {
+    id value = headers[name];
+    if (![value isKindOfClass:NSString.class] || ![value length]) continue;
+    if ([name caseInsensitiveCompare:@"CF-Access-Client-Id"] == NSOrderedSame) accessId = YES;
+    if ([name caseInsensitiveCompare:@"CF-Access-Client-Secret"] == NSOrderedSame) accessSecret = YES;
+  }
+  if (![self handlesURL:url] && !(accessId && accessSecret)) return url;
   NSURLComponents *components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
   components.scheme = @"bitty-runner-media";
   return components.URL;

@@ -12,6 +12,6 @@ NS_ASSUME_NONNULL_BEGIN
 - (NSURLSession *)sessionWithDelegate:(nullable id<NSURLSessionDelegate>)delegate queue:(nullable NSOperationQueue *)queue NS_SWIFT_NAME(session(withDelegate:queue:));
 - (void)handleChallenge:(NSURLAuthenticationChallenge *)challenge
              completion:(void (^)(NSURLSessionAuthChallengeDisposition, NSURLCredential *_Nullable))completion NS_SWIFT_NAME(handle(_:completion:));
-- (NSURL *)mediaURL:(NSURL *)url;
+- (NSURL *)mediaURL:(NSURL *)url headers:(NSDictionary<NSString *, NSString *> *)headers;
 @end
 NS_ASSUME_NONNULL_END

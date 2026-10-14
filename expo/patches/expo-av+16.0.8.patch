@@ -25,7 +25,7 @@ diff --git a/node_modules/expo-av/ios/EXAV/EXAVPlayerData.m b/node_modules/expo-
      assetUrl = temporaryFileUrl;
    }
  
-+  assetUrl = [[BittyRunnerTLS shared] mediaURL:assetUrl];
++  assetUrl = [[BittyRunnerTLS shared] mediaURL:assetUrl headers:_headers];
    AVURLAsset *avAsset = [AVURLAsset URLAssetWithURL:assetUrl options:@{AVURLAssetHTTPCookiesKey : cookies, @"AVURLAssetHTTPHeaderFieldsKey": _headers}];
 +  [BittyRunnerMediaLoader attachToAsset:avAsset headers:_headers];
    // unless we preload, the asset will not necessarily load the duration by the time we try to play it.

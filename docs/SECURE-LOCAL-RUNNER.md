@@ -29,7 +29,11 @@ forwards credentials across redirects or attaches Cloudflare service credentials
 AVFoundation does not apply ordinary URLSession trust delegates to its own HTTPS
 media requests. The existing ExpoAV asset factory therefore gives paired media a
 custom scheme and installs a native incremental Range loader that uses the same
-TLS policy. This preserves streaming and cancellation instead of downloading an
+TLS policy. Authenticated Cloudflare media uses this same loader with its
+original HTTPS hostname and port fixed for the asset; it retains normal OS trust
+and refuses redirects, so service-token headers cannot follow a different origin.
+The common TTS playback entry supplies origin-scoped Access headers to both the
+standard player and themed native downloader. This preserves streaming and cancellation instead of downloading an
 entire video before playback. The small ExpoAV patch is applied by the existing
 patch-package workflow. Native interfaces are separated by their current
 responsibilities; no screen-specific HTTP or certificate wrappers are added.

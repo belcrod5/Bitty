@@ -16,6 +16,7 @@
 @property(nonatomic, strong) NSURLSession *session;
 @property(nonatomic, strong) NSMutableDictionary<NSValue *, BittyRunnerMediaRequest *> *requests;
 @property(nonatomic, strong) NSOperationQueue *queue;
+@property(nonatomic, strong) NSURL *sourceOrigin;
 @end
 
 @implementation BittyRunnerMediaLoader
@@ -23,6 +24,12 @@
   if (![asset.URL.scheme isEqual:@"bitty-runner-media"]) return;
   BittyRunnerMediaLoader *loader = [self new];
   loader.headers = headers;
+  NSURLComponents *origin = [NSURLComponents componentsWithURL:asset.URL resolvingAgainstBaseURL:NO];
+  origin.scheme = @"https";
+  origin.path = @"";
+  origin.query = nil;
+  origin.fragment = nil;
+  loader.sourceOrigin = origin.URL;
   loader.requests = [NSMutableDictionary new];
   loader.queue = [NSOperationQueue new];
   loader.queue.maxConcurrentOperationCount = 1;
@@ -37,13 +44,17 @@
   NSURLComponents *components = [NSURLComponents componentsWithURL:loading.request.URL resolvingAgainstBaseURL:NO];
   if (![components.scheme isEqual:@"bitty-runner-media"]) return NO;
   components.scheme = @"https";
-  if (![[BittyRunnerTLS shared] handlesURL:components.URL]) {
+  if (![components.host.lowercaseString isEqual:self.sourceOrigin.host.lowercaseString] ||
+      (components.port.integerValue ?: 443) != (self.sourceOrigin.port.integerValue ?: 443) ||
+      components.user || components.password) {
     [loading finishLoadingWithError:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorServerCertificateUntrusted userInfo:nil]];
     return YES;
   }
   NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:components.URL];
+  BOOL pairedLocal = [[BittyRunnerTLS shared] handlesURL:components.URL];
   for (NSString *header in self.headers) {
-    if (![header.lowercaseString hasPrefix:@"cf-access-"]) [request setValue:self.headers[header] forHTTPHeaderField:header];
+    if (pairedLocal && [header.lowercaseString hasPrefix:@"cf-access-"]) continue;
+    [request setValue:self.headers[header] forHTTPHeaderField:header];
   }
   AVAssetResourceLoadingDataRequest *data = loading.dataRequest;
   int64_t offset = data.currentOffset ?: data.requestedOffset;

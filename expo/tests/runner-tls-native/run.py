@@ -77,4 +77,6 @@ extendedKeyUsage=serverAuth
     assert counts["protocolSecrets"] == 0, "Cloudflare secrets reached the local protocol or media loader"
     assert counts["metadataRange"] > 0, "AVAsset metadata was not served through an actual two-byte Range request"
     assert counts["slowCancelled"] > 0, "Active media cancellation did not abort its HTTP stream"
+    assert counts["redirected"] == 0, "Media credentials reached a redirected origin"
+    assert counts["cloudAuthenticated"] > 0 and counts["cloudMissing"] > 0, "Dummy Cloudflare credential gate was not exercised"
     print("PASS: rejected TLS peers and redirected targets received zero HTTP requests")
