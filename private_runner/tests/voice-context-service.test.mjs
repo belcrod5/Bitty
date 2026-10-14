@@ -71,7 +71,6 @@ function fakeCodex({ reply = "answer", summaryReply, topicReplies = [], failTopi
         }
         if (method === "thread/start") {
           isSummaryThread = params.approvalPolicy === "never";
-          isTopicThread = isSummaryThread && params.developerInstructions?.startsWith("Decide whether");
           if (!isSummaryThread && ++responseThreadStartCount === failResponseThreadStartAt) {
             throw Object.assign(new Error("response thread start failed"), { code: "app_server_failed" });
           }
@@ -109,6 +108,7 @@ function fakeCodex({ reply = "answer", summaryReply, topicReplies = [], failTopi
         }
         if (method === "mcpServerStatus/list") return mcpPage ?? { data: [], nextCursor: null };
         if (method === "turn/start") {
+          isTopicThread = isSummaryThread && Array.isArray(JSON.parse(params.input[0].text).recent);
           const isSummary = isSummaryThread && !isTopicThread;
           const isIsolated = isSummaryThread;
           const responseIndex = isIsolated ? -1 : responseTurnIndex++;
@@ -745,7 +745,7 @@ test("oversize serialized topic input skips only classification", async (t) => {
   const quoted = '"'.repeat(410_000);
   assert.equal((await complete(service, conversation, quoted)).result.status, "completed");
   assert.equal(codex.calls.filter(({ method, params }) => method === "turn/start"
-    && params.approvalPolicy === "never" && params.developerInstructions?.startsWith("Decide whether")).length, 0);
+    && params.approvalPolicy === "never" && Array.isArray(JSON.parse(params.input[0].text).recent)).length, 0);
 });
 
 test("a full newly adopted parent persists its limit after a failed response", async (t) => {
