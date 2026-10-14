@@ -68,7 +68,7 @@ RCT_REMAP_METHOD(process,
                  processUri:(NSString *)uri
                  effect:(NSDictionary *)effect
                  requestId:(NSString *)requestId
-                 headers:(NSDictionary<NSString *, NSString *> *)headers
+                 headers:(NSDictionary *)headers
                  resolver:(RCTPromiseResolveBlock)resolve
                  rejecter:(RCTPromiseRejectBlock)reject)
 {
