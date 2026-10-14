@@ -65,6 +65,7 @@ import { createGoogleCloudUsageLedger } from "./google-cloud-usage.mjs";
 import { createGoogleCloudHttpHandler } from "./google-cloud-http.mjs";
 import { MAX_FRAME_BYTES } from "./streaming-stt-protocol.mjs";
 import { createStreamingSttHandler } from "./streaming-stt-handler.mjs";
+import { createMacosStreamingSttHandler } from "./macos-streaming-stt.mjs";
 import { createSttSettingsService, createSttSettingsHttpHandler } from "./stt-settings.mjs";
 import { createSttCorrectionService, createSttCorrectionHttpHandler } from "./stt-correction.mjs";
 
@@ -7183,10 +7184,20 @@ const runnerWsClientInstanceIds = new WeakMap();
 const runnerWsServer = new WebSocketServer({ noServer: true });
 const wsServer = new WebSocketServer({ noServer: true });
 const streamSttWsServer = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES });
+const macosSttLog = {
+  info(event, payload) {
+    console.info(event, payload);
+    return appendClientAppLogs({
+      source: "runner_stt", sessionId: payload.streamId, device: "runner_macos",
+      events: [{ at: new Date().toISOString(), event: event.replace("[stream-stt] ", ""), payload }],
+    });
+  },
+};
 const handleStreamingStt = createStreamingSttHandler({
   sttSettings,
   googleCloudService,
   usageLedger: googleCloudUsageLedger,
+  macosHandler: createMacosStreamingSttHandler({ log: macosSttLog }),
 });
 
 streamSttWsServer.on("connection", (ws, req) => {
@@ -10362,6 +10373,7 @@ if (!RUNNER_SKIP_SERVER_START) {
 
 export const __TESTING__ = {
   server,
+  macosSttLog,
   HOST,
   handleRunnerRequest,
   resolvePublicBaseUrl,
