@@ -1,6 +1,7 @@
 import AVFoundation
 import ExpoModulesCore
 import Foundation
+import BittyRunnerTLS
 
 public class BittyStreamingSttModule: Module {
   private let queue = DispatchQueue(label: "bitty.stt.transport")
@@ -104,7 +105,7 @@ private final class StreamingSession: NSObject, URLSessionWebSocketDelegate {
     for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
     let delegateQueue = OperationQueue()
     delegateQueue.maxConcurrentOperationCount = 1
-    let session = URLSession(configuration: .default, delegate: self, delegateQueue: delegateQueue)
+    let session = BittyRunnerTLS.shared().session(withDelegate: self, queue: delegateQueue)
     let task = session.webSocketTask(with: request)
     socketSession = session
     socket = task
@@ -118,6 +119,11 @@ private final class StreamingSession: NSObject, URLSessionWebSocketDelegate {
       self.sendNext()
       self.receiveNext()
     }
+  }
+
+  func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
+                  completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+    BittyRunnerTLS.shared().handle(challenge, completion: completionHandler)
   }
 
   func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {

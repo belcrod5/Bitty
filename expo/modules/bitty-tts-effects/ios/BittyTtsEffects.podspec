@@ -10,6 +10,7 @@ Pod::Spec.new do |s|
   s.source         = { git: '' }
   s.static_framework = true
   s.dependency 'React-Core'
+  s.dependency 'BittyRunnerTLS'
   s.frameworks = 'AVFoundation'
   s.source_files = '**/*.mm'
 end

@@ -1,0 +1,55 @@
+diff --git a/node_modules/expo-av/ios/EXAV.podspec b/node_modules/expo-av/ios/EXAV.podspec
+--- a/node_modules/expo-av/ios/EXAV.podspec
++++ b/node_modules/expo-av/ios/EXAV.podspec
+@@ -18,6 +18,7 @@
+   s.static_framework = true
+ 
+   s.dependency 'ExpoModulesCore'
++  s.dependency 'BittyRunnerTLS'
+   s.dependency 'ReactCommon/turbomodule/core'
+ 
+   # Swift/Objective-C compatibility
+diff --git a/node_modules/expo-av/ios/EXAV/EXAVPlayerData.m b/node_modules/expo-av/ios/EXAV/EXAVPlayerData.m
+--- a/node_modules/expo-av/ios/EXAV/EXAVPlayerData.m
++++ b/node_modules/expo-av/ios/EXAV/EXAVPlayerData.m
+@@ -2,6 +2,8 @@
+ 
+ #import <EXAV/EXAVPlayerData.h>
+ #import <MobileCoreServices/MobileCoreServices.h>
++#import <BittyRunnerTLS/BittyRunnerTLS.h>
++#import <BittyRunnerTLS/BittyRunnerMediaLoader.h>
+ 
+ // This struct is passed between the MTAudioProcessingTap callbacks.
+ typedef struct AVAudioTapProcessorContext {
+@@ -154,7 +156,12 @@
+     assetUrl = temporaryFileUrl;
+   }
+ 
++  NSMutableURLRequest *sourceRequest = [NSMutableURLRequest requestWithURL:assetUrl];
++  sourceRequest.allHTTPHeaderFields = _headers;
++  [[BittyRunnerTLS shared] logMediaStage:@"player-source" request:sourceRequest response:nil error:nil];
++  assetUrl = [[BittyRunnerTLS shared] mediaURL:assetUrl headers:_headers];
+   AVURLAsset *avAsset = [AVURLAsset URLAssetWithURL:assetUrl options:@{AVURLAssetHTTPCookiesKey : cookies, @"AVURLAssetHTTPHeaderFieldsKey": _headers}];
++  [BittyRunnerMediaLoader attachToAsset:avAsset headers:_headers];
+   // unless we preload, the asset will not necessarily load the duration by the time we try to play it.
+   // http://stackoverflow.com/questions/20581567/avplayer-and-avfoundationerrordomain-code-11819
+   EX_WEAKIFY(self);
+@@ -162,6 +169,7 @@
+     EX_ENSURE_STRONGIFY(self);
+     NSError *error = nil;
+     AVKeyValueStatus status = [avAsset statusOfValueForKey:@"isPlayable" error:&error];
++    if (error) [[BittyRunnerTLS shared] logMediaStage:@"player-asset-error" request:sourceRequest response:nil error:error];
+ 
+     if (status == AVKeyValueStatusLoaded && !avAsset.isPlayable) {
+       NSString *errorMessage = @"Load encountered an error: [AVAsset isPlayable:] returned false. The asset does not contain a playable content or is not supported by the device.";
+@@ -1189,6 +1197,10 @@
+ }
+ 
+ - (void)_finishLoadWithError:(NSString *)errorMessage {
++  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:_url];
++  request.allHTTPHeaderFields = _headers;
++  [[BittyRunnerTLS shared] logMediaStage:@"player-error" request:request response:nil
++      error:self.player.currentItem.error ?: self.player.error];
+   if (self.loadFinishBlock) {
+     self.loadFinishBlock(NO, nil, errorMessage);
+     self.loadFinishBlock = nil;

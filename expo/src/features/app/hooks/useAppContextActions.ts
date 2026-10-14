@@ -9,6 +9,7 @@ import { isBackendChangeBlocked } from "../modelOptions";
 import type { CodexApprovalPolicy, ReasoningEffort } from "../utils/settingsParsers";
 import { parseCloudflareRunnerPairingPayload } from "../utils/cloudflareAccess";
 import { saveSecureRunnerCredentials } from "../utils/secureRunnerCredentials";
+import { configureLocalRunnerTls } from "../utils/localRunnerTls";
 
 type UseAppContextActionsArgs = {
   drawerOpen: boolean;
@@ -34,6 +35,7 @@ type UseAppContextActionsArgs = {
   setCloudflareAccessClientSecret: Dispatch<SetStateAction<string>>;
   setCloudflareRunnerUrl: Dispatch<SetStateAction<string>>;
   setLocalRunnerUrl: Dispatch<SetStateAction<string>>;
+  setLocalRunnerCertificate: Dispatch<SetStateAction<string>>;
   setCodexApprovalPolicy: Dispatch<SetStateAction<CodexApprovalPolicy>>;
   setModelSelectOpen: Dispatch<SetStateAction<boolean>>;
   setThinkSelectOpen: Dispatch<SetStateAction<boolean>>;
@@ -84,6 +86,7 @@ export function useAppContextActions({
   setCloudflareAccessClientSecret,
   setCloudflareRunnerUrl,
   setLocalRunnerUrl,
+  setLocalRunnerCertificate,
   setCodexApprovalPolicy,
   setModelSelectOpen,
   setThinkSelectOpen,
@@ -147,6 +150,7 @@ export function useAppContextActions({
   }, [setCloudflareAccessClientId, setCloudflareAccessClientSecret]);
   const applyCloudflareRunnerPairing = useCallback(async (payload: string): Promise<RunnerPairingResult> => {
     const pairing = parseCloudflareRunnerPairingPayload(payload);
+    await configureLocalRunnerTls(pairing.localRunnerUrl, pairing.localRunnerCertificate);
     await saveSecureRunnerCredentials({
       runnerToken: pairing.runnerToken,
       cloudflareAccessClientId: pairing.cloudflareAccessClientId,
@@ -158,6 +162,7 @@ export function useAppContextActions({
     setCloudflareAccessClientSecret(pairing.cloudflareAccessClientSecret);
     setCloudflareRunnerUrl(pairing.runnerUrl);
     setLocalRunnerUrl(pairing.localRunnerUrl);
+    setLocalRunnerCertificate(pairing.localRunnerCertificate);
     return {
       runnerUrl: pairing.runnerUrl,
       localRunnerUrl: pairing.localRunnerUrl,
@@ -167,6 +172,7 @@ export function useAppContextActions({
     setCloudflareAccessClientSecret,
     setCloudflareRunnerUrl,
     setLocalRunnerUrl,
+    setLocalRunnerCertificate,
     setRunnerToken,
     setRunnerUrl,
   ]);

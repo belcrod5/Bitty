@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { AppState, type AppStateStatus } from "react-native";
 import * as Network from "../networkState";
+import { isLocalRunnerTlsReady } from "../utils/localRunnerTls";
+import { runnerHttpsOrigin } from "../utils/urlResolvers";
 
 const ROUTE_RECHECK_DEBOUNCE_MS = 500;
 const NETWORK_STABILIZE_RECHECK_DELAYS_MS = [500, 2000, 5000];
@@ -9,6 +11,7 @@ const LOCAL_HEALTH_TIMEOUT_MS = 2500;
 type RunnerRouteSelectionArgs = {
   enabled: boolean;
   localRunnerUrl: string;
+  localRunnerCertificate: string;
   cloudflareRunnerUrl: string;
   runnerToken: string;
   runnerUrl: string;
@@ -45,7 +48,7 @@ function buildHealthUrl(runnerUrl: string) {
 async function probeRunnerHealth(runnerUrl: string, runnerToken: string) {
   const healthUrl = buildHealthUrl(runnerUrl);
   const token = String(runnerToken || "").trim();
-  if (!healthUrl || !token) return false;
+  if (!healthUrl || !token || !isLocalRunnerTlsReady(runnerUrl)) return false;
 
   const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
   const timeout = setTimeout(() => controller?.abort(), LOCAL_HEALTH_TIMEOUT_MS);
@@ -66,6 +69,7 @@ async function probeRunnerHealth(runnerUrl: string, runnerToken: string) {
 export function useRunnerRouteSelection({
   enabled,
   localRunnerUrl,
+  localRunnerCertificate,
   cloudflareRunnerUrl,
   runnerToken,
   runnerUrl,
@@ -73,8 +77,8 @@ export function useRunnerRouteSelection({
 }: RunnerRouteSelectionArgs) {
   const latestRef = useRef({
     enabled,
-    localRunnerUrl: trimTrailingSlash(localRunnerUrl),
-    cloudflareRunnerUrl: trimTrailingSlash(cloudflareRunnerUrl),
+    localRunnerUrl: isLocalRunnerTlsReady(localRunnerUrl, localRunnerCertificate) ? runnerHttpsOrigin(localRunnerUrl) : "",
+    cloudflareRunnerUrl: runnerHttpsOrigin(cloudflareRunnerUrl),
     runnerToken: String(runnerToken || "").trim(),
     runnerUrl: trimTrailingSlash(runnerUrl),
   });
@@ -94,8 +98,8 @@ export function useRunnerRouteSelection({
   useEffect(() => {
     latestRef.current = {
       enabled,
-      localRunnerUrl: trimTrailingSlash(localRunnerUrl),
-      cloudflareRunnerUrl: trimTrailingSlash(cloudflareRunnerUrl),
+      localRunnerUrl: isLocalRunnerTlsReady(localRunnerUrl, localRunnerCertificate) ? runnerHttpsOrigin(localRunnerUrl) : "",
+      cloudflareRunnerUrl: runnerHttpsOrigin(cloudflareRunnerUrl),
       runnerToken: String(runnerToken || "").trim(),
       runnerUrl: trimTrailingSlash(runnerUrl),
     };
@@ -103,6 +107,7 @@ export function useRunnerRouteSelection({
     cloudflareRunnerUrl,
     enabled,
     localRunnerUrl,
+    localRunnerCertificate,
     runnerToken,
     runnerUrl,
   ]);
@@ -184,12 +189,13 @@ export function useRunnerRouteSelection({
   }, [setRunnerUrl]);
 
   useEffect(() => {
-    if (!enabled || !localRunnerUrl || !cloudflareRunnerUrl || !runnerToken) return;
+    if (!enabled || !isLocalRunnerTlsReady(localRunnerUrl, localRunnerCertificate) || !runnerHttpsOrigin(cloudflareRunnerUrl) || !runnerToken) return;
     scheduleRouteSelectionRef.current([0]);
   }, [
     cloudflareRunnerUrl,
     enabled,
     localRunnerUrl,
+    localRunnerCertificate,
     runnerToken,
   ]);
 

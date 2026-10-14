@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import BittyRunnerTLS
 
 // Reads the configuration the native responder needs without any JS involvement:
 //
@@ -35,7 +36,41 @@ enum PushApprovalConfigStore {
   }
 
   static func readRunnerUrl() -> String {
-    return (readSettingsField("runnerUrl") as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    BittyRunnerTLS.install()
+    let current = (readSettingsField("runnerUrl") as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    let configuredCloudflare = readSettingsField("cloudflareRunnerUrl") ?? readSettingsField("tunnelRunnerUrl")
+    if let raw = configuredCloudflare as? String, !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+        httpsOrigin(raw).isEmpty { return "" }
+    if let url = URL(string: current), BittyRunnerTLS.shared().handlesURL(url) {
+      return current
+    }
+    let cloudflare = readCloudflareRunnerUrl()
+    if !cloudflare.isEmpty { return cloudflare }
+    let local = (readSettingsField("localRunnerUrl") as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    // A formerly-selected LAN URL is not a fallback when its trust is missing.
+    if current == local { return "" }
+    return httpsOrigin(current)
+  }
+
+  static func readCloudflareRunnerUrl() -> String {
+    let configured = readSettingsField("cloudflareRunnerUrl") ?? readSettingsField("tunnelRunnerUrl")
+    if let configured = configured as? String, !configured.isEmpty { return httpsOrigin(configured) }
+    let runner = readSettingsField("runnerUrl") as? String ?? ""
+    let local = readSettingsField("localRunnerUrl") as? String ?? ""
+    return runner == local ? "" : httpsOrigin(runner)
+  }
+
+  static func sameOrigin(_ left: URL, _ right: URL) -> Bool {
+    return left.scheme?.lowercased() == right.scheme?.lowercased() &&
+      left.host?.lowercased() == right.host?.lowercased() && (left.port ?? 443) == (right.port ?? 443)
+  }
+
+  private static func httpsOrigin(_ raw: String) -> String {
+    let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let url = URL(string: value), url.scheme?.lowercased() == "https", url.host != nil,
+      url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
+      url.path.isEmpty || url.path == "/" else { return "" }
+    return value
   }
 
   static func readFaceIdRequiredForApproval() -> Bool {

@@ -1,5 +1,6 @@
 #import <AVFoundation/AVFoundation.h>
 #import <React/RCTBridgeModule.h>
+#import <BittyRunnerTLS/BittyRunnerTLS.h>
 
 static NSString *BittyTtsTempPath(NSString *extension)
 {
@@ -67,6 +68,7 @@ RCT_REMAP_METHOD(process,
                  processUri:(NSString *)uri
                  effect:(NSDictionary *)effect
                  requestId:(NSString *)requestId
+                 headers:(NSDictionary *)headers
                  resolver:(RCTPromiseResolveBlock)resolve
                  rejecter:(RCTPromiseRejectBlock)reject)
 {
@@ -86,6 +88,8 @@ RCT_REMAP_METHOD(process,
       BOOL success = ![self isCancelled:requestId] &&
           [self renderFile:inputURL toURL:[NSURL fileURLWithPath:outputPath]
                    effect:effect requestId:requestId error:&error];
+      if (error) [[BittyRunnerTLS shared] logMediaStage:@"effect-render-error"
+          request:[NSURLRequest requestWithURL:inputURL] response:nil error:error];
       if (deleteInput) [[NSFileManager defaultManager] removeItemAtURL:inputURL error:nil];
       BOOL cancelled = [self isCancelled:requestId];
       [self finishRequest:requestId];
@@ -105,8 +109,18 @@ RCT_REMAP_METHOD(process,
     return;
   }
 
-  NSURLSessionDownloadTask *task = [NSURLSession.sharedSession downloadTaskWithURL:url
+  NSURLSession *session = [[BittyRunnerTLS shared] sessionWithDelegate:nil queue:nil];
+  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+  BOOL pairedLocal = [[BittyRunnerTLS shared] handlesURL:url];
+  for (NSString *name in headers) {
+    if (pairedLocal && [name.lowercaseString hasPrefix:@"cf-access-"]) continue;
+    if ([headers[name] isKindOfClass:NSString.class]) [request setValue:headers[name] forHTTPHeaderField:name];
+  }
+  [[BittyRunnerTLS shared] logMediaStage:@"effect-request" request:request response:nil error:nil];
+  NSURLSessionDownloadTask *task = [session downloadTaskWithRequest:request
       completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
+        [[BittyRunnerTLS shared] logMediaStage:@"effect-response" request:request response:response error:error];
+        [session finishTasksAndInvalidate];
         BOOL cancelled = [self isCancelled:requestId];
         if (cancelled || !location || error ||
             ([response isKindOfClass:NSHTTPURLResponse.class] &&

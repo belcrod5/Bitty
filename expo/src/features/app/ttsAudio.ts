@@ -1,9 +1,10 @@
 import { NativeModules } from "react-native";
 import { Audio } from "./audio";
 import type { VisualThemeTtsEffect } from "./theme/visualThemes";
+import { getCloudflareAccessHeadersForUrl } from "./utils/cloudflareAccessFetch";
 
 type TtsEffectsModule = {
-  process(uri: string, effect: VisualThemeTtsEffect, requestId: string): Promise<string>;
+  process(uri: string, effect: VisualThemeTtsEffect, requestId: string, headers: Record<string, string>): Promise<string>;
   cancel(requestId: string): Promise<void>;
   remove(uri: string): Promise<void>;
 };
@@ -17,8 +18,10 @@ export async function createTtsSoundAsync(
   signal?: AbortSignal
 ): Promise<Audio.Sound> {
   if (signal?.aborted) throw new Error("TTS音声加工を中止しました。");
+  const headers = getCloudflareAccessHeadersForUrl(uri);
   if (!effect) {
-    const { sound } = await Audio.Sound.createAsync({ uri }, status);
+    const source = Object.keys(headers).length ? { uri, headers } : { uri };
+    const { sound } = await Audio.Sound.createAsync(source, status);
     if (signal?.aborted) {
       await sound.unloadAsync().catch(() => {});
       throw new Error("TTS音声加工を中止しました。");
@@ -35,7 +38,7 @@ export async function createTtsSoundAsync(
   signal?.addEventListener("abort", cancel, { once: true });
   let processedUri: string;
   try {
-    processedUri = await processor.process(uri, effect, requestId);
+    processedUri = await processor.process(uri, effect, requestId, headers);
   } finally {
     signal?.removeEventListener("abort", cancel);
   }

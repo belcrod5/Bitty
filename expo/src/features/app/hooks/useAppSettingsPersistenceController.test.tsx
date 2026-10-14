@@ -3,6 +3,7 @@ import { useState } from "react";
 import { Alert, AppState } from "react-native";
 import * as Clipboard from "../clipboard";
 import { useAppSettingsPersistenceController } from "./useAppSettingsPersistenceController";
+import { configureLocalRunnerTls } from "../utils/localRunnerTls";
 import {
   mutatePersistedSettings,
   readPersistedSettings,
@@ -17,6 +18,7 @@ jest.mock("../clipboard", () => ({
   getStringAsync: jest.fn(),
   setStringAsync: jest.fn(),
 }));
+jest.mock("../utils/localRunnerTls", () => ({ configureLocalRunnerTls: jest.fn() }));
 
 jest.mock("../utils/persistedSettingsFile", () => ({
   PRESERVED_SETTINGS_FIELDS: ["skiaBoardCardTextScale"],
@@ -52,6 +54,7 @@ function createArgs() {
     cloudflareAccessClientSecret: "",
     cloudflareRunnerUrl: "",
     localRunnerUrl: "",
+    localRunnerCertificate: "",
     llmBackend: "codex",
     llmDirectory: "",
     registeredDirectories: [],
@@ -78,6 +81,7 @@ function createArgs() {
     setCloudflareAccessClientSecret: setter,
     setCloudflareRunnerUrl: setter,
     setLocalRunnerUrl: setter,
+    setLocalRunnerCertificate: setter,
     setLlmBackend: setter,
     setLlmDirectory: setter,
     setRegisteredDirectories: setter,
@@ -134,6 +138,7 @@ async function renderPersistenceController(
 beforeEach(() => {
   jest.useFakeTimers();
   jest.clearAllMocks();
+  jest.mocked(configureLocalRunnerTls).mockResolvedValue(false);
   appStateChangeListener = undefined;
   jest.spyOn(console, "warn").mockImplementation(() => {});
   jest.spyOn(Alert, "alert").mockImplementation(() => {});
@@ -152,6 +157,40 @@ beforeEach(() => {
   mockSaveSecureRunnerCredentials.mockResolvedValue();
   mockGetStringAsync.mockResolvedValue("");
   mockSetStringAsync.mockResolvedValue(true);
+});
+
+test("bootstrap with saved local HTTPS waits for native CA installation before loading settings", async () => {
+  const local = "https://mac.local:8789";
+  mockReadPersistedSettings.mockResolvedValue({ runnerUrl: local, localRunnerUrl: local,
+    localRunnerCertificate: "paired-ca", cloudflareRunnerUrl: "https://runner.example.com" });
+  let finish!: (ready: boolean) => void;
+  jest.mocked(configureLocalRunnerTls).mockImplementation(() => new Promise<boolean>((resolve) => { finish = resolve; }));
+  const setRunnerUrl = jest.fn();
+  const args = { ...createArgs(), setRunnerUrl };
+  const hook = await renderHook(() => {
+    const [settingsLoaded, setSettingsLoaded] = useState(false);
+    useAppSettingsPersistenceController({ ...args, settingsLoaded, setSettingsLoaded });
+    return settingsLoaded;
+  });
+  await act(async () => {});
+  expect(configureLocalRunnerTls).toHaveBeenCalledWith(local, "paired-ca");
+  expect(hook.result.current).toBe(false);
+  expect(setRunnerUrl).not.toHaveBeenCalled();
+  await act(async () => { finish(true); });
+  expect(hook.result.current).toBe(true);
+  expect(setRunnerUrl).toHaveBeenCalledWith(local);
+});
+
+test("legacy saved HTTP LAN never reappears while bootstrap trust fails", async () => {
+  mockReadPersistedSettings.mockResolvedValue({ runnerUrl: "http://192.168.1.5:8788",
+    localRunnerUrl: "http://192.168.1.5:8788", cloudflareRunnerUrl: "https://runner.example.com" });
+  jest.mocked(configureLocalRunnerTls).mockRejectedValue(new Error("unsupported trust"));
+  const setRunnerUrl = jest.fn();
+  const setLocalRunnerUrl = jest.fn();
+  await renderPersistenceController({ setRunnerUrl, setLocalRunnerUrl });
+  expect(setRunnerUrl).toHaveBeenCalledWith("https://runner.example.com");
+  expect(setRunnerUrl).not.toHaveBeenCalledWith("http://192.168.1.5:8788");
+  expect(setLocalRunnerUrl).toHaveBeenCalledWith("");
 });
 
 afterEach(() => {
@@ -217,8 +256,8 @@ test("a non-URL runnerUrl in persisted settings is dropped so the default heals 
   const setLocalRunnerUrl = jest.fn();
   await renderPersistenceController({ setRunnerUrl, setLocalRunnerUrl });
 
-  expect(setRunnerUrl).not.toHaveBeenCalled();
-  expect(setLocalRunnerUrl).toHaveBeenCalledWith("http://127.0.0.1:8788");
+  expect(setRunnerUrl).toHaveBeenCalledWith("");
+  expect(setLocalRunnerUrl).toHaveBeenCalledWith("");
 });
 
 test("a valid persisted runnerUrl is still applied", async () => {

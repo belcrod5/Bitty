@@ -1,4 +1,5 @@
 import http from "node:http";
+import https from "node:https";
 import os from "node:os";
 import path from "node:path";
 import { createReadStream, promises as fs } from "node:fs";
@@ -23,6 +24,7 @@ import {
   trackRunnerWebSocket,
 } from "./runner-connection-events.mjs";
 import { installRunnerWebSocketUpgradeHandler } from "./runner-websocket-upgrade.mjs";
+import { loadLocalRunnerTls, resolveLocalRunnerTlsConfig } from "./local-runner-tls.mjs";
 import { createApnsClient, maskApnsToken } from "./apns-client.mjs";
 import { createPushDeviceStore } from "./push-device-store.mjs";
 import { calendarConversationDynamicTools } from "./calendar-tool-service.mjs";
@@ -70,8 +72,9 @@ const SERVER_FILE_PATH = fileURLToPath(import.meta.url);
 const SERVER_DIR = path.dirname(SERVER_FILE_PATH);
 const WORKSPACE_ROOT = path.resolve(SERVER_DIR, "../..");
 
-const PORT = Number(process.env.PORT || 8788);
-const HOST = process.env.HOST || "127.0.0.1";
+const PORT = Number(process.env.PORT || process.env.RUNNER_PORT || 8788);
+// Plain HTTP is reserved for the local Tunnel and CLI, regardless of old HOST settings.
+const HOST = "127.0.0.1";
 const RUNNER_TOKEN = process.env.RUNNER_TOKEN || "";
 const RUNNER_MOCK = process.env.RUNNER_MOCK === "1";
 const RUNNER_SKIP_SERVER_START = process.env.RUNNER_SKIP_SERVER_START === "1";
@@ -2048,8 +2051,9 @@ function resolvePublicBaseUrl(req, reqUrl) {
   const forwardedHostHeader = String(req?.headers?.["x-forwarded-host"] || "")
     .split(",")[0]
     .trim();
-  const protocol = forwardedProtoHeader === "https" ? "https" : "http";
-  const host = forwardedHostHeader || String(req?.headers?.host || reqUrl?.host || `${HOST}:${PORT}`);
+  const encrypted = Boolean(req?.socket?.encrypted);
+  const protocol = encrypted || forwardedProtoHeader === "https" ? "https" : "http";
+  const host = (!encrypted && forwardedHostHeader) || String(req?.headers?.host || reqUrl?.host || `${HOST}:${PORT}`);
   return `${protocol}://${host}`;
 }
 
@@ -5906,7 +5910,7 @@ function startLlmStreamJob(startPayload, opts = {}) {
   return job;
 }
 
-const server = http.createServer(async (req, res) => {
+const handleRunnerRequest = async (req, res) => {
   const reqUrl = parseRequestUrl(req);
   const pathname = reqUrl.pathname;
 
@@ -7160,7 +7164,8 @@ const server = http.createServer(async (req, res) => {
   }
 
   return notFound(res);
-});
+};
+const server = http.createServer(handleRunnerRequest);
 
 const runnerWsEnvelopeClients = new WeakSet();
 const runnerWsActiveClients = new Set();
@@ -10145,8 +10150,7 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
   }
 }
 
-installRunnerWebSocketUpgradeHandler({
-  server,
+const runnerWebSocketOptions = {
   runnerToken: RUNNER_TOKEN,
   runnerWsPath: RUNNER_WS_PATH,
   runnerWsServer,
@@ -10154,7 +10158,8 @@ installRunnerWebSocketUpgradeHandler({
   streamSttWsServer,
   appendDebug: appendCodexWsProxyDebug,
   logRequests: RUNNER_LOG_REQUESTS,
-});
+};
+installRunnerWebSocketUpgradeHandler({ ...runnerWebSocketOptions, server });
 
 async function initializeLlmFileRuntime() {
   try {
@@ -10259,8 +10264,12 @@ async function initializeCodexWsDebugRuntime() {
 
 if (!RUNNER_SKIP_SERVER_START) {
   let stopRequested = false;
+  let localHttpsServer = null;
   const stopAgentsForSignal = (signal) => {
     stopRequested = true;
+    server.close();
+    localHttpsServer?.close();
+    codexScheduleService.stop();
     codexAuthService.markUnready();
     void codexAuthService.shutdown()
       .catch(() => {})
@@ -10271,6 +10280,18 @@ if (!RUNNER_SKIP_SERVER_START) {
   process.once("SIGTERM", () => stopAgentsForSignal("SIGTERM"));
   process.once("SIGINT", () => stopAgentsForSignal("SIGINT"));
   void (async () => {
+    let localTlsConfig;
+    try {
+      localTlsConfig = resolveLocalRunnerTlsConfig();
+      if (localTlsConfig) {
+        localHttpsServer = https.createServer(loadLocalRunnerTls(localTlsConfig), handleRunnerRequest);
+        installRunnerWebSocketUpgradeHandler({ ...runnerWebSocketOptions, server: localHttpsServer });
+      }
+    } catch (error) {
+      console.error(`[local-tls] startup stopped: ${errorMessage(error)}`);
+      process.exitCode = 1;
+      return;
+    }
     try {
       await googleCloudService.initialize();
       await googleCloudUsageLedger.initialize();
@@ -10317,6 +10338,18 @@ if (!RUNNER_SKIP_SERVER_START) {
       await releaseCodexAuthOwnerLock();
       return;
     }
+    const listenerError = (error) => {
+      if (stopRequested) return;
+      console.error(`[runner] listener failed: ${error.code || "unknown"}; stopping both listeners`);
+      stopAgentsForSignal("SIGTERM");
+    };
+    server.on("error", listenerError);
+    if (localHttpsServer) {
+      localHttpsServer.on("error", listenerError);
+      localHttpsServer.listen(localTlsConfig.port, "0.0.0.0", () => {
+        console.log(`private runner LAN listening on ${localTlsConfig.url}`);
+      });
+    }
     server.listen(PORT, HOST, () => {
       console.log(
         `private runner server listening on http://${HOST}:${PORT} (mode=${
@@ -10329,6 +10362,9 @@ if (!RUNNER_SKIP_SERVER_START) {
 
 export const __TESTING__ = {
   server,
+  HOST,
+  handleRunnerRequest,
+  resolvePublicBaseUrl,
   codexAuthService,
   codexAuthRuntime,
   codexUsageService,

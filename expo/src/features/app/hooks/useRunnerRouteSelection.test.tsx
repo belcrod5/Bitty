@@ -7,8 +7,11 @@ import { useRunnerRouteSelection } from "./useRunnerRouteSelection";
 jest.mock("expo-network", () => ({
   addNetworkStateListener: jest.fn(),
 }));
+jest.mock("../utils/localRunnerTls", () => ({
+  isLocalRunnerTlsReady: jest.fn((url: string) => url.startsWith("https://")),
+}));
 
-const localRunnerUrl = "http://d5-macbook.local:8788";
+const localRunnerUrl = "https://d5-macbook.local:8789";
 const cloudflareRunnerUrl = "https://runner.example.com";
 const runnerToken = "runner-secret";
 type RouteSelectionProps = Parameters<typeof useRunnerRouteSelection>[0];
@@ -72,6 +75,7 @@ describe("useRunnerRouteSelection", () => {
     const props: RouteSelectionProps = {
       enabled: true,
       localRunnerUrl,
+      localRunnerCertificate: "paired-ca",
       cloudflareRunnerUrl,
       runnerToken,
       runnerUrl: cloudflareRunnerUrl,
@@ -106,6 +110,15 @@ describe("useRunnerRouteSelection", () => {
     expect(setRunnerUrl).toHaveBeenCalledWith(localRunnerUrl);
   });
 
+  it("never probes a legacy plaintext LAN candidate even if a host returns 200", async () => {
+    const { setRunnerUrl } = await renderSelection({ localRunnerUrl: "http://d5-macbook.local:8788" });
+    await runPendingTimers();
+    networkListeners[0]?.();
+    await advanceTimers(5000);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(setRunnerUrl).not.toHaveBeenCalled();
+  });
+
   it("rechecks when a local runner candidate is saved after startup", async () => {
     const { rendered, setRunnerUrl } = await renderSelection({
       localRunnerUrl: "",
@@ -118,6 +131,7 @@ describe("useRunnerRouteSelection", () => {
     await rendered.rerender(<RouteSelectionProbe
       enabled={true}
       localRunnerUrl={localRunnerUrl}
+      localRunnerCertificate="paired-ca"
       cloudflareRunnerUrl={cloudflareRunnerUrl}
       runnerToken={runnerToken}
       runnerUrl={cloudflareRunnerUrl}
@@ -143,6 +157,7 @@ describe("useRunnerRouteSelection", () => {
     await rendered.rerender(<RouteSelectionProbe
       enabled={true}
       localRunnerUrl={localRunnerUrl}
+      localRunnerCertificate="paired-ca"
       cloudflareRunnerUrl={nextCloudflareRunnerUrl}
       runnerToken={runnerToken}
       runnerUrl={cloudflareRunnerUrl}
