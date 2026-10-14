@@ -312,7 +312,14 @@ export function useSynthesizeSpeechStreamController(
           return;
         }
         seenAudioChunks.add(chunkKey);
-        logAuto("tts_trace", { stage: "chunk_received", messageId: targetMessageId, seq, audioBytes: segment.audioBytes });
+        logAuto("tts_trace", {
+          stage: "chunk_received", messageId: targetMessageId, jobId: chunkJobId, seq,
+          audioBytes: segment.audioBytes,
+          queueWaitMs: segment.queueWaitMs,
+          synthesisMs: segment.synthesisMs,
+          mediaRegistrationMs: segment.mediaRegistrationMs,
+          serverEmittedAtMs: segment.serverEmittedAtMs,
+        });
         nextAudioChunkSeq = Math.max(nextAudioChunkSeq, seq + 1);
         upsertStreamSegment(targetMessageId, seq, segment.text, "ready", {
           chunkChars: segment.chunkChars,

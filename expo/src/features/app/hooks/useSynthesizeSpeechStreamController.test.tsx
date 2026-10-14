@@ -276,7 +276,14 @@ test("direct WebSocket releases its active ref at done before the close event", 
 
   options.ttsPlayingRef.current = true;
   ws.onmessage?.({ data: JSON.stringify({ type: "audio_chunk", jobId: "job-1", seq: 0,
-    text: "Hello", audioUrl: "https://example.com/0", mimeType: "audio/mpeg" }) });
+    text: "Hello", audioUrl: "https://example.com/0", mimeType: "audio/mpeg",
+    queueWaitMs: 42, synthesisMs: 550, mediaRegistrationMs: 3,
+    at: "2026-10-15T00:00:00.000Z" }) });
+  expect(options.logAuto).toHaveBeenCalledWith("tts_trace", {
+    stage: "chunk_received", messageId: "message-1", jobId: "job-1", seq: 0, audioBytes: 0,
+    queueWaitMs: 42, synthesisMs: 550, mediaRegistrationMs: 3,
+    serverEmittedAtMs: Date.parse("2026-10-15T00:00:00.000Z"),
+  });
   ws.onmessage?.({ data: JSON.stringify({ type: "done" }) });
 
   expect(ws.close).toHaveBeenCalledTimes(1);
@@ -355,6 +362,10 @@ test("text TTS resumes missed audio after the shared runner socket reconnects", 
     payload: { type: "audio_chunk", eventSeq: 4, seq: 0, text: "first",
       audioUrl: "https://example.com/0", mimeType: "audio/mpeg" } });
 
+  expect(options.logAuto).toHaveBeenCalledWith("tts_trace", expect.objectContaining({
+    stage: "chunk_received", queueWaitMs: null, synthesisMs: null,
+    mediaRegistrationMs: null, serverEmittedAtMs: null,
+  }));
   manager.reconnect();
   expect(manager.sent.at(-1)).toMatchObject({
     channel: "tts", op: "attach", operationId: start.operationId,

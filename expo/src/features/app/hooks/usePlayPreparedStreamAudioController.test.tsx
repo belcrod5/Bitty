@@ -95,6 +95,37 @@ test("loads one next chunk during current playback and reuses it", async () => {
   expect(secondSound.playAsync).toHaveBeenCalledTimes(1);
 });
 
+test("logs preload duration separately from remaining load wait without the media URL", async () => {
+  let now = 100;
+  const dateNow = jest.spyOn(Date, "now").mockImplementation(() => now);
+  try {
+    const item = queueItem(0);
+    const loaded = sound();
+    let release: (value: { sound: typeof loaded }) => void = () => {};
+    createAsync.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    const options = createOptions();
+    const { result } = await renderHook(() => usePlayPreparedStreamAudioController(options));
+    result.current.preloadStreamAudio(item);
+    expect(options.logAuto).toHaveBeenCalledWith("tts_trace", {
+      stage: "preload_start", messageId: "message-1", seq: 0, hasEffect: false,
+    });
+    now = 450;
+    release({ sound: loaded });
+    await Promise.resolve();
+    await Promise.resolve();
+    await result.current.playPreparedStreamAudioAndWait(item);
+    expect(options.logAuto).toHaveBeenCalledWith("tts_trace", {
+      stage: "preload_complete", messageId: "message-1", seq: 0, elapsedMs: 350,
+    });
+    expect(options.logAuto).toHaveBeenCalledWith("tts_trace", expect.objectContaining({
+      stage: "native_load_complete", elapsedMs: 0,
+    }));
+    expect(JSON.stringify(options.logAuto.mock.calls)).not.toContain(item.uri);
+  } finally {
+    dateNow.mockRestore();
+  }
+});
+
 test("unloads a pending lookahead chunk when the queue is cleared", async () => {
   const next = queueItem(1);
   const nextSound = sound();

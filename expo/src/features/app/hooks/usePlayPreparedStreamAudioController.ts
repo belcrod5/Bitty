@@ -85,12 +85,29 @@ export function usePlayPreparedStreamAudioController(
     const controller = new AbortController();
     const effect = ttsEffectRef.current;
     ttsProcessingAbortControllersRef.current.add(controller);
+    const startedAt = Date.now();
+    logAuto("tts_trace", {
+      stage: "preload_start", messageId: item.playbackMessageId, seq: item.seq,
+      hasEffect: effect !== null,
+    });
     const sound = createTtsSoundAsync(
       item.uri,
       { shouldPlay: false, volume: fixedMediaVolume },
       effect,
       controller.signal
-    ).finally(() => ttsProcessingAbortControllersRef.current.delete(controller));
+    ).then((loaded) => {
+      logAuto("tts_trace", {
+        stage: "preload_complete", messageId: item.playbackMessageId, seq: item.seq,
+        elapsedMs: Date.now() - startedAt,
+      });
+      return loaded;
+    }, (error: unknown) => {
+      logAuto("tts_trace", {
+        stage: "preload_error", messageId: item.playbackMessageId, seq: item.seq,
+        elapsedMs: Date.now() - startedAt, error: ttsDiagnosticError(error),
+      });
+      throw error;
+    }).finally(() => ttsProcessingAbortControllersRef.current.delete(controller));
     void sound.catch(() => {});
     streamAudioPreloadRef.current = {
       item,
@@ -99,7 +116,7 @@ export function usePlayPreparedStreamAudioController(
       effect,
       claimed: false,
     };
-  }, [fixedMediaVolume, ttsProcessingAbortControllersRef]);
+  }, [fixedMediaVolume, logAuto, ttsProcessingAbortControllersRef]);
 
   useEffect(() => () => {
     clearPreloadedStreamAudio(true);

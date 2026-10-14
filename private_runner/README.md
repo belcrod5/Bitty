@@ -289,10 +289,12 @@ npm run ios
   },
   "tts": {
     "maxChars": 5000,
-    "segmentMaxEstMs": 1200
+    "segmentMaxEstMs": null
   }
 }
 ```
+
+`segmentMaxEstMs` は互換用のフィールドです。現在は `null`（区間の時間上限なし）を返します。
 
 ### GET /jobs
 - Header: `Authorization: Bearer <RUNNER_TOKEN>`

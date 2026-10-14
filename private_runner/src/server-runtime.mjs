@@ -41,7 +41,7 @@ import {
 } from "./codex-turn-execution.mjs";
 import { createCodexAppServerClient } from "./codex-app-server-client.mjs";
 import { createVoiceOrchestratorService } from "./voice-orchestrator-service.mjs";
-import { createStreamTtsSegments } from "./stream-tts-segments.mjs";
+import { createStreamTtsSegments, TTS_SEGMENT_BOUNDARY } from "./stream-tts-segments.mjs";
 import { createVoiceRequestBridge } from "./voice-request-bridge.mjs";
 import { createCodexAuthService } from "./codex-auth-service.mjs";
 import { createCodexAuthRuntime } from "./codex-auth-runtime.mjs";
@@ -200,22 +200,6 @@ const MAX_TTS_CHARS = Number(process.env.MAX_TTS_CHARS || 5000);
 const STREAM_TTS_MAX_CHARS = Math.max(
   1000,
   Number(process.env.STREAM_TTS_MAX_CHARS || 50000)
-);
-const STREAM_TTS_SEGMENT_MAX_CHARS = Math.max(
-  24,
-  Number(process.env.STREAM_TTS_SEGMENT_MAX_CHARS || 70)
-);
-const STREAM_TTS_SEGMENT_MIN_CHARS = Math.max(
-  8,
-  Number(process.env.STREAM_TTS_SEGMENT_MIN_CHARS || 12)
-);
-const STREAM_TTS_SEGMENT_FORCE_SPLIT_WINDOW_CHARS = Math.max(
-  8,
-  Number(process.env.STREAM_TTS_SEGMENT_FORCE_SPLIT_WINDOW_CHARS || 22)
-);
-const STREAM_TTS_SEGMENT_MAX_EST_MS = Math.max(
-  300,
-  Number(process.env.STREAM_TTS_SEGMENT_MAX_EST_MS || 1200)
 );
 const STREAM_TTS_EST_BASE_CHARS_PER_SEC = Math.max(
   1,
@@ -2738,89 +2722,10 @@ function llmJobCancel(job, reason = "cancelled") {
   return true;
 }
 
-function isTtsBoundaryChar(ch) {
-  return (
-    ch === "。" ||
-    ch === "、" ||
-    ch === "！" ||
-    ch === "？" ||
-    ch === "!" ||
-    ch === "?" ||
-    ch === "." ||
-    ch === "," ||
-    ch === "\n"
-  );
-}
-
-function isSoftTtsSplitChar(ch) {
-  return ch === " " || ch === "　" || ch === "：" || ch === ":" || ch === ";" || ch === "；";
-}
-
-function findStreamTtsSplitIndex(buffer, maxChars) {
-  const text = String(buffer || "");
-  if (!text) return -1;
-  const hardLimit = Math.max(1, Math.min(maxChars, text.length));
-  const softStart = Math.max(0, hardLimit - STREAM_TTS_SEGMENT_FORCE_SPLIT_WINDOW_CHARS);
-  for (let i = hardLimit - 1; i >= softStart; i -= 1) {
-    if (isTtsBoundaryChar(text[i])) return i;
-  }
-  for (let i = hardLimit - 1; i >= softStart; i -= 1) {
-    if (isSoftTtsSplitChar(text[i])) return i;
-  }
-  let hardIndex = hardLimit - 1;
-  if (splitsSurrogatePair(text, hardIndex)) {
-    hardIndex = hardIndex > 0 ? hardIndex - 1 : hardIndex + 1;
-  }
-  return hardIndex;
-}
-
-function splitsSurrogatePair(text, index) {
-  const hi = text.charCodeAt(index);
-  if (hi < 0xd800 || hi > 0xdbff) return false;
-  const lo = text.charCodeAt(index + 1);
-  return lo >= 0xdc00 && lo <= 0xdfff;
-}
-
-function takeNextStreamTtsSegment(buffer, maxChars = STREAM_TTS_SEGMENT_MAX_CHARS, force = false) {
-  const text = String(buffer || "");
-  if (!text) return null;
-  const limit = Math.max(1, Number(maxChars) || STREAM_TTS_SEGMENT_MAX_CHARS);
-  const scanLimit = Math.min(text.length, limit);
-  for (let i = 0; i < scanLimit; i += 1) {
-    if (isTtsBoundaryChar(text[i])) {
-      return { segment: text.slice(0, i + 1), rest: text.slice(i + 1) };
-    }
-  }
-  if (text.length >= limit) {
-    const splitIndex = findStreamTtsSplitIndex(text, limit);
-    return { segment: text.slice(0, splitIndex + 1), rest: text.slice(splitIndex + 1) };
-  }
-  if (force && text.trim()) {
-    return { segment: text, rest: "" };
-  }
-  return null;
-}
-
 function normalizeSpeedScaleForTtsEstimate(speedScale) {
   const value = Number(speedScale);
   if (!Number.isFinite(value) || value <= 0) return 1;
   return Math.max(0.5, Math.min(2.0, value));
-}
-
-function resolveStreamTtsSegmentTargetChars(speedScale) {
-  const normalizedSpeedScale = normalizeSpeedScaleForTtsEstimate(speedScale);
-  const estimatedChars = Math.floor(
-    (STREAM_TTS_SEGMENT_MAX_EST_MS / 1000) * STREAM_TTS_EST_BASE_CHARS_PER_SEC * normalizedSpeedScale
-  );
-  return Math.max(
-    STREAM_TTS_SEGMENT_MIN_CHARS,
-    Math.min(
-      STREAM_TTS_SEGMENT_MAX_CHARS,
-      Number.isFinite(estimatedChars) && estimatedChars > 0
-        ? estimatedChars
-        : STREAM_TTS_SEGMENT_MIN_CHARS
-    )
-  );
 }
 
 function estimateStreamTtsSegmentDurationMs(text, speedScale) {
@@ -2866,7 +2771,8 @@ function sanitizeTtsInputText(raw) {
 }
 
 function sanitizeStreamTtsText(raw) {
-  return sanitizeTtsInputText(raw).replace(/[。、.,\r\n]/g, "").trim();
+  const text = sanitizeTtsInputText(raw);
+  return text.endsWith(TTS_SEGMENT_BOUNDARY) ? text.slice(0, -1).trimEnd() : text;
 }
 
 function createRunnerStreamTtsSegments({ emit, signal, publicBaseUrl, ttsProvider, voiceId, speedScale,
@@ -2874,14 +2780,11 @@ function createRunnerStreamTtsSegments({ emit, signal, publicBaseUrl, ttsProvide
   const normalizedSpeed = normalizeSpeedScaleForTtsEstimate(speedScale);
   return createStreamTtsSegments({
     emit, signal, speedScale: normalizedSpeed,
-    takeNextSegment: takeNextStreamTtsSegment,
     sanitizeText: sanitizeStreamTtsText,
-    maxChars: STREAM_TTS_SEGMENT_MAX_CHARS,
-    targetChars: resolveStreamTtsSegmentTargetChars(speedScale),
-    maxEstMs: STREAM_TTS_SEGMENT_MAX_EST_MS,
     estimateDurationMs: estimateStreamTtsSegmentDurationMs,
     synthesizeSegment: async (text, seq) => {
       try {
+        const synthesisStartedAt = performance.now();
         const tts = await runTtsByProvider(ttsProvider, text, {
           voiceId: voiceId || undefined,
           modelId: modelId || undefined,
@@ -2891,8 +2794,12 @@ function createRunnerStreamTtsSegments({ emit, signal, publicBaseUrl, ttsProvide
           applyLanguageTextNormalization,
           speedScale,
         });
+        const synthesisMs = performance.now() - synthesisStartedAt;
+        const registrationStartedAt = performance.now();
         const media = await registerTtsMedia(tts.audioBuffer, tts.mimeType, publicBaseUrl);
+        const mediaRegistrationMs = performance.now() - registrationStartedAt;
         return {
+          synthesisMs, mediaRegistrationMs,
           audioUrl: media.audioUrl, audioBytes: media.audioBytes, mimeType: tts.mimeType,
           provider: tts.provider, voiceId: tts.voiceId, speedScale: tts.speedScale,
         };
@@ -6016,7 +5923,7 @@ const handleRunnerRequest = async (req, res) => {
       stt: { maxDurationSeconds: 290 },
       tts: {
         maxChars: MAX_TTS_CHARS,
-        segmentMaxEstMs: STREAM_TTS_SEGMENT_MAX_EST_MS,
+        segmentMaxEstMs: null, // No duration/character cap; retained for older clients.
       },
     });
   }
@@ -10453,12 +10360,8 @@ export const __TESTING__ = {
   resolveRunnerWsTtsOperationJob,
   sweepRunnerWsTtsOperationJobs,
   startLlmStreamJob,
-  takeNextStreamTtsSegment,
-  findStreamTtsSplitIndex,
   sanitizeStreamTtsText,
-  resolveStreamTtsSegmentTargetChars,
   fetchTtsWithTimeout,
-  STREAM_TTS_SEGMENT_MAX_CHARS,
   STREAM_TTS_MAX_CHARS,
   TTS_FETCH_TIMEOUT_MS,
 };

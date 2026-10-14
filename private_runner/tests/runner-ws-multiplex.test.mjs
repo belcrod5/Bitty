@@ -369,6 +369,7 @@ test("voice TTS sends audio before turn completion and stays cancelled while gen
   let notify;
   let releaseSecondAudio;
   let syntheses = 0;
+  const spoken = [];
   service.start = async (_message, onResult, _onApproval, callbacks) => {
     hooks = callbacks;
     notify = onResult;
@@ -378,6 +379,7 @@ test("voice TTS sends audio before turn completion and stays cancelled while gen
   globalThis.fetch = (url, init) => {
     if (String(url).startsWith("http://127.0.0.1:")) return originalFetch(url, init);
     syntheses += 1;
+    spoken.push(JSON.parse(init.body).text);
     if (syntheses === 2) {
       return new Promise((resolve) => {
         releaseSecondAudio = () => resolve({ ok: true, arrayBuffer: async () => Uint8Array.of(1, 2, 3).buffer });
@@ -405,10 +407,14 @@ test("voice TTS sends audio before turn completion and stays cancelled while gen
     operationId, payload: { jobId, sinceSeq: 0 } }), false);
   await waitFor(() => ws.sent.some((message) => message.op === "attached"));
 
-  hooks.onText("First.");
+  const firstSentence = `${"abc123".repeat(20)} 3.14, yes!?\nNext`;
+  hooks.onText(firstSentence);
+  assert.equal(ws.sent.some((message) => message.op === "segment_queued"), false);
+  hooks.onText("。");
   await waitFor(() => ws.sent.some((message) => message.channel === "tts" && message.op === "audio_chunk"));
   assert.equal(ws.sent.some((message) => message.op === "voice.turn.completed"), false);
-  hooks.onText("Second.");
+  assert.deepEqual(spoken, [firstSentence]);
+  hooks.onText("Second。");
   await waitFor(() => releaseSecondAudio);
 
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -418,10 +424,10 @@ test("voice TTS sends audio before turn completion and stays cancelled while gen
   assert.equal(response.status, 200);
   assert.equal((await response.json()).job.status, "cancelled");
   releaseSecondAudio();
-  hooks.onText("Third.");
+  hooks.onText("Third。");
   hooks.onTextError(new Error("late generation error"));
-  notify({ clientOperationId: operationId, status: "completed", text: "First. Second. Third." });
-  hooks.onCompleted("First. Second. Third.");
+  notify({ clientOperationId: operationId, status: "completed", text: `${firstSentence}。Second。Third。` });
+  hooks.onCompleted(`${firstSentence}。Second。Third。`);
   await new Promise((resolve) => setImmediate(resolve));
   const job = __TESTING__.resolveRunnerWsTtsOperationJob(operationId);
   assert.equal(job.status, "cancelled");
@@ -429,7 +435,7 @@ test("voice TTS sends audio before turn completion and stays cancelled while gen
   assert.equal(job.events.some((event) => event.type === "done" || event.type === "error"), false);
   assert.equal(job.events.filter((event) => event.type === "segment_queued").length, 2);
   assert.equal(ws.sent.find((message) => message.op === "voice.turn.completed").payload.text,
-    "First. Second. Third.");
+    `${firstSentence}。Second。Third。`);
 });
 
 test("attach snapshot reports the final audio seq when old audio history was pruned", async (t) => {
@@ -437,7 +443,7 @@ test("attach snapshot reports the final audio seq when old audio history was pru
   globalThis.fetch = async () => ({ ok: true, arrayBuffer: async () => Uint8Array.of(1, 2, 3).buffer });
   t.after(() => { globalThis.fetch = originalFetch; });
   const job = __TESTING__.startLlmStreamJob({
-    mode: "text", text: "a.".repeat(102), ttsProvider: "elevenlabs",
+    mode: "text", text: "a。".repeat(102), ttsProvider: "elevenlabs",
   }, { publicBaseUrl: "http://127.0.0.1" });
   await job.runPromise;
   assert.equal(job.status, "completed");
