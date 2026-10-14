@@ -167,6 +167,49 @@ extern void RCTSetCustomNSURLSessionConfigurationProvider(NSURLSessionConfigurat
   components.scheme = @"bitty-runner-media";
   return components.URL;
 }
+
+- (void)logMediaStage:(NSString *)stage request:(NSURLRequest *)request
+            response:(NSURLResponse *)response error:(NSError *)error {
+  NSURL *url = request.URL;
+  BOOL ttsResource = [url.path hasPrefix:@"/tts-media/"];
+  BOOL effectFile = url.isFileURL && [url.path containsString:@"/bitty-tts-effects/"];
+  if (!ttsResource && !effectFile) return;
+  NSURLComponents *origin = [NSURLComponents new];
+  origin.scheme = [url.scheme isEqual:@"bitty-runner-media"] ? @"https" : url.scheme;
+  origin.host = url.host;
+  origin.port = url.port;
+  NSMutableDictionary *payload = [@{
+    @"transportStage":stage, @"origin":origin.string ?: @"",
+    @"pathKind":ttsResource ? @"tts-media" : @"effect-file",
+    @"pairedLocal":@([self handlesURL:origin.URL]),
+    @"accessIdPresent":@([request valueForHTTPHeaderField:@"CF-Access-Client-Id"].length > 0),
+    @"accessSecretPresent":@([request valueForHTTPHeaderField:@"CF-Access-Client-Secret"].length > 0)
+  } mutableCopy];
+  if ([response isKindOfClass:NSHTTPURLResponse.class]) {
+    NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
+    payload[@"status"] = @(http.statusCode);
+    NSSet *mimeTypes = [NSSet setWithArray:@[@"audio/mpeg", @"audio/mp3", @"audio/wav", @"audio/x-wav",
+      @"audio/aac", @"audio/mp4", @"video/mp4", @"application/octet-stream", @"text/html", @"application/json"]];
+    payload[@"mimeType"] = [mimeTypes containsObject:response.MIMEType] ? response.MIMEType : @"other";
+    NSScanner *scanner = [NSScanner scannerWithString:[http valueForHTTPHeaderField:@"Content-Range"] ?: @""];
+    long long start, end, total;
+    if ([scanner scanString:@"bytes" intoString:nil] && [scanner scanLongLong:&start] &&
+        [scanner scanString:@"-" intoString:nil] && [scanner scanLongLong:&end] &&
+        [scanner scanString:@"/" intoString:nil] && [scanner scanLongLong:&total] && scanner.isAtEnd) {
+      payload[@"rangeStart"] = @(start); payload[@"rangeEnd"] = @(end); payload[@"rangeTotal"] = @(total);
+    }
+  }
+  NSMutableArray *chain = [NSMutableArray new];
+  NSSet *domains = [NSSet setWithArray:@[NSURLErrorDomain, NSCocoaErrorDomain, @"AVFoundationErrorDomain",
+    NSOSStatusErrorDomain, @"kCFErrorDomainCFNetwork", @"CoreMediaErrorDomain"]];
+  for (NSInteger depth = 0; error && depth < 5; depth++) {
+    [chain addObject:@{@"domain":[domains containsObject:error.domain] ? error.domain : @"other", @"code":@(error.code)}];
+    id underlying = error.userInfo[NSUnderlyingErrorKey];
+    error = [underlying isKindOfClass:NSError.class] ? underlying : nil;
+  }
+  if (chain.count) payload[@"errors"] = chain;
+  [[NSNotificationCenter defaultCenter] postNotificationName:@"BittyRunnerMediaDiagnostic" object:nil userInfo:payload];
+}
 @end
 
 @implementation BittyRunnerProtocol

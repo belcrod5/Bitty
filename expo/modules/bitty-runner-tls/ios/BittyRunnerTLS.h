@@ -13,5 +13,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)handleChallenge:(NSURLAuthenticationChallenge *)challenge
              completion:(void (^)(NSURLSessionAuthChallengeDisposition, NSURLCredential *_Nullable))completion NS_SWIFT_NAME(handle(_:completion:));
 - (NSURL *)mediaURL:(NSURL *)url headers:(NSDictionary<NSString *, NSString *> *)headers;
+- (void)logMediaStage:(NSString *)stage request:(NSURLRequest *)request
+            response:(nullable NSURLResponse *)response error:(nullable NSError *)error;
 @end
 NS_ASSUME_NONNULL_END

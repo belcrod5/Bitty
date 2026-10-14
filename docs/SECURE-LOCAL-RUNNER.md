@@ -59,3 +59,11 @@ an external network must select Cloudflare. Simulator SDK compilation and macOS
 native tests do not establish real-device networking behavior or large-video
 AVPlayer playback and seek performance. Existing background approval network
 failures still use the notification fallback; no retry policy is introduced.
+
+TTS transport diagnostics are persisted through the existing `tts_trace` client
+log pipeline. They include the installed build stamp, actual source origin,
+credential-presence flags, HTTP status, allowlisted MIME, numeric byte ranges and
+native error domain/code chains. Userinfo, URL queries, opaque media identifiers,
+credential values and free-form error descriptions are omitted. A once-per-mount
+ready event confirms logging is active. Native notifications are delivered
+asynchronously so recording an error does not block media loading.

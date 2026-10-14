@@ -73,6 +73,7 @@
   pending.remaining = allToEnd ? INT64_MAX : length;
   pending.task = [self.session dataTaskWithRequest:request];
   self.requests[[NSValue valueWithNonretainedObject:pending.task]] = pending;
+  [[BittyRunnerTLS shared] logMediaStage:@"media-request" request:request response:nil error:nil];
   [pending.task resume];
   return YES;
 }
@@ -80,6 +81,8 @@
 - (void)finish:(BittyRunnerMediaRequest *)pending error:(NSError *)error {
   if (!pending || !self.requests[[NSValue valueWithNonretainedObject:pending.task]]) return;
   [self.requests removeObjectForKey:[NSValue valueWithNonretainedObject:pending.task]];
+  [[BittyRunnerTLS shared] logMediaStage:error ? @"media-error" : @"media-complete"
+      request:pending.task.originalRequest response:pending.task.response error:error];
   if (!pending.loading.isCancelled && !pending.loading.isFinished) {
     if (error) [pending.loading finishLoadingWithError:error];
     else [pending.loading finishLoading];
@@ -104,12 +107,16 @@
 
 - (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task
     willPerformHTTPRedirection:(NSHTTPURLResponse *)response newRequest:(NSURLRequest *)request
-    completionHandler:(void (^)(NSURLRequest *))completion { completion(nil); }
+    completionHandler:(void (^)(NSURLRequest *))completion {
+  [[BittyRunnerTLS shared] logMediaStage:@"media-redirect-denied" request:task.originalRequest response:response error:nil];
+  completion(nil);
+}
 
 - (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)task
     didReceiveResponse:(NSURLResponse *)response completionHandler:(void (^)(NSURLSessionResponseDisposition))completion {
   BittyRunnerMediaRequest *pending = self.requests[[NSValue valueWithNonretainedObject:task]];
   NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
+  [[BittyRunnerTLS shared] logMediaStage:@"media-response" request:task.originalRequest response:response error:nil];
   NSString *range = [http isKindOfClass:NSHTTPURLResponse.class] ? [http valueForHTTPHeaderField:@"Content-Range"] : nil;
   NSScanner *scanner = [NSScanner scannerWithString:range ?: @""];
   long long start = -1, end = -1, total = -1;

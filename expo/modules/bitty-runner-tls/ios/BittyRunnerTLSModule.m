@@ -7,16 +7,27 @@
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, BittyRunnerSocket *> *sockets;
 @property(nonatomic, copy) NSString *pairedOrigin;
 @property(nonatomic, copy) NSString *pairedCertificate;
+@property(nonatomic, strong) id mediaDiagnosticObserver;
 @end
 
 @implementation BittyRunnerTLSModule
 RCT_EXPORT_MODULE(BittyRunnerTLS)
 + (BOOL)requiresMainQueueSetup { return NO; }
 - (dispatch_queue_t)methodQueue { return dispatch_get_main_queue(); }
-- (NSArray<NSString *> *)supportedEvents { return @[@"BittyRunnerWebSocket"]; }
+- (NSArray<NSString *> *)supportedEvents { return @[@"BittyRunnerWebSocket", @"BittyRunnerMediaDiagnostic"]; }
 - (instancetype)init {
   self = [super init];
-  if (self) _sockets = [NSMutableDictionary new];
+  if (self) {
+    _sockets = [NSMutableDictionary new];
+    __weak BittyRunnerTLSModule *weakSelf = self;
+    _mediaDiagnosticObserver = [NSNotificationCenter.defaultCenter addObserverForName:@"BittyRunnerMediaDiagnostic"
+      object:nil queue:nil usingBlock:^(NSNotification *notification) {
+        NSDictionary *payload = notification.userInfo;
+        dispatch_async(dispatch_get_main_queue(), ^{
+          [weakSelf sendEventWithName:@"BittyRunnerMediaDiagnostic" body:payload];
+        });
+      }];
+  }
   return self;
 }
 
@@ -111,6 +122,7 @@ RCT_EXPORT_METHOD(close:(NSNumber *)identifier code:(NSInteger)code reason:(NSSt
 }
 
 - (void)invalidate {
+  [NSNotificationCenter.defaultCenter removeObserver:self.mediaDiagnosticObserver];
   dispatch_async(dispatch_get_main_queue(), ^{
     for (BittyRunnerSocket *socket in self.sockets.allValues) {
       [socket finishCode:1000 reason:@"invalidated" error:NO];

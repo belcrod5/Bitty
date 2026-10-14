@@ -115,6 +115,37 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
   Method method = class_getClassMethod(BittyRunnerTLS.class, NSSelectorFromString(@"configurationFile"));
   method_setImplementation(method, (IMP)testConfigurationFile);
   [BittyRunnerTLS install];
+  __block NSDictionary *diagnostic;
+  id observer = [NSNotificationCenter.defaultCenter addObserverForName:@"BittyRunnerMediaDiagnostic" object:nil queue:nil
+    usingBlock:^(NSNotification *note) { diagnostic = note.userInfo; }];
+  NSMutableURLRequest *sensitiveRequest = [NSMutableURLRequest requestWithURL:
+      [NSURL URLWithString:@"https://sensitive-user:sensitive-password@localhost:9443/tts-media/sensitive-id?token=sensitive-query#sensitive-fragment"]];
+  [sensitiveRequest setValue:@"sensitive-access-id" forHTTPHeaderField:@"CF-Access-Client-Id"];
+  [sensitiveRequest setValue:@"sensitive-access-secret" forHTTPHeaderField:@"CF-Access-Client-Secret"];
+  NSHTTPURLResponse *diagnosticResponse = [[NSHTTPURLResponse alloc] initWithURL:sensitiveRequest.URL statusCode:206 HTTPVersion:@"HTTP/1.1"
+      headerFields:@{@"Content-Type":@"audio/mpeg", @"Content-Range":@"bytes 0-1/1024"}];
+  NSError *underlying = [NSError errorWithDomain:@"sensitive-domain" code:123 userInfo:@{NSLocalizedDescriptionKey:@"sensitive-description"}];
+  NSError *nativeFailure = [NSError errorWithDomain:NSURLErrorDomain code:-1011 userInfo:@{NSUnderlyingErrorKey:underlying,
+      NSLocalizedDescriptionKey:@"sensitive-error", NSURLErrorFailingURLErrorKey:sensitiveRequest.URL}];
+  [[BittyRunnerTLS shared] logMediaStage:@"diagnostic-test" request:sensitiveRequest response:diagnosticResponse error:nativeFailure];
+  NSString *serialized = [[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:diagnostic options:0 error:nil] encoding:NSUTF8StringEncoding];
+  check(![serialized containsString:@"sensitive-"] && [diagnostic[@"origin"] isEqual:@"https://localhost:9443"] &&
+      [diagnostic[@"pathKind"] isEqual:@"tts-media"], @"Media diagnostics omit credentials, opaque paths, queries and error descriptions");
+  check([diagnostic[@"status"] integerValue] == 206 && [diagnostic[@"rangeTotal"] integerValue] == 1024 &&
+      [diagnostic[@"accessSecretPresent"] boolValue] && [diagnostic[@"errors"] count] == 2 &&
+      [diagnostic[@"errors"][1][@"domain"] isEqual:@"other"], @"Media diagnostics preserve safe HTTP, credential-presence and native error-code fields");
+  diagnostic = nil;
+  [[BittyRunnerTLS shared] logMediaStage:@"player-source" request:[NSURLRequest requestWithURL:[NSURL URLWithString:@"file:///application/ui-sound.caf"]]
+      response:nil error:nil];
+  check(!diagnostic, @"TTS diagnostics do not record unrelated UI audio or video loads");
+  NSError *deep = underlying;
+  for (NSInteger depth = 0; depth < 8; depth++) deep = [NSError errorWithDomain:NSURLErrorDomain code:-1 userInfo:@{NSUnderlyingErrorKey:deep}];
+  NSHTTPURLResponse *untrustedResponse = [[NSHTTPURLResponse alloc] initWithURL:sensitiveRequest.URL statusCode:403 HTTPVersion:@"HTTP/1.1"
+      headerFields:@{@"Content-Type":@"text/sensitive-mime", @"Content-Range":@"sensitive-range"}];
+  [[BittyRunnerTLS shared] logMediaStage:@"diagnostic-test" request:sensitiveRequest response:untrustedResponse error:deep];
+  check([diagnostic[@"mimeType"] isEqual:@"other"] && !diagnostic[@"rangeStart"] && [diagnostic[@"errors"] count] == 5,
+      @"Untrusted MIME and Range text is omitted and native error chains are bounded");
+  [NSNotificationCenter.defaultCenter removeObserver:observer];
   NSDictionary *ports = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:[base stringByAppendingPathComponent:@"ports.json"]] options:0 error:nil];
   NSString *origin = [NSString stringWithFormat:@"https://localhost:%@",ports[@"trusted"]];
   NSString *badOrigin = [NSString stringWithFormat:@"https://localhost:%@",ports[@"rogue"]];

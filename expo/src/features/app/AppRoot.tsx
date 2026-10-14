@@ -6,6 +6,8 @@ import { KeyboardProvider } from "./keyboardController";
 import {
   Alert,
   AppState,
+  NativeEventEmitter,
+  NativeModules,
   type ImageSourcePropType,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
@@ -15,6 +17,7 @@ import {
   View,
 } from "react-native";
 import { Audio } from "./audio";
+import { BUILD_STAMP } from "./buildStamp";
 import Constants from "expo-constants";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import { WebView } from "react-native-webview";
@@ -1092,6 +1095,17 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     flushDelayMs: AUTO_CLIENT_LOG_FLUSH_DELAY_MS,
     retryMs: AUTO_CLIENT_LOG_RETRY_MS,
   });
+  const nativeMediaLogRef = useRef(autoClientLogs.enqueue);
+  nativeMediaLogRef.current = autoClientLogs.enqueue;
+  useEffect(() => {
+    const module = Platform.OS === "ios" ? NativeModules.BittyRunnerTLS : undefined;
+    if (!module) return;
+    const subscription = new NativeEventEmitter(module).addListener("BittyRunnerMediaDiagnostic", (payload) => {
+      nativeMediaLogRef.current("tts_trace", { stage: "transport", buildStamp: BUILD_STAMP, ...payload });
+    });
+    nativeMediaLogRef.current("tts_trace", { stage: "transport-diagnostics-ready", buildStamp: BUILD_STAMP });
+    return () => subscription.remove();
+  }, []);
   const sessionDiagClientLogs = useBufferedClientLogs<AutoClientLogEntry>({
     enabled: true,
     source: "session_diag",
