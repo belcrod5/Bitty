@@ -11,6 +11,7 @@ import { createVoiceOrchestratorService } from "../src/voice-orchestrator-servic
 function fakeCodex({ hold = false, failSummary = false, failTurn = false, approval = false } = {}) {
   const calls = [];
   const releases = [];
+  const threads = new Map();
   const createClient = () => {
     let listener = () => {};
     let resolveCompletion = () => {};
@@ -31,14 +32,19 @@ function fakeCodex({ hold = false, failSummary = false, failTurn = false, approv
         if (method === "mcpServerStatus/list") return { data: [], nextCursor: null };
         if (method === "thread/start") {
           summary = params.approvalPolicy === "never";
-          return { thread: { id: randomUUID(), ephemeral: params.ephemeral } };
+          const thread = { id: randomUUID(), ephemeral: params.ephemeral, turns: [] };
+          threads.set(thread.id, thread);
+          return { thread };
         }
-        if (method === "thread/resume") return { thread: { id: params.threadId, ephemeral: false } };
+        if (method === "thread/resume" || method === "thread/read") return { thread: threads.get(params.threadId) };
         if (method === "turn/start") {
           if (summary && failSummary) throw new Error("summary unavailable");
           if (!summary && failTurn) throw Object.assign(new Error("native turn unavailable"), { code: "backend_unavailable" });
           const turnId = randomUUID();
+          const turn = { id: turnId, status: "active", items: [] };
+          threads.get(params.threadId)?.turns.push(turn);
           const finish = () => {
+            turn.status = "completed";
             listener("item/completed", { threadId: params.threadId, turnId,
               item: { type: "agentMessage", text: `reply:${params.input[0].text}` } });
             listener("turn/completed", { threadId: params.threadId, turnId, turn: { status: "completed" } });
@@ -78,10 +84,20 @@ async function fixture(t, options) {
 async function turn(service, orchestratorId, conversationId, text, operationId = randomUUID()) {
   let resolve;
   const finished = new Promise((done) => { resolve = done; });
-  const accepted = await service.start({ operationId, payload: { ...(orchestratorId ? { orchestratorId } : {}),
+  const message = { operationId, payload: { ...(orchestratorId ? { orchestratorId } : {}),
     backendId: "codex", logicalConversationId: conversationId, clientOperationId: operationId,
     input: { blocks: [{ type: "text", text }] } },
-  }, resolve, async () => "decline");
+  };
+  let accepted = await service.start(message, resolve, async () => "decline");
+  if (accepted.status === "confirmation_required") {
+    await service.respondToResetConfirmation(orchestratorId || "main", {
+      logicalConversationId: conversationId,
+      clientOperationId: operationId,
+      ...accepted.resetConfirmation,
+      decision: accepted.resetConfirmation.required ? "reset" : "continue",
+    });
+    accepted = await service.start(message, resolve, async () => "decline");
+  }
   return { accepted, finished, operationId };
 }
 
@@ -179,7 +195,11 @@ test("shared memory clear also drops every retained native parent", async (t) =>
   for (const file of files) assert.ok(JSON.parse(await fs.readFile(file, "utf8")).nativeThreadId);
   const restarted = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
   await restarted.clearMemory();
-  for (const file of files) assert.equal(JSON.parse(await fs.readFile(file, "utf8")).nativeThreadId, null);
+  for (const file of files) {
+    const active = JSON.parse(await fs.readFile(file, "utf8"));
+    assert.ok(active.nativeThreadId);
+    assert.equal(active.pendingSwitch.reason, "memory");
+  }
 });
 
 test("main migration keeps its native parent; each orchestrator has a separate parent in one workspace", async (t) => {
@@ -221,6 +241,30 @@ test("main migration keeps its native parent; each orchestrator has a separate p
   assert.equal((await reloaded.open(created.id)).logicalConversationId, other.logicalConversationId);
   assert.equal((await reloaded.history("main")).messages.length, 4);
   await assert.rejects(reloaded.remove("main"), { code: "turn_rejected" });
+});
+
+test("shared memory clear checks every orchestrator before mutating memory", async (t) => {
+  let busyId = "";
+  const activity = { hasOutstanding: ({ orchestratorId }) => orchestratorId === busyId,
+    registerRoot: () => () => {} };
+  const { rootDir, codex, service } = await fixture(t, { activity });
+  const main = await service.open("main");
+  const child = await service.create("secondary");
+  const other = await service.open(child.id);
+  await (await turn(service, "main", main.logicalConversationId, "main evidence")).finished;
+  await (await turn(service, child.id, other.logicalConversationId, "other evidence")).finished;
+  const workspace = codex.calls.find(({ method, params }) => method === "thread/start"
+    && params.approvalPolicy === "on-request").params.cwd;
+  const memoryFile = path.join(workspace, "voice-memory", "recent.json");
+  const before = await fs.readFile(memoryFile, "utf8");
+  const mainActiveBefore = await fs.readFile(path.join(rootDir, "active.json"), "utf8");
+  busyId = child.id;
+  await assert.rejects(service.clearMemory(), { code: "session_busy" });
+  assert.equal(await fs.readFile(memoryFile, "utf8"), before);
+  assert.equal(await fs.readFile(path.join(rootDir, "active.json"), "utf8"), mainActiveBefore);
+  await assert.rejects(service.remove(child.id), { code: "session_busy" });
+  busyId = "";
+  await service.clearMemory();
 });
 
 test("deletion and clear preserve shared memory and the main workspace", async (t) => {
@@ -336,11 +380,12 @@ test("an orchestrator with an outstanding delegated run cannot be deleted", asyn
   }]));
   const recovered = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient,
     getAgentService: () => agent, subjectId: "voice-owner" });
-  await recovered.clearMessages(child.id);
+  await assert.rejects(recovered.clearMessages(child.id), { code: "session_busy" });
   await assert.rejects(recovered.remove(child.id), { code: "session_busy" });
   state = "unknown";
   await assert.rejects(recovered.remove(child.id), { code: "session_busy" });
   state = "completed";
+  await recovered.clearMessages(child.id);
   await recovered.remove(child.id);
   assert.equal((await recovered.list()).orchestrators.some((item) => item.id === child.id), false);
 });
