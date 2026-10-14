@@ -6,6 +6,7 @@ import { KeyboardProvider } from "./keyboardController";
 import {
   Alert,
   AppState,
+  DeviceEventEmitter,
   NativeEventEmitter,
   NativeModules,
   type ImageSourcePropType,
@@ -1098,13 +1099,16 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   const nativeMediaLogRef = useRef(autoClientLogs.enqueue);
   nativeMediaLogRef.current = autoClientLogs.enqueue;
   useEffect(() => {
+    const sourceSubscription = DeviceEventEmitter.addListener("BittyRunnerImageDiagnostic", (payload) => {
+      nativeMediaLogRef.current("image_trace", { stage: "transport", buildStamp: BUILD_STAMP, ...payload });
+    });
     const module = Platform.OS === "ios" ? NativeModules.BittyRunnerTLS : undefined;
-    if (!module) return;
+    if (!module) return () => sourceSubscription.remove();
     const subscription = new NativeEventEmitter(module).addListener("BittyRunnerMediaDiagnostic", (payload) => {
-      nativeMediaLogRef.current("tts_trace", { stage: "transport", buildStamp: BUILD_STAMP, ...payload });
+      nativeMediaLogRef.current(payload.pathKind === "runner-image" ? "image_trace" : "tts_trace", { stage: "transport", buildStamp: BUILD_STAMP, ...payload });
     });
     nativeMediaLogRef.current("tts_trace", { stage: "transport-diagnostics-ready", buildStamp: BUILD_STAMP });
-    return () => subscription.remove();
+    return () => { sourceSubscription.remove(); subscription.remove(); };
   }, []);
   const sessionDiagClientLogs = useBufferedClientLogs<AutoClientLogEntry>({
     enabled: true,

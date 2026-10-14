@@ -1,3 +1,5 @@
+import { getCloudflareAccessHeadersForUrl } from "./cloudflareAccessFetch";
+
 export function normalizeRunnerPath(value: unknown) {
   return String(value || "").trim().replace(/\\/g, "/");
 }
@@ -98,7 +100,7 @@ export type RunnerImageSource = { uri: string; headers?: Record<string, string> 
 export function getRunnerMediaSource(uri: string, runnerToken: string): RunnerImageSource | null {
   const token = runnerToken.trim();
   if (!uri || !token) return null;
-  return { uri, headers: { authorization: `Bearer ${token}` } };
+  return { uri, headers: { ...getCloudflareAccessHeadersForUrl(uri), authorization: `Bearer ${token}` } };
 }
 
 export function resolveRunnerMarkdownImage(

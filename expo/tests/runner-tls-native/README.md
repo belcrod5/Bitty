@@ -7,10 +7,16 @@ python3 expo/tests/runner-tls-native/run.py
 python3 expo/tests/runner-tls-native/check-tts-bridge.py
 ```
 
-The harness compiles the production TLS policy, HTTP protocol and streaming media
-loader. It creates temporary CAs and HTTPS listeners, overrides only the test
+The harness compiles the production TLS policy, HTTP protocol, streaming media
+loader and installed Markdown image downloader. The image fixture supplies only
+the rendering cache and RN platform aliases; TLS and image decoding run unchanged. It creates temporary CAs and HTTPS listeners, overrides only the test
 process's configuration-file location, and deletes all temporary keys afterward.
 It neither installs an OS certificate nor contacts or restarts a real Runner.
+
+Image checks cover both default and authenticated sessions, startup hook registration,
+paired TLS image decoding, rejected CA/hostname/port/expiry/redirects, clearing pairing,
+and retained timeout and cache policy. App startup registers the image configuration
+hook before any image downloader session is created.
 
 Checks cover QR anchor trust, mismatched CA/hostname, expired leaf, exact port
 binding, redirects, Cloudflare header isolation, default OS trust after clearing

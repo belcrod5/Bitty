@@ -10,6 +10,7 @@ import time
 
 HERE = pathlib.Path(__file__).resolve().parent
 SOURCE = HERE.parents[1] / "modules/bitty-runner-tls/ios"
+IMAGE_SOURCE = HERE.parents[1] / "node_modules/react-native-enriched-markdown/ios/utils"
 os.umask(0o077)
 
 with tempfile.TemporaryDirectory(prefix="bitty-runner-tls-native-") as temporary:
@@ -50,11 +51,27 @@ extendedKeyUsage=serverAuth
     certificate_command("x509", "-req", "-in", "server.csr", "-CA", "ca.pem", "-CAkey", "ca.key",
                         "-CAcreateserial", "-days", "0", "-sha256", "-extfile", "leaf.ext", "-out", "expired.pem")
     certificate_command("x509", "-in", "ca.pem", "-outform", "DER", "-out", "ca.der")
+    # Compile the actual dependency downloader unchanged, replacing only its RN
+    # platform aliases and renderer-owned cache for this macOS command-line fixture.
+    for name in ("ENRMImageDownloader.m", "ENRMImageDownloader.h"):
+        shutil.copyfile(IMAGE_SOURCE / name, work / name)
+    shutil.copyfile(IMAGE_SOURCE.parent / "attachments/ENRMImageAttachment.h", work / "ENRMImageAttachment.h")
+    (work / "ReactNativeEnrichedMarkdown").mkdir()
+    shutil.copyfile(IMAGE_SOURCE / "ENRMImageDownloaderSession.h",
+                    work / "ReactNativeEnrichedMarkdown/ENRMImageDownloaderSession.h")
+    shutil.copyfile(IMAGE_SOURCE / "ENRMImageDownloaderSession.h", work / "ENRMImageDownloaderSession.h")
+    (work / "ENRMUIKit.h").write_text("""#import <AppKit/AppKit.h>
+@interface NativeTestImage : NSImage
+@property(nonatomic, readonly) CGImageRef CGImage;
+@end
+#define RCTUIImage NativeTestImage
+""")
     subprocess.run(["xcrun", "clang", "-fobjc-arc", "-fblocks", "-Wno-deprecated-declarations",
                     "-framework", "Foundation", "-framework", "Security", "-framework", "AVFoundation",
-                    "-framework", "UniformTypeIdentifiers", "-framework", "CoreMedia", "-I", str(SOURCE),
+                    "-framework", "AppKit", "-framework", "UniformTypeIdentifiers", "-framework", "CoreMedia", "-I", str(SOURCE), "-I", str(work),
                     str(HERE / "Harness.m"), str(SOURCE / "BittyRunnerTLS.m"),
                     str(SOURCE / "BittyRunnerMediaLoader.m"), str(SOURCE / "BittyRunnerSocket.m"),
+                    str(work / "ENRMImageDownloader.m"), str(HERE / "ImageCacheFixture.m"),
                     "-o", str(work / "harness")], check=True)
     server = subprocess.Popen(["node", str(HERE / "server.cjs"), str(HERE / "test.mp4")],
                               cwd=work, stdout=subprocess.DEVNULL)
@@ -71,6 +88,9 @@ extendedKeyUsage=serverAuth
         server.terminate()
         server.wait(timeout=5)
     counts = json.loads((work / "counts.json").read_text())
+    assert counts["imageAuthenticated"] > 0, "Production image downloader never received authenticated image"
+    assert counts["publicImage"] > 0, "Header-free image downloader did not use paired transport"
+    assert counts["imageMissing"] == 0, "Image downloader omitted its Authorization header"
     assert counts["rogue"] == 0, "Invalid CA or redirect leaked an HTTP request"
     assert counts["expired"] == 0, "Expired leaf received an HTTP request"
     assert counts["wrongName"] == 0, "Hostname mismatch leaked an HTTP request"

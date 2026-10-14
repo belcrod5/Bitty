@@ -1,4 +1,5 @@
 #import "BittyRunnerTLS.h"
+#import <ReactNativeEnrichedMarkdown/ENRMImageDownloaderSession.h>
 #if __has_include(<React/RCTBridgeModule.h>)
 // The official HTTP configuration hook is exported by React's prebuilt binary,
 // but RCTHTTPRequestHandler.h is omitted from its public header set.
@@ -9,6 +10,13 @@ extern void RCTSetCustomNSURLSessionConfigurationProvider(NSURLSessionConfigurat
 @property(nonatomic, strong) NSURLSession *session;
 @property(nonatomic, strong) NSURLSessionDataTask *task;
 @end
+
+static void registerRunnerProtocol(NSURLSessionConfiguration *configuration) {
+  NSMutableArray *protocols = [NSMutableArray arrayWithArray:configuration.protocolClasses ?: @[]];
+  [protocols removeObject:BittyRunnerProtocol.class];
+  [protocols insertObject:BittyRunnerProtocol.class atIndex:0];
+  configuration.protocolClasses = protocols;
+}
 
 @interface BittyRunnerTLS ()
 @property(nonatomic, strong) NSURL *origin;
@@ -39,14 +47,20 @@ extern void RCTSetCustomNSURLSessionConfigurationProvider(NSURLSessionConfigurat
                          certificate:configuration[@"certificate"] ?: @"" error:nil];
     }
     [NSURLProtocol registerClass:BittyRunnerProtocol.class];
+    [NSNotificationCenter.defaultCenter addObserverForName:ENRMImageDownloadDiagnosticNotification
+        object:nil queue:nil usingBlock:^(NSNotification *notification) {
+      NSDictionary *event = notification.userInfo;
+      [[self shared] logMediaStage:event[@"stage"] request:event[@"request"]
+                         response:event[@"response"] error:event[@"error"]];
+    }];
+    ENRMSetImageSessionConfigurationHandler(^(NSURLSessionConfiguration *configuration) {
+      registerRunnerProtocol(configuration);
+    });
 #if __has_include(<React/RCTBridgeModule.h>)
     // React Native fetch and image loading share this public configuration hook.
     RCTSetCustomNSURLSessionConfigurationProvider(^{
       NSURLSessionConfiguration *configuration = NSURLSessionConfiguration.defaultSessionConfiguration;
-      NSMutableArray *protocols = [NSMutableArray arrayWithArray:configuration.protocolClasses ?: @[]];
-      [protocols removeObject:BittyRunnerProtocol.class];
-      [protocols insertObject:BittyRunnerProtocol.class atIndex:0];
-      configuration.protocolClasses = protocols;
+      registerRunnerProtocol(configuration);
       return configuration;
     });
 #endif
@@ -172,24 +186,30 @@ extern void RCTSetCustomNSURLSessionConfigurationProvider(NSURLSessionConfigurat
             response:(NSURLResponse *)response error:(NSError *)error {
   NSURL *url = request.URL;
   BOOL ttsResource = [url.path hasPrefix:@"/tts-media/"];
+  BOOL runnerImage = [url.path isEqual:@"/files/media"];
   BOOL effectFile = url.isFileURL && [url.path containsString:@"/bitty-tts-effects/"];
-  if (!ttsResource && !effectFile) return;
+  if (!ttsResource && !effectFile && !runnerImage) return;
   NSURLComponents *origin = [NSURLComponents new];
   origin.scheme = [url.scheme isEqual:@"bitty-runner-media"] ? @"https" : url.scheme;
   origin.host = url.host;
   origin.port = url.port;
   NSMutableDictionary *payload = [@{
     @"transportStage":stage, @"origin":origin.string ?: @"",
-    @"pathKind":ttsResource ? @"tts-media" : @"effect-file",
+    @"pathKind":ttsResource ? @"tts-media" : runnerImage ? @"runner-image" : @"effect-file",
+    @"authorizationPresent":@([request valueForHTTPHeaderField:@"Authorization"].length > 0),
     @"pairedLocal":@([self handlesURL:origin.URL]),
     @"accessIdPresent":@([request valueForHTTPHeaderField:@"CF-Access-Client-Id"].length > 0),
     @"accessSecretPresent":@([request valueForHTTPHeaderField:@"CF-Access-Client-Secret"].length > 0)
   } mutableCopy];
+  if (runnerImage) {
+    payload[@"decoded"] = @([stage isEqual:@"image-decoded"] || [stage isEqual:@"image-cache"]);
+    payload[@"cached"] = @([stage isEqual:@"image-cache"]);
+  }
   if ([response isKindOfClass:NSHTTPURLResponse.class]) {
     NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
     payload[@"status"] = @(http.statusCode);
     NSSet *mimeTypes = [NSSet setWithArray:@[@"audio/mpeg", @"audio/mp3", @"audio/wav", @"audio/x-wav",
-      @"audio/aac", @"audio/mp4", @"video/mp4", @"application/octet-stream", @"text/html", @"application/json"]];
+      @"image/jpeg", @"image/png", @"image/webp", @"audio/aac", @"audio/mp4", @"video/mp4", @"application/octet-stream", @"text/html", @"application/json"]];
     payload[@"mimeType"] = [mimeTypes containsObject:response.MIMEType] ? response.MIMEType : @"other";
     NSScanner *scanner = [NSScanner scannerWithString:[http valueForHTTPHeaderField:@"Content-Range"] ?: @""];
     long long start, end, total;
