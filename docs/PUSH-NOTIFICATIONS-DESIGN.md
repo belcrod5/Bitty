@@ -19,12 +19,14 @@
 タップ時の遷移、前景での通知抑制は既存どおり。前景でOSの通知と音を出すのは
 `SCHEDULE_FAILED` のみで、`CODEX_USAGE_LIMIT` はWS経由で利用状況表示を更新する。
 
-初期素材は `expo/notifications/assets` のsimple案。Bittyの通常アイコンに用途マークを
-合成したPNGと、用途別の短いPCM WAVを同梱する。PNG名はcategoryを小文字・ハイフンへ
+初期素材は `expo/notifications/assets` のsimple案。用途シンボル単体を中央に描いた
+PNGと、用途別の短いPCM WAVを同梱する。PNG名はcategoryを小文字・ハイフンへ
 変換したもの、音名は `bitty-<同じ名前>.wav`。候補の切替設定は設けない。
+本番の音はKenney Interface SoundsのCC0素材をPCM WAVへ変換したもの。
+対応する原素材とライセンスは[音源の出典](../expo/notifications/assets/sounds/README.md)に記録する。
 
 OS通知の画像はCommunication Notificationsのavatarを利用する。これはアプリアイコン
-そのものを通知ごとに差し替えるAPIではない。合成PNGをavatarへ指定し、OSが表示位置と
+そのものを通知ごとに差し替えるAPIではない。用途PNGをavatarへ指定し、OSが表示位置と
 小さいアプリアイコンの重なりを決める。用途別通知に `mutable-content: 1` を付け、
 独立した `BittyNotificationService` が同梱PNGから `INSendMessageIntent` を作り、
 incoming interactionのdonation完了後に元のcontentを `updating(from:)` へ渡す。
