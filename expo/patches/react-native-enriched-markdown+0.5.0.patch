@@ -1,3 +1,17 @@
+diff --git a/node_modules/react-native-enriched-markdown/ReactNativeEnrichedMarkdown.podspec b/node_modules/react-native-enriched-markdown/ReactNativeEnrichedMarkdown.podspec
+index e191da8..6c22ae9 100644
+--- a/node_modules/react-native-enriched-markdown/ReactNativeEnrichedMarkdown.podspec
++++ b/node_modules/react-native-enriched-markdown/ReactNativeEnrichedMarkdown.podspec
+@@ -14,7 +14,8 @@ Pod::Spec.new do |s|
+   s.source       = { :git => "https://github.com/software-mansion-labs/react-native-enriched-markdown.git", :tag => "#{s.version}" }
+ 
+   s.source_files = "ios/**/*.{h,m,mm,cpp}", "cpp/md4c/*.{c,h}", "cpp/parser/*.{hpp,cpp}"
+-  s.private_header_files = "ios/**/*.h"
++  s.public_header_files = "ios/utils/ENRMImageDownloaderSession.h"
++  s.private_header_files = Dir.glob("ios/**/*.h", base: __dir__) - ["ios/utils/ENRMImageDownloaderSession.h"]
+ 
+   # To disable LaTeX math rendering (iosMath, supported on iOS and macOS), add ENV['ENRICHED_MARKDOWN_ENABLE_MATH'] = '0' to your Podfile.
+   enable_math = ENV['ENRICHED_MARKDOWN_ENABLE_MATH'] != '0'
 diff --git a/node_modules/react-native-enriched-markdown/android/generated/java/com/facebook/react/viewmanagers/EnrichedMarkdownManagerDelegate.java b/node_modules/react-native-enriched-markdown/android/generated/java/com/facebook/react/viewmanagers/EnrichedMarkdownManagerDelegate.java
 index 041cd4f..85d5e0f 100644
 --- a/node_modules/react-native-enriched-markdown/android/generated/java/com/facebook/react/viewmanagers/EnrichedMarkdownManagerDelegate.java
@@ -1168,10 +1182,38 @@ index 557939d..967d23d 100644
  @end
  
 diff --git a/node_modules/react-native-enriched-markdown/ios/utils/ENRMImageDownloader.m b/node_modules/react-native-enriched-markdown/ios/utils/ENRMImageDownloader.m
-index 720d864..2073475 100644
+index 720d864..ea3f4c3 100644
 --- a/node_modules/react-native-enriched-markdown/ios/utils/ENRMImageDownloader.m
 +++ b/node_modules/react-native-enriched-markdown/ios/utils/ENRMImageDownloader.m
-@@ -13,8 +13,12 @@ static inline NSUInteger ENRMImageByteCost(RCTUIImage *image)
+@@ -1,7 +1,27 @@
+ #import "ENRMImageDownloader.h"
++#import "ENRMImageDownloaderSession.h"
+ #import "ENRMImageAttachment.h"
+ #include <TargetConditionals.h>
+ 
++NSNotificationName const ENRMImageDownloadDiagnosticNotification = @"ENRMImageDownloadDiagnostic";
++
++static void reportImageDownload(NSString *stage, NSURLRequest *request, NSURLResponse *response,
++                                NSError *error)
++{
++  NSMutableDictionary *payload = [@{@"stage": stage, @"request": request} mutableCopy];
++  if (response) payload[@"response"] = response;
++  if (error) payload[@"error"] = error;
++  [[NSNotificationCenter defaultCenter] postNotificationName:ENRMImageDownloadDiagnosticNotification
++                                                    object:nil userInfo:payload];
++}
++
++static void (^imageSessionConfigurationHandler)(NSURLSessionConfiguration *);
++
++void ENRMSetImageSessionConfigurationHandler(void (^handler)(NSURLSessionConfiguration *configuration))
++{
++  imageSessionConfigurationHandler = [handler copy];
++}
++
+ static const NSUInteger kDiskCacheMemoryCapacity = 10 * 1024 * 1024;
+ static const NSUInteger kDiskCacheDiskCapacity = 100 * 1024 * 1024;
+ 
+@@ -13,8 +33,12 @@ static inline NSUInteger ENRMImageByteCost(RCTUIImage *image)
    return CGImageGetBytesPerRow(cgImage) * CGImageGetHeight(cgImage);
  }
  
@@ -1184,15 +1226,18 @@ index 720d864..2073475 100644
    NSMutableDictionary<NSString *, NSMutableArray<ENRMImageDownloadCompletion> *> *_inFlightRequests;
  }
  
-@@ -38,52 +42,73 @@ - (instancetype)init
+@@ -37,53 +61,75 @@ - (instancetype)init
+     config.requestCachePolicy = NSURLRequestReturnCacheDataElseLoad;
      config.timeoutIntervalForRequest = 15;
      config.timeoutIntervalForResource = 30;
++    if (imageSessionConfigurationHandler) imageSessionConfigurationHandler(config);
      _session = [NSURLSession sessionWithConfiguration:config];
 +    NSURLSessionConfiguration *authenticatedConfig = [NSURLSessionConfiguration ephemeralSessionConfiguration];
 +    authenticatedConfig.URLCache = nil;
 +    authenticatedConfig.requestCachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
 +    authenticatedConfig.timeoutIntervalForRequest = 15;
 +    authenticatedConfig.timeoutIntervalForResource = 30;
++    if (imageSessionConfigurationHandler) imageSessionConfigurationHandler(authenticatedConfig);
 +    _authenticatedSession = [NSURLSession sessionWithConfiguration:authenticatedConfig delegate:self delegateQueue:nil];
      _inFlightRequests = [NSMutableDictionary dictionary];
    }
@@ -1203,13 +1248,13 @@ index 720d864..2073475 100644
 +- (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task
 +    willPerformHTTPRedirection:(NSHTTPURLResponse *)response newRequest:(NSURLRequest *)request
 +    completionHandler:(void (^)(NSURLRequest *_Nullable))completionHandler
-+{
+ {
 +  // Authenticated resources are direct requests; never forward caller headers through redirects.
 +  completionHandler(nil);
 +}
 +
 +- (void)downloadSource:(NSDictionary *)source cacheKey:(NSString *)cacheKey completion:(ENRMImageDownloadCompletion)completion
- {
++{
 +  NSString *url = source[@"uri"];
    if (url.length == 0) {
      completion(nil);
@@ -1217,8 +1262,14 @@ index 720d864..2073475 100644
    }
  
 -  RCTUIImage *cached = [[ENRMImageAttachment originalImageCache] objectForKey:url];
++  NSURL *nsURL = [NSURL URLWithString:url];
++  if (!nsURL) { completion(nil); return; }
++  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:nsURL];
++  NSDictionary *headers = source[@"headers"] ?: @{};
++  for (NSString *name in headers) [request setValue:headers[name] forHTTPHeaderField:name];
 +  RCTUIImage *cached = [[ENRMImageAttachment originalImageCache] objectForKey:cacheKey];
    if (cached) {
++    reportImageDownload(@"image-cache", request, nil, nil);
      completion(cached);
      return;
    }
@@ -1231,20 +1282,17 @@ index 720d864..2073475 100644
        return;
      }
 -    _inFlightRequests[url] = [NSMutableArray arrayWithObject:completion];
+-  }
+-
+-  NSURL *nsURL = [NSURL URLWithString:url];
+-  if (!nsURL) {
+-    [self dispatchCallbacksForURL:url image:nil];
+-    return;
 +    _inFlightRequests[cacheKey] = [NSMutableArray arrayWithObject:completion];
    }
  
-   NSURL *nsURL = [NSURL URLWithString:url];
-   if (!nsURL) {
--    [self dispatchCallbacksForURL:url image:nil];
-+    [self dispatchCallbacksForURL:cacheKey image:nil];
-     return;
-   }
- 
 -  [[_session dataTaskWithURL:nsURL
-+  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:nsURL];
-+  NSDictionary *headers = source[@"headers"] ?: @{};
-+  for (NSString *name in headers) [request setValue:headers[name] forHTTPHeaderField:name];
++  reportImageDownload(@"image-request", request, nil, nil);
 +  NSURLSession *session = headers.count ? _authenticatedSession : _session;
 +  [[session dataTaskWithRequest:request
             completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
@@ -1258,6 +1306,7 @@ index 720d864..2073475 100644
 +        RCTUIImage *image = (data && !error && success) ? [[RCTUIImage alloc] initWithData:data] : nil;
  #endif
  
++             reportImageDownload(image ? @"image-decoded" : @"image-response", request, response, error);
               if (image) {
 -               [[ENRMImageAttachment originalImageCache] setObject:image forKey:url cost:ENRMImageByteCost(image)];
 +               [[ENRMImageAttachment originalImageCache] setObject:image forKey:cacheKey cost:ENRMImageByteCost(image)];
@@ -1268,6 +1317,21 @@ index 720d864..2073475 100644
             }] resume];
  }
  
+diff --git a/node_modules/react-native-enriched-markdown/ios/utils/ENRMImageDownloaderSession.h b/node_modules/react-native-enriched-markdown/ios/utils/ENRMImageDownloaderSession.h
+new file mode 100644
+index 0000000..a1868bd
+--- /dev/null
++++ b/node_modules/react-native-enriched-markdown/ios/utils/ENRMImageDownloaderSession.h
+@@ -0,0 +1,9 @@
++#pragma once
++#import <Foundation/Foundation.h>
++
++NS_ASSUME_NONNULL_BEGIN
++FOUNDATION_EXPORT NSNotificationName const ENRMImageDownloadDiagnosticNotification;
++// Register before the first image download. Preserve the supplied cache/timeout policy.
++FOUNDATION_EXPORT void ENRMSetImageSessionConfigurationHandler(
++    void (^handler)(NSURLSessionConfiguration *configuration));
++NS_ASSUME_NONNULL_END
 diff --git a/node_modules/react-native-enriched-markdown/ios/utils/TextViewLayoutManager.mm b/node_modules/react-native-enriched-markdown/ios/utils/TextViewLayoutManager.mm
 index dca3717..7684019 100644
 --- a/node_modules/react-native-enriched-markdown/ios/utils/TextViewLayoutManager.mm

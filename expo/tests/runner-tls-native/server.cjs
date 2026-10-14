@@ -1,7 +1,7 @@
 const https = require("node:https");
 const fs = require("node:fs");
 const crypto = require("node:crypto");
-const counts = { trusted: 0, rogue: 0, expired: 0, wrongName: 0, protocolSecrets: 0, metadataRange: 0, slowCancelled: 0, cloud: 0, redirected: 0, cloudAuthenticated: 0, cloudMissing: 0 };
+const counts = { trusted: 0, rogue: 0, expired: 0, wrongName: 0, protocolSecrets: 0, metadataRange: 0, slowCancelled: 0, cloud: 0, redirected: 0, cloudAuthenticated: 0, cloudMissing: 0, imageAuthenticated: 0, imageMissing: 0, publicImage: 0 };
 const media = fs.readFileSync(process.argv[2]);
 function create(prefix, name, certificate = `${prefix}server.pem`) {
   return https.createServer({ key: fs.readFileSync(`${prefix}server.key`), cert: fs.readFileSync(certificate) }, (req, res) => {
@@ -12,6 +12,23 @@ function create(prefix, name, certificate = `${prefix}server.pem`) {
         res.writeHead(401); res.end(); return;
       }
       counts.cloudAuthenticated += 1;
+    }
+    if (req.url === "/files/media?forbidden") { res.writeHead(403); res.end("forbidden"); return; }
+    if (req.url === "/files/media?invalid") { res.writeHead(200); res.end("not an image"); return; }
+    if (req.url === "/files/media?redirect") {
+      res.writeHead(302, { Location: `https://localhost:${rogue.address().port}/steal` });
+      res.end(); return;
+    }
+    if (req.url === "/image.png" || req.url === "/public-image.png" || req.url.startsWith("/files/media")) {
+      if (req.url === "/image.png" && req.headers.authorization !== "Bearer temporary-native-test-only") {
+        counts.imageMissing += 1;
+        res.writeHead(401); res.end(); return;
+      }
+      if (req.url === "/image.png") counts.imageAuthenticated += 1;
+      else counts.publicImage += 1;
+      res.writeHead(200, { "Content-Type": "image/png" });
+      res.end(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1XcAAAAASUVORK5CYII=", "base64"));
+      return;
     }
     if (req.headers.host.startsWith("127.0.0.1:")) counts.wrongName += 1;
     if (["/protocol", "/test.mp4"].includes(req.url) && req.headers["cf-access-client-secret"]) counts.protocolSecrets += 1;

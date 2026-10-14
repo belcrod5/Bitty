@@ -1,3 +1,4 @@
+import { getCloudflareAccessHeadersForUrl } from "../utils/cloudflareAccessFetch";
 import { resolveRunnerMarkdownImage } from "../utils/runnerFileResources";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import {
@@ -1486,9 +1487,24 @@ export function ChatScreen({
     sanitizeTextForTts,
     showInfoToast,
   ]);
-  const resolveChatImageSource = useCallback((url: string) => resolveRunnerMarkdownImage(url, {
-    runnerUrl, runnerToken, rootDir: selectedDirectoryPathForView,
-  }), [runnerUrl, runnerToken, selectedDirectoryPathForView]);
+  const imageAccessHeaders = getCloudflareAccessHeadersForUrl(runnerUrl);
+  const resolveChatImageSource = useCallback((url: string) => {
+    const source = resolveRunnerMarkdownImage(url, {
+      runnerUrl, runnerToken, rootDir: selectedDirectoryPathForView,
+    });
+    if (!source || source.headers?.authorization) {
+      let origin = "";
+      try { origin = new URL(source?.uri || runnerUrl).origin; } catch {}
+      DeviceEventEmitter.emit("BittyRunnerImageDiagnostic", {
+        transportStage: "image-source", pathKind: "runner-image", origin,
+        resolved: Boolean(source), authorizationPresent: Boolean(source?.headers?.authorization),
+        accessIdPresent: Boolean(source?.headers?.["CF-Access-Client-Id"]),
+        accessSecretPresent: Boolean(source?.headers?.["CF-Access-Client-Secret"]),
+      });
+    }
+    return source;
+  }, [runnerUrl, runnerToken, selectedDirectoryPathForView,
+    imageAccessHeaders["CF-Access-Client-Id"], imageAccessHeaders["CF-Access-Client-Secret"]]);
   const openChatFileLinkContextMenu = useCallback((filePathRaw: unknown) => {
     const filePath = normalizeRunnerPath(filePathRaw);
     if (!filePath) return;

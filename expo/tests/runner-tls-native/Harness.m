@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
 #import "BittyRunnerTLS.h"
+#import "ENRMImageDownloader.h"
 #import "BittyRunnerMediaLoader.h"
 #import "BittyRunnerSocket.h"
 // Minimal AVFoundation request fixtures drive the production incremental loader
@@ -53,6 +54,20 @@ static BOOL waitUntil(BOOL (^done)(void)) {
   while (!done() && deadline.timeIntervalSinceNow > 0) [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
   return done();
 }
+static RCTUIImage *downloadImage(ENRMImageDownloader *downloader, NSString *origin, NSString *path, BOOL authenticated) {
+  __block BOOL done = NO;
+  __block RCTUIImage *image;
+  NSDictionary *source = @{@"uri":[origin stringByAppendingString:path],
+    @"headers":authenticated ? @{@"Authorization":@"Bearer temporary-native-test-only"} : @{}};
+  // Different trust scenarios must exercise TLS, not an earlier successful cache entry.
+  [downloader downloadSource:source cacheKey:NSUUID.UUID.UUIDString completion:^(RCTUIImage *value) {
+    image = value;
+    done = YES;
+  }];
+  NSCAssert(waitUntil(^BOOL { return done; }), @"Image request timeout");
+  return image;
+}
+
 static NSString *storagePath;
 static NSData *fixtureAnchor;
 static NSInteger fixtureCloudPort, fixtureRedirectPort;
@@ -114,6 +129,11 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
   storagePath = [base stringByAppendingPathComponent:@"native-test-config.json"];
   Method method = class_getClassMethod(BittyRunnerTLS.class, NSSelectorFromString(@"configurationFile"));
   method_setImplementation(method, (IMP)testConfigurationFile);
+  NSDictionary *initialPorts = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:
+      [base stringByAppendingPathComponent:@"ports.json"]] options:0 error:nil];
+  NSString *initialOrigin = [NSString stringWithFormat:@"https://localhost:%@", initialPorts[@"trusted"]];
+  check(downloadImage([ENRMImageDownloader new], initialOrigin, @"/image.png", YES) == nil,
+      @"Unconfigured native image downloader keeps default OS trust");
   [BittyRunnerTLS install];
   __block NSDictionary *diagnostic;
   id observer = [NSNotificationCenter.defaultCenter addObserverForName:@"BittyRunnerMediaDiagnostic" object:nil queue:nil
@@ -145,7 +165,7 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
   [[BittyRunnerTLS shared] logMediaStage:@"diagnostic-test" request:sensitiveRequest response:untrustedResponse error:deep];
   check([diagnostic[@"mimeType"] isEqual:@"other"] && !diagnostic[@"rangeStart"] && [diagnostic[@"errors"] count] == 5,
       @"Untrusted MIME and Range text is omitted and native error chains are bounded");
-  [NSNotificationCenter.defaultCenter removeObserver:observer];
+
   NSDictionary *ports = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:[base stringByAppendingPathComponent:@"ports.json"]] options:0 error:nil];
   NSString *origin = [NSString stringWithFormat:@"https://localhost:%@",ports[@"trusted"]];
   NSString *badOrigin = [NSString stringWithFormat:@"https://localhost:%@",ports[@"rogue"]];
@@ -155,20 +175,66 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
   NSError *configurationError;
   check([[BittyRunnerTLS shared] configureOrigin:origin certificate:ca error:&configurationError], @"QR CA configuration succeeds in isolated store");
   check(fetch([NSURL URLWithString:origin], &status, NO) == nil && status == 200, @"Shared TLS session authenticates paired HTTPS server");
+  ENRMImageDownloader *imageDownloader = [ENRMImageDownloader shared];
+  check(downloadImage(imageDownloader, origin, @"/image.png", YES) != nil,
+      @"Production Markdown image downloader authenticates paired TLS and decodes image");
+  check(downloadImage(imageDownloader, origin, @"/public-image.png", NO) != nil,
+      @"Production header-free Markdown image session uses paired TLS too");
+  check(downloadImage(imageDownloader, origin, @"/files/media?path=sensitive-path&token=sensitive-query", YES) != nil,
+      @"Runner image diagnostics receive actual decoded download completion");
+  check([diagnostic[@"pathKind"] isEqual:@"runner-image"] && [diagnostic[@"decoded"] boolValue] &&
+      [diagnostic[@"status"] integerValue] == 200 && [diagnostic[@"authorizationPresent"] boolValue],
+      @"Image diagnostics preserve decode result and authentication presence");
+  NSString *imageDiagnostic = [[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:diagnostic options:0 error:nil]
+      encoding:NSUTF8StringEncoding];
+  check(![imageDiagnostic containsString:@"sensitive-"] && ![imageDiagnostic containsString:@"temporary-native-test-only"],
+      @"Image diagnostics omit source paths, query values and credentials");
+  check(downloadImage(imageDownloader, origin, @"/files/media?forbidden", YES) == nil &&
+      [diagnostic[@"status"] integerValue] == 403 && ![diagnostic[@"decoded"] boolValue],
+      @"Image diagnostics distinguish HTTP rejection from successful decode");
+  check(downloadImage(imageDownloader, origin, @"/files/media?invalid", YES) == nil &&
+      [diagnostic[@"status"] integerValue] == 200 && ![diagnostic[@"decoded"] boolValue],
+      @"Image diagnostics identify a successful HTTP response with invalid image data");
+  check(downloadImage(imageDownloader, origin, @"/files/media?redirect", YES) == nil &&
+      [diagnostic[@"status"] integerValue] == 302 && ![diagnostic[@"decoded"] boolValue],
+      @"Image diagnostics report redirects without forwarding credentials");
+  NSURLSession *authenticatedImageSession = [imageDownloader valueForKey:@"authenticatedSession"];
+  NSURLSession *defaultImageSession = [imageDownloader valueForKey:@"session"];
+  check(!authenticatedImageSession.configuration.URLCache &&
+      authenticatedImageSession.configuration.requestCachePolicy == NSURLRequestReloadIgnoringLocalCacheData &&
+      authenticatedImageSession.configuration.timeoutIntervalForRequest == 15 &&
+      authenticatedImageSession.configuration.timeoutIntervalForResource == 30 &&
+      defaultImageSession.configuration.URLCache != nil,
+      @"Image TLS integration preserves separate authenticated cache policy and timeouts");
+  check(downloadImage(imageDownloader, origin, @"/redirect", YES) == nil,
+      @"Production image downloader rejects redirected credentials");
+  check(downloadImage(imageDownloader, badOrigin, @"/files/media", YES) == nil &&
+      [diagnostic[@"errors"] count] > 0 && ![diagnostic[@"decoded"] boolValue],
+      @"Image diagnostics preserve TLS error domain and code without raw descriptions");
+  check(downloadImage(imageDownloader, badOrigin, @"/image.png", YES) == nil,
+      @"Image paired trust does not cover another port");
   check(fetch([NSURL URLWithString:[origin stringByAppendingString:@"/protocol"]], &status, YES) == nil && status == 200, @"Explicit configuration protocol class covers URLSession");
   check(![[BittyRunnerTLS shared] handlesURL:[NSURL URLWithString:badOrigin]], @"Paired trust is restricted to its exact port");
   check(fetch([NSURL URLWithString:[origin stringByAppendingString:@"/redirect"]], &status, NO) == nil && status == 302, @"Redirect is not followed to another server");
   check([[BittyRunnerTLS shared] configureOrigin:badOrigin certificate:ca error:&configurationError], @"Pair test rogue endpoint with expected CA");
+  check(downloadImage(imageDownloader, badOrigin, @"/image.png", YES) == nil,
+      @"Production image downloader rejects unpaired CA certificate");
   check(fetch([NSURL URLWithString:badOrigin], &status, NO) != nil, @"Wrong CA server certificate is rejected");
   NSString *wrongName = [NSString stringWithFormat:@"https://127.0.0.1:%@",ports[@"trusted"]];
   check([[BittyRunnerTLS shared] configureOrigin:wrongName certificate:ca error:&configurationError], @"Set mismatched hostname test endpoint");
+  check(downloadImage(imageDownloader, wrongName, @"/image.png", YES) == nil,
+      @"Production image downloader rejects mismatched hostname");
   check(fetch([NSURL URLWithString:wrongName], &status, NO) != nil, @"Wrong hostname is rejected even with paired CA");
   NSString *expiredOrigin = [NSString stringWithFormat:@"https://localhost:%@", ports[@"expired"]];
   check([[BittyRunnerTLS shared] configureOrigin:expiredOrigin certificate:ca error:&configurationError], @"Set expired leaf test endpoint");
+  check(downloadImage(imageDownloader, expiredOrigin, @"/image.png", YES) == nil,
+      @"Production image downloader rejects expired server certificate");
   check(fetch([NSURL URLWithString:expiredOrigin], &status, NO) != nil, @"Expired server leaf is rejected");
   check(![[BittyRunnerTLS shared] configureOrigin:@"http://localhost:8788" certificate:ca error:&configurationError], @"Plain HTTP cannot become a paired TLS endpoint");
   check([[BittyRunnerTLS shared] configureOrigin:@"" certificate:@"" error:&configurationError], @"Clear pairing succeeds");
   check(fetch([NSURL URLWithString:origin], &status, YES) != nil, @"Default OS trust remains unchanged after clearing pairing");
+  check(downloadImage(imageDownloader, origin, @"/image.png", YES) == nil,
+      @"Existing image sessions return to default OS trust after clearing pairing");
   check([[BittyRunnerTLS shared] configureOrigin:origin certificate:ca error:&configurationError], @"Restore media test pairing");
   __block BOOL opened = NO, textReceived = NO, binaryReceived = NO, largeReceived = NO, closed = NO;
   BittyRunnerSocket *socket = [BittyRunnerSocket new];

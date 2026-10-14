@@ -11,6 +11,7 @@ Pod::Spec.new do |s|
   s.swift_version = '5.9'
   s.dependency 'ExpoModulesCore'
   s.dependency 'React-Core'
+  s.dependency 'ReactNativeEnrichedMarkdown'
   s.frameworks = 'Security', 'AVFoundation'
   s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES' }
   s.source_files = '**/*.{h,m,mm,swift}'

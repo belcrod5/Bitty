@@ -1,3 +1,4 @@
+import { configureCloudflareAccessFetch } from "../utils/cloudflareAccessFetch";
 import React from "react";
 import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
 import { Alert, DeviceEventEmitter, Platform, StyleSheet } from "react-native";
@@ -7,6 +8,7 @@ import { VisualThemeProvider } from "../theme/VisualThemeContext";
 import { VISUAL_THEMES } from "../theme/visualThemes";
 import type { ConversationMessage } from "../types/appTypes";
 
+let mockImageResolver: ((url: string) => any) | undefined;
 const mockStartStreamingStt = jest.fn();
 const mockStopStreamingStt = jest.fn();
 const mockCancelCorrection = jest.fn(() => true);
@@ -144,12 +146,16 @@ jest.mock("../components/MarkdownText", () => {
   const ReactModule = jest.requireActual<typeof React>("react");
   const { TouchableOpacity } = jest.requireActual("react-native") as typeof import("react-native");
   return {
-    MarkdownText: ({ onLocalFileLinkPress }: {
+    MarkdownText: ({ onLocalFileLinkPress, resolveImageSource }: {
       onLocalFileLinkPress?: (path: string) => void;
-    }) => ReactModule.createElement(TouchableOpacity, {
-      testID: "local-file-link",
-      onPress: () => onLocalFileLinkPress?.("/external/tasks/today.checklist"),
-    }),
+      resolveImageSource?: (url: string) => unknown;
+    }) => {
+      mockImageResolver = resolveImageSource;
+      return ReactModule.createElement(TouchableOpacity, {
+        testID: "local-file-link",
+        onPress: () => onLocalFileLinkPress?.("/external/tasks/today.checklist"),
+      });
+    },
   };
 });
 jest.mock("../components/PixelRobotIndicator", () => ({ PixelRobotIndicator: () => null }));
@@ -456,6 +462,8 @@ describe("ChatScreen voice input", () => {
     mockPanelBackendId = "codex";
     mockPanelSessionMaterialized = true;
     mockSelectedLlmSessionMaterialized = true;
+    configureCloudflareAccessFetch({ runnerUrl: "", credentials: { clientId: "", clientSecret: "" } });
+    mockImageResolver = undefined;
     mockRunnerUrl = "http://runner.test";
     mockRunnerClientStateScopeId = "runner-a";
     mockComposerDraftsLoaded = true;
@@ -464,6 +472,29 @@ describe("ChatScreen voice input", () => {
 
   afterEach(() => {
     if (platformOSDescriptor) Object.defineProperty(Platform, "OS", platformOSDescriptor);
+  });
+
+  it("updates the image resolver for same-ID Access secret rotation and emits only safe source diagnostics", async () => {
+    mockRunnerUrl = "https://runner.test";
+    configureCloudflareAccessFetch({ runnerUrl: mockRunnerUrl, credentials: { clientId: "access-id", clientSecret: "secret-first" } });
+    const events: unknown[] = [];
+    const subscription = DeviceEventEmitter.addListener("BittyRunnerImageDiagnostic", (payload) => events.push(payload));
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    const row = await render(mockLegendListProps.current?.renderItem?.({ item: mockPanelConversationMessages[0], index: 0 }));
+    const first = mockImageResolver!;
+    expect(first("/private/tmp/sensitive.jpg").headers["CF-Access-Client-Secret"]).toBe("secret-first");
+    configureCloudflareAccessFetch({ runnerUrl: mockRunnerUrl, credentials: { clientId: "access-id", clientSecret: "secret-second" } });
+    await screen.rerender(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    await row.rerender(mockLegendListProps.current?.renderItem?.({ item: mockPanelConversationMessages[0], index: 0 }));
+    expect(mockImageResolver).not.toBe(first);
+    expect(mockImageResolver!("/private/tmp/sensitive.jpg").headers["CF-Access-Client-Secret"]).toBe("secret-second");
+    expect(events).toHaveLength(2);
+    expect(events[1]).toEqual({ transportStage: "image-source", pathKind: "runner-image", origin: "https://runner.test",
+      resolved: true, authorizationPresent: true, accessIdPresent: true, accessSecretPresent: true });
+    expect(JSON.stringify(events)).not.toMatch(/sensitive|secret-first|secret-second|runner-token|access-id/);
+    subscription.remove();
+    await row.unmount();
+    await screen.unmount();
   });
 
   it("replaces the whole composer with the recording panel at the same position", async () => {

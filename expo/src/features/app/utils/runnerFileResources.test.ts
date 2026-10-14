@@ -3,10 +3,28 @@ import {
   getRunnerMediaSource,
   resolveRunnerMarkdownImage,
 } from "./runnerFileResources";
+import { configureCloudflareAccessFetch } from "./cloudflareAccessFetch";
 
 const context = { runnerUrl: "http://runner.test", runnerToken: "token", rootDir: "/repo" };
 
 describe("Runner image resources", () => {
+  beforeEach(() => configureCloudflareAccessFetch({ runnerUrl: "", credentials: { clientId: "", clientSecret: "" } }));
+
+  it("includes Access credentials only in sources for the configured Runner origin", () => {
+    configureCloudflareAccessFetch({ runnerUrl: "https://runner.test", credentials: { clientId: "access-id", clientSecret: "access-secret" } });
+    const cloud = { ...context, runnerUrl: "https://runner.test" };
+    const source = resolveRunnerMarkdownImage("/private/tmp/image.jpg", cloud)!;
+    expect(source.headers).toEqual({ authorization: "Bearer token", "CF-Access-Client-Id": "access-id", "CF-Access-Client-Secret": "access-secret" });
+    expect(getRunnerMediaSource(source.uri, context.runnerToken)).toEqual(source);
+    expect(resolveRunnerMarkdownImage("https://runner.test/external.jpg", cloud)).toEqual({ uri: "https://runner.test/external.jpg" });
+    expect(resolveRunnerMarkdownImage("image.jpg", { ...cloud, runnerUrl: "https://runner.test:9443" })!.headers)
+      .toEqual({ authorization: "Bearer token" });
+    expect(resolveRunnerMarkdownImage("image.jpg", { ...cloud, runnerUrl: "https://local.test" })!.headers)
+      .toEqual({ authorization: "Bearer token" });
+    configureCloudflareAccessFetch({ runnerUrl: "https://runner.test", credentials: { clientId: "access-id", clientSecret: "rotated-secret" } });
+    expect(resolveRunnerMarkdownImage("/private/tmp/image.jpg", cloud)!.headers!["CF-Access-Client-Secret"])
+      .toBe("rotated-secret");
+  });
   it.each([
     ["/private/tmp/screen.jpg", "/private/tmp"],
     ["/repo/images/screen.jpg", "/repo"],

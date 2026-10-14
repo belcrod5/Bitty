@@ -1,3 +1,4 @@
+import { getCloudflareAccessHeadersForUrl } from "../utils/cloudflareAccessFetch";
 import { getRunnerMediaSource } from "../utils/runnerFileResources";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -99,9 +100,10 @@ export function RunnerMediaViewer({ media, onRequestClose }: RunnerMediaViewerPr
     setError("");
   }, [activeItem?.url]);
 
+  const mediaAccessHeaders = getCloudflareAccessHeadersForUrl(media?.url ?? "");
   const sourceForItem = useCallback((item: RunnerMediaItem) => (
     getRunnerMediaSource(item.url, media?.runnerToken ?? "") ?? { uri: "" }
-  ), [media?.runnerToken]);
+  ), [media?.runnerToken, mediaAccessHeaders["CF-Access-Client-Id"], mediaAccessHeaders["CF-Access-Client-Secret"]]);
 
   const renderMediaItem = useCallback((item: RunnerMediaItem, index: number) => {
     const source = sourceForItem(item);
