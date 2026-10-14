@@ -87,6 +87,8 @@ test("observes Claude and Codex approvals through one path and clears stale IDs"
   assert.equal(first.aps.alert.title, "project");
   assert.equal(first.aps.alert.body, "Allow a safe command?");
   assert.equal(first.aps.category, "APPROVAL_REQUEST");
+  assert.equal(first.aps.sound, "bitty-approval-request.wav");
+  assert.equal(first.aps["mutable-content"], 1);
   assert.equal(first.aps["interruption-level"], "time-sensitive");
 
   service.onRunEvent({ ...claude, sequence: 99 });

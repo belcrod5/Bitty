@@ -63,6 +63,8 @@ test("voice completion pushes a logical orchestrator target with combined badge"
     text: "finished" });
   assert.equal(harness.sends.length, 1);
   assert.equal(harness.sends[0].payload.aps.category, "VOICE_COMPLETED");
+  assert.equal(harness.sends[0].payload.aps.sound, "bitty-voice-completed.wav");
+  assert.equal(harness.sends[0].payload.aps["mutable-content"], 1);
   assert.equal(harness.sends[0].payload.aps.badge, 5);
   assert.equal(harness.sends[0].payload.orchestratorId, "main");
   assert.equal(harness.sends[0].payload.sessionId, undefined);
@@ -164,8 +166,9 @@ test("broadcasts and sends one TURN_COMPLETED push with the existing payload sha
   assert.deepEqual(harness.sends[0].payload, {
     aps: {
       alert: { title: "project-a", body: "summary: finished successfully" },
-      sound: "default",
+      sound: "bitty-turn-completed.wav",
       category: "TURN_COMPLETED",
+      "mutable-content": 1,
       "thread-id": "session-1",
     },
     sessionId: "session-1",
@@ -517,6 +520,8 @@ test("schedule failure pushes do not require a session, unread state or LLM summ
   assert.equal(harness.sends.length, 2);
   const payload = harness.sends[0].payload;
   assert.equal(payload.aps.category, "SCHEDULE_FAILED");
+  assert.equal(payload.aps.sound, "bitty-schedule-failed.wav");
+  assert.equal(payload.aps["mutable-content"], 1);
   assert.match(payload.aps.alert.body, /Parking check.*model value is not supported/);
   assert.equal(payload.scheduleId, "schedule-1");
   assert.equal(payload.sessionId, undefined);
@@ -548,4 +553,17 @@ test("scheduled quota failures use the account alert rather than duplicate sched
   assert.equal(harness.sends.length, 0);
   await harness.notifier.notifyScheduleFailed({ ...failure, errorCode: "turn_failed" });
   assert.equal(harness.sends.length, 1);
+});
+
+test("account usage alerts keep account grouping and episode without adding a session or badge", async () => {
+  const harness = createHarness();
+  await harness.notifier.notifyUsageLimitReached({ accountId: "account-one", episode: "episode-one" });
+  assert.deepEqual(harness.sends[0].payload, {
+    aps: {
+      alert: { title: "Codex 利用上限", body: "Codex の利用上限に達しました。アプリで利用状況を確認してください。" },
+      category: "CODEX_USAGE_LIMIT", sound: "bitty-codex-usage-limit.wav", "mutable-content": 1,
+      "thread-id": "codex-usage:account-one",
+    },
+    usageLimitReached: true, episode: "episode-one",
+  });
 });

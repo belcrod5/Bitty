@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { AGENT_TERMINAL_EVENT_TYPES } from "./agent/agent-protocol.mjs";
 import { maskApnsToken } from "./apns-client.mjs";
+import { pushNotificationPresentation } from "./push-notification-presentation.mjs";
 import {
   compactLlmCompletionPreview,
   derivePushDirectoryTitle,
@@ -68,8 +69,7 @@ export function createApprovalPushService({
     const payload = {
       aps: {
         alert: { title, body },
-        sound: "default",
-        category: "APPROVAL_REQUEST",
+        ...pushNotificationPresentation("APPROVAL_REQUEST"),
         "interruption-level": "time-sensitive",
       },
       approvalId,

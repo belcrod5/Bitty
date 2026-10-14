@@ -1,4 +1,5 @@
 import { maskApnsToken } from "./apns-client.mjs";
+import { pushNotificationPresentation } from "./push-notification-presentation.mjs";
 
 const DEDUP_TTL_MS = 6 * 60 * 60 * 1000;
 const DEDUP_MAX_ENTRIES = 1000;
@@ -131,8 +132,7 @@ export function createTurnCompletionNotifier({
     const basePayload = {
       aps: {
         alert: { title: derivePushDirectoryTitle(payloadDirectory) || "タスク完了", body: summary },
-        sound: "default",
-        category: "TURN_COMPLETED",
+        ...pushNotificationPresentation("TURN_COMPLETED"),
         "thread-id": id,
       },
       sessionId: id,
@@ -178,8 +178,8 @@ export function createTurnCompletionNotifier({
         if (voiceUnreadCount !== null) badge = (await getNormalUnreadCount(device.directories || [])) + voiceUnreadCount;
       } catch (error) { log.warn(`[push] normal badge count failed: ${errorMessage(error)}`); }
       return { device, payload: {
-        aps: { alert: { title: orchestratorName || "音声会話", body: summary }, sound: "default",
-          category: "VOICE_COMPLETED", "thread-id": `voice:${orchestratorId}`,
+        aps: { alert: { title: orchestratorName || "音声会話", body: summary },
+          ...pushNotificationPresentation("VOICE_COMPLETED"), "thread-id": `voice:${orchestratorId}`,
           ...(badge === undefined ? {} : { badge }) },
         orchestratorId, logicalConversationId, clientOperationId, completedOrdinal,
       } };
@@ -240,7 +240,7 @@ export function createTurnCompletionNotifier({
     const payload = {
       aps: {
         alert: { title: "Codex 利用上限", body: "Codex の利用上限に達しました。アプリで利用状況を確認してください。" },
-        sound: "default", category: "CODEX_USAGE_LIMIT", "thread-id": `codex-usage:${accountId}`,
+        ...pushNotificationPresentation("CODEX_USAGE_LIMIT"), "thread-id": `codex-usage:${accountId}`,
       },
       usageLimitReached: true, episode,
     };
@@ -264,8 +264,7 @@ export function createTurnCompletionNotifier({
           title: "スケジュール実行失敗",
           body: compactLlmCompletionPreview(`${schedule.name}: ${failureMessage} (${errorCode})`),
         },
-        sound: "default",
-        category: "SCHEDULE_FAILED",
+        ...pushNotificationPresentation("SCHEDULE_FAILED"),
         "thread-id": schedule.id,
       },
       scheduleId: schedule.id,

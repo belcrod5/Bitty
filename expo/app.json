@@ -47,7 +47,14 @@
       [
         "expo-notifications",
         {
-          "mode": "development"
+          "mode": "development",
+          "sounds": [
+            "./notifications/assets/sounds/bitty-turn-completed.wav",
+            "./notifications/assets/sounds/bitty-voice-completed.wav",
+            "./notifications/assets/sounds/bitty-approval-request.wav",
+            "./notifications/assets/sounds/bitty-schedule-failed.wav",
+            "./notifications/assets/sounds/bitty-codex-usage-limit.wav"
+          ]
         }
       ],
       [
@@ -57,7 +64,8 @@
           "remindersPermission": "カレンダー機能の初期化時にリマインダーのアクセス状態を確認するために使用します。リマインダーの読み書きは行いません。"
         }
       ],
-      "./plugins/withRemovedLocationPermissions"
+      "./plugins/withRemovedLocationPermissions",
+      "./plugins/withPushNotificationPresentation"
     ],
     "ios": {
       "supportsTablet": true,
