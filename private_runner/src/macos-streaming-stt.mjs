@@ -228,8 +228,9 @@ export function createMacosStreamingSttHandler({
           }
         }
         if (typeof message.recognizerAvailable === "boolean") nativeDetails.recognizerAvailable = message.recognizerAvailable;
-        if (message.code === "macos_recognition_failed" && phase === "finalizing"
-          && endReason === "no_speech_timeout" && !speechBegan) {
+        if (message.code === "macos_recognition_failed" && (phase === "ready" || phase === "finalizing")
+          && nativeDetails.nativeErrorDomain === "kAFAssistantErrorDomain" && nativeDetails.nativeErrorCode === 1110
+          && !lastPartialText && !finalHadText) {
           diagnose("macos_no_speech_error", nativeDetails);
           finishDone();
           return;

@@ -384,6 +384,53 @@ test("guards double start and ignores stale events after auto rearm", async () =
   expect(options.setTranscript).not.toHaveBeenCalledWith("stale");
 });
 
+test("repeated empty Mac sessions restart beyond the error retry limit and still recognize speech", async () => {
+  const options = createOptions();
+  const { result } = await renderHook(() => useStreamingStt(options));
+  await openReady(result);
+  for (let index = 0; index < 6; index += 1) {
+    const session = mockSessions.at(-1)!;
+    await emit(session, { type: "speech_activity_begin" });
+    await emit(session, { type: "speech_activity_end" });
+    await emit(session, { type: "done", reason: "speech_end_timeout", hasSpeech: false });
+    expect(session.abort).toHaveBeenCalledTimes(1);
+    expect(result.current.isArmed()).toBe(true);
+    await advanceTimers(250);
+    expect(mockSessions).toHaveLength(index + 2);
+    await emit(mockSessions.at(-1)!, { type: "ready" });
+    expect(result.current.phase).toBe("recording");
+  }
+  expect(options.sendTranscript).not.toHaveBeenCalled();
+  expect(options.onError).not.toHaveBeenCalled();
+  expect(options.onDiagnostic.mock.calls.some(([event]) => event === "stt_error_retry")).toBe(false);
+  await finishSpeech(mockSessions.at(-1)!, "再開後の音声");
+  expect(options.sendTranscript).toHaveBeenCalledWith("再開後の音声", expect.any(Function));
+});
+
+test.each(["stop", "abort", "unmount"])("%s cancels empty-session restart during cleanup or its delay", async (action) => {
+  for (const timing of ["cleanup", "delay"]) {
+    const options = createOptions();
+    const hook = await renderHook(() => useStreamingStt(options));
+    const before = mockSessions.length;
+    const session = await openReady(hook.result);
+    let resolveAbort = () => {};
+    if (timing === "cleanup") session.abort.mockImplementation(() => new Promise<void>((resolve) => { resolveAbort = resolve; }));
+    await emit(session, { type: "done", reason: "speech_end_timeout", hasSpeech: false });
+    let abort: Promise<void> | undefined;
+    if (action === "unmount") await hook.unmount();
+    else await act(async () => {
+      if (action === "stop") hook.result.current.stop();
+      else abort = hook.result.current.abort();
+    });
+    await act(async () => { resolveAbort(); await abort; });
+    await advanceTimers(2_000);
+    expect(mockSessions).toHaveLength(before + 1);
+    expect(session.abort).toHaveBeenCalledTimes(1);
+    expect(options.sendTranscript).not.toHaveBeenCalled();
+    if (action !== "unmount") await hook.unmount();
+  }
+});
+
 test("waits for native abort before restarting after stop while connecting", async () => {
   let resolveAbort = () => {};
   const options = createOptions();

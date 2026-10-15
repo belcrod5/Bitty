@@ -255,8 +255,90 @@ test("native no-speech error after timeout completes without a spurious failure"
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(child.ended, true);
   assert.equal(logs.find(([event]) => event === "[stream-stt] macos_input_ended")[1].trigger, "no_speech_timeout");
-  child.emitMessage({ type: "error", code: "macos_recognition_failed" });
+  child.emitMessage({
+    type: "error", code: "macos_recognition_failed",
+    nativeErrorDomain: "kAFAssistantErrorDomain", nativeErrorCode: 1110,
+  });
   assert.deepEqual(ws.sent.at(-1), { type: "done", reason: "no_speech_timeout", hasSpeech: false });
+});
+
+test("Apple no-speech completion tolerates PCM activity and preserves the stop reason", async () => {
+  for (const outcome of ["ready", "pcm_silence", "user_stop"]) {
+    const ws = new FakeSocket();
+    const child = new FakeChild();
+    const logs = [];
+    createMacosStreamingSttHandler({ startHelper: async () => child, log: { info: (...entry) => logs.push(entry) } })(ws);
+    start(ws);
+    await tick();
+    child.emitMessage({ type: "ready" });
+    if (outcome === "pcm_silence") {
+      ws.emit("message", pcm(4000, 200), true);
+      await tick();
+      ws.emit("message", pcm(0, 1_250), true);
+      await tick();
+      assert.equal(child.ended, true);
+      assert.ok(ws.sent.some((message) => message.type === "speech_activity_begin"));
+    } else if (outcome === "user_stop") {
+      ws.emit("message", Buffer.from('{"type":"stop"}'), false);
+      await tick();
+    }
+    child.emitMessage({
+      type: "error", code: "macos_recognition_failed",
+      nativeErrorDomain: "kAFAssistantErrorDomain", nativeErrorCode: 1110, recognizerAvailable: true,
+    });
+    assert.deepEqual(ws.sent.at(-1), {
+      type: "done", reason: outcome === "ready" ? "no_speech_timeout"
+        : outcome === "user_stop" ? "user_stop" : "speech_end_timeout", hasSpeech: false,
+    });
+    assert.equal(ws.sent.some((message) => message.type === "error"), false);
+    assert.equal(child.killed, true);
+    assert.equal(ws.readyState, 3);
+    const nativeError = logs.find(([event]) => event === "[stream-stt] macos_no_speech_error")[1];
+    assert.equal(nativeError.nativeErrorCode, 1110);
+    assert.equal(nativeError.recognizerAvailable, true);
+    assert.equal(nativeError.speechBegan, outcome === "pcm_silence");
+    child.emit("close", 1);
+    child.emitMessage({ type: "transcript", text: "late", isFinal: true });
+    assert.equal(ws.sent.filter((message) => message.type === "done").length, 1);
+    assert.equal(ws.sent.some((message) => message.type === "transcript"), false);
+  }
+});
+
+test("real failures and no-speech errors with recognized text remain failures", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  for (const outcome of ["missing_metadata", "other_domain", "other_code", "permission", "starting", "partial", "final"]) {
+    const ws = new FakeSocket();
+    const child = new FakeChild();
+    const logs = [];
+    createMacosStreamingSttHandler({ startHelper: async () => child, noSpeechTimeoutMs: 5, log: { info: (...entry) => logs.push(entry) } })(ws);
+    start(ws);
+    await tick();
+    if (outcome !== "starting") child.emitMessage({ type: "ready" });
+    if (outcome === "partial" || outcome === "final") {
+      child.emitMessage({ type: "transcript", text: "保護する本文", isFinal: outcome === "final" });
+      ws.emit("message", Buffer.from('{"type":"stop"}'), false);
+      await tick();
+    } else if (outcome !== "starting") {
+      t.mock.timers.tick(5);
+      assert.equal(child.ended, true);
+    }
+    const error = {
+      type: "error", code: outcome === "permission" ? "macos_speech_permission_denied" : "macos_recognition_failed",
+      nativeErrorDomain: outcome === "other_domain" ? "kLSRErrorDomain" : "kAFAssistantErrorDomain",
+      nativeErrorCode: outcome === "other_code" ? 1101 : 1110,
+    };
+    if (outcome === "missing_metadata") {
+      delete error.nativeErrorDomain;
+      delete error.nativeErrorCode;
+    }
+    child.emitMessage(error);
+    assert.equal(ws.sent.at(-1).type, "error", outcome);
+    assert.equal(ws.sent.at(-1).retryable, outcome !== "permission", outcome);
+    assert.equal(ws.sent.some((message) => message.type === "done"), false, outcome);
+    assert.equal(logs.at(-1)[0], "[stream-stt] macos_failed", outcome);
+    assert.equal(child.killed, true);
+    assert.doesNotMatch(JSON.stringify(logs), /保護する本文/);
+  }
 });
 
 test("unchanged macOS transcript ends despite loud noise and waits for the native final", async (t) => {
@@ -473,10 +555,10 @@ test("no-speech native errors remain successful while preserving error metadata 
   await tick();
   child.emitMessage({ type: "ready" });
   await new Promise((resolve) => setTimeout(resolve, 10));
-  child.emitMessage({ type: "error", code: "macos_recognition_failed", nativeErrorDomain: "kLSRErrorDomain", nativeErrorCode: 1110 });
+  child.emitMessage({ type: "error", code: "macos_recognition_failed", nativeErrorDomain: "kAFAssistantErrorDomain", nativeErrorCode: 1110 });
   const nativeError = logs.find(([event]) => event === "[stream-stt] macos_no_speech_error")[1];
   const done = logs.at(-1)[1];
-  assert.equal(nativeError.nativeErrorDomain, "kLSRErrorDomain");
+  assert.equal(nativeError.nativeErrorDomain, "kAFAssistantErrorDomain");
   assert.equal(nativeError.nativeErrorCode, 1110);
   assert.equal(nativeError.streamId, done.streamId);
   assert.equal(done.hasSpeech, false);
