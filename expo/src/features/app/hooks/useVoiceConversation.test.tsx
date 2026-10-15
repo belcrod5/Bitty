@@ -1,9 +1,10 @@
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react-native";
 import { Alert } from "react-native";
+import { randomUUID } from "expo-crypto";
 import { useVoiceConversation } from "./useVoiceConversation";
 import type { VoiceContextStats } from "../types/appTypes";
 
-jest.mock("expo-crypto", () => ({ randomUUID: () => "11111111-2222-4333-8444-555555555555" }));
+jest.mock("expo-crypto", () => ({ randomUUID: jest.fn(() => "11111111-2222-4333-8444-555555555555") }));
 
 let mockSnapshot = { connected: true, generation: 1 };
 const handlers = new Map<string, (message: unknown) => void>();
@@ -34,6 +35,7 @@ beforeEach(() => {
   mockSnapshot = { connected: true, generation: 1 };
   handlers.clear();
   jest.clearAllMocks();
+  jest.mocked(randomUUID).mockReturnValue(operationId);
   mockManager.request.mockImplementation(async ({ op }: { op: string }) => {
     if (op === "voice.open") return {
       channel: "agent", op: "voice.open.result",
@@ -150,6 +152,150 @@ test("an older history response cannot replace a newer one", async () => {
     await first;
   });
   expect(result.current.history[0].text).toBe("new");
+});
+
+test("shows the submitted user message before acknowledgement and streamed replies", async () => {
+  const request = mockManager.request.getMockImplementation();
+  mockManager.request.mockImplementation((message: { op: string }) => message.op === "turn.start"
+    ? new Promise(() => {}) : request?.(message));
+  const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
+  await waitFor(() => expect(result.current.ready).toBe(true));
+  let sent!: Promise<void>;
+  await act(async () => { sent = result.current.sendTranscript("  質問  ", jest.fn()); });
+  void sent.catch(() => {});
+  expect(result.current.turnStatus).toBe("sending");
+  expect(result.current.history).toEqual([{ role: "user", text: "質問", clientOperationId: operationId,
+    at: expect.any(String) }]);
+  expect(result.current.reply).toBeNull();
+  await act(async () => handlers.get("voice.turn.delta")?.({ payload: {
+    logicalConversationId: conversationId, clientOperationId: operationId, delta: "返答中",
+  } }));
+  expect(result.current.history[0].text).toBe("質問");
+  expect(result.current.reply?.text).toBe("返答中");
+});
+
+test("a history snapshot taken before sending cannot erase a completed local turn", async () => {
+  const request = mockManager.request.getMockImplementation();
+  let resolveHistory!: (message: unknown) => void;
+  mockManager.request.mockImplementation((message: { op: string }) => message.op === "voice.history"
+    ? new Promise((resolve) => { resolveHistory = resolve; }) : request?.(message));
+  const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
+  await waitFor(() => expect(result.current.ready).toBe(true));
+  let history!: Promise<void>;
+  let sent!: Promise<void>;
+  await act(async () => {
+    history = result.current.refreshHistory();
+    sent = result.current.sendTranscript("質問", jest.fn());
+  });
+  await act(async () => {
+    handlers.get("voice.turn.completed")?.({ payload: {
+      clientOperationId: operationId, text: "返答", outputTokens: 12, completedOrdinal: 1,
+    } });
+    await sent;
+    resolveHistory({ op: "voice.history.result", payload: { logicalConversationId: conversationId, messages: [] } });
+    await history;
+  });
+  expect(result.current.history.map(({ role, text }) => ({ role, text }))).toEqual([
+    { role: "user", text: "質問" }, { role: "assistant", text: "返答" },
+  ]);
+  expect(result.current.history[1]).toMatchObject({ outputTokens: 12, completedOrdinal: 1 });
+});
+
+test("keeps consecutive local turns and replaces each message with its persisted version once", async () => {
+  const secondId = "22222222-2222-4333-8444-555555555555";
+  jest.mocked(randomUUID).mockReturnValueOnce(operationId).mockReturnValueOnce(secondId);
+  const request = mockManager.request.getMockImplementation();
+  let messages: unknown[] = [];
+  mockManager.request.mockImplementation((message: { op: string; operationId?: string }) => {
+    if (message.op === "voice.history") return Promise.resolve({ op: "voice.history.result",
+      payload: { logicalConversationId: conversationId, messages } });
+    if (message.op === "turn.start") return Promise.resolve({ op: "turn.accepted",
+      payload: { clientOperationId: message.operationId, status: "accepted" } });
+    return request?.(message);
+  });
+  const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
+  await waitFor(() => expect(result.current.ready).toBe(true));
+  let first!: Promise<void>;
+  let second!: Promise<void>;
+  await act(async () => { first = result.current.sendTranscript("最初の質問", jest.fn()); });
+  await act(async () => {
+    handlers.get("voice.turn.completed")?.({ payload: { clientOperationId: operationId, text: "最初の返答" } });
+    await first;
+    second = result.current.sendTranscript("次の質問", jest.fn());
+  });
+  expect(result.current.reply).toBeNull();
+  expect(result.current.history.map(({ text }) => text)).toEqual(["最初の質問", "最初の返答", "次の質問"]);
+  messages = [
+    { role: "user", text: "保存済みの質問", clientOperationId: operationId, at: "2026-10-15T01:02:03Z" },
+    { role: "assistant", text: "最初の返答", clientOperationId: operationId },
+  ];
+  await act(async () => { await result.current.refreshHistory(); });
+  expect(result.current.history.map(({ text }) => text)).toEqual(["保存済みの質問", "最初の返答", "次の質問"]);
+  expect(result.current.history[0].at).toBe("2026-10-15T01:02:03Z");
+  await act(async () => {
+    handlers.get("voice.turn.completed")?.({ payload: { clientOperationId: secondId, text: "次の返答" } });
+    await second;
+  });
+  messages = [...messages,
+    { role: "user", text: "次の質問", clientOperationId: secondId },
+    { role: "assistant", text: "次の返答", clientOperationId: secondId }];
+  await act(async () => { await result.current.refreshHistory(); await result.current.refreshHistory(); });
+  expect(result.current.history.map(({ text }) => text)).toEqual(["保存済みの質問", "最初の返答", "次の質問", "次の返答"]);
+});
+
+test("does not duplicate a completed reply when persisted history arrives before its event", async () => {
+  const request = mockManager.request.getMockImplementation();
+  mockManager.request.mockImplementation((message: { op: string }) => message.op === "voice.history"
+    ? Promise.resolve({ op: "voice.history.result", payload: { logicalConversationId: conversationId, messages: [
+      { role: "user", text: "質問", clientOperationId: operationId },
+      { role: "assistant", text: "保存済みの返答", clientOperationId: operationId },
+    ] } }) : request?.(message));
+  const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
+  await waitFor(() => expect(result.current.ready).toBe(true));
+  let sent!: Promise<void>;
+  await act(async () => { sent = result.current.sendTranscript("質問", jest.fn()); });
+  await act(async () => { await result.current.refreshHistory(); });
+  await act(async () => {
+    handlers.get("voice.turn.completed")?.({ payload: { clientOperationId: operationId, text: "保存済みの返答" } });
+    await sent;
+  });
+  expect(result.current.history.map(({ text }) => text)).toEqual(["質問", "保存済みの返答"]);
+});
+
+test("removes an unaccepted message only after Runner explicitly rejects the send", async () => {
+  const request = mockManager.request.getMockImplementation();
+  mockManager.request.mockImplementation((message: { op: string }) => message.op === "turn.start"
+    ? Promise.resolve({ op: "error", payload: { code: "session_busy", message: "送信拒否" } }) : request?.(message));
+  const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
+  await waitFor(() => expect(result.current.ready).toBe(true));
+  const onAccepted = jest.fn();
+  await act(async () => {
+    await expect(result.current.sendTranscript("未送信", onAccepted)).rejects.toThrow("送信拒否");
+  });
+  expect(result.current.history).toEqual([]);
+  expect(result.current.turnStatus).toBe("failed");
+  expect(onAccepted).not.toHaveBeenCalled();
+});
+
+test("loads the user history when restoring a running turn without input text", async () => {
+  mockManager.request.mockImplementation(async ({ op }: { op: string }) => {
+    if (op === "voice.open") return { op: "voice.open.result", payload: {
+      logicalConversationId: conversationId, contextMode: "self_context_array", clientOperationId: operationId,
+      status: "running", ...initialStats,
+    } };
+    if (op === "voice.status") return { op: "voice.status.result", payload: {
+      clientOperationId: operationId, status: "running", partialText: "返答中", ...initialStats,
+    } };
+    if (op === "voice.history") return { op: "voice.history.result", payload: {
+      logicalConversationId: conversationId,
+      messages: [{ role: "user", text: "復元された質問", clientOperationId: operationId }],
+    } };
+    throw new Error(`unexpected ${op}`);
+  });
+  const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
+  await waitFor(() => expect(result.current.history[0]?.text).toBe("復元された質問"));
+  expect(result.current.reply?.text).toBe("返答中");
+  expect(result.current.turnStatus).toBe("running");
 });
 
 test("sends one final text block and reads aloud only after a completed turn", async () => {
@@ -327,6 +473,7 @@ test("stopping a voice turn interrupts the matching operation and ignores its la
     payload: { clientOperationId: operationId, status: "completed", text: "late reply" },
   }));
   expect(result.current.turnStatus).toBe("idle");
+  expect(result.current.history.map(({ text }) => text)).toEqual(["long story"]);
   expect(result.current.reply).toBeNull();
   expect(onCompleted).not.toHaveBeenCalled();
 });
@@ -433,9 +580,12 @@ test("attaches the accepted voice job once and skips full-text synthesis on comp
   expect(onCompleted).not.toHaveBeenCalled();
 });
 
-test("drops the prior reply when message clear rotates the conversation ID", async () => {
+test("drops the prior reply and local history when message clear rotates the conversation ID", async () => {
   const nextConversationId = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
   mockManager.request.mockImplementation(async ({ op }: { op: string }) => {
+    if (op === "turn.start") return { op: "turn.accepted", payload: {
+      clientOperationId: operationId, status: "completed", text: "old reply",
+    } };
     if (op !== "voice.open") throw new Error(`unexpected ${op}`);
     return { op: "voice.open.result", payload: {
       logicalConversationId: mockSnapshot.generation === 1 ? conversationId : nextConversationId,
@@ -445,11 +595,14 @@ test("drops the prior reply when message clear rotates the conversation ID", asy
   });
   const { result, rerender } = await renderHook(() => useVoiceConversation(jest.fn()));
   await waitFor(() => expect(result.current.reply?.text).toBe("old reply"));
+  await act(async () => { await result.current.sendTranscript("old question", jest.fn()); });
+  expect(result.current.history.map(({ text }) => text)).toEqual(["old question", "old reply"]);
   mockSnapshot = { connected: true, generation: 2 };
   await rerender(undefined);
   await waitFor(() => expect(result.current.reply).toBeNull());
   await waitFor(() => expect(result.current.logicalConversationId).toBe(nextConversationId));
   expect(result.current.turnStatus).toBe("idle");
+  expect(result.current.history).toEqual([]);
 });
 
 test("checks status and resends the same operation only after not_found", async () => {
@@ -475,6 +628,7 @@ test("checks status and resends the same operation only after not_found", async 
   let sent!: Promise<void>;
   await act(async () => { sent = result.current.sendTranscript("確定発話", onAccepted); await Promise.resolve(); });
   await waitFor(() => expect(result.current.turnStatus).toBe("sending"));
+  expect(result.current.history.map(({ text }) => text)).toEqual(["確定発話"]);
   mockSnapshot = { connected: true, generation: 2 };
   await rerender(undefined);
   await act(async () => { await sent; });
@@ -482,6 +636,7 @@ test("checks status and resends the same operation only after not_found", async 
   const turnStarts = mockManager.request.mock.calls.filter(([message]) => message.op === "turn.start");
   expect(turnStarts).toHaveLength(2);
   expect(turnStarts[0][0]).toEqual(turnStarts[1][0]);
+  expect(result.current.history.map(({ text }) => text)).toEqual(["確定発話", "保存済み"]);
   expect(onAccepted).toHaveBeenCalledTimes(1);
 });
 
@@ -625,6 +780,7 @@ test("a persisted failure arriving before turn.accepted still acknowledges STT",
   await sent;
   expect(onAccepted).toHaveBeenCalledTimes(1);
   expect(result.current.turnStatus).toBe("failed");
+  expect(result.current.history.map(({ text }) => text)).toEqual(["確定発話"]);
   expect(onCompleted).not.toHaveBeenCalled();
   resolveStart({ channel: "agent", op: "turn.accepted", payload: { clientOperationId: operationId } });
   await waitFor(() => expect(result.current.turnStatus).toBe("failed"));
