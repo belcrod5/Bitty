@@ -48,7 +48,6 @@ export function CodexStatusSummaryMenu({
     codexAuthProfilesLoading: authProfilesLoading,
     codexAuthSwitching: authSwitching,
     codexAuthSwitchError: authSwitchError,
-    refreshCodexCliStatus: onRefreshStatus,
     loadCodexAuthProfiles: onLoadAuthProfiles,
     switchCodexAuthProfile: onSwitchAuthProfile,
   } = useChatDiagnostics();
@@ -94,7 +93,6 @@ export function CodexStatusSummaryMenu({
   const openPreview = useCallback(() => {
     const openWithRefresh = () => {
       setPreviewOpen(true);
-      onRefreshStatus?.();
       onLoadAuthProfiles?.();
     };
     if (!triggerRef.current || typeof triggerRef.current.measureInWindow !== "function") {
@@ -110,7 +108,7 @@ export function CodexStatusSummaryMenu({
       });
       openWithRefresh();
     });
-  }, [onLoadAuthProfiles, onRefreshStatus]);
+  }, [onLoadAuthProfiles]);
 
   const toggleAuthSelect = useCallback(() => {
     setAuthSelectOpen((prev) => {

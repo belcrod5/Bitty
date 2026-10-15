@@ -310,7 +310,6 @@ jest.mock("../contexts/ChatDiagnosticsContext", () => ({
     codexAuthProfilesLoading: false,
     codexAuthSwitching: false,
     codexAuthSwitchError: "",
-    refreshCodexCliStatus: jest.fn(),
     loadCodexAuthProfiles: jest.fn(),
     switchCodexAuthProfile: jest.fn(),
   }),

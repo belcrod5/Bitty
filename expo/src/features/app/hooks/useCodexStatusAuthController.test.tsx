@@ -54,6 +54,33 @@ test("resuming immediately after a recent request reads the latest canonical quo
   expect(inputs.setCodexCliStatusSnapshot).toHaveBeenCalledWith(expect.objectContaining({ usageLimitReached: true }));
 });
 
+test("refreshing accounts uses their quota update without a second active-account request", async () => {
+  const { inputs, receive } = args();
+  (global.fetch as jest.Mock).mockResolvedValue(response({
+    currentAuthId: "a",
+    profiles: [{ authId: "a", rateLimits: { primary: { usedPercent: 20, windowDurationMins: 300 } } }],
+  }));
+  const { result } = await renderHook(() => useCodexStatusAuthController(inputs));
+  await act(async () => { await result.current.refreshCodexAuthProfiles({ force: true }); });
+  expect(global.fetch).toHaveBeenCalledTimes(1);
+  expect(String((global.fetch as jest.Mock).mock.calls[0][0])).toContain("/codex-auth/profiles?refresh=1");
+  await act(async () => { receive(status("5h limit: 80% left", "2026-10-10T02:00:01.000Z")); });
+  expect(inputs.setCodexCliStatusSnapshot).toHaveBeenCalledWith(expect.objectContaining({ statusText: "5h limit: 80% left" }));
+});
+
+test("refreshing accounts falls back to the status endpoint for legacy auth", async () => {
+  const { inputs } = args();
+  (global.fetch as jest.Mock)
+    .mockResolvedValueOnce(response({ currentAuthId: "", profiles: [] }))
+    .mockResolvedValueOnce(response(status("5h limit: 80% left", "2026-10-10T02:00:01.000Z")));
+  const { result } = await renderHook(() => useCodexStatusAuthController(inputs));
+  await act(async () => { await result.current.refreshCodexAuthProfiles({ force: true }); });
+  expect((global.fetch as jest.Mock).mock.calls.map(([url]) => new URL(url).pathname)).toEqual([
+    "/codex-auth/profiles", "/codex-cli/status",
+  ]);
+  expect(inputs.setCodexCliStatusSnapshot).toHaveBeenCalledWith(expect.objectContaining({ statusText: "5h limit: 80% left" }));
+});
+
 test("account switching discards pending old reads and accepts the new account even with clock skew", async () => {
   const { inputs, receive } = args();
   const pending = deferred<Response>();

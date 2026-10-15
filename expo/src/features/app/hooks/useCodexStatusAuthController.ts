@@ -207,6 +207,10 @@ export function useCodexStatusAuthController({
       if (snapshot) {
         applyCodexAuthProfilesSnapshot(snapshot);
       }
+      const current = snapshot?.profiles.find((profile) => profile.isCurrent);
+      if (!current?.rateLimits?.length || current.status === "unavailable") {
+        await refreshCodexCliStatusForWidget({ force: true });
+      }
     } finally {
       codexAuthProfilesRefreshInFlightRef.current = false;
       setCodexAuthProfilesLoading(false);
@@ -215,6 +219,7 @@ export function useCodexStatusAuthController({
     applyCodexAuthProfilesSnapshot,
     codexAuthProfilesRefreshInFlightRef,
     fetchRunnerCodexAuthProfiles,
+    refreshCodexCliStatusForWidget,
     setCodexAuthProfilesLoading,
   ]);
 

@@ -21,7 +21,6 @@ export type ChatDiagnosticsContextValue = {
     directory: string,
     options?: { force?: boolean },
   ) => Promise<void>;
-  refreshCodexCliStatus: () => void;
   loadCodexAuthProfiles: () => void;
   switchCodexAuthProfile: (authId: string) => Promise<boolean>;
   startCodexAuthRegistration: () => Promise<CodexAuthRegistration>;

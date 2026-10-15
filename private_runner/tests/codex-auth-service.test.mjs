@@ -7,6 +7,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { createCodexAuthService } from "../src/codex-auth-service.mjs";
 import { normalizeRegistrationCredential } from "../src/codex-auth-service.mjs";
+import { createCodexUsageService } from "../src/codex-usage-service.mjs";
 
 const profile = (authId = "a", overrides = {}) => ({
   version: 1,
@@ -165,6 +166,31 @@ test("refreshes rate limits in an isolated server and persists only safe metadat
     assert.equal(process.calls.find((call) => call.method === "account/login/start").params.type, "chatgptAuthTokens");
     assert.equal(process.calls.at(-1).method, "cleanup");
     assert.equal(JSON.stringify(await service.snapshot()).includes("access_token"), false);
+  });
+});
+
+test("refreshing every profile updates the selected account quota while rejecting an older read", async () => {
+  await withService(async (root) => {
+    let nowMs = 1_000_000;
+    const usage = createCodexUsageService({ storePath: path.join(root, "usage.json"), now: () => nowMs });
+    const access = `x.${Buffer.from(JSON.stringify({ exp: 4102444800 })).toString("base64url")}.x`;
+    const service = createCodexAuthService({ rootDir: root, now: () => nowMs,
+      isolatedProcessFactory: async ({ authId }) => createFakeRateLimitProcess({ rateLimits: {
+        primary: { usedPercent: authId === "a" ? 20 : 40, windowDurationMins: 300, resetsAt: 2000 },
+      } }),
+      onRateLimits: (accountId, update, options) => usage.observe(accountId, update, options),
+    });
+    for (const authId of ["a", "b"]) {
+      await service.save(profile(authId, { tokens: { access_token: access, refresh_token: `refresh-${authId}`, account_id: authId } }));
+    }
+    await service.setActiveAuthId("a");
+    await usage.observe("a", { rateLimits: { primary: { usedPercent: 50, windowDurationMins: 300, resetsAt: 2000 } } }, { observedAt: 999_000 });
+    nowMs = 1_002_000;
+    await service.refreshAllRateLimits();
+    assert.equal((await service.snapshot()).profiles.length, 2);
+    assert.match((await usage.snapshot("a")).statusText, /80% left/);
+    await usage.observe("a", { rateLimits: { primary: { usedPercent: 70, windowDurationMins: 300, resetsAt: 2000 } } }, { observedAt: 998_000 });
+    assert.match((await usage.snapshot("a")).statusText, /80% left/);
   });
 });
 
