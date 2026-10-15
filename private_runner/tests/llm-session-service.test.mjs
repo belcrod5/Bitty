@@ -885,3 +885,27 @@ test("returns zero for an empty directory count without loading either session s
   });
   assert.equal(agentLoads, 0);
 });
+
+test("summary lookup routes native IDs to their backend and preserves request order", async () => {
+  const requests = [];
+  const service = createService({
+    listAgentSessionSnapshot: async (options) => {
+      requests.push(options);
+      return { groups: [{ cwd: options.cwds[0], sessions: [
+        { sessionRef: { backendId: "claude", nativeSessionId: "second" }, canonicalCwd: options.cwds[0],
+          title: "Claude title", updatedAt: "2026-10-01", sourceKind: "cli", modelId: "sonnet" },
+        { sessionRef: { backendId: "claude", nativeSessionId: "first" }, canonicalCwd: options.cwds[0] },
+      ] }] };
+    },
+    findCliSessionIndexEntriesBySessionIds: () => { throw new Error("must not read Codex IDs"); },
+  });
+  const result = await service.getLlmSessionSummaries({
+    directory: "/workspace", backendId: "claude", sessionIds: ["first", "missing", "second"],
+  });
+  assert.deepEqual(requests, [{ backendId: "claude", cwds: ["/canonical/workspace"] }]);
+  assert.deepEqual(result.sessions.map((entry) => entry.sessionId), ["first", "second"]);
+  assert.deepEqual(result.missingSessionIds, ["missing"]);
+  assert.equal(result.sessions[1].backendId, "claude");
+  assert.equal(result.sessions[1].firstUserMessage, "Claude title");
+  assert.equal(result.sessions[1].modelRef, "sonnet");
+});

@@ -499,3 +499,19 @@ test("latestCursor issued by an older page keeps olderCursor paging intact", asy
   });
   assert.deepEqual(middleDelta.messages.map((item) => item.content), ["message-50"]);
 });
+
+test("a missing archive retains empty fresh history and stale delta cursor contracts", async (t) => {
+  const { withLlmSessionRollout } = await import("../src/llm-session-rollout-file.mjs");
+  const { tempDir } = await makeRollout(t, []);
+  const missing = path.join(tempDir, "removed.jsonl.zst");
+  const readers = createReaders();
+  await assert.rejects(withLlmSessionRollout(missing, () => {
+    assert.fail("must not pass an unreadable path into the callback");
+  }), { code: "ENOENT" });
+  const read = (options) => readers.readSessionMessagesFromRolloutFile(missing, { sessionId: "thread-1", ...options });
+  const fresh = await read({});
+  assert.deepEqual(fresh.messages, []);
+  assert.equal(fresh.latestCursor, null);
+  await assert.rejects(read({ sinceCursor: "old-cursor" }), { apiStatus: 409, apiCode: "stale_history_cursor" });
+  await assert.rejects(readers.readCliSessionSummaryFromRolloutFile(missing), { code: "ENOENT" });
+});

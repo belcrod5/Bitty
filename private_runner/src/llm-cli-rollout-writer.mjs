@@ -189,6 +189,9 @@ export function createLlmCliRolloutWriter(deps = {}) {
 
       const existing = await findCliSessionIndexEntryBySessionId(normalizedSessionId, { directory });
       let filePath = String(existing?.filePath || "").trim();
+      if (filePath.endsWith(".jsonl.zst")) {
+        throw new Error("Cannot append to a compressed rollout");
+      }
       if (!filePath) {
         filePath = buildCliRolloutFilePathForSession(normalizedSessionId, now);
       }

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { promises as fs } from "node:fs";
+import { openLlmSessionRollout } from "./llm-session-rollout-file.mjs";
 
 const CURSOR_VERSION = 1;
 const CHUNK_BYTES = 64 * 1024;
@@ -388,14 +388,14 @@ export function createLlmSessionHistoryPageReader(deps) {
 
   // Codex legacy thread paging still replays the full rollout (upstream #25215),
   // so saved history is read here from the end without transporting tool output.
-  return async function readSessionHistoryPage(filePath, opts = {}) {
+  return async function readSessionHistoryPage(filePath, opts = {}, sourceStat) {
     const startedAt = Date.now();
     const limit = normalizeSessionMessagesLimit(opts?.limit);
     const sessionId = String(opts?.sessionId || "").trim();
     const sinceCursorRaw = String(opts?.sinceCursor || "").trim();
     let handle;
     try {
-      handle = await fs.open(filePath, "r");
+      handle = await openLlmSessionRollout(filePath);
     } catch (error) {
       if (String(error?.code || "").toUpperCase() !== "ENOENT") throw error;
       if (sinceCursorRaw) {
@@ -409,7 +409,7 @@ export function createLlmSessionHistoryPageReader(deps) {
       };
     }
     try {
-      const stat = await handle.stat();
+      const stat = sourceStat || await handle.stat();
       const fileSize = Number(stat.size || 0);
       let endOffset = fileSize;
       if (opts?.cursor) {
@@ -423,7 +423,7 @@ export function createLlmSessionHistoryPageReader(deps) {
         sinceOffset = sinceCursor.end;
       }
       const deltaMode = sinceOffset >= 0;
-      const header = await readSessionHeaderContext(filePath, stat);
+      const header = await readSessionHeaderContext(handle, stat);
       const outcomesByCallId = new Map();
       const candidates = [];
       const outputUsageRecords = [];

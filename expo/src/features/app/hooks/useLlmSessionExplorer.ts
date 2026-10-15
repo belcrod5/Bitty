@@ -17,6 +17,7 @@ import { parseLlmDirectory } from "../utils/settingsParsers";
 import { utf8ByteLength } from "../../ws/networkUsageMetrics";
 import { ALL_BACKENDS_SCOPE, readAgentHistory } from "../../agent/client";
 import { deriveAgentSessionLiveState } from "../../agent/sessionLiveState";
+import { runnerSessionKey } from "../utils/runnerClientState";
 import { fetchRunnerSessionSummaries } from "../utils/runnerSessionSummaries";
 
 const RUNNER_SESSIONS_HTTP_TIMEOUT_MS = 12_000;
@@ -255,9 +256,10 @@ export function buildLlmSessionHistoryEntry(
   runnerSnapshotMap: Map<string, RunnerSessionSnapshot>,
 ): LlmSessionHistoryEntry {
   const sessionId = parseOptionalSessionId(item.threadId);
-  const snapshot = sessionId ? runnerSnapshotMap.get(sessionId) : undefined;
+  const backendId = String(item.backendId || "codex").trim() || "codex";
+  const snapshot = sessionId ? runnerSnapshotMap.get(runnerSessionKey(backendId, sessionId)) : undefined;
   return {
-    backendId: String(item.backendId || "codex").trim() || "codex",
+    backendId,
     sessionId,
     parentSessionId: parseOptionalSessionId(item.parentThreadId),
     // The thread cwd is the execution identity. `directory` is only the scope used
@@ -356,15 +358,19 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
 
   const fetchRunnerSessionSnapshotMap = useCallback(async (
     directoryRaw?: unknown,
-    sessionIdsRaw?: unknown[]
+    threads: CodexThreadListEntry[] = []
   ): Promise<Map<string, RunnerSessionSnapshot>> => {
     const out = new Map<string, RunnerSessionSnapshot>();
-    const sessionIds = Array.from(new Set(
-      (Array.isArray(sessionIdsRaw) ? sessionIdsRaw : [])
-        .map(parseOptionalSessionId)
-        .filter(Boolean)
-    ));
-    if (sessionIds.length <= 0) return out;
+    const idsByBackend = new Map<string, string[]>();
+    for (const thread of threads) {
+      const id = parseOptionalSessionId(thread.threadId);
+      if (!id) continue;
+      const backendId = String(thread.backendId || "codex").trim() || "codex";
+      const ids = idsByBackend.get(backendId) || [];
+      ids.push(id);
+      idsByBackend.set(backendId, ids);
+    }
+    if (idsByBackend.size <= 0) return out;
     const { baseUrl: targetLlmUrl, token } = await getRunnerHttpAuth();
     if (!targetLlmUrl || !token) {
       emitSessionDiag("runner_sessions_skipped_missing_auth", {
@@ -374,14 +380,15 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       return out;
     }
     const directory = parseLlmDirectory(directoryRaw ?? normalizedLlmDirectoryForRequest());
-    const sessions = await fetchRunnerSessionSummaries(
-      { baseUrl: targetLlmUrl, token },
-      { directory, sessionIds },
-      RUNNER_SESSIONS_HTTP_TIMEOUT_MS,
-    );
-    for (const item of sessions) {
-      const sessionId = item.sessionId;
-      out.set(sessionId, buildRunnerSessionSnapshot(item));
+    for (const [backendId, sessionIds] of idsByBackend) {
+      const sessions = await fetchRunnerSessionSummaries(
+        { baseUrl: targetLlmUrl, token },
+        { directory, backendId, sessionIds },
+        RUNNER_SESSIONS_HTTP_TIMEOUT_MS,
+      );
+      for (const item of sessions) {
+        out.set(runnerSessionKey(backendId, item.sessionId), buildRunnerSessionSnapshot(item));
+      }
     }
     return out;
   }, [emitSessionDiag, getRunnerHttpAuth, normalizedLlmDirectoryForRequest]);
@@ -874,11 +881,8 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       backendId,
       rawFallbackBackendId,
     });
-    const listedSessionIds = listed.data
-      .map((item) => parseOptionalSessionId(item.threadId))
-      .filter(Boolean);
     const runnerSnapshotMap = includeRunnerSnapshots
-      ? await fetchRunnerSessionSnapshotMap(directory, listedSessionIds).catch((error) => {
+      ? await fetchRunnerSessionSnapshotMap(directory, listed.data).catch((error) => {
         emitSessionDiag("runner_session_snapshot_map_failed", {
           directory,
           elapsedMs: Math.max(0, Date.now() - startedAt),
@@ -1007,7 +1011,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     const runnerSnapshotMap = includeRunnerSnapshots
       ? await fetchRunnerSessionSnapshotMap(
         directory,
-        directChildren.map((item) => parseOptionalSessionId(item.threadId)).filter(Boolean)
+        directChildren
       ).catch((error) => {
         emitSessionDiag("runner_session_snapshot_map_failed", {
           directory,

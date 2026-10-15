@@ -862,3 +862,78 @@ test("new rollouts cannot collide across directories in the same second", async 
   assert.equal(createdFiles.length, 2);
   assert.notEqual(createdFiles[0], createdFiles[1]);
 });
+
+test("indexes archives beyond the old scan window and retains read state across compression", async (t) => {
+  const { zstdCompressSync } = await import("node:zlib");
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-cli-archive-"));
+  t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));
+  const rootDir = path.join(tempRoot, "repo");
+  const sessionsDir = path.join(tempRoot, "sessions");
+  await Promise.all([fs.mkdir(rootDir), fs.mkdir(sessionsDir)]);
+  const rollout = path.join(sessionsDir, "rollout-old.jsonl");
+  const raw = `${JSON.stringify({ type: "session_meta", payload: {
+    id: "old", cwd: rootDir, timestamp: "2026-01-01T00:00:00.000Z",
+  } })}\n`;
+  await fs.writeFile(rollout, raw);
+  const index = createLlmCliSessionIndex({
+    fileSystem: {
+      ...fs,
+      async open(filePath, ...args) {
+        if (filePath.endsWith("rollout-vanishing.jsonl")) {
+          await fs.unlink(filePath);
+          throw Object.assign(new Error("compressed during scan"), { code: "ENOENT" });
+        }
+        return fs.open(filePath, ...args);
+      },
+    },
+    cliSessionIndexPath: path.join(tempRoot, "index.json"),
+    cliSessionIndexRefreshMinIntervalMs: 0,
+    cliSessionScanMaxFiles: 1,
+    codeCliSessionsDir: sessionsDir,
+    compareSessionHistoryEntries: (a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)),
+    normalizeLlmExecutionSessionId: (value) => String(value || ""),
+    normalizeReasoningEffort: (value) => String(value || ""),
+    normalizeSessionRootRelativePath: (value) => String(value || ""),
+    normalizeSessionUpdatedAt: (value) => String(value || ""),
+    toUnixPath: (value) => value,
+    toWorkspaceRelativeFromAbsolutePath: () => "",
+  });
+  await index.markCliSessionsRead(["old"], { directory: rootDir, lastReadAt: "2026-01-02T00:00:00.000Z" });
+  await fs.writeFile(`${rollout}.zst`, zstdCompressSync(Buffer.from(raw)));
+  await fs.unlink(rollout);
+  await fs.writeFile(path.join(sessionsDir, "rollout-new.jsonl"), `${JSON.stringify({
+    type: "session_meta", payload: { id: "new", cwd: rootDir, timestamp: "2026-02-01T00:00:00.000Z" },
+  })}\n`);
+  await fs.writeFile(path.join(sessionsDir, "rollout-vanishing.jsonl"), raw);
+  await fs.writeFile(path.join(sessionsDir, "rollout-broken.jsonl.zst"), "invalid-frame");
+  const entries = await index.listCliSessionsForDirectory(rootDir, { forceRefresh: true });
+  assert.deepEqual(entries.map((entry) => entry.sessionId).sort(), ["new", "old"]);
+  const old = await index.findCliSessionIndexEntryBySessionId("old", { directory: rootDir });
+  assert.equal(old.filePath, `${rollout}.zst`);
+  assert.equal(old.lastReadAt, "2026-01-02T00:00:00.000Z");
+  await index.markCliSessionsRead(["old"], { directory: rootDir, lastReadAt: new Date(0).toISOString() });
+  await fs.writeFile(rollout, raw);
+  await fs.unlink(`${rollout}.zst`);
+  const restored = await index.findCliSessionIndexEntryBySessionId("old", { directory: rootDir });
+  assert.equal(restored.lastReadAt, new Date(0).toISOString());
+});
+
+test("rollout writer rejects archives without appending plaintext to the source", async (t) => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-cli-archive-writer-"));
+  t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));
+  const file = path.join(tempRoot, "rollout.jsonl.zst");
+  const archive = Buffer.from("archive bytes");
+  await fs.writeFile(file, archive);
+  const writer = createLlmCliRolloutWriter({
+    buildTokenCountPayloadFromContextUsage: () => null,
+    ensureCliSessionIndexLoaded: async () => {},
+    findCliSessionIndexEntryBySessionId: async () => ({ filePath: file }),
+    normalizeLlmExecutionSessionId: (value) => value,
+    normalizeSessionRootRelativePath: (value) => value,
+    normalizeSessionUpdatedAt: (value) => value,
+    toWorkspaceRelativeFromAbsolutePath: () => ".",
+    workspaceRoot: tempRoot,
+  });
+  await assert.rejects(writer.appendAppConversationToCliRollout({ sessionId: "archived", userText: "new" }), /compressed rollout/);
+  assert.deepEqual(await fs.readFile(file), archive);
+});

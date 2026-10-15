@@ -34,8 +34,9 @@ jest.mock("../contexts/PanelRuntimeControllerContext", () => ({
 jest.mock("../contexts/PanelRuntimeStoreContext", () => ({
   usePanelRuntimeStore: jest.fn(),
 }));
+let mockRunnerAuth = { runnerUrl: "http://runner", runnerToken: "runner-token" };
 jest.mock("../contexts/ChatScreenContext", () => ({
-  useChatScreen: () => ({ runnerUrl: "http://runner", runnerToken: "runner-token" }),
+  useChatScreen: () => mockRunnerAuth,
 }));
 const mockWsEmitter: { handlers: Array<(message: { payload?: unknown }) => void> } = {
   handlers: [],
@@ -118,6 +119,7 @@ function sessionCard(sessionId: string, col: number, row: number): SkiaBoardCard
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockRunnerAuth = { runnerUrl: "http://runner", runnerToken: "runner-token" };
   persistedFile = {};
   mockWsEmitter.handlers = [];
   runnerStore = { initialized: false, revision: 0, board: null };
@@ -829,7 +831,7 @@ describe("useSkiaMiniChatSessions", () => {
 
     expect(mockFetchSkiaBoardSessionSummaries).toHaveBeenCalledWith(
       { baseUrl: "http://runner", token: "runner-token" },
-      { directory: "/workspace", sessionIds: ["session-99"] },
+      { directory: "/workspace", backendId: "codex", sessionIds: ["session-99"] },
       15_000,
     );
     const summarySession = result.current.sessions.find((item) => item.sessionId === "session-99");
@@ -849,7 +851,7 @@ describe("useSkiaMiniChatSessions", () => {
     ]);
   });
 
-  it("prefers the card backendId over the summary fallback", async () => {
+  it("requests summaries from the card backend", async () => {
     seedRunnerBoard([
       { kind: "session", sessionId: "session-77", directory: "/workspace", backendId: "claude", col: 0, row: 0 },
     ]);
@@ -872,6 +874,7 @@ describe("useSkiaMiniChatSessions", () => {
     await flush();
     await flush();
 
+    expect(mockFetchSkiaBoardSessionSummaries.mock.calls[0][1].backendId).toBe("claude");
     expect(result.current.sessions[0]).toMatchObject({
       sessionId: "session-77",
       backendId: "claude",
@@ -1016,4 +1019,78 @@ describe("useSkiaMiniChatSessions", () => {
     expect(result.current.panelHydrationErrorCount).toBe(0);
     expect(result.current.sessions.map((item) => item.sessionId)).toContain("session-2");
   });
+});
+
+const archivedSummary = {
+  sessionId: "archived", directory: "/workspace", cwd: "/workspace", updatedAt: "2026-06-20",
+  lastReadAt: "", source: "cli", firstUserMessage: "Archived title", parentSessionId: "",
+  contextUsage: null, modelRef: "", reasoningEffort: "",
+};
+const archivedCard: SkiaBoardCard = {
+  kind: "session", sessionId: "archived", backendId: "codex", directory: "/workspace", col: 1, row: 2,
+};
+
+test("keeps an in-flight summary valid when a directory sync cycle completes", async () => {
+  const pending = deferred<typeof archivedSummary[]>();
+  seedRunnerBoard([archivedCard]);
+  mockConversation([]);
+  mockFetchSkiaBoardSessionSummaries.mockReturnValue(pending.promise);
+  const { result, rerender } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
+  await flush();
+  mockConversation([], { directorySessionSync: { ...IDLE_DIRECTORY_SESSION_SYNC, cycleId: 2 } });
+  await rerender(undefined as never);
+  await act(async () => pending.resolve([archivedSummary]));
+  await flush();
+  expect(mockFetchSkiaBoardSessionSummaries).toHaveBeenCalledTimes(1);
+  expect(result.current.sessions.map((item) => item.sessionId)).toEqual(["archived"]);
+});
+
+test("keeps same-Runner data on failure and removes a successfully confirmed missing summary", async () => {
+  seedRunnerBoard([archivedCard]);
+  mockConversation([]);
+  mockFetchSkiaBoardSessionSummaries.mockResolvedValue([archivedSummary]);
+  const { result, rerender } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
+  await flush();
+  expect(result.current.sessions).toHaveLength(1);
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    mockFetchSkiaBoardSessionSummaries.mockRejectedValueOnce(new Error("offline"));
+    mockConversation([], { directorySessionSync: { ...IDLE_DIRECTORY_SESSION_SYNC, cycleId: 2 } });
+    await rerender(undefined as never);
+    await flush();
+    expect(result.current.sessions).toHaveLength(1);
+    mockFetchSkiaBoardSessionSummaries.mockResolvedValueOnce([]);
+    mockConversation([], { directorySessionSync: { ...IDLE_DIRECTORY_SESSION_SYNC, cycleId: 3 } });
+    await rerender(undefined as never);
+    await flush();
+    expect(result.current.sessions).toHaveLength(0);
+  } finally { warn.mockRestore(); }
+});
+
+test("does not retain another Runner's summaries when its replacement fails", async () => {
+  seedRunnerBoard([archivedCard]);
+  mockConversation([]);
+  mockFetchSkiaBoardSessionSummaries.mockResolvedValue([archivedSummary]);
+  const { result, rerender } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
+  await flush();
+  expect(result.current.sessions).toHaveLength(1);
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    mockRunnerAuth = { ...mockRunnerAuth, runnerToken: "other-runner" };
+    mockFetchSkiaBoardSessionSummaries.mockRejectedValue(new Error("offline"));
+    await rerender(undefined as never);
+    await flush();
+    expect(result.current.sessions).toHaveLength(0);
+  } finally { warn.mockRestore(); }
+});
+
+test("resolves colliding native IDs using each card's backend", async () => {
+  seedRunnerBoard([{ ...archivedCard, backendId: "claude" }]);
+  mockConversation([{ ...session(1), sessionId: "archived" }]);
+  mockFetchSkiaBoardSessionSummaries.mockResolvedValue([archivedSummary]);
+  const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
+  await flush();
+  expect(mockFetchSkiaBoardSessionSummaries.mock.calls[0][1].backendId).toBe("claude");
+  expect(result.current.sessions[0].backendId).toBe("claude");
+  expect(result.current.sessions[0].title).toBe("Archived title");
 });

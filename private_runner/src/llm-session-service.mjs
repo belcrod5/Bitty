@@ -469,6 +469,32 @@ export function createLlmSessionService(deps = {}) {
       return { directory, sessions: [], missingSessionIds: [] };
     }
 
+    const backendId = String(body.backendId || "codex").trim();
+    if (backendId !== "codex") {
+      const snapshot = await listAgentSessionSnapshot({ backendId, cwds: [directory] });
+      const sessionsById = new Map((snapshot.groups?.[0]?.sessions || []).map((session) => [
+        session.sessionRef.nativeSessionId,
+        {
+          backendId: session.sessionRef.backendId,
+          sessionId: session.sessionRef.nativeSessionId,
+          directory,
+          cwd: session.canonicalCwd,
+          updatedAt: session.updatedAt,
+          lastReadAt: session.lastReadAt,
+          source: session.sourceKind,
+          firstUserMessage: session.title,
+          parentSessionId: session.parentSessionRef?.nativeSessionId || "",
+          modelRef: session.modelId,
+          reasoningEffort: session.reasoningEffort,
+        },
+      ]));
+      return {
+        directory,
+        sessions: sessionIds.flatMap((id) => sessionsById.has(id) ? [sessionsById.get(id)] : []),
+        missingSessionIds: sessionIds.filter((id) => !sessionsById.has(id)),
+      };
+    }
+
     const acpSessions = await listAcpSessionsForDirectory(directory);
     const acpBySessionId = new Map(
       acpSessions
