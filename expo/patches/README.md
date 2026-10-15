@@ -17,8 +17,12 @@ Remove this part of the patch once React Native macOS includes the same fix.
 
 The patch also keeps Fabric scroll interactions bracketed for
 React Native, smooths phase-less mouse-wheel ticks, and doubles only their
-vertical distance. Precise trackpad and horizontal scrolling remain native. It
-also reads display-link timestamps from the host clock: Worklets pauses the
+vertical distance. Each frame adds its movement to the current offset, preserving
+layout/MVCP corrections during animation and subsequent wheel input. Run
+`./scripts/macos/test-scroll-animation.sh` from the repository root to check this
+against the native controls. Precise trackpad scrolling remains native, and
+horizontal wheel distance is unchanged. It also reads display-link timestamps
+from the host clock: Worklets pauses the
 macOS CVDisplayLink before reading its timestamp, and querying the stopped link
 returns an error and zero time. The host clock uses the same time base and
 advances even while the link is paused. The patch also maps a macOS
