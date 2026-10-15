@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
 import test from "node:test";
 import { createStreamTtsSegments, takeNextStreamTtsSegment } from "../src/stream-tts-segments.mjs";
 
@@ -15,9 +16,10 @@ process.env.ELEVENLABS_API_KEY = "test-key";
 process.env.TTS_MEDIA_DIR = mediaDir;
 
 const {
-  sanitizeStreamTtsText,
+  sanitizeTtsInputText,
   fetchTtsWithTimeout,
   startLlmStreamJob,
+  handleRunnerRequest,
   STREAM_TTS_MAX_CHARS,
   TTS_FETCH_TIMEOUT_MS,
 } = (await import("../src/server-runtime.mjs")).__TESTING__;
@@ -40,7 +42,7 @@ test("shared segment queue speaks genuine deltas once and flushes the tail", asy
   const segments = createStreamTtsSegments({
     emit: (event) => events.push(event),
     synthesizeSegment: async (text) => { spoken.push(text); return { audioUrl: `audio:${text}`, speedScale: 1 }; },
-    speedScale: 1, sanitizeText: sanitizeStreamTtsText,
+    speedScale: 1, sanitizeText: sanitizeTtsInputText,
     estimateDurationMs: () => 100,
   });
   segments.append("こんに");
@@ -67,7 +69,7 @@ test("cancelling shared segments discards queued work and suppresses late audio"
   const segments = createStreamTtsSegments({
     emit: (event) => events.push(event),
     synthesizeSegment: () => new Promise((resolve) => { resolveAudio = resolve; }),
-    speedScale: 1, sanitizeText: sanitizeStreamTtsText,
+    speedScale: 1, sanitizeText: sanitizeTtsInputText,
     estimateDurationMs: () => 100,
   });
   segments.append("一。二。未完成");
@@ -86,7 +88,7 @@ test("aborted shared segments ignore later deltas and do not flush their tail", 
     emit: (event) => events.push(event),
     synthesizeSegment: async () => ({ audioUrl: "unused", speedScale: 1 }),
     signal: controller.signal,
-    speedScale: 1, sanitizeText: sanitizeStreamTtsText,
+    speedScale: 1, sanitizeText: sanitizeTtsInputText,
     estimateDurationMs: () => 100,
   });
   segments.append("Unfinished");
@@ -103,9 +105,36 @@ test("only Japanese full stops delimit segments and preserve all raw text", () =
 });
 
 test("provider text preserves internal punctuation, decimals and line separation", () => {
-  assert.equal(sanitizeStreamTtsText("価格3.14、1,234円! 本当？\nNext sentence。"),
+  assert.equal(sanitizeTtsInputText("価格3.14、1,234円! 本当？\nNext sentence。"),
     "価格3.14、1,234円! 本当？\nNext sentence");
-  assert.equal(sanitizeStreamTtsText("Last sentence."), "Last sentence.");
+  assert.equal(sanitizeTtsInputText("Last sentence."), "Last sentence.");
+  assert.equal(sanitizeTtsInputText("最初。次。3.14、最後。"), "最初次3.14、最後");
+});
+
+test("single TTS removes all Japanese full stops before calling the provider", async () => {
+  const originalFetch = globalThis.fetch;
+  const spoken = [];
+  globalThis.fetch = async (_url, init) => {
+    spoken.push(JSON.parse(init.body).text);
+    return { ok: true, arrayBuffer: async () => Uint8Array.of(1, 2, 3).buffer };
+  };
+  try {
+    for (const [text, expectedStatus] of [["最初。次。価格3.14、1,234円。", 200], ["。。。", 400]]) {
+      const req = Readable.from([Buffer.from(JSON.stringify({ text, ttsProvider: "elevenlabs" }))]);
+      Object.assign(req, { method: "POST", url: "/tts",
+        headers: { host: "127.0.0.1", authorization: "Bearer test-runner-token" },
+        socket: { remoteAddress: "test" } });
+      let status;
+      await handleRunnerRequest(req, {
+        writeHead(code) { status = code; },
+        end() {},
+      });
+      assert.equal(status, expectedStatus);
+    }
+    assert.deepEqual(spoken, ["最初次価格3.14、1,234円"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("long sentences wait for a Japanese full stop regardless of length or ASCII", () => {
@@ -140,7 +169,7 @@ test("streamed ASCII deltas stay buffered until a true boundary, then finish flu
   const segments = createStreamTtsSegments({
     emit: (event) => events.push(event),
     synthesizeSegment: async (text) => { spoken.push(text); return { audioUrl: "mock", speedScale: 1 }; },
-    speedScale: 1, sanitizeText: sanitizeStreamTtsText, estimateDurationMs: () => 100,
+    speedScale: 1, sanitizeText: sanitizeTtsInputText, estimateDurationMs: () => 100,
   });
   const prefix = "abc123".repeat(30);
   for (const delta of [prefix, ".", "14, !?\n", "https://example", ".com/path ", "次"]) segments.append(delta);
@@ -161,7 +190,7 @@ test("records serial synthesis queue wait on each audio event", async (t) => {
   const events = [];
   const segments = createStreamTtsSegments({
     emit: (event) => events.push(event), speedScale: 1,
-    sanitizeText: sanitizeStreamTtsText, estimateDurationMs: () => 100,
+    sanitizeText: sanitizeTtsInputText, estimateDurationMs: () => 100,
     synthesizeSegment: async (_text, seq) => {
       if (seq === 0) await new Promise((resolve) => { releaseFirst = resolve; });
       return { audioUrl: "mock", speedScale: 1 };

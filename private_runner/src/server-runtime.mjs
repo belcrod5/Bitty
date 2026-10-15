@@ -2763,16 +2763,11 @@ function stripMarkdownAndUrlsForTts(raw) {
 }
 
 function sanitizeTtsInputText(raw) {
-  return stripMarkdownAndUrlsForTts(stripYouTubeTags(raw))
+  return stripMarkdownAndUrlsForTts(stripYouTubeTags(raw)).replaceAll(TTS_SEGMENT_BOUNDARY, "")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .replace(/[ \t]{2,}/g, " ")
     .trim();
-}
-
-function sanitizeStreamTtsText(raw) {
-  const text = sanitizeTtsInputText(raw);
-  return text.endsWith(TTS_SEGMENT_BOUNDARY) ? text.slice(0, -1).trimEnd() : text;
 }
 
 function createRunnerStreamTtsSegments({ emit, signal, publicBaseUrl, ttsProvider, voiceId, speedScale,
@@ -2780,7 +2775,7 @@ function createRunnerStreamTtsSegments({ emit, signal, publicBaseUrl, ttsProvide
   const normalizedSpeed = normalizeSpeedScaleForTtsEstimate(speedScale);
   return createStreamTtsSegments({
     emit, signal, speedScale: normalizedSpeed,
-    sanitizeText: sanitizeStreamTtsText,
+    sanitizeText: sanitizeTtsInputText,
     estimateDurationMs: estimateStreamTtsSegmentDurationMs,
     synthesizeSegment: async (text, seq) => {
       try {
@@ -10360,7 +10355,7 @@ export const __TESTING__ = {
   resolveRunnerWsTtsOperationJob,
   sweepRunnerWsTtsOperationJobs,
   startLlmStreamJob,
-  sanitizeStreamTtsText,
+  sanitizeTtsInputText,
   fetchTtsWithTimeout,
   STREAM_TTS_MAX_CHARS,
   TTS_FETCH_TIMEOUT_MS,
