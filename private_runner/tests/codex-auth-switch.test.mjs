@@ -56,15 +56,34 @@ test("skip-start runtime does not acquire the owner lock", async () => {
 test("profiles snapshot is canonical, safe, and token-free", async () => {
   await codexAuthService.save(profile("canonical"));
   await codexAuthService.setActiveAuthId("canonical");
+  await __TESTING__.codexUsageService.observe("account-canonical", { rateLimits: {
+    secondary: { usedPercent: 16, windowDurationMins: 10080, resetsAt: 1_800_000_000 },
+  } });
   await withServer(async (base) => {
     const response = await fetch(`${base}/codex-auth/profiles`, { headers: { authorization: `Bearer ${RUNNER_TOKEN}` } });
     assert.equal(response.status, 200);
     const body = await response.json();
     assert.equal(body.currentAuthId, "canonical");
     assert.equal(body.profiles[0].authId, "canonical");
+    assert.match(body.currentUsage.statusText, /Weekly limit:[^\n]*84% left/);
     assert.equal("accountId" in body.profiles[0], false);
     assert.equal(JSON.stringify(body).includes("access-canonical"), false);
   });
+});
+
+test("profiles remain available when the active marker has no profile quota", async () => {
+  await codexAuthService.setActiveAuthId("missing");
+  try {
+    await withServer(async (base) => {
+      const response = await fetch(`${base}/codex-auth/profiles`, { headers: { authorization: `Bearer ${RUNNER_TOKEN}` } });
+      assert.equal(response.status, 200);
+      const body = await response.json();
+      assert.equal(body.currentAuthId, "missing");
+      assert.equal(body.currentUsage, null);
+    });
+  } finally {
+    await codexAuthService.setActiveAuthId("canonical");
+  }
 });
 
 test("profile endpoint requires bearer authentication", async () => {
@@ -115,19 +134,25 @@ test("successful switch response exposes no account id or tokens", async () => {
   } finally { codexAuthRuntime.switchAccount = original; }
 });
 
-test("status cache follows the active auth profile after a switch", async () => {
+test("managed status uses the profile quota even when WHAM disagrees, and follows a switch", async () => {
   const originalSwitch = codexAuthRuntime.switchAccount;
-  const originalExternalTokenPayload = codexAuthService.externalTokenPayload;
+  const originalRefreshRateLimits = codexAuthService.refreshRateLimits;
   const originalFetch = globalThis.fetch;
   const firstAuthId = "status-first";
   const secondAuthId = "status-second";
   await codexAuthService.save(profile(firstAuthId));
   await codexAuthService.save(profile(secondAuthId));
   await codexAuthService.setActiveAuthId(firstAuthId);
-  codexAuthService.externalTokenPayload = async (authId) => ({
-    accessToken: `access-${authId}`,
-    chatgptAccountId: `account-${authId}`,
-  });
+  codexAuthService.refreshRateLimits = async (authId) => {
+    const rateLimits = { secondary: {
+      usedPercent: authId === firstAuthId ? 16 : 70,
+      windowDurationMins: 10080,
+      resetsAt: 1_800_000_000,
+    } };
+    await __TESTING__.codexUsageService.observe(`account-${authId}`, { rateLimits }, { observedAt: Date.now() });
+    await codexAuthService.updateMetadata(authId, { rateLimits, status: "active" });
+    return rateLimits;
+  };
   codexAuthRuntime.switchAccount = async (authId) => {
     await codexAuthService.setActiveAuthId(authId);
   };
@@ -135,13 +160,11 @@ test("status cache follows the active auth profile after a switch", async () => 
   globalThis.fetch = async (input, init) => {
     if (String(input).startsWith("http://127.0.0.1:")) return originalFetch(input, init);
     usageRequests += 1;
-    const accountId = init?.headers?.["ChatGPT-Account-Id"];
-    const usedPercent = accountId === `account-${firstAuthId}` ? 10 : 70;
     return new Response(JSON.stringify({
       rate_limit: {
-        primary_window: {
-          limit_window_seconds: 5 * 60 * 60,
-          used_percent: usedPercent,
+        secondary_window: {
+          limit_window_seconds: 7 * 24 * 60 * 60,
+          used_percent: 3,
           reset_at: 1_800_000_000,
         },
       },
@@ -150,9 +173,12 @@ test("status cache follows the active auth profile after a switch", async () => 
   try {
     await withServer(async (base) => {
       const headers = { authorization: `Bearer ${RUNNER_TOKEN}` };
+      await codexAuthService.refreshRateLimits(firstAuthId);
+      const profiles = await (await fetch(`${base}/codex-auth/profiles`, { headers })).json();
+      assert.equal(profiles.profiles.find(({ authId }) => authId === firstAuthId).rateLimits.secondary.usedPercent, 16);
       const first = await fetch(`${base}/codex-cli/status?force=1`, { headers });
       assert.equal(first.status, 200);
-      assert.match((await first.json()).statusText, /90% left/);
+      assert.match((await first.json()).statusText, /Weekly limit:[^\n]*84% left/);
 
       const switched = await fetch(`${base}/codex-auth/switch`, {
         method: "POST",
@@ -165,16 +191,16 @@ test("status cache follows the active auth profile after a switch", async () => 
       assert.equal(second.status, 200);
       const secondBody = await second.json();
       assert.equal(secondBody.cached, false);
-      assert.match(secondBody.statusText, /30% left/);
+      assert.match(secondBody.statusText, /Weekly limit:[^\n]*30% left/);
 
       const cached = await fetch(`${base}/codex-cli/status`, { headers });
       assert.equal(cached.status, 200);
       assert.equal((await cached.json()).cached, true);
-      assert.equal(usageRequests, 2);
+      assert.equal(usageRequests, 0);
     });
   } finally {
     globalThis.fetch = originalFetch;
-    codexAuthService.externalTokenPayload = originalExternalTokenPayload;
+    codexAuthService.refreshRateLimits = originalRefreshRateLimits;
     codexAuthRuntime.switchAccount = originalSwitch;
     await codexAuthService.setActiveAuthId("canonical");
   }

@@ -83,8 +83,10 @@ const RUNNER_SKIP_SERVER_START = process.env.RUNNER_SKIP_SERVER_START === "1";
 const CODEX_AUTH_STORE_DIR = path.resolve(process.env.CODEX_AUTH_STORE_DIR || "private_runner/logs/codex-auth");
 const CODEX_BIN = String(process.env.CODEX_BIN || "codex").trim() || "codex";
 const codexAuthService = createCodexAuthService({ rootDir: CODEX_AUTH_STORE_DIR, codexBin: CODEX_BIN,
-  onRateLimits: (accountId, update, options) => codexUsageService.observe(accountId, update, options)
-    .catch(() => console.warn("[codex-usage] profile quota observation failed")),
+  onRateLimits: async (accountId, update, options) => {
+    await codexUsageService.observe(accountId, update, options);
+    return codexUsageService.rateLimits(accountId);
+  },
 });
 let codexAuthOwnerLockRelease = null;
 let codexAuthOwnerLockReleased = false;
@@ -3020,6 +3022,15 @@ async function fetchWhamUsage(accessToken, accountId) {
 
 async function fetchCodexCliStatusSnapshotLeased() {
   const startedAt = Date.now();
+  const profiles = await codexAuthService.snapshot();
+  if (profiles.profiles.length > 0) {
+    if (!profiles.activeAuthId) throw new Error("active auth profile unavailable");
+    await codexAuthService.refreshRateLimits(profiles.activeAuthId);
+    const profile = await codexAuthService.read(profiles.activeAuthId);
+    const formatted = await codexUsageService.snapshot(profile.accountId);
+    if (!formatted?.limitLines.length) throw new Error("profile usage payload missing 5h/weekly windows");
+    return { ...formatted, exitCode: 0, durationMs: Date.now() - startedAt };
+  }
   let triedAuthRefresh = false;
   while (true) {
     const auth = await resolveCodexResponseAuth({ forceRefresh: triedAuthRefresh });
@@ -6132,10 +6143,14 @@ const handleRunnerRequest = async (req, res) => {
         await codexAuthService.refreshAllRateLimits();
       }
       const snapshot = await codexAuthService.snapshot();
+      const currentUsage = snapshot.profiles.some((profile) => profile.authId === snapshot.activeAuthId && profile.status !== "invalid")
+        ? await codexUsageService.snapshot((await codexAuthService.read(snapshot.activeAuthId)).accountId)
+        : null;
       return json(res, 200, {
         ok: true,
         currentAuthId: snapshot.activeAuthId,
         profiles: snapshot.profiles,
+        currentUsage: currentUsage || null,
         fetchedAt: new Date().toISOString(),
       });
     } catch (err) {

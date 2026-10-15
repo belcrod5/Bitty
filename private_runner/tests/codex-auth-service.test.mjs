@@ -178,7 +178,10 @@ test("refreshing every profile updates the selected account quota while rejectin
       isolatedProcessFactory: async ({ authId }) => createFakeRateLimitProcess({ rateLimits: {
         primary: { usedPercent: authId === "a" ? 20 : 40, windowDurationMins: 300, resetsAt: 2000 },
       } }),
-      onRateLimits: (accountId, update, options) => usage.observe(accountId, update, options),
+      onRateLimits: async (accountId, update, options) => {
+        await usage.observe(accountId, update, options);
+        return usage.rateLimits(accountId);
+      },
     });
     for (const authId of ["a", "b"]) {
       await service.save(profile(authId, { tokens: { access_token: access, refresh_token: `refresh-${authId}`, account_id: authId } }));
@@ -194,6 +197,46 @@ test("refreshing every profile updates the selected account quota while rejectin
   });
 });
 
+test("a slow older profile read cannot overwrite the accepted account quota", async () => {
+  await withService(async (root) => {
+    let nowMs = 1_000_000;
+    let signalFirstRead, finishFirstRead;
+    const firstReadStarted = new Promise((resolve) => { signalFirstRead = resolve; });
+    const firstResponse = new Promise((resolve) => { finishFirstRead = resolve; });
+    let reads = 0;
+    const limits = (usedPercent) => ({ rateLimits: { secondary: { usedPercent, windowDurationMins: 10080, resetsAt: 2000 } } });
+    const usage = createCodexUsageService({ storePath: path.join(root, "usage.json"), now: () => nowMs });
+    const service = createCodexAuthService({ rootDir: root, now: () => nowMs,
+      isolatedProcessFactory: async () => {
+        const process = createFakeRateLimitProcess();
+        const request = process.request;
+        process.request = (method, params) => {
+          if (method !== "account/rateLimits/read") return request(method, params);
+          if (++reads > 1) return Promise.resolve(limits(16));
+          signalFirstRead();
+          return firstResponse;
+        };
+        return process;
+      },
+      onRateLimits: async (accountId, update, options) => {
+        await usage.observe(accountId, update, options);
+        return usage.rateLimits(accountId);
+      },
+    });
+    const access = `x.${Buffer.from(JSON.stringify({ exp: 4102444800 })).toString("base64url")}.x`;
+    await service.save(profile("a", { tokens: { access_token: access, refresh_token: "refresh", account_id: "a" } }));
+    const older = service.refreshRateLimits("a");
+    await firstReadStarted;
+    nowMs = 1_000_100;
+    await service.refreshRateLimits("a");
+    nowMs = 1_000_200;
+    finishFirstRead(limits(3));
+    await older;
+    assert.equal((await service.read("a")).rateLimits.secondary.usedPercent, 16);
+    assert.match((await usage.snapshot("a")).statusText, /Weekly limit:[^\n]*84% left/);
+  });
+});
+
 test("marks only the failing profile unavailable and rejects malformed limits safely", async () => {
   await withService(async (root) => {
     const service = createCodexAuthService({ rootDir: root, isolatedProcessFactory: async () => createFakeRateLimitProcess({ rateLimits: { primary: { usedPercent: "secret" } } }) });
@@ -203,6 +246,22 @@ test("marks only the failing profile unavailable and rejects malformed limits sa
     assert.equal((await service.read("a")).status, "unavailable");
     assert.equal((await service.read("a")).tokens.refresh_token, "refresh");
     assert.equal((await service.read("b")).status, undefined);
+  });
+});
+
+test("failed canonical quota observation cannot save a newer profile percentage", async () => {
+  await withService(async (root) => {
+    const access = `x.${Buffer.from(JSON.stringify({ exp: 4102444800 })).toString("base64url")}.x`;
+    const oldLimits = { primary: { usedPercent: 50, windowDurationMins: 300, resetsAt: 2000 } };
+    const service = createCodexAuthService({ rootDir: root,
+      isolatedProcessFactory: async () => createFakeRateLimitProcess({ rateLimits: { primary: { ...oldLimits.primary, usedPercent: 20 } } }),
+      onRateLimits: async () => { throw new Error("usage persistence failed"); },
+    });
+    await service.save(profile("a", { tokens: { access_token: access, refresh_token: "refresh", account_id: "a" }, rateLimits: oldLimits }));
+    await assert.rejects(() => service.refreshRateLimits("a"), /rate limits unavailable/);
+    const saved = await service.read("a");
+    assert.equal(saved.rateLimits.primary.usedPercent, 50);
+    assert.equal(saved.status, "unavailable");
   });
 });
 

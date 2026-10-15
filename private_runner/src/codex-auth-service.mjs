@@ -326,8 +326,9 @@ export function createCodexAuthService({ rootDir, pid = process.pid, now = () =>
         if (login?.type !== "chatgptAuthTokens") throw new Error("rate limits login rejected");
         const observedAt = now();
         const response = await process.request("account/rateLimits/read", {});
-        await onRateLimits?.(payload.chatgptAccountId, response, { observedAt });
-        const rateLimits = sanitizeRateLimits(response?.rateLimits || response);
+        const canonicalRateLimits = await onRateLimits?.(payload.chatgptAccountId, response, { observedAt });
+        const fetchedRateLimits = sanitizeRateLimits(response?.rateLimits || response);
+        const rateLimits = onRateLimits ? sanitizeRateLimits(canonicalRateLimits) : fetchedRateLimits;
         await updateMetadata(checked, { rateLimits, status: "active" });
         return rateLimits;
       } catch {

@@ -175,5 +175,7 @@ export function createCodexUsageService({ storePath, onChanged, onLimitReached, 
     return null;
   }
 
-  return { observe, observeNotification, async snapshot(accountId) { await queue; await load(); return snapshot(accounts[accountId]); } };
+  return { observe, observeNotification,
+    async rateLimits(accountId) { await queue; await load(); return accounts[accountId]?.rateLimits; },
+    async snapshot(accountId) { await queue; await load(); return snapshot(accounts[accountId]); } };
 }
