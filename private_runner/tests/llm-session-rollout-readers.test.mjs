@@ -978,3 +978,64 @@ test("finds a subagent child boundary beyond the old bounded head window", async
     { content: "child", inherited: false },
   ]);
 });
+
+test("reads archived summaries and paged history without changing source bytes or cursor identity", async (t) => {
+  const { zstdCompressSync } = await import("node:zlib");
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-rollout-archive-"));
+  t.after(() => fs.rm(tempDir, { recursive: true, force: true }));
+  const filePath = path.join(tempDir, "rollout.jsonl.zst");
+  const records = [
+    { type: "session_meta", payload: { id: "archived", model_ref: "gpt-test", reasoning_effort: "high" } },
+    ...messageSequence(25),
+  ];
+  const compressed = zstdCompressSync(Buffer.from(`${records.map(JSON.stringify).join("\n")}\n`));
+  await fs.writeFile(filePath, compressed);
+  const readers = createReaders();
+  const summary = await readers.readCliSessionSummaryFromRolloutFile(filePath);
+  assert.equal(summary.modelRef, "gpt-test");
+  assert.equal(summary.reasoningEffort, "high");
+  assert.ok(summary.firstUserMessage);
+  const newest = await readers.readSessionMessagesFromRolloutFile(filePath, { sessionId: "archived", limit: 20 });
+  const older = await readers.readSessionMessagesFromRolloutFile(filePath, {
+    sessionId: "archived", limit: 20, cursor: newest.olderCursor,
+  });
+  assert.equal(newest.messages.length, 20);
+  assert.equal(older.messages.length, 5);
+  assert.equal(older.olderCursor, null);
+  const stat = await fs.stat(filePath);
+  const cursor = JSON.parse(Buffer.from(newest.latestCursor, "base64url").toString());
+  assert.equal(cursor.ino, String(stat.ino));
+  assert.deepEqual(await fs.readFile(filePath), compressed);
+  assert.deepEqual(await fs.readdir(tempDir), ["rollout.jsonl.zst"]);
+});
+
+test("compound archive history expands once and keeps cursors reusable across reads", async (t) => {
+  const { withLlmSessionRollout } = await import("../src/llm-session-rollout-file.mjs");
+  const { zstdCompressSync } = await import("node:zlib");
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-history-compound-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const file = path.join(root, "rollout.jsonl.zst");
+  await fs.writeFile(file, zstdCompressSync(Buffer.from([
+    { type: "session_meta", payload: { id: "archive", model_ref: "gpt-test" } },
+    ...messageSequence(25),
+  ].map(JSON.stringify).join("\n") + "\n")));
+  const readers = createReaders();
+  const mkdtemp = fs.mkdtemp;
+  let expansions = 0;
+  fs.mkdtemp = async (...args) => { expansions += 1; return mkdtemp(...args); };
+  let newest;
+  try {
+    [newest] = await withLlmSessionRollout(file, (readablePath, sourceStat) => Promise.all([
+      readers.readSessionMessagesFromRolloutFile(readablePath, { sessionId: "archive", limit: 20 }, sourceStat),
+      readers.readSessionContextUsageFromRolloutFile(readablePath),
+      readers.readSessionMetaFromRolloutFile(readablePath),
+    ]));
+    assert.equal(expansions, 1);
+  } finally { fs.mkdtemp = mkdtemp; }
+  const older = await withLlmSessionRollout(file, (readablePath, sourceStat) => (
+    readers.readSessionMessagesFromRolloutFile(readablePath, {
+      sessionId: "archive", limit: 20, cursor: newest.olderCursor,
+    }, sourceStat)
+  ));
+  assert.equal(older.messages.length, 5);
+});

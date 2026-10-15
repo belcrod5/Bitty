@@ -120,3 +120,13 @@ test("aborts a timed-out summary batch and clears its timer", async () => {
     jest.useRealTimers();
   }
 });
+
+test("preserves backend identity in every summary batch", async () => {
+  const fetchMock = jest.spyOn(global, "fetch").mockResolvedValue({
+    ok: true, status: 200, text: async () => JSON.stringify({ sessions: [] }),
+  } as Response);
+  await fetchRunnerSessionSummaries(auth, {
+    directory: "/workspace", backendId: "claude", sessionIds: Array.from({ length: 101 }, (_, index) => `id-${index}`),
+  }, 12_000);
+  expect(fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init?.body)).backendId)).toEqual(["claude", "claude"]);
+});

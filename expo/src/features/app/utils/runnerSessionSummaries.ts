@@ -16,7 +16,7 @@ export type RunnerSessionSummary = Record<string, unknown> & {
 
 export async function fetchRunnerSessionSummaries(
   auth: { baseUrl: string; token: string },
-  { directory, sessionIds }: { directory: string; sessionIds: readonly string[] },
+  { directory, sessionIds, backendId }: { directory: string; sessionIds: readonly string[]; backendId?: string },
   timeoutMs: number,
 ): Promise<RunnerSessionSummary[]> {
   const baseUrl = String(auth.baseUrl || "").trim().replace(/\/$/, "");
@@ -34,7 +34,7 @@ export async function fetchRunnerSessionSummaries(
           authorization: `Bearer ${token}`,
           "content-type": "application/json",
         },
-        body: JSON.stringify({ directory, sessionIds: ids.slice(start, start + SESSION_SUMMARY_BATCH_SIZE) }),
+        body: JSON.stringify({ directory, sessionIds: ids.slice(start, start + SESSION_SUMMARY_BATCH_SIZE), ...(backendId ? { backendId } : {}) }),
         signal: controller.signal,
       }).then(async (response) => ({ response, text: await response.text() }));
       const timeout = new Promise<never>((_resolve, reject) => {

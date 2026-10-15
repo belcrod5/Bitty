@@ -509,6 +509,7 @@ describe("fetchSessionHistory runner snapshot failures", () => {
         body: JSON.stringify({
           directory: "/workspace",
           sessionIds: ["session-1", "session-2"],
+          backendId: "codex",
         }),
       })
     );
@@ -727,7 +728,7 @@ describe("buildLlmSessionHistoryEntry", () => {
       cwd: "/workspace/bitty",
       contextUsedPct: 10,
     } as never, "/workspace/bitty", new Map([[
-      "session-1",
+      JSON.stringify(["codex", "session-1"]),
       { contextUsedPct: 41.6, modelRef: "", reasoningEffort: "", latestToolLabel: "", lastReadAt: "" },
     ]]));
 
@@ -752,7 +753,7 @@ describe("buildLlmSessionHistoryEntry", () => {
       cwd: "/workspace/bitty",
       lastReadAt: "2026-08-24T03:00:00.000Z",
     } as never, "/workspace/bitty", new Map([[
-      "session-1",
+      JSON.stringify(["codex", "session-1"]),
       { contextUsedPct: null, modelRef: "", reasoningEffort: "", latestToolLabel: "", lastReadAt: "2026-08-23T03:00:00.000Z" },
     ]]));
 
@@ -932,4 +933,29 @@ test("a failed second summary batch is logged and no partial snapshots are used"
     directChildCount: 101, runnerSnapshotCount: 0,
   }));
   fetchMock.mockRestore();
+});
+
+test("summary metadata remains scoped when different backends reuse native IDs", async () => {
+  mockListCodexAppServerThreads.mockResolvedValue({
+    data: [
+      { threadId: "shared", backendId: "codex", cwd: "/workspace" },
+      { threadId: "shared", backendId: "claude", cwd: "/workspace" },
+    ],
+  } as never);
+  const fetchMock = jest.spyOn(global, "fetch").mockImplementation(async (_url, init) => {
+    const { backendId } = JSON.parse(String(init?.body));
+    return {
+      ok: true, status: 200, text: async () => JSON.stringify({ sessions: [
+        { sessionId: "shared", modelRef: backendId === "codex" ? "gpt-test" : "sonnet" },
+      ] }),
+    } as Response;
+  });
+  try {
+    const { result } = await renderExplorerHook();
+    const history = await result.current.fetchSessionHistory("/workspace");
+    expect(fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init?.body)).backendId)).toEqual(["codex", "claude"]);
+    expect(history.entries.map((entry) => [entry.backendId, entry.modelRef])).toEqual([
+      ["codex", "gpt-test"], ["claude", "sonnet"],
+    ]);
+  } finally { fetchMock.mockRestore(); }
 });

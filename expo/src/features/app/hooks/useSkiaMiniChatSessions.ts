@@ -178,20 +178,23 @@ export function useSkiaMiniChatSessions() {
   // これにより「配置済みなのに読み込みウィンドウ外で非表示」が構造的に消える(設計書 Step 3)。
   const { runnerUrl, runnerToken } = useChatScreen();
   const missingSummaryKey = useMemo(() => {
-    const candidateIds = new Set(sessionCandidates.map((candidate) => candidate.sessionId));
-    const byDirectory = new Map<string, string[]>();
+    const byOrigin = new Map<string, { directory: string; backendId: string; sessionIds: string[] }>();
     for (const card of boardState?.cards || []) {
-      if (card.kind !== "session" || candidateIds.has(card.sessionId)) continue;
+      if (card.kind !== "session" || sessionCandidates.some((candidate) => (
+        candidate.sessionId === card.sessionId && (!card.backendId || candidate.backendId === card.backendId)
+      ))) continue;
       const directory = String(card.directory || "").trim();
       // 出所情報の無い旧カードは従来どおりウィンドウ外では非表示(位置は保持)。
       if (!directory) continue;
-      const sessionIds = byDirectory.get(directory) || [];
-      sessionIds.push(card.sessionId);
-      byDirectory.set(directory, sessionIds);
+      const backendId = card.backendId || "codex";
+      const origin = JSON.stringify([directory, backendId]);
+      const group = byOrigin.get(origin) || { directory, backendId, sessionIds: [] };
+      group.sessionIds.push(card.sessionId);
+      byOrigin.set(origin, group);
     }
     return JSON.stringify(
-      Array.from(byDirectory, ([directory, sessionIds]) => [directory, sessionIds.sort()])
-        .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+      Array.from(byOrigin.values(), ({ directory, backendId, sessionIds }) => [directory, backendId, sessionIds.sort()])
+        .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
     );
   }, [boardState, sessionCandidates]);
 
@@ -201,21 +204,28 @@ export function useSkiaMiniChatSessions() {
     directoryDisplayName: string;
   };
   const [summaryCandidates, setSummaryCandidates] = useState<SummaryCandidate[]>([]);
+  const summaryScopeRef = useRef("");
   const summaryFetchGenerationRef = useRef(0);
   const summaryFetchInFlightKeyRef = useRef("");
   useEffect(() => {
-    const generation = summaryFetchGenerationRef.current + 1;
-    summaryFetchGenerationRef.current = generation;
-    const groups = JSON.parse(missingSummaryKey) as Array<[string, string[]]>;
+    const scope = JSON.stringify([runnerUrl, runnerToken]);
+    if (summaryScopeRef.current !== scope) {
+      summaryScopeRef.current = scope;
+      setSummaryCandidates([]);
+    }
+    const requestKey = JSON.stringify([scope, missingSummaryKey]);
+    // A sync cycle can finish while the same request is in flight. Keep that response valid.
+    if (summaryFetchInFlightKeyRef.current === requestKey) return;
+    const generation = ++summaryFetchGenerationRef.current;
+    summaryFetchInFlightKeyRef.current = "";
+    const groups = JSON.parse(missingSummaryKey) as Array<[string, string, string[]]>;
     if (groups.length <= 0) {
       // 空→空の再設定は余分な再レンダリングになるため据え置く。
       setSummaryCandidates((current) => (current.length > 0 ? [] : current));
       return;
     }
     if (!runnerUrl.trim() || !runnerToken.trim()) return;
-    // 同じ不足集合のfetchが進行中なら重ねない(cycleIdの短周期環境での並走抑止)。
-    if (summaryFetchInFlightKeyRef.current === missingSummaryKey) return;
-    summaryFetchInFlightKeyRef.current = missingSummaryKey;
+    summaryFetchInFlightKeyRef.current = requestKey;
     const directoryNames = new Map(registeredDirectories.map((directory) => [
       String(directory.path || "").trim(),
       String(directory.displayName || "").trim(),
@@ -223,16 +233,18 @@ export function useSkiaMiniChatSessions() {
     void (async () => {
       try {
         const collected: SummaryCandidate[] = [];
-        // ディレクトリ単位で失敗を局所化し、成功分は部分反映する。
-        for (const [directory, sessionIds] of groups) {
+        const failedOrigins = new Set<string>();
+        // A failed read is not an empty snapshot; only successful origins replace their previous data.
+        for (const [directory, backendId, sessionIds] of groups) {
           let summaries;
           try {
             summaries = await fetchRunnerSessionSummaries(
               { baseUrl: runnerUrl, token: runnerToken },
-              { directory, sessionIds },
+              { directory, backendId, sessionIds },
               15_000,
             );
           } catch (error) {
+            failedOrigins.add(JSON.stringify([directory, backendId]));
             console.warn(
               `[skia_board] failed to fetch session summaries for ${directory}`,
               error
@@ -241,8 +253,7 @@ export function useSkiaMiniChatSessions() {
           }
           for (const summary of summaries) {
             collected.push({
-              // backendId はサマリ応答に無いため、assignedSessions側でカードの値を優先する。
-              backendId: "codex",
+              backendId,
               sessionId: summary.sessionId,
               parentSessionId: summary.parentSessionId,
               directory,
@@ -263,11 +274,14 @@ export function useSkiaMiniChatSessions() {
           }
         }
         if (summaryFetchGenerationRef.current !== generation) return;
-        setSummaryCandidates(collected);
+        setSummaryCandidates((current) => [
+          ...current.filter((candidate) => failedOrigins.has(JSON.stringify([candidate.directory, candidate.backendId]))),
+          ...collected,
+        ]);
       } catch (error) {
         console.warn("[skia_board] failed to fetch session summaries for board cards", error);
       } finally {
-        if (summaryFetchInFlightKeyRef.current === missingSummaryKey) {
+        if (summaryFetchGenerationRef.current === generation) {
           summaryFetchInFlightKeyRef.current = "";
         }
       }
@@ -278,22 +292,11 @@ export function useSkiaMiniChatSessions() {
   // ボード搭載カードのうち、候補(ウィンドウ内セッション、またはサマリ取得済み)が
   // 存在するものを表示・hydrate対象にする。どちらにも無いカードは位置だけ保持する。
   const assignedSessions = useMemo(() => {
-    const candidatesBySessionId = new Map(
-      sessionCandidates.map((candidate) => [candidate.sessionId, candidate])
-    );
-    const summariesBySessionId = new Map(
-      summaryCandidates.map((candidate) => [candidate.sessionId, candidate])
-    );
     return (boardState?.cards || []).flatMap((card) => {
       if (card.kind !== "session") return [];
-      const windowCandidate = candidatesBySessionId.get(card.sessionId);
-      const summaryCandidate = windowCandidate
-        ? undefined
-        : summariesBySessionId.get(card.sessionId);
-      const candidate = windowCandidate
-        ?? (summaryCandidate
-          ? { ...summaryCandidate, backendId: card.backendId || summaryCandidate.backendId }
-          : undefined);
+      const matchesCard = (candidate: SummaryCandidate) => candidate.sessionId === card.sessionId
+        && (!card.backendId || candidate.backendId === card.backendId);
+      const candidate = sessionCandidates.find(matchesCard) ?? summaryCandidates.find(matchesCard);
       if (!candidate) return [];
       return [{
         card,

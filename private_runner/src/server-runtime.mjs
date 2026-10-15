@@ -1,3 +1,4 @@
+import { withLlmSessionRollout } from "./llm-session-rollout-file.mjs";
 import http from "node:http";
 import https from "node:https";
 import os from "node:os";
@@ -474,7 +475,6 @@ const CLI_SESSION_INDEX_PATH = path.resolve(
   WORKSPACE_ROOT,
   process.env.CLI_SESSION_INDEX_PATH || "private_runner/logs/cli_sessions_index.json"
 );
-const CLI_SESSION_SCAN_MAX_FILES = Math.max(100, Number(process.env.CLI_SESSION_SCAN_MAX_FILES || 5000));
 // PUSH notifications (APNs). Unset APNS_KEY_PATH/APNS_KEY_ID/APPLE_TEAM_ID disables the
 // feature entirely (registration endpoints and the turn-completed hook become no-ops)
 // so an unconfigured runner behaves exactly as before this feature existed.
@@ -1264,7 +1264,6 @@ const {
 } = createLlmCliSessionIndex({
   cliSessionIndexPath: CLI_SESSION_INDEX_PATH,
   cliSessionIndexRefreshMinIntervalMs: CLI_SESSION_INDEX_REFRESH_MIN_INTERVAL_MS,
-  cliSessionScanMaxFiles: CLI_SESSION_SCAN_MAX_FILES,
   codeCliSessionsDir: CODEX_CLI_SESSIONS_DIR,
   compareSessionHistoryEntries,
   normalizeLlmExecutionSessionId,
@@ -1433,33 +1432,42 @@ async function listLlmSessionMessages(rawSessionId, opts = {}) {
     };
   }
   const readParallelStartedAt = Date.now();
-  const messagesPromise = (async () => {
-    const t0 = Date.now();
-    const result = await readSessionMessagesFromRolloutFile(cliEntry.filePath, {
-      limit,
-      cursor,
-      sinceCursor,
-      sessionId,
+  const readRollout = async (filePath, sourceStat) => {
+    const messagesPromise = (async () => {
+      const t0 = Date.now();
+      const result = await readSessionMessagesFromRolloutFile(filePath, {
+        limit,
+        cursor,
+        sinceCursor,
+        sessionId,
+      }, sourceStat);
+      return { result, elapsedMs: Math.max(0, Date.now() - t0) };
+    })();
+    const contextPromise = (async () => {
+      if (cursor) return { result: null, elapsedMs: 0 };
+      const t0 = Date.now();
+      const result = await readSessionContextUsageFromRolloutFile(filePath);
+      return { result, elapsedMs: Math.max(0, Date.now() - t0) };
+    })();
+    const metaPromise = (async () => {
+      if (cursor) return { result: { modelRef: "", reasoningEffort: "" }, elapsedMs: 0 };
+      const t0 = Date.now();
+      const result = await readSessionMetaFromRolloutFile(filePath);
+      return { result, elapsedMs: Math.max(0, Date.now() - t0) };
+    })();
+    return await Promise.all([
+      messagesPromise,
+      contextPromise,
+      metaPromise,
+    ]);
+  };
+  const [messagesTimed, contextTimed, metaTimed] = await withLlmSessionRollout(cliEntry.filePath, readRollout)
+    .catch((error) => {
+      // Keep the history reader's missing-file / stale-cursor contract if an
+      // archive disappears after index lookup, just as for an ordinary rollout.
+      if (error?.code === "ENOENT") return readRollout(cliEntry.filePath);
+      throw error;
     });
-    return { result, elapsedMs: Math.max(0, Date.now() - t0) };
-  })();
-  const contextPromise = (async () => {
-    if (cursor) return { result: null, elapsedMs: 0 };
-    const t0 = Date.now();
-    const result = await readSessionContextUsageFromRolloutFile(cliEntry.filePath);
-    return { result, elapsedMs: Math.max(0, Date.now() - t0) };
-  })();
-  const metaPromise = (async () => {
-    if (cursor) return { result: { modelRef: "", reasoningEffort: "" }, elapsedMs: 0 };
-    const t0 = Date.now();
-    const result = await readSessionMetaFromRolloutFile(cliEntry.filePath);
-    return { result, elapsedMs: Math.max(0, Date.now() - t0) };
-  })();
-  const [messagesTimed, contextTimed, metaTimed] = await Promise.all([
-    messagesPromise,
-    contextPromise,
-    metaPromise,
-  ]);
   const readParallelMs = Math.max(0, Date.now() - readParallelStartedAt);
   const messagesResult = messagesTimed.result;
   const contextUsage = contextTimed.result;

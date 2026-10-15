@@ -263,3 +263,24 @@ test("ingest adds only new unexcluded sessions past the watermark", () => {
     { sessionId: "old", updatedAt: "2026-06-01T00:00:00.000Z" },
   ]), next);
 });
+
+test("ingest repairs legacy origins without moving cards or advancing their watermark", () => {
+  const state = {
+    cards: [
+      { kind: "session", sessionId: "old", col: 4, row: 8 },
+      { kind: "session", sessionId: "ambiguous", col: 5, row: 8 },
+    ],
+    sections: [], excludedSessionIds: ["removed"], ingestedUpdatedAtMs: Date.parse("2026-10-01"),
+  };
+  const candidates = [
+    { sessionId: "old", backendId: "codex", directory: "/work", updatedAt: "2026-01-01" },
+    { sessionId: "ambiguous", backendId: "codex", directory: "/work", updatedAt: "2026-01-01" },
+    { sessionId: "ambiguous", backendId: "claude", directory: "/work", updatedAt: "2026-01-01" },
+  ];
+  const next = ingestSkiaBoardSessions(state, candidates);
+  assert.deepEqual(next.cards[0], { ...state.cards[0], backendId: "codex", directory: "/work" });
+  assert.equal(next.cards[1], state.cards[1]);
+  assert.equal(next.ingestedUpdatedAtMs, state.ingestedUpdatedAtMs);
+  assert.equal(next.excludedSessionIds, state.excludedSessionIds);
+  assert.equal(ingestSkiaBoardSessions(next, candidates), next);
+});

@@ -1,6 +1,7 @@
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { readLlmSessionRolloutLines } from "./llm-session-rollout-file.mjs";
 import { parseLlmSessionRelationship } from "./llm-session-metadata.mjs";
 
 const CLI_SESSION_INDEX_VERSION = 4;
@@ -9,7 +10,6 @@ export function createLlmCliSessionIndex(deps = {}) {
   const {
     cliSessionIndexPath,
     cliSessionIndexRefreshMinIntervalMs,
-    cliSessionScanMaxFiles,
     codeCliSessionsDir,
     compareSessionHistoryEntries,
     normalizeLlmExecutionSessionId,
@@ -158,85 +158,62 @@ export function createLlmCliSessionIndex(deps = {}) {
           continue;
         }
         if (!entry.isFile()) continue;
-        if (!entry.name.startsWith("rollout-") || !entry.name.endsWith(".jsonl")) continue;
+        if (!entry.name.startsWith("rollout-") || !(entry.name.endsWith(".jsonl") || entry.name.endsWith(".jsonl.zst"))) continue;
         files.push(absPath);
       }
     }
     files.sort((a, b) => b.localeCompare(a));
-    return files.slice(0, cliSessionScanMaxFiles);
+    const paths = new Set(files);
+    return files.filter((file) => !file.endsWith(".jsonl.zst") || !paths.has(file.slice(0, -4)));
   }
 
   async function readCliSessionMetaFromRolloutFile(filePath, fallbackUpdatedAt) {
-    let handle = null;
     try {
-      handle = await fileSystem.open(filePath, "r");
-    } catch {
-      return null;
-    }
-    const maxBytes = 512 * 1024;
-    const chunkBytes = 64 * 1024;
-    let bytesOffset = 0;
-    let carry = "";
-    try {
-      while (bytesOffset < maxBytes) {
-        const length = Math.min(chunkBytes, maxBytes - bytesOffset);
-        const chunk = Buffer.alloc(length);
-        const { bytesRead } = await handle.read(chunk, 0, length, bytesOffset);
-        if (!bytesRead) break;
-        bytesOffset += bytesRead;
-        carry += chunk.toString("utf8", 0, bytesRead);
-        let newlineIndex = carry.indexOf("\n");
-        while (newlineIndex >= 0) {
-          const line = carry.slice(0, newlineIndex).trim();
-          carry = carry.slice(newlineIndex + 1);
-          if (!line.includes("\"session_meta\"")) {
-            newlineIndex = carry.indexOf("\n");
-            continue;
-          }
-          let parsed = null;
-          try {
-            parsed = JSON.parse(line);
-          } catch {
-            newlineIndex = carry.indexOf("\n");
-            continue;
-          }
-          if (String(parsed?.type || "") !== "session_meta") {
-            newlineIndex = carry.indexOf("\n");
-            continue;
-          }
-          const payload = parsed?.payload && typeof parsed.payload === "object" ? parsed.payload : {};
-          const cwd = String(payload?.cwd || "").trim();
-          let sessionId = "";
-          try {
-            sessionId = normalizeLlmExecutionSessionId(payload?.id);
-          } catch {
-            sessionId = "";
-          }
-          if (!sessionId) return null;
-          const createdAt = normalizeSessionUpdatedAt(payload?.timestamp || parsed?.timestamp);
-          const updatedAt = createdAt || fallbackUpdatedAt;
-          const lastReadAt = normalizeSessionUpdatedAt(payload?.last_read_at);
-          const directoryCandidate = toWorkspaceRelativeFromAbsolutePath(cwd);
-          const modelRef = String(payload?.model_ref || "").trim();
-          const reasoningEffort = normalizeReasoningEffort(payload?.reasoning_effort, { warnInvalid: false });
-          const relationship = parseLlmSessionRelationship(payload);
-          return {
-            sessionId,
-            cwd,
-            directory: directoryCandidate ? normalizeSessionRootRelativePath(directoryCandidate) : "",
-            createdAt: createdAt || "",
-            updatedAt,
-            lastReadAt: lastReadAt || "",
-            modelRef,
-            reasoningEffort: reasoningEffort || "",
-            ...relationship,
-          };
+      for await (const line of readLlmSessionRolloutLines(filePath, 512 * 1024, fileSystem)) {
+        if (!line.includes("\"session_meta\"")) {
+          continue;
         }
+        let parsed = null;
+        try {
+          parsed = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (String(parsed?.type || "") !== "session_meta") {
+          continue;
+        }
+        const payload = parsed?.payload && typeof parsed.payload === "object" ? parsed.payload : {};
+        const cwd = String(payload?.cwd || "").trim();
+        let sessionId = "";
+        try {
+          sessionId = normalizeLlmExecutionSessionId(payload?.id);
+        } catch {
+          sessionId = "";
+        }
+        if (!sessionId) return null;
+        const createdAt = normalizeSessionUpdatedAt(payload?.timestamp || parsed?.timestamp);
+        const updatedAt = createdAt || fallbackUpdatedAt;
+        const lastReadAt = normalizeSessionUpdatedAt(payload?.last_read_at);
+        const directoryCandidate = toWorkspaceRelativeFromAbsolutePath(cwd);
+        const modelRef = String(payload?.model_ref || "").trim();
+        const reasoningEffort = normalizeReasoningEffort(payload?.reasoning_effort, { warnInvalid: false });
+        const relationship = parseLlmSessionRelationship(payload);
+        return {
+          sessionId,
+          cwd,
+          directory: directoryCandidate ? normalizeSessionRootRelativePath(directoryCandidate) : "",
+          createdAt: createdAt || "",
+          updatedAt,
+          lastReadAt: lastReadAt || "",
+          modelRef,
+          reasoningEffort: reasoningEffort || "",
+          ...relationship,
+        };
       }
-      return null;
-    } finally {
-      await handle.close().catch(() => {});
+    } catch (error) {
+      if (error?.code !== "ENOENT" && !String(error?.code || "").startsWith("ZSTD_")) throw error;
     }
+    return null;
   }
 
   async function scanCliSessionIndex() {
@@ -257,10 +234,11 @@ export function createLlmCliSessionIndex(deps = {}) {
       }
       const mtimeMs = Math.floor(Number(stat.mtimeMs || 0));
       const size = Number(stat.size || 0);
-      const cached = snapshotByFilePath.get(filePath);
+      const cached = snapshotByFilePath.get(filePath)
+        || snapshotByFilePath.get(filePath.endsWith(".zst") ? filePath.slice(0, -4) : `${filePath}.zst`);
       remainingSnapshotEntries.delete(filePath);
       if (
-        cached &&
+        cached && cached.filePath === filePath &&
         Number(cached.mtimeMs || 0) === mtimeMs &&
         Number(cached.size || 0) === size &&
         !cliSessionIndexRequiresMetadataMigration

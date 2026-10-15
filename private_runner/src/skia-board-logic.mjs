@@ -491,6 +491,23 @@ export function ingestSkiaBoardSessions(state, candidates) {
       ),
     };
   }
+  // Older cards did not persist their origin. Reconcile it from the authoritative
+  // snapshot even when the session is older than the ingest watermark.
+  const reconciledCards = state.cards.map((card) => {
+    if (card.kind !== "session" || (card.directory && card.backendId)) return card;
+    const matches = candidates.filter((candidate) => candidate.sessionId === card.sessionId
+      && (!card.backendId || card.backendId === candidate.backendId)
+      && (!card.directory || card.directory === candidate.directory));
+    if (matches.length !== 1) return card;
+    const candidate = matches[0];
+    if ((!candidate.directory || card.directory === candidate.directory)
+      && (!candidate.backendId || card.backendId === candidate.backendId)) return card;
+    return { ...card, ...(candidate.directory ? { directory: candidate.directory } : {}),
+      ...(candidate.backendId ? { backendId: candidate.backendId } : {}) };
+  });
+  if (reconciledCards.some((card, index) => card !== state.cards[index])) {
+    state = { ...state, cards: reconciledCards };
+  }
   const boardedSessionIds = new Set(state.cards.flatMap((card) => (
     card.kind === "session" ? [card.sessionId] : []
   )));

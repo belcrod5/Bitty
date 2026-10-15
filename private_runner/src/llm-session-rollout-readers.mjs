@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { createLlmSessionHistoryPageReader } from "./llm-session-history-page-reader.mjs";
+import { openLlmSessionRollout, withLlmSessionRollout } from "./llm-session-rollout-file.mjs";
 import { parseLlmSessionRelationship } from "./llm-session-metadata.mjs";
 
 
@@ -200,13 +201,12 @@ export function createLlmSessionRolloutReaders(deps) {
   }
 
   async function readRolloutTextWithByteLimit(filePath, maxBytes) {
-    const fileStat = await fs.stat(filePath);
-    const size = Number(fileStat.size || 0);
-    const start = size > maxBytes ? size - maxBytes : 0;
-    const readLength = Math.max(0, size - start);
-    if (readLength <= 0) return "";
-    const handle = await fs.open(filePath, "r");
+    const handle = await openLlmSessionRollout(filePath);
     try {
+      const size = Number((await handle.stat()).size || 0);
+      const start = Math.max(0, size - maxBytes);
+      const readLength = size - start;
+      if (readLength <= 0) return "";
       const buffer = Buffer.alloc(readLength);
       const { bytesRead } = await handle.read(buffer, 0, readLength, start);
       if (!bytesRead) return "";
@@ -226,12 +226,10 @@ export function createLlmSessionRolloutReaders(deps) {
   }
 
   async function readRolloutHeadTextWithByteLimit(filePath, maxBytes) {
-    const fileStat = await fs.stat(filePath);
-    const size = Number(fileStat.size || 0);
-    const readLength = Math.max(0, Math.min(size, maxBytes));
-    if (readLength <= 0) return "";
-    const handle = await fs.open(filePath, "r");
+    const handle = await openLlmSessionRollout(filePath);
     try {
+      const readLength = Math.max(0, Math.min(Number((await handle.stat()).size || 0), maxBytes));
+      if (readLength <= 0) return "";
       const buffer = Buffer.alloc(readLength);
       const { bytesRead } = await handle.read(buffer, 0, readLength, 0);
       if (!bytesRead) return "";
@@ -243,8 +241,7 @@ export function createLlmSessionRolloutReaders(deps) {
 
   const sessionHeaderCache = new Map();
 
-  async function readSessionHeaderContext(filePath, stat) {
-    const handle = await fs.open(filePath, "r");
+  async function readSessionHeaderContext(handle, stat) {
     let cacheKey = "";
     let isSubagent = false;
     let parentSessionId = "";
@@ -257,78 +254,74 @@ export function createLlmSessionRolloutReaders(deps) {
     let skippingOversizedLine = false;
     const decoder = new TextDecoder();
     const workingDirectoryCandidates = [];
-    try {
-      while (position < Number(stat.size || 0)) {
-        const chunk = Buffer.alloc(Math.min(64 * 1024, Number(stat.size || 0) - position));
-        const { bytesRead } = await handle.read(chunk, 0, chunk.length, position);
-        if (!bytesRead) break;
-        if (position === 0) {
-          const headHash = createHash("sha256")
-            .update(chunk.subarray(0, Math.min(bytesRead, 4096)))
-            .digest("hex")
-            .slice(0, 24);
-          cacheKey = `${stat.dev}:${stat.ino}:${headHash}`;
-          const cached = sessionHeaderCache.get(cacheKey);
-          if (cached) return cached;
-        }
-        position += bytesRead;
-        let decoded = decoder.decode(chunk.subarray(0, bytesRead), { stream: position < Number(stat.size || 0) });
-        if (skippingOversizedLine) {
-          const newline = decoded.indexOf("\n");
-          if (newline < 0) continue;
-          decoded = decoded.slice(newline + 1);
-          skippingOversizedLine = false;
-        }
-        carry += decoded;
-        let newline = carry.indexOf("\n");
-        while (newline >= 0) {
-          const line = carry.slice(0, newline).replace(/\r$/, "");
-          carry = carry.slice(newline + 1);
-          newline = carry.indexOf("\n");
-          if (!line.trim() || Buffer.byteLength(line) > 256 * 1024) continue;
-          let parsed;
-          try {
-            parsed = JSON.parse(line);
-          } catch {
-            continue;
-          }
-          if (String(parsed?.type || "") === "session_meta") {
-            const payload = parsed?.payload && typeof parsed.payload === "object" ? parsed.payload : {};
-            ({ isSubagent, parentSessionId } = parseLlmSessionRelationship(payload));
-            if (!isSubagent) {
-              const result = { isSubagent: false, parentSessionId: "", boundaryTimestamp: "", workingDirectory: "" };
-              sessionHeaderCache.clear();
-              sessionHeaderCache.set(cacheKey, result);
-              return result;
-            }
-          }
-          if (!isSubagent) continue;
-          if (
-            String(parsed?.type || "") === "event_msg"
-            && String(parsed?.payload?.type || "") === "task_started"
-            && !boundaryFound
-          ) {
-            lastTaskStartedAt = String(parsed?.timestamp || parsed?.payload?.timestamp || "");
-          }
-          const isChildBoundary = String(parsed?.type || "") === "inter_agent_communication";
-          if (!boundaryFound && isChildBoundary) {
-            boundaryFound = true;
-            boundaryTimestamp = lastTaskStartedAt;
-          }
-          if (!boundaryFound) continue;
-          linesAfterBoundary += 1;
-          const workingDirectory = extractToolWorkingDirectory(parsed);
-          if (workingDirectory) workingDirectoryCandidates.push(workingDirectory);
-          if (workingDirectoryCandidates.length >= 16 || linesAfterBoundary >= 256) break;
-        }
-        if (workingDirectoryCandidates.length >= 16 || linesAfterBoundary >= 256) break;
-        if (carry.length > 256 * 1024) {
-          carry = "";
-          skippingOversizedLine = true;
-        }
+    while (position < Number(stat.size || 0)) {
+      const chunk = Buffer.alloc(Math.min(64 * 1024, Number(stat.size || 0) - position));
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, position);
+      if (!bytesRead) break;
+      if (position === 0) {
+        const headHash = createHash("sha256")
+          .update(chunk.subarray(0, Math.min(bytesRead, 4096)))
+          .digest("hex")
+          .slice(0, 24);
+        cacheKey = `${stat.dev}:${stat.ino}:${headHash}`;
+        const cached = sessionHeaderCache.get(cacheKey);
+        if (cached) return cached;
       }
-    } finally {
-      await handle.close().catch(() => {});
+      position += bytesRead;
+      let decoded = decoder.decode(chunk.subarray(0, bytesRead), { stream: position < Number(stat.size || 0) });
+      if (skippingOversizedLine) {
+        const newline = decoded.indexOf("\n");
+        if (newline < 0) continue;
+        decoded = decoded.slice(newline + 1);
+        skippingOversizedLine = false;
+      }
+      carry += decoded;
+      let newline = carry.indexOf("\n");
+      while (newline >= 0) {
+        const line = carry.slice(0, newline).replace(/\r$/, "");
+        carry = carry.slice(newline + 1);
+        newline = carry.indexOf("\n");
+        if (!line.trim() || Buffer.byteLength(line) > 256 * 1024) continue;
+        let parsed;
+        try {
+          parsed = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (String(parsed?.type || "") === "session_meta") {
+          const payload = parsed?.payload && typeof parsed.payload === "object" ? parsed.payload : {};
+          ({ isSubagent, parentSessionId } = parseLlmSessionRelationship(payload));
+          if (!isSubagent) {
+            const result = { isSubagent: false, parentSessionId: "", boundaryTimestamp: "", workingDirectory: "" };
+            sessionHeaderCache.clear();
+            sessionHeaderCache.set(cacheKey, result);
+            return result;
+          }
+        }
+        if (!isSubagent) continue;
+        if (
+          String(parsed?.type || "") === "event_msg"
+          && String(parsed?.payload?.type || "") === "task_started"
+          && !boundaryFound
+        ) {
+          lastTaskStartedAt = String(parsed?.timestamp || parsed?.payload?.timestamp || "");
+        }
+        const isChildBoundary = String(parsed?.type || "") === "inter_agent_communication";
+        if (!boundaryFound && isChildBoundary) {
+          boundaryFound = true;
+          boundaryTimestamp = lastTaskStartedAt;
+        }
+        if (!boundaryFound) continue;
+        linesAfterBoundary += 1;
+        const workingDirectory = extractToolWorkingDirectory(parsed);
+        if (workingDirectory) workingDirectoryCandidates.push(workingDirectory);
+        if (workingDirectoryCandidates.length >= 16 || linesAfterBoundary >= 256) break;
+      }
+      if (workingDirectoryCandidates.length >= 16 || linesAfterBoundary >= 256) break;
+      if (carry.length > 256 * 1024) {
+        carry = "";
+        skippingOversizedLine = true;
+      }
     }
     let workingDirectory = "";
     if (workingDirectoryCandidates.length > 0) {
@@ -503,8 +496,9 @@ export function createLlmSessionRolloutReaders(deps) {
 
     let rolloutFileSize = 0;
     try {
-      const stat = await fs.stat(filePath);
-      rolloutFileSize = Number(stat?.size || 0);
+      const handle = await openLlmSessionRollout(filePath);
+      try { rolloutFileSize = Number((await handle.stat()).size || 0); }
+      finally { await handle.close(); }
     } catch {}
 
     const maxTailSearchBytes = Math.max(
@@ -674,23 +668,25 @@ export function createLlmSessionRolloutReaders(deps) {
   }
 
   async function readCliSessionSummaryFromRolloutFile(filePath) {
-    const [firstUserMessage, contextUsage, meta] = await Promise.all([
-      readSessionFirstUserMessageFromRolloutFile(filePath, {
-        maxBytes: sessionSummaryHeadMaxReadBytes,
-      }),
-      readSessionContextUsageFromRolloutFile(filePath, {
-        maxBytes: sessionSummaryTailMaxReadBytes,
-      }),
-      readSessionMetaFromRolloutFile(filePath, {
-        maxBytes: sessionSummaryHeadMaxReadBytes,
-      }),
-    ]);
-    return {
-      firstUserMessage: String(firstUserMessage || "").trim(),
-      contextUsage: contextUsage || null,
-      modelRef: String(meta?.modelRef || "").trim(),
-      reasoningEffort: String(meta?.reasoningEffort || "").trim(),
-    };
+    return withLlmSessionRollout(filePath, async (readablePath) => {
+      const [firstUserMessage, contextUsage, meta] = await Promise.all([
+        readSessionFirstUserMessageFromRolloutFile(readablePath, {
+          maxBytes: sessionSummaryHeadMaxReadBytes,
+        }),
+        readSessionContextUsageFromRolloutFile(readablePath, {
+          maxBytes: sessionSummaryTailMaxReadBytes,
+        }),
+        readSessionMetaFromRolloutFile(readablePath, {
+          maxBytes: sessionSummaryHeadMaxReadBytes,
+        }),
+      ]);
+      return {
+        firstUserMessage: String(firstUserMessage || "").trim(),
+        contextUsage: contextUsage || null,
+        modelRef: String(meta?.modelRef || "").trim(),
+        reasoningEffort: String(meta?.reasoningEffort || "").trim(),
+      };
+    });
   }
 
   return {
