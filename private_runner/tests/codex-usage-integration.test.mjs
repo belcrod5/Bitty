@@ -7,8 +7,14 @@ import { WebSocketServer } from "ws";
 
 const root = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-codex-usage-ingress-"));
 process.env.CODEX_AUTH_STORE_DIR = root;
+process.env.CODEX_WS_PROXY_DEBUG_LOG_DIR = path.join(root, "codex_ws_proxy");
+process.env.PUSH_DEVICE_STORE_PATH = path.join(root, "push_devices.json");
 process.env.RUNNER_SKIP_SERVER_START = "1";
 process.env.RUNNER_TOKEN = "test-token";
+// Synthetic quota failures must never reach devices from the local runner.
+delete process.env.APNS_KEY_PATH;
+delete process.env.APNS_KEY_ID;
+delete process.env.APPLE_TEAM_ID;
 const { __TESTING__: runtime } = await import("../src/server-runtime.mjs");
 const { codexUsageService: usage, codexAuthRuntime: auth, codexAuthService, server } = runtime;
 const wsServer = new WebSocketServer({ port: 0, host: "127.0.0.1" });
@@ -57,6 +63,8 @@ function relay(account, threadId = "thread-a") {
 function receive(relay, payload) { runtime.handleCodexRelayUpstreamMessage(relay, JSON.stringify(payload), false); }
 
 test("RPC client, raw relay and status endpoint share one typed-failure account episode", async () => {
+  assert.equal(runtime.apnsClient, null);
+  assert.deepEqual(await runtime.pushDeviceStore.listDevices(), []);
   const { socket } = await client();
   socket.send(JSON.stringify({ method: "error", params: { threadId: "agent-session", turnId: "agent-turn",
     error: { codexErrorInfo: "usageLimitExceeded", message: "usage exhausted" } } }));
