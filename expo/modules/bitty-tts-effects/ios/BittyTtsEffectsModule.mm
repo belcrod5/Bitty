@@ -85,9 +85,18 @@ RCT_REMAP_METHOD(process,
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
       NSString *outputPath = BittyTtsTempPath(@"caf");
       NSError *error = nil;
-      BOOL success = ![self isCancelled:requestId] &&
-          [self renderFile:inputURL toURL:[NSURL fileURLWithPath:outputPath]
-                   effect:effect requestId:requestId error:&error];
+      NSString *renderPath = effect.count ? BittyTtsTempPath(@"caf") : nil;
+      NSURL *preparedInput = renderPath ? [NSURL fileURLWithPath:renderPath] : inputURL;
+      BOOL success = ![self isCancelled:requestId];
+      if (success && renderPath) {
+        success = [self renderFile:inputURL toURL:preparedInput
+                           effect:effect requestId:requestId error:&error];
+      }
+      if (success) {
+        success = [self trimFile:preparedInput toURL:[NSURL fileURLWithPath:outputPath]
+                      requestId:requestId error:&error];
+      }
+      if (renderPath) [[NSFileManager defaultManager] removeItemAtPath:renderPath error:nil];
       if (error) [[BittyRunnerTLS shared] logMediaStage:@"effect-render-error"
           request:[NSURLRequest requestWithURL:inputURL] response:nil error:error];
       if (deleteInput) [[NSFileManager defaultManager] removeItemAtURL:inputURL error:nil];
@@ -222,8 +231,7 @@ RCT_REMAP_METHOD(cancel,
   [player play];
   AVAudioPCMBuffer *buffer = [[AVAudioPCMBuffer alloc]
       initWithPCMFormat:engine.manualRenderingFormat frameCapacity:4096];
-  // Render a short tail so delay and room reflections do not end with the speech.
-  AVAudioFramePosition totalFrames = input.length + (AVAudioFramePosition)(format.sampleRate * 0.18);
+  AVAudioFramePosition totalFrames = input.length;
   NSUInteger retries = 0;
   BOOL completed = YES;
   while (engine.manualRenderingSampleTime < totalFrames && ![self isCancelled:requestId]) {
@@ -249,6 +257,66 @@ RCT_REMAP_METHOD(cancel,
   [player stop];
   [engine stop];
   return completed && ![self isCancelled:requestId] && (!error || !*error);
+}
+
+// Detect only file-edge silence. Never remove a pause inside speech, and retain
+// 30 ms on each side of detected speech to protect quiet consonants/decays.
+- (BOOL)trimFile:(NSURL *)inputURL toURL:(NSURL *)outputURL
+       requestId:(NSString *)requestId error:(NSError **)error
+{
+  AVAudioFile *input = [[AVAudioFile alloc] initForReading:inputURL
+      commonFormat:AVAudioPCMFormatFloat32 interleaved:NO error:error];
+  if (!input) return NO;
+  if (input.length <= 0) {
+    if (error) *error = [NSError errorWithDomain:@"BittyTtsEffects" code:2
+        userInfo:@{NSLocalizedDescriptionKey: @"TTS音声が空です。"}];
+    return NO;
+  }
+  AVAudioFormat *format = input.processingFormat;
+  AVAudioPCMBuffer *buffer = [[AVAudioPCMBuffer alloc] initWithPCMFormat:format frameCapacity:4096];
+  float peak = 0;
+  while (input.framePosition < input.length) {
+    if ([self isCancelled:requestId]) return NO;
+    if (![input readIntoBuffer:buffer error:error] || buffer.frameLength == 0) return NO;
+    for (AVAudioChannelCount channel = 0; channel < format.channelCount; channel++) {
+      for (AVAudioFrameCount frame = 0; frame < buffer.frameLength; frame++) {
+        peak = fmaxf(peak, fabsf(buffer.floatChannelData[channel][frame]));
+      }
+    }
+  }
+  // -70 dBFS, or 60 dB below this file's peak for quiet recordings.
+  const float threshold = fminf(0.000316228f, peak * 0.001f);
+  AVAudioFramePosition first = input.length;
+  AVAudioFramePosition last = -1;
+  input.framePosition = 0;
+  while (input.framePosition < input.length) {
+    if ([self isCancelled:requestId]) return NO;
+    AVAudioFramePosition offset = input.framePosition;
+    if (![input readIntoBuffer:buffer error:error] || buffer.frameLength == 0) return NO;
+    for (AVAudioChannelCount channel = 0; channel < format.channelCount; channel++) {
+      for (AVAudioFrameCount frame = 0; frame < buffer.frameLength; frame++) {
+        if (fabsf(buffer.floatChannelData[channel][frame]) > threshold) {
+          first = MIN(first, offset + frame);
+          last = MAX(last, offset + frame);
+        }
+      }
+    }
+  }
+  AVAudioFramePosition guard = (AVAudioFramePosition)ceil(format.sampleRate * 0.03);
+  // Keep an all-silent file valid instead of producing an unplayable empty file.
+  AVAudioFramePosition start = last >= 0 ? MAX(0, first - guard) : 0;
+  AVAudioFramePosition end = last >= 0 ? MIN(input.length, last + 1 + guard) : input.length;
+  AVAudioFile *output = [[AVAudioFile alloc] initForWriting:outputURL settings:format.settings
+      commonFormat:AVAudioPCMFormatFloat32 interleaved:NO error:error];
+  if (!output) return NO;
+  input.framePosition = start;
+  while (input.framePosition < end) {
+    if ([self isCancelled:requestId]) return NO;
+    AVAudioFrameCount frames = (AVAudioFrameCount)MIN(4096, end - input.framePosition);
+    if (![input readIntoBuffer:buffer frameCount:frames error:error] || buffer.frameLength == 0 ||
+        ![output writeFromBuffer:buffer error:error]) return NO;
+  }
+  return YES;
 }
 
 RCT_REMAP_METHOD(remove,

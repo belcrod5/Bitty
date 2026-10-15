@@ -1,4 +1,4 @@
-import { NativeModules } from "react-native";
+import { NativeModules, Platform } from "react-native";
 import { Audio } from "./audio";
 import { createTtsSoundAsync } from "./ttsAudio";
 import { VISUAL_THEMES } from "./theme/visualThemes";
@@ -13,21 +13,23 @@ const remove = jest.fn(async () => {});
 
 beforeEach(() => {
   jest.clearAllMocks();
+  process.mockReset();
+  process.mockResolvedValue("file:///tmp/prepared.caf");
   (NativeModules as Record<string, unknown>).BittyTtsEffects = { process, cancel, remove };
   configureCloudflareAccessFetch({ runnerUrl: "https://cloudflare.example.com",
     credentials: { clientId: "test-access-id", clientSecret: "test-access-secret" } });
 });
 
-test("standard TTS keeps the existing playback path", async () => {
+test("standard TTS trims file edges through the same native preparation as themed audio", async () => {
   const sound = { unloadAsync: jest.fn(async () => {}) };
   createAsync.mockResolvedValue({ sound });
 
   await expect(createTtsSoundAsync("https://runner/tts", { shouldPlay: true, volume: 1 }, null))
     .resolves.toBe(sound);
   expect(createAsync).toHaveBeenCalledWith(
-    { uri: "https://runner/tts" }, { shouldPlay: true, volume: 1 }
+    { uri: "file:///tmp/prepared.caf" }, { shouldPlay: true, volume: 1 }
   );
-  expect(process).not.toHaveBeenCalled();
+  expect(process).toHaveBeenCalledWith("https://runner/tts", null, expect.any(String), {});
 });
 
 test("themed TTS processes audio locally and removes its file on unload", async () => {
@@ -76,13 +78,12 @@ test("aborting a pending effect stops native work", async () => {
   expect(createAsync).not.toHaveBeenCalled();
 });
 
-test("standard Cloudflare TTS supplies origin-scoped credentials to the native player", async () => {
+test("standard Cloudflare TTS supplies origin-scoped credentials to native preparation", async () => {
   const sound = { unloadAsync: jest.fn(async () => {}) };
   createAsync.mockResolvedValue({ sound });
   await createTtsSoundAsync("https://cloudflare.example.com/tts-media/audio.mp3", { shouldPlay: false, volume: 1 }, null);
-  expect(createAsync).toHaveBeenCalledWith({ uri: "https://cloudflare.example.com/tts-media/audio.mp3",
-    headers: { "CF-Access-Client-Id": "test-access-id", "CF-Access-Client-Secret": "test-access-secret" } },
-    { shouldPlay: false, volume: 1 });
+  expect(process).toHaveBeenCalledWith("https://cloudflare.example.com/tts-media/audio.mp3", null, expect.any(String),
+    { "CF-Access-Client-Id": "test-access-id", "CF-Access-Client-Secret": "test-access-secret" });
 });
 
 test("themed Cloudflare TTS supplies the same credentials to its native downloader", async () => {
@@ -100,7 +101,26 @@ test("switching from LAN to Cloudflare changes media credentials without sending
   await createTtsSoundAsync("https://mac.local:8789/tts-media/lan.mp3", status, null);
   await createTtsSoundAsync("https://cloudflare.example.com/tts-media/cloud.mp3", status, null);
   await createTtsSoundAsync("https://cloudflare.example.com.attacker.test/tts-media/other.mp3", status, null);
-  expect(createAsync.mock.calls[0][0]).toEqual({ uri: "https://mac.local:8789/tts-media/lan.mp3" });
-  expect(createAsync.mock.calls[1][0].headers["CF-Access-Client-Secret"]).toBe("test-access-secret");
-  expect(createAsync.mock.calls[2][0]).toEqual({ uri: "https://cloudflare.example.com.attacker.test/tts-media/other.mp3" });
+  expect(process.mock.calls[0][3]).toEqual({});
+  expect(process.mock.calls[1][3]["CF-Access-Client-Secret"]).toBe("test-access-secret");
+  expect(process.mock.calls[2][3]).toEqual({});
+});
+
+test("Apple builds require native preparation even without a theme", async () => {
+  (NativeModules as Record<string, unknown>).BittyTtsEffects = undefined;
+  await expect(createTtsSoundAsync("https://runner/tts", { shouldPlay: false, volume: 1 }, null))
+    .rejects.toThrow("再ビルド");
+  expect(createAsync).not.toHaveBeenCalled();
+});
+
+test("platforms without Apple preparation retain plain playback", async () => {
+  const platform = jest.replaceProperty(Platform, "OS", "android");
+  try {
+    (NativeModules as Record<string, unknown>).BittyTtsEffects = undefined;
+    const sound = { unloadAsync: jest.fn(async () => {}) };
+    createAsync.mockResolvedValue({ sound });
+    await expect(createTtsSoundAsync("https://runner/tts", { shouldPlay: false, volume: 1 }, null))
+      .resolves.toBe(sound);
+    expect(process).not.toHaveBeenCalled();
+  } finally { platform.restore(); }
 });

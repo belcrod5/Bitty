@@ -7,9 +7,14 @@ type StreamSegmentEnvelope = {
   chunkChars: number | null;
   segmentTargetChars: number | null;
   estimatedDurationMs: number | null;
+  queueWaitMs: number | null;
+  synthesisMs: number | null;
+  mediaRegistrationMs: number | null;
+  serverEmittedAtMs: number | null;
 };
 
 function parseNullableFiniteNumber(value: unknown) {
+  if (value === null || value === undefined) return null;
   const num = Number(value);
   return Number.isFinite(num) ? num : null;
 }
@@ -29,5 +34,9 @@ export function parseStreamSegmentEnvelope(payload: unknown): StreamSegmentEnvel
     chunkChars: parseNullableFiniteNumber(data.chunkChars),
     segmentTargetChars: parseNullableFiniteNumber(data.segmentTargetChars),
     estimatedDurationMs: parseNullableFiniteNumber(data.estimatedDurationMs),
+    queueWaitMs: parseNullableFiniteNumber(data.queueWaitMs),
+    synthesisMs: parseNullableFiniteNumber(data.synthesisMs),
+    mediaRegistrationMs: parseNullableFiniteNumber(data.mediaRegistrationMs),
+    serverEmittedAtMs: parseNullableFiniteNumber(typeof data.at === "string" ? Date.parse(data.at) : undefined),
   };
 }

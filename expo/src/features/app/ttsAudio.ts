@@ -1,10 +1,10 @@
-import { NativeModules } from "react-native";
+import { NativeModules, Platform } from "react-native";
 import { Audio } from "./audio";
 import type { VisualThemeTtsEffect } from "./theme/visualThemes";
 import { getCloudflareAccessHeadersForUrl } from "./utils/cloudflareAccessFetch";
 
 type TtsEffectsModule = {
-  process(uri: string, effect: VisualThemeTtsEffect, requestId: string, headers: Record<string, string>): Promise<string>;
+  process(uri: string, effect: VisualThemeTtsEffect | null, requestId: string, headers: Record<string, string>): Promise<string>;
   cancel(requestId: string): Promise<void>;
   remove(uri: string): Promise<void>;
 };
@@ -19,7 +19,7 @@ export async function createTtsSoundAsync(
 ): Promise<Audio.Sound> {
   if (signal?.aborted) throw new Error("TTS音声加工を中止しました。");
   const headers = getCloudflareAccessHeadersForUrl(uri);
-  if (!effect) {
+  if (!effect && Platform.OS !== "ios" && Platform.OS !== "macos") {
     const source = Object.keys(headers).length ? { uri, headers } : { uri };
     const { sound } = await Audio.Sound.createAsync(source, status);
     if (signal?.aborted) {
@@ -31,7 +31,7 @@ export async function createTtsSoundAsync(
 
   const processor = NativeModules.BittyTtsEffects as TtsEffectsModule | undefined;
   if (!processor) {
-    throw new Error("TTS音声エフェクトがありません。アプリを再ビルドしてください。");
+    throw new Error("TTS音声処理がありません。アプリを再ビルドしてください。");
   }
   const requestId = `${Date.now()}-${++nextRequestId}`;
   const cancel = () => { void processor.cancel(requestId).catch(() => {}); };

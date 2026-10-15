@@ -29,9 +29,11 @@ function queueItem(seq: number): StreamAudioQueueItem {
 }
 
 function sound() {
+  const unload = jest.fn(async () => {});
   return {
     playAsync: jest.fn(async () => {}),
-    unloadAsync: jest.fn(async () => {}),
+    unloadAsync: unload,
+    unload,
     setOnPlaybackStatusUpdate: jest.fn(),
   };
 }
@@ -63,7 +65,11 @@ const createAsync = Audio.Sound.createAsync as jest.Mock;
 
 beforeEach(() => {
   jest.clearAllMocks();
-  (NativeModules as Record<string, unknown>).BittyTtsEffects = undefined;
+  createAsync.mockReset();
+  (NativeModules as Record<string, unknown>).BittyTtsEffects = {
+    process: jest.fn(async (uri: string) => uri),
+    cancel: jest.fn(async () => {}), remove: jest.fn(async () => {}),
+  };
 });
 
 test("loads one next chunk during current playback and reuses it", async () => {
@@ -95,6 +101,38 @@ test("loads one next chunk during current playback and reuses it", async () => {
   expect(secondSound.playAsync).toHaveBeenCalledTimes(1);
 });
 
+test("logs preload duration separately from remaining load wait without the media URL", async () => {
+  let now = 100;
+  const dateNow = jest.spyOn(Date, "now").mockImplementation(() => now);
+  try {
+    const item = queueItem(0);
+    const loaded = sound();
+    let release: (value: { sound: typeof loaded }) => void = () => {};
+    createAsync.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    const options = createOptions();
+    const { result } = await renderHook(() => usePlayPreparedStreamAudioController(options));
+    result.current.preloadStreamAudio(item);
+    expect(options.logAuto).toHaveBeenCalledWith("tts_trace", {
+      stage: "preload_start", messageId: "message-1", seq: 0, hasEffect: false,
+    });
+    await waitFor(() => expect(createAsync).toHaveBeenCalledTimes(1));
+    now = 450;
+    release({ sound: loaded });
+    await Promise.resolve();
+    await Promise.resolve();
+    await result.current.playPreparedStreamAudioAndWait(item);
+    expect(options.logAuto).toHaveBeenCalledWith("tts_trace", {
+      stage: "preload_complete", messageId: "message-1", seq: 0, elapsedMs: 350,
+    });
+    expect(options.logAuto).toHaveBeenCalledWith("tts_trace", expect.objectContaining({
+      stage: "native_load_complete", elapsedMs: 0,
+    }));
+    expect(JSON.stringify(options.logAuto.mock.calls)).not.toContain(item.uri);
+  } finally {
+    dateNow.mockRestore();
+  }
+});
+
 test("unloads a pending lookahead chunk when the queue is cleared", async () => {
   const next = queueItem(1);
   const nextSound = sound();
@@ -105,10 +143,11 @@ test("unloads a pending lookahead chunk when the queue is cleared", async () => 
   const { result } = await renderHook(() => usePlayPreparedStreamAudioController(createOptions()));
 
   result.current.preloadStreamAudio(next);
+  await waitFor(() => expect(createAsync).toHaveBeenCalledTimes(1));
   result.current.clearPreloadedStreamAudio();
   resolveLoad({ sound: nextSound });
 
-  await waitFor(() => expect(nextSound.unloadAsync).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(nextSound.unload).toHaveBeenCalledTimes(1));
 });
 
 test("queue clearing does not cancel the chunk already being loaded for playback", async () => {
@@ -121,12 +160,13 @@ test("queue clearing does not cancel the chunk already being loaded for playback
   const { result } = await renderHook(() => usePlayPreparedStreamAudioController(createOptions()));
 
   const playback = result.current.playPreparedStreamAudioAndWait(current);
+  await waitFor(() => expect(createAsync).toHaveBeenCalledTimes(1));
   result.current.clearPreloadedStreamAudio();
   resolveLoad({ sound: currentSound });
 
   await expect(playback).resolves.toBe(true);
   expect(currentSound.playAsync).toHaveBeenCalledTimes(1);
-  expect(currentSound.unloadAsync).not.toHaveBeenCalled();
+  expect(currentSound.unload).not.toHaveBeenCalled();
 });
 
 test("unloads the current chunk if playback was stopped while it was loading", async () => {
@@ -140,13 +180,14 @@ test("unloads the current chunk if playback was stopped while it was loading", a
   const { result } = await renderHook(() => usePlayPreparedStreamAudioController(options));
 
   const playback = result.current.playPreparedStreamAudioAndWait(current);
+  await waitFor(() => expect(createAsync).toHaveBeenCalledTimes(1));
   options.ttsPlaybackRunIdRef.current += 1;
   result.current.clearPreloadedStreamAudio();
   resolveLoad({ sound: currentSound });
 
   await expect(playback).resolves.toBe(false);
   expect(currentSound.playAsync).not.toHaveBeenCalled();
-  expect(currentSound.unloadAsync).toHaveBeenCalledTimes(1);
+  expect(currentSound.unload).toHaveBeenCalledTimes(1);
 });
 
 test("keeps only the first requested lookahead chunk", async () => {
@@ -159,7 +200,7 @@ test("keeps only the first requested lookahead chunk", async () => {
   result.current.preloadStreamAudio(first);
   result.current.preloadStreamAudio(second);
 
-  expect(createAsync).toHaveBeenCalledTimes(1);
+  await waitFor(() => expect(createAsync).toHaveBeenCalledTimes(1));
   expect(createAsync).toHaveBeenCalledWith(
     { uri: first.uri },
     { shouldPlay: false, volume: 1 }
@@ -230,7 +271,7 @@ test("unloads a chunk and clears its sound ref when playAsync fails", async () =
 
   await expect(result.current.playPreparedStreamAudioAndWait(item)).rejects.toThrow("play failed");
 
-  expect(failedSound.unloadAsync).toHaveBeenCalledTimes(1);
+  expect(failedSound.unload).toHaveBeenCalledTimes(1);
   const clearSound = options.setTtsSoundWithRef.mock.calls[1][0] as
     (current: Audio.Sound | null) => Audio.Sound | null;
   expect(clearSound(failedSound as unknown as Audio.Sound)).toBeNull();
@@ -256,8 +297,8 @@ test("a failed stale chunk does not clear a newer sound", async () => {
   rejectFirstPlay(new Error("stale play failed"));
   await expect(firstPlayback).resolves.toBe(false);
 
-  expect(firstSound.unloadAsync).toHaveBeenCalledTimes(1);
-  expect(nextSound.unloadAsync).not.toHaveBeenCalled();
+  expect(firstSound.unload).toHaveBeenCalledTimes(1);
+  expect(nextSound.unload).not.toHaveBeenCalled();
   const clearSound = options.setTtsSoundWithRef.mock.calls[2][0] as
     (current: Audio.Sound | null) => Audio.Sound | null;
   expect(clearSound(nextSound as unknown as Audio.Sound)).toBe(nextSound);
@@ -269,9 +310,9 @@ test("restarts a pending chunk with the newly selected theme", async () => {
   const plainSound = sound();
   createAsync.mockResolvedValue({ sound: plainSound });
   let cancelProcessing: () => void = () => {};
-  const process = jest.fn(() => new Promise<string>((_resolve, reject) => {
-    cancelProcessing = () => reject(new Error("cancelled"));
-  }));
+  const process = jest.fn((uri: string, effect: VisualThemeTtsEffect | null) => effect
+    ? new Promise<string>((_resolve, reject) => { cancelProcessing = () => reject(new Error("cancelled")); })
+    : Promise.resolve(uri));
   const cancel = jest.fn(async () => cancelProcessing());
   (NativeModules as Record<string, unknown>).BittyTtsEffects = {
     process, cancel, remove: jest.fn(async () => {}),

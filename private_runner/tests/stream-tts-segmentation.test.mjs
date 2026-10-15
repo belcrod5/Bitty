@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
 import test from "node:test";
-import { createStreamTtsSegments } from "../src/stream-tts-segments.mjs";
+import { createStreamTtsSegments, takeNextStreamTtsSegment } from "../src/stream-tts-segments.mjs";
 
 const mediaDir = await fs.mkdtemp(path.join(os.tmpdir(), "stream-tts-media-"));
 test.after(() => fs.rm(mediaDir, { recursive: true, force: true }));
@@ -15,22 +16,19 @@ process.env.ELEVENLABS_API_KEY = "test-key";
 process.env.TTS_MEDIA_DIR = mediaDir;
 
 const {
-  takeNextStreamTtsSegment,
-  findStreamTtsSplitIndex,
-  sanitizeStreamTtsText,
-  resolveStreamTtsSegmentTargetChars,
+  sanitizeTtsInputText,
   fetchTtsWithTimeout,
   startLlmStreamJob,
-  STREAM_TTS_SEGMENT_MAX_CHARS,
+  handleRunnerRequest,
   STREAM_TTS_MAX_CHARS,
   TTS_FETCH_TIMEOUT_MS,
 } = (await import("../src/server-runtime.mjs")).__TESTING__;
 
-function collectSegments(text, maxChars = STREAM_TTS_SEGMENT_MAX_CHARS) {
+function collectSegments(text) {
   const segments = [];
   let buffer = text;
   for (;;) {
-    const next = takeNextStreamTtsSegment(buffer, maxChars, true);
+    const next = takeNextStreamTtsSegment(buffer, true);
     if (!next) break;
     segments.push(next.segment);
     buffer = next.rest;
@@ -44,8 +42,7 @@ test("shared segment queue speaks genuine deltas once and flushes the tail", asy
   const segments = createStreamTtsSegments({
     emit: (event) => events.push(event),
     synthesizeSegment: async (text) => { spoken.push(text); return { audioUrl: `audio:${text}`, speedScale: 1 }; },
-    speedScale: 1, takeNextSegment: takeNextStreamTtsSegment, sanitizeText: sanitizeStreamTtsText,
-    maxChars: STREAM_TTS_SEGMENT_MAX_CHARS, targetChars: 12, maxEstMs: 1200,
+    speedScale: 1, sanitizeText: sanitizeTtsInputText,
     estimateDurationMs: () => 100,
   });
   segments.append("こんに");
@@ -72,8 +69,7 @@ test("cancelling shared segments discards queued work and suppresses late audio"
   const segments = createStreamTtsSegments({
     emit: (event) => events.push(event),
     synthesizeSegment: () => new Promise((resolve) => { resolveAudio = resolve; }),
-    speedScale: 1, takeNextSegment: takeNextStreamTtsSegment, sanitizeText: sanitizeStreamTtsText,
-    maxChars: STREAM_TTS_SEGMENT_MAX_CHARS, targetChars: 12, maxEstMs: 1200,
+    speedScale: 1, sanitizeText: sanitizeTtsInputText,
     estimateDurationMs: () => 100,
   });
   segments.append("一。二。未完成");
@@ -92,8 +88,7 @@ test("aborted shared segments ignore later deltas and do not flush their tail", 
     emit: (event) => events.push(event),
     synthesizeSegment: async () => ({ audioUrl: "unused", speedScale: 1 }),
     signal: controller.signal,
-    speedScale: 1, takeNextSegment: takeNextStreamTtsSegment, sanitizeText: sanitizeStreamTtsText,
-    maxChars: STREAM_TTS_SEGMENT_MAX_CHARS, targetChars: 12, maxEstMs: 1200,
+    speedScale: 1, sanitizeText: sanitizeTtsInputText,
     estimateDurationMs: () => 100,
   });
   segments.append("Unfinished");
@@ -103,94 +98,112 @@ test("aborted shared segments ignore later deltas and do not flush their tail", 
   assert.deepEqual(events, []);
 });
 
-test("splits at punctuation boundaries as before for normal text", () => {
-  const segments = collectSegments("こんにちは。今日は良い天気ですね、散歩に行きましょう。");
-  assert.deepEqual(segments, ["こんにちは。", "今日は良い天気ですね、", "散歩に行きましょう。"]);
+test("only Japanese full stops delimit segments and preserve all raw text", () => {
+  const text = "一。二、three.four,five!?！？:：;；\n 空白　も同じ文。末尾";
+  assert.deepEqual(collectSegments(text), ["一。", "二、three.four,five!?！？:：;；\n 空白　も同じ文。", "末尾"]);
+  assert.equal(collectSegments(text).join(""), text);
 });
 
-test("removes Japanese and ASCII sentence punctuation from provider text", () => {
-  assert.equal(
-    sanitizeStreamTtsText("こんにちは。今日は、sunny. Let's walk, together."),
-    "こんにちは今日はsunny Let's walk together"
-  );
+test("provider text preserves internal punctuation, decimals and line separation", () => {
+  assert.equal(sanitizeTtsInputText("価格3.14、1,234円! 本当？\nNext sentence。"),
+    "価格3.14、1,234円! 本当？\nNext sentence");
+  assert.equal(sanitizeTtsInputText("Last sentence."), "Last sentence.");
+  assert.equal(sanitizeTtsInputText("最初。次。3.14、最後。"), "最初次3.14、最後");
 });
 
-test("uses removable punctuation as boundaries without losing text", () => {
-  const text = "一。二、three.four,five";
-  const segments = collectSegments(text);
-  assert.deepEqual(segments, ["一。", "二、", "three.", "four,", "five"]);
-  assert.equal(segments.join(""), text);
-  assert.deepEqual(segments.map(sanitizeStreamTtsText), ["一", "二", "three", "four", "five"]);
-});
-
-test("waits for more streamed input when no boundary and below max chars", () => {
-  const next = takeNextStreamTtsSegment("まだ途中の文", STREAM_TTS_SEGMENT_MAX_CHARS, false);
-  assert.equal(next, null);
-});
-
-test("force flush emits trailing text without boundary", () => {
-  const next = takeNextStreamTtsSegment("最後の残り", STREAM_TTS_SEGMENT_MAX_CHARS, true);
-  assert.deepEqual(next, { segment: "最後の残り", rest: "" });
-});
-
-test("force-splits boundary-free long text at the segment max chars", () => {
-  const text = "あ".repeat(300);
-  const segments = collectSegments(text);
-  assert.equal(segments.join(""), text);
-  assert.ok(segments.length > 1, "long boundary-free text must produce multiple segments");
-  for (const segment of segments) {
-    assert.ok(
-      segment.length <= STREAM_TTS_SEGMENT_MAX_CHARS,
-      `segment length ${segment.length} must not exceed ${STREAM_TTS_SEGMENT_MAX_CHARS}`
-    );
+test("single TTS removes all Japanese full stops before calling the provider", async () => {
+  const originalFetch = globalThis.fetch;
+  const spoken = [];
+  globalThis.fetch = async (_url, init) => {
+    spoken.push(JSON.parse(init.body).text);
+    return { ok: true, arrayBuffer: async () => Uint8Array.of(1, 2, 3).buffer };
+  };
+  try {
+    for (const [text, expectedStatus] of [["最初。次。価格3.14、1,234円。", 200], ["。。。", 400]]) {
+      const req = Readable.from([Buffer.from(JSON.stringify({ text, ttsProvider: "elevenlabs" }))]);
+      Object.assign(req, { method: "POST", url: "/tts",
+        headers: { host: "127.0.0.1", authorization: "Bearer test-runner-token" },
+        socket: { remoteAddress: "test" } });
+      let status;
+      await handleRunnerRequest(req, {
+        writeHead(code) { status = code; },
+        end() {},
+      });
+      assert.equal(status, expectedStatus);
+    }
+    assert.deepEqual(spoken, ["最初次価格3.14、1,234円"]);
+  } finally {
+    globalThis.fetch = originalFetch;
   }
-  assert.equal(segments[0].length, STREAM_TTS_SEGMENT_MAX_CHARS);
 });
 
-test("boundary-free buffer at exactly max chars is split without waiting", () => {
-  const text = "い".repeat(STREAM_TTS_SEGMENT_MAX_CHARS);
-  const next = takeNextStreamTtsSegment(text, STREAM_TTS_SEGMENT_MAX_CHARS, false);
-  assert.ok(next, "buffer reaching max chars must be flushed even while streaming");
-  assert.equal(next.segment.length, STREAM_TTS_SEGMENT_MAX_CHARS);
-  assert.equal(next.rest, "");
+test("long sentences wait for a Japanese full stop regardless of length or ASCII", () => {
+  for (const text of ["a".repeat(70), "abc123".repeat(100), "😀".repeat(100), "長".repeat(6000)]) {
+    assert.equal(takeNextStreamTtsSegment(text), null);
+    assert.deepEqual(takeNextStreamTtsSegment(`${text}。残り`), { segment: `${text}。`, rest: "残り" });
+    assert.deepEqual(takeNextStreamTtsSegment(text, true), { segment: text, rest: "" });
+  }
 });
 
-test("prefers a soft split char inside the force-split window", () => {
-  const text = `${"x".repeat(60)} ${"y".repeat(60)}`;
-  const next = takeNextStreamTtsSegment(text, STREAM_TTS_SEGMENT_MAX_CHARS, false);
-  assert.ok(next);
-  assert.equal(next.segment, `${"x".repeat(60)} `);
-  assert.equal(next.rest, "y".repeat(60));
+test("decimals, URLs, English sentences and whitespace never split audio", () => {
+  const text = "API v3.14 at https://example.com/a?x=1,234&y=abc; works! Yes?\n".repeat(3);
+  assert.equal(takeNextStreamTtsSegment(text), null);
+  assert.deepEqual(collectSegments(text), [text]);
+  assert.deepEqual(collectSegments(`${text}。次。`), [`${text}。`, "次。"]);
 });
 
-test("segments a 6000+ char text with sparse punctuation completely", () => {
+test("keeps long sentences intact and flushes a boundary-free tail", () => {
   const sentence = `${"長".repeat(200)}。`;
-  const text = sentence.repeat(30);
-  assert.ok(text.length > 6000);
+  const tail = `a${"😀".repeat(100)}`;
+  const text = sentence.repeat(30) + tail;
   const segments = collectSegments(text);
+  assert.deepEqual(segments, [...Array(30).fill(sentence), tail]);
   assert.equal(segments.join(""), text);
-  for (const segment of segments) {
-    assert.ok(segment.length <= STREAM_TTS_SEGMENT_MAX_CHARS);
-  }
+  assert.ok(segments.every((segment) => segment.isWellFormed()));
+  assert.equal(takeNextStreamTtsSegment("  \n", true), null);
 });
 
-test("findStreamTtsSplitIndex prefers boundary chars in the trailing window", () => {
-  const text = `${"a".repeat(50)}。${"b".repeat(50)}`;
-  assert.equal(findStreamTtsSplitIndex(text, 70), 50);
+test("streamed ASCII deltas stay buffered until a true boundary, then finish flushes once", async () => {
+  const spoken = [];
+  const events = [];
+  const segments = createStreamTtsSegments({
+    emit: (event) => events.push(event),
+    synthesizeSegment: async (text) => { spoken.push(text); return { audioUrl: "mock", speedScale: 1 }; },
+    speedScale: 1, sanitizeText: sanitizeTtsInputText, estimateDurationMs: () => 100,
+  });
+  const prefix = "abc123".repeat(30);
+  for (const delta of [prefix, ".", "14, !?\n", "https://example", ".com/path ", "次"]) segments.append(delta);
+  assert.deepEqual(events, []);
+  segments.append("。終わり.");
+  assert.equal(events.filter((event) => event.type === "segment_queued").length, 1);
+  await segments.finish();
+  await segments.finish();
+  segments.append("追加。拒否");
+  assert.deepEqual(spoken, [`${prefix}.14, !?\n 次`, "終わり."]);
+  assert.deepEqual(events.filter((event) => event.type === "audio_chunk").map((event) => event.seq), [0, 1]);
 });
 
-test("findStreamTtsSplitIndex falls back to a hard cut without split chars", () => {
-  const text = "c".repeat(100);
-  assert.equal(findStreamTtsSplitIndex(text, 70), 69);
-});
-
-test("resolveStreamTtsSegmentTargetChars stays within configured bounds", () => {
-  for (const speedScale of [undefined, 0.5, 1, 2, Number.NaN]) {
-    const target = resolveStreamTtsSegmentTargetChars(speedScale);
-    assert.ok(Number.isInteger(target));
-    assert.ok(target >= 1);
-    assert.ok(target <= STREAM_TTS_SEGMENT_MAX_CHARS);
-  }
+test("records serial synthesis queue wait on each audio event", async (t) => {
+  let now = 0;
+  t.mock.method(performance, "now", () => now);
+  let releaseFirst;
+  const events = [];
+  const segments = createStreamTtsSegments({
+    emit: (event) => events.push(event), speedScale: 1,
+    sanitizeText: sanitizeTtsInputText, estimateDurationMs: () => 100,
+    synthesizeSegment: async (_text, seq) => {
+      if (seq === 0) await new Promise((resolve) => { releaseFirst = resolve; });
+      return { audioUrl: "mock", speedScale: 1 };
+    },
+  });
+  segments.append("一。二。");
+  now = 5;
+  await Promise.resolve();
+  assert.equal(events.filter((event) => event.type === "segment_tts_started").length, 1);
+  now = 205;
+  releaseFirst();
+  await segments.finish();
+  assert.deepEqual(events.filter((event) => event.type === "audio_chunk").map((event) => event.queueWaitMs), [5, 205]);
 });
 
 test("fetchTtsWithTimeout rejects with a timeout error when the provider hangs", async () => {
@@ -209,27 +222,6 @@ test("fetchTtsWithTimeout rejects with a timeout error when the provider hangs",
   } finally {
     globalThis.fetch = originalFetch;
     clearTimeout(keepAlive);
-  }
-});
-
-test("hard cut never splits a surrogate pair", () => {
-  // "a" offsets the emoji pairs so the hard cut at max chars lands on a high surrogate.
-  const text = `a${"😀".repeat(100)}`;
-  const splitIndex = findStreamTtsSplitIndex(text, STREAM_TTS_SEGMENT_MAX_CHARS);
-  assert.equal(splitIndex, STREAM_TTS_SEGMENT_MAX_CHARS - 2);
-  const segments = collectSegments(text);
-  assert.equal(segments.join(""), text);
-  for (const segment of segments) {
-    assert.ok(segment.isWellFormed(), `segment must not contain lone surrogates: ${segment}`);
-  }
-});
-
-test("hard cut on an aligned emoji run keeps pairs intact", () => {
-  const text = "😀".repeat(100);
-  const segments = collectSegments(text);
-  assert.equal(segments.join(""), text);
-  for (const segment of segments) {
-    assert.ok(segment.isWellFormed());
   }
 });
 
@@ -256,12 +248,17 @@ test("text mode uses the shared queue and records the last emitted audio seq", a
     return { ok: true, arrayBuffer: async () => Uint8Array.of(1, 2, 3).buffer };
   };
   try {
-    const job = startLlmStreamJob({ mode: "text", text: "One. Two!", ttsProvider: "elevenlabs" }, {
+    const job = startLlmStreamJob({ mode: "text", text: "One. Two!。Three3.14, end!", ttsProvider: "elevenlabs" }, {
       publicBaseUrl: "http://127.0.0.1:8788",
     });
     await job.runPromise;
     assert.equal(job.status, "completed");
-    assert.deepEqual(spoken, ["One", "Two!"]);
+    assert.deepEqual(spoken, ["One. Two!", "Three3.14, end!"]);
+    for (const chunk of job.events.filter((event) => event.type === "audio_chunk")) {
+      for (const field of ["queueWaitMs", "synthesisMs", "mediaRegistrationMs"]) {
+        assert.ok(Number.isFinite(chunk[field]) && chunk[field] >= 0, `${field} must be a non-negative duration`);
+      }
+    }
     assert.deepEqual(job.events.filter((event) => event.type === "audio_chunk").map((event) => event.seq), [0, 1]);
     assert.equal(job.lastAudioChunkSeq, 1);
   } finally {
