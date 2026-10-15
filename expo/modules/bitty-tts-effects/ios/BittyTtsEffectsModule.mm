@@ -1,6 +1,8 @@
 #import <AVFoundation/AVFoundation.h>
 #import <React/RCTBridgeModule.h>
+#if !TARGET_OS_OSX
 #import <BittyRunnerTLS/BittyRunnerTLS.h>
+#endif
 
 static NSString *BittyTtsTempPath(NSString *extension)
 {
@@ -97,8 +99,10 @@ RCT_REMAP_METHOD(process,
                       requestId:requestId error:&error];
       }
       if (renderPath) [[NSFileManager defaultManager] removeItemAtPath:renderPath error:nil];
+#if !TARGET_OS_OSX
       if (error) [[BittyRunnerTLS shared] logMediaStage:@"effect-render-error"
           request:[NSURLRequest requestWithURL:inputURL] response:nil error:error];
+#endif
       if (deleteInput) [[NSFileManager defaultManager] removeItemAtURL:inputURL error:nil];
       BOOL cancelled = [self isCancelled:requestId];
       [self finishRequest:requestId];
@@ -118,17 +122,26 @@ RCT_REMAP_METHOD(process,
     return;
   }
 
+#if TARGET_OS_OSX
+  NSURLSession *session = [NSURLSession sessionWithConfiguration:NSURLSessionConfiguration.defaultSessionConfiguration];
+  BOOL pairedLocal = NO;
+#else
   NSURLSession *session = [[BittyRunnerTLS shared] sessionWithDelegate:nil queue:nil];
-  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
   BOOL pairedLocal = [[BittyRunnerTLS shared] handlesURL:url];
+#endif
+  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
   for (NSString *name in headers) {
     if (pairedLocal && [name.lowercaseString hasPrefix:@"cf-access-"]) continue;
     if ([headers[name] isKindOfClass:NSString.class]) [request setValue:headers[name] forHTTPHeaderField:name];
   }
+#if !TARGET_OS_OSX
   [[BittyRunnerTLS shared] logMediaStage:@"effect-request" request:request response:nil error:nil];
+#endif
   NSURLSessionDownloadTask *task = [session downloadTaskWithRequest:request
       completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
+#if !TARGET_OS_OSX
         [[BittyRunnerTLS shared] logMediaStage:@"effect-response" request:request response:response error:error];
+#endif
         [session finishTasksAndInvalidate];
         BOOL cancelled = [self isCancelled:requestId];
         if (cancelled || !location || error ||
