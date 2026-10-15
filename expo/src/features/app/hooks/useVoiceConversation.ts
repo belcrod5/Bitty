@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { randomUUID } from "expo-crypto";
 import { Alert } from "react-native";
 import { useRunnerWebSocketManager, useRunnerWebSocketSnapshot } from "../../runnerWs/RunnerWebSocketContext";
@@ -87,6 +87,7 @@ export function useVoiceConversation(
   const [error, setError] = useState("");
   const [contextStats, setContextStats] = useState<VoiceContextStats | null>(null);
   const [history, setHistory] = useState<VoiceHistoryMessage[]>([]);
+  const [localHistory, setLocalHistory] = useState<VoiceHistoryMessage[]>([]);
   const [historyError, setHistoryError] = useState("");
   const historyRequestRef = useRef(0);
   const pendingRef = useRef<PendingTurn | null>(null);
@@ -140,6 +141,9 @@ export function useVoiceConversation(
       return;
     }
     pendingRef.current = null;
+    if (!pending.accepted) {
+      setLocalHistory((current) => current.filter((message) => message.clientOperationId !== id));
+    }
     if (status !== "completed") {
       setContextStats((current) => current ? { ...current, contextUsagePercent: null } : null);
     }
@@ -152,6 +156,11 @@ export function useVoiceConversation(
     }
     if (status === "completed" && typeof payload.text === "string" && payload.text.trim()) {
       pending.resolve?.();
+      const text = payload.text;
+      setLocalHistory((current) => [...current, { role: "assistant", text,
+        clientOperationId: id,
+        outputTokens: typeof payload.outputTokens === "number" ? payload.outputTokens : undefined,
+        completedOrdinal: typeof payload.completedOrdinal === "number" ? payload.completedOrdinal : undefined }]);
       setReply({ text: payload.text, operationId: id,
         outputTokens: typeof payload.outputTokens === "number" ? payload.outputTokens : undefined,
         completedOrdinal: typeof payload.completedOrdinal === "number" ? payload.completedOrdinal : undefined });
@@ -259,6 +268,7 @@ export function useVoiceConversation(
         historyRequestRef.current += 1;
         setReply(null);
         setHistory([]);
+        setLocalHistory([]);
         setHistoryError("");
         setTurnStatus("idle");
       }
@@ -274,6 +284,8 @@ export function useVoiceConversation(
           ...(typeof openPayload.inputText === "string" ? { text: openPayload.inputText } : {}),
           readAloud: false, accepted: openPayload.status !== "confirmation_required" };
         pendingRef.current = pending;
+        const { id, text } = pending;
+        if (text) setLocalHistory((current) => [...current, { role: "user", text, clientOperationId: id }]);
         setTurnStatus("sending");
       }
       if (!pending) {
@@ -409,6 +421,8 @@ export function useVoiceConversation(
       };
       turnRevisionRef.current += 1;
       pendingRef.current = pending;
+      setLocalHistory((current) => [...current, { role: "user", text: trimmed, clientOperationId: pending.id,
+        at: new Date().toISOString() }]);
       if (manager.getSnapshot().connected) void startTurn(pending);
     });
   }, [manager, startTurn]);
@@ -450,7 +464,10 @@ export function useVoiceConversation(
       }
       if (!aliveRef.current || historyRequestRef.current !== requestNumber || conversationIdRef.current !== conversationId
         || manager.getSnapshot().generation !== startedGeneration) return;
-      setHistory(payload.messages as VoiceHistoryMessage[]);
+      const messages = payload.messages as VoiceHistoryMessage[];
+      setHistory(messages);
+      setLocalHistory((current) => current.filter((local) => !messages.some((message) =>
+        message.role === local.role && message.clientOperationId === local.clientOperationId)));
       setHistoryError("");
     } catch (cause) {
       if (aliveRef.current && historyRequestRef.current === requestNumber && conversationIdRef.current === conversationId
@@ -460,13 +477,20 @@ export function useVoiceConversation(
     }
   }, [manager, orchestratorId]);
 
+  useEffect(() => {
+    if (logicalConversationId && pendingRef.current && !pendingRef.current.text) void refreshHistory();
+  }, [logicalConversationId, refreshHistory]);
+
+  const visibleHistory = useMemo(() => [...history, ...localHistory.filter((local) => !history.some((message) =>
+    message.role === local.role && message.clientOperationId === local.clientOperationId))], [history, localHistory]);
+
   return {
     ready: Boolean(logicalConversationId) && connected,
     logicalConversationId,
     turnStatus,
     reply,
     contextStats,
-    history,
+    history: visibleHistory,
     historyError,
     refreshHistory,
     error,
