@@ -172,7 +172,10 @@ export function useCodexStatusAuthController({
     setCodexCliStatusLoading,
   ]);
 
-  const fetchRunnerCodexAuthProfiles = useCallback(async (force = false): Promise<CodexAuthProfilesSnapshot | null> => {
+  const fetchRunnerCodexAuthProfiles = useCallback(async (force = false): Promise<{
+    profiles: CodexAuthProfilesSnapshot;
+    currentUsage: CodexCliStatusSnapshot | null;
+  } | null> => {
     const targetLlmUrl = auxServerBaseUrl();
     const token = runnerToken.trim();
     if (!targetLlmUrl || !token) return null;
@@ -187,7 +190,10 @@ export function useCodexStatusAuthController({
       });
       if (!res.ok) return null;
       const data = await res.json().catch(() => ({}));
-      return parseCodexAuthProfilesSnapshot(data);
+      return {
+        profiles: parseCodexAuthProfilesSnapshot(data),
+        currentUsage: parseCodexCliStatusSnapshot(data?.currentUsage),
+      };
     } catch {
       return null;
     }
@@ -202,10 +208,16 @@ export function useCodexStatusAuthController({
     if (codexAuthProfilesRefreshInFlightRef.current) return;
     codexAuthProfilesRefreshInFlightRef.current = true;
     setCodexAuthProfilesLoading(true);
+    const accountGeneration = accountGenerationRef.current;
     try {
-      const snapshot = await fetchRunnerCodexAuthProfiles(Boolean(options?.force));
-      if (snapshot) {
-        applyCodexAuthProfilesSnapshot(snapshot);
+      const result = await fetchRunnerCodexAuthProfiles(Boolean(options?.force));
+      if (accountGeneration !== accountGenerationRef.current) return;
+      if (result) {
+        applyCodexAuthProfilesSnapshot(result.profiles);
+        if (result.currentUsage) applyCodexCliStatusSnapshot(result.currentUsage);
+      }
+      if (!result?.profiles.profiles.length) {
+        await refreshCodexCliStatusForWidget({ force: true });
       }
     } finally {
       codexAuthProfilesRefreshInFlightRef.current = false;
@@ -213,8 +225,10 @@ export function useCodexStatusAuthController({
     }
   }, [
     applyCodexAuthProfilesSnapshot,
+    applyCodexCliStatusSnapshot,
     codexAuthProfilesRefreshInFlightRef,
     fetchRunnerCodexAuthProfiles,
+    refreshCodexCliStatusForWidget,
     setCodexAuthProfilesLoading,
   ]);
 

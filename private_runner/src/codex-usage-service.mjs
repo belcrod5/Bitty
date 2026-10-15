@@ -38,7 +38,7 @@ function normalizeWindow(raw) {
   };
 }
 
-function mergeLimits(previous = {}, raw = {}) {
+function mergeLimits(previous = {}, raw = {}, freshRead = false) {
   const result = { ...previous };
   for (const name of ["primary", "secondary"]) {
     const incoming = normalizeWindow(raw[name]);
@@ -53,7 +53,7 @@ function mergeLimits(previous = {}, raw = {}) {
     if (old?.resetsAt && incoming.resetsAt && incoming.resetsAt < old.resetsAt) continue;
     const sameWindow = old && (!incoming.resetsAt || !old.resetsAt || incoming.resetsAt === old.resetsAt);
     result[key] = { ...(sameWindow ? old : {}), ...incoming,
-      ...(sameWindow ? { usedPercent: Math.max(old.usedPercent, incoming.usedPercent) } : {}),
+      ...(sameWindow && !freshRead ? { usedPercent: Math.max(old.usedPercent, incoming.usedPercent) } : {}),
     };
   }
   if (typeof raw.credits?.hasCredits === "boolean" && typeof raw.credits?.unlimited === "boolean") {
@@ -123,13 +123,15 @@ export function createCodexUsageService({ storePath, onChanged, onLimitReached, 
     const operation = queue.then(async () => {
       await load();
       const previous = accounts[accountId] || { rateLimits: {}, blocked: false, episode: 0 };
-      // A late read must not replace a newer observation, whether it reports
-      // exhaustion or recovery (including credits and spend controls).
-      if (observedAt !== undefined && observedAt <= Date.parse(previous.fetchedAt)) return { accountId, snapshot: snapshot(previous) };
+      // Compare when reads began, not when persistence finished: a later read
+      // can start before an earlier one finishes and still contain newer data.
+      const previousObservedAt = Number.isFinite(previous.observedAt)
+        ? previous.observedAt : Date.parse(previous.fetchedAt);
+      if (observedAt !== undefined && observedAt <= previousObservedAt) return { accountId, snapshot: snapshot(previous) };
       const source = update.rateLimitsByLimitId?.codex || update.rateLimits;
       // Other model buckets do not overwrite the ordinary Codex quota.
       if (source?.limitId && source.limitId !== "codex" && !usageLimitExceeded) return snapshot(previous);
-      const limits = mergeLimits(previous.rateLimits, source);
+      const limits = mergeLimits(previous.rateLimits, source, observedAt !== undefined);
       const newlyExhausted = [limits.primary, limits.secondary].some((incoming) =>
         incoming?.usedPercent >= 100 && !Object.values(previous.rateLimits).some((old) =>
           old?.windowDurationMins === incoming.windowDurationMins && old.usedPercent >= 100 && old.resetsAt === incoming.resetsAt));
@@ -148,6 +150,7 @@ export function createCodexUsageService({ storePath, onChanged, onLimitReached, 
         || (previous.blocked && !recovered);
       const newEpisode = blocked && (!previous.blocked || (rolledOver && exhausted));
       const state = { rateLimits: limits, blocked, ordinaryUsageAllowed: allowance,
+        observedAt: observedAt ?? now(),
         episode: previous.episode + (newEpisode ? 1 : 0), fetchedAt: new Date(Math.max(now(), Date.parse(previous.fetchedAt || "") + 1 || 0)).toISOString() };
       accounts[accountId] = state;
       // Persist the reservation before fanout; no TTL can create repeated alerts.
@@ -172,5 +175,7 @@ export function createCodexUsageService({ storePath, onChanged, onLimitReached, 
     return null;
   }
 
-  return { observe, observeNotification, async snapshot(accountId) { await queue; await load(); return snapshot(accounts[accountId]); } };
+  return { observe, observeNotification,
+    async rateLimits(accountId) { await queue; await load(); return accounts[accountId]?.rateLimits; },
+    async snapshot(accountId) { await queue; await load(); return snapshot(accounts[accountId]); } };
 }

@@ -54,6 +54,55 @@ test("resuming immediately after a recent request reads the latest canonical quo
   expect(inputs.setCodexCliStatusSnapshot).toHaveBeenCalledWith(expect.objectContaining({ usageLimitReached: true }));
 });
 
+test("refreshing accounts uses their quota update without a second active-account request", async () => {
+  const { inputs } = args();
+  (global.fetch as jest.Mock).mockResolvedValue(response({
+    currentAuthId: "a",
+    profiles: [{ authId: "a", rateLimits: { primary: { usedPercent: 20, windowDurationMins: 300 } } }],
+    currentUsage: status("5h limit: 80% left", "2026-10-10T02:00:01.000Z"),
+  }));
+  const { result } = await renderHook(() => useCodexStatusAuthController(inputs));
+  await act(async () => { await result.current.refreshCodexAuthProfiles({ force: true }); });
+  expect(global.fetch).toHaveBeenCalledTimes(1);
+  expect(String((global.fetch as jest.Mock).mock.calls[0][0])).toContain("/codex-auth/profiles?refresh=1");
+  expect(inputs.setCodexCliStatusSnapshot).toHaveBeenCalledWith(expect.objectContaining({ statusText: "5h limit: 80% left" }));
+});
+
+test("a profiles response without canonical usage leaves a newer status untouched", async () => {
+  const { inputs, receive } = args();
+  (global.fetch as jest.Mock).mockResolvedValue(response({
+    currentAuthId: "a", profiles: [{ authId: "a", rateLimits: { primary: { usedPercent: 20, windowDurationMins: 300 } } }],
+  }));
+  const { result } = await renderHook(() => useCodexStatusAuthController(inputs));
+  await act(async () => { receive(status("5h limit: 70% left", "2026-10-10T02:00:02.000Z")); });
+  await act(async () => { await result.current.refreshCodexAuthProfiles({ force: true }); });
+  expect(inputs.setCodexCliStatusSnapshot).toHaveBeenCalledTimes(1);
+});
+
+test("refreshing accounts falls back to the status endpoint for legacy auth", async () => {
+  const { inputs } = args();
+  (global.fetch as jest.Mock)
+    .mockResolvedValueOnce(response({ currentAuthId: "", profiles: [] }))
+    .mockResolvedValueOnce(response(status("5h limit: 80% left", "2026-10-10T02:00:01.000Z")));
+  const { result } = await renderHook(() => useCodexStatusAuthController(inputs));
+  await act(async () => { await result.current.refreshCodexAuthProfiles({ force: true }); });
+  expect((global.fetch as jest.Mock).mock.calls.map(([url]) => new URL(url).pathname)).toEqual([
+    "/codex-auth/profiles", "/codex-cli/status",
+  ]);
+  expect(inputs.setCodexCliStatusSnapshot).toHaveBeenCalledWith(expect.objectContaining({ statusText: "5h limit: 80% left" }));
+});
+
+test("an unavailable managed account does not retry the same quota read through status", async () => {
+  const { inputs } = args();
+  (global.fetch as jest.Mock).mockResolvedValue(response({
+    currentAuthId: "a", profiles: [{ authId: "a", status: "unavailable" }],
+  }));
+  const { result } = await renderHook(() => useCodexStatusAuthController(inputs));
+  await act(async () => { await result.current.refreshCodexAuthProfiles({ force: true }); });
+  expect(global.fetch).toHaveBeenCalledTimes(1);
+  expect(String((global.fetch as jest.Mock).mock.calls[0][0])).toContain("/codex-auth/profiles?refresh=1");
+});
+
 test("account switching discards pending old reads and accepts the new account even with clock skew", async () => {
   const { inputs, receive } = args();
   const pending = deferred<Response>();
@@ -69,6 +118,25 @@ test("account switching discards pending old reads and accepts the new account e
   await act(async () => { switchResponse.resolve(response({ currentAuthId: "new", profiles: [] })); await switching; });
   expect(inputs.setCodexCliStatusSnapshot).toHaveBeenLastCalledWith(expect.objectContaining({ statusText: "new account" }));
   await act(async () => { pending.resolve(response(status("old account", "2030-01-01T00:00:00.000Z", true))); await oldRead; });
+  expect(inputs.setCodexCliStatusSnapshot).toHaveBeenLastCalledWith(expect.objectContaining({ statusText: "new account" }));
+});
+
+test("account switching discards a pending old profiles response and its compact quota", async () => {
+  const { inputs } = args();
+  const oldProfiles = deferred<Response>();
+  (global.fetch as jest.Mock).mockReturnValueOnce(oldProfiles.promise)
+    .mockResolvedValueOnce(response({ currentAuthId: "new", profiles: [{ authId: "new" }] }))
+    .mockResolvedValueOnce(response(status("new account", "2020-01-01T00:00:00.000Z")));
+  const { result } = await renderHook(() => useCodexStatusAuthController(inputs));
+  let refreshing!: Promise<void>;
+  await act(async () => { refreshing = result.current.refreshCodexAuthProfiles({ force: true }); });
+  await act(async () => { await result.current.switchCodexAuthProfile("new"); });
+  await act(async () => {
+    oldProfiles.resolve(response({ currentAuthId: "old", profiles: [{ authId: "old" }],
+      currentUsage: status("old account", "2030-01-01T00:00:00.000Z") }));
+    await refreshing;
+  });
+  expect(inputs.setCodexAuthProfilesSnapshot).toHaveBeenLastCalledWith(expect.objectContaining({ currentAuthId: "new" }));
   expect(inputs.setCodexCliStatusSnapshot).toHaveBeenLastCalledWith(expect.objectContaining({ statusText: "new account" }));
 });
 

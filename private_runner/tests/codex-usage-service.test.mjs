@@ -65,6 +65,21 @@ test("lower and older late snapshots cannot rearm an episode; reset and recovery
   });
 });
 
+test("overlapping reads keep the later-started account quota even when its percentage falls", async () => {
+  await fixture(async ({ service, advance }) => {
+    const firstReadStartedAt = 1_000_000;
+    advance(1_000_100);
+    const secondReadStartedAt = 1_000_100;
+    advance(1_000_200);
+    await service.observe("a", update(50), { observedAt: firstReadStartedAt });
+    advance(1_000_300);
+    await service.observe("a", update(20), { observedAt: secondReadStartedAt });
+    assert.match((await service.snapshot("a")).statusText, /80% left/);
+    await service.observe("a", update(70), { observedAt: 999_000 });
+    assert.match((await service.snapshot("a")).statusText, /80% left/);
+  });
+});
+
 test("a newly exhausted reset window starts a new episode even if recovery was not observed", async () => {
   await fixture(async ({ service, sent, advance }) => {
     await service.observe("a", update(100));

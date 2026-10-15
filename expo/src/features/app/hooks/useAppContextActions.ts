@@ -53,9 +53,6 @@ type UseAppContextActionsArgs = {
   removeRegisteredDirectory: (directoryId: string) => void;
   cancelCodexTurnRequest: () => Promise<void>;
   stopWaveformPlayback: () => Promise<void>;
-  refreshCodexCliStatusForWidget: (
-    options?: { force?: boolean; source?: "auto" | "initial" | "resume" | "manual" | "slash" }
-  ) => Promise<void>;
   refreshCodexAuthProfiles: (options?: { force?: boolean }) => Promise<void>;
   switchCodexAuthProfile: (authId: string) => Promise<boolean>;
   loadVoices: () => Promise<void>;
@@ -104,7 +101,6 @@ export function useAppContextActions({
   removeRegisteredDirectory,
   cancelCodexTurnRequest,
   stopWaveformPlayback,
-  refreshCodexCliStatusForWidget,
   refreshCodexAuthProfiles,
   switchCodexAuthProfile,
   loadVoices,
@@ -255,12 +251,6 @@ export function useAppContextActions({
   const stopWaveformPlaybackFromVisualContext = useCallback(() => {
     void stopWaveformPlayback();
   }, [stopWaveformPlayback]);
-  const refreshCodexCliStatusFromContext = useCallback(() => {
-    void refreshCodexCliStatusForWidget({
-      force: true,
-      source: "manual",
-    });
-  }, [refreshCodexCliStatusForWidget]);
   const loadCodexAuthProfilesFromContext = useCallback(() => {
     void refreshCodexAuthProfiles({
       force: true,
@@ -311,7 +301,6 @@ export function useAppContextActions({
     removeSelectedDirectoryFromContext,
     stopLlmTurnFromComposerContext,
     stopWaveformPlaybackFromVisualContext,
-    refreshCodexCliStatusFromContext,
     loadCodexAuthProfilesFromContext,
     switchCodexAuthProfileFromContext,
     loadVoicesFromSettingsContext,

@@ -6,7 +6,6 @@ import { VISUAL_THEMES, type VisualThemeId } from "../theme/visualThemes";
 
 jest.mock("./AppModal", () => ({ AppModal: ({ children }: { children: ReactNode }) => children }));
 const mockSwitchAuthProfile = jest.fn();
-const mockRefreshStatus = jest.fn();
 const mockLoadAuthProfiles = jest.fn();
 let mockUsageLimitReached = false;
 let mockStatusText = "5h limit: 75% left\nWeekly limit: 50% left";
@@ -32,7 +31,6 @@ jest.mock("../contexts/ChatDiagnosticsContext", () => ({
     codexAuthProfilesLoading: false,
     codexAuthSwitching: false,
     codexAuthSwitchError: "",
-    refreshCodexCliStatus: mockRefreshStatus,
     loadCodexAuthProfiles: mockLoadAuthProfiles,
     switchCodexAuthProfile: mockSwitchAuthProfile,
   }),

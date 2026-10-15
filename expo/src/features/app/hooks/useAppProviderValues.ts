@@ -466,7 +466,6 @@ type UseChatDiagnosticsContextValueArgs = {
     directory: string,
     options?: { force?: boolean },
   ) => Promise<void>;
-  refreshCodexCliStatus: () => void;
   loadCodexAuthProfiles: () => void;
   switchCodexAuthProfile: (authId: string) => Promise<boolean>;
   startCodexAuthRegistration: () => Promise<CodexAuthRegistration>;
@@ -490,7 +489,6 @@ export function useChatDiagnosticsContextValue(
     codexAuthSwitchError,
     gitChangedFilesByDirectory,
     refreshGitChangedFiles,
-    refreshCodexCliStatus,
     loadCodexAuthProfiles,
     switchCodexAuthProfile,
     startCodexAuthRegistration, completeCodexAuthRegistration, getCodexAuthRegistration, cancelCodexAuthRegistration, reauthCodexAuthProfile, deleteCodexAuthProfile,
@@ -509,7 +507,6 @@ export function useChatDiagnosticsContextValue(
       codexAuthSwitchError,
       gitChangedFilesByDirectory,
       refreshGitChangedFiles,
-      refreshCodexCliStatus,
       loadCodexAuthProfiles,
       switchCodexAuthProfile,
       startCodexAuthRegistration, completeCodexAuthRegistration, getCodexAuthRegistration, cancelCodexAuthRegistration, reauthCodexAuthProfile, deleteCodexAuthProfile,
@@ -524,7 +521,6 @@ export function useChatDiagnosticsContextValue(
       codexAuthSwitchError,
       gitChangedFilesByDirectory,
       refreshGitChangedFiles,
-      refreshCodexCliStatus,
       loadCodexAuthProfiles,
       switchCodexAuthProfile,
       startCodexAuthRegistration, completeCodexAuthRegistration, getCodexAuthRegistration, cancelCodexAuthRegistration, reauthCodexAuthProfile, deleteCodexAuthProfile,
