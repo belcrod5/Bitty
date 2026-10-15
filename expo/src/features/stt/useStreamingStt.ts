@@ -51,6 +51,7 @@ export function useStreamingStt(options: Options) {
   const lastPartialCharsRef = useRef(0);
   const terminalRef = useRef(false);
   const listeningRef = useRef(false);
+  const appActiveRef = useRef(AppState.currentState == null || AppState.currentState === "active");
   const startSessionRef = useRef<() => void>(() => {});
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const errorRetriesRef = useRef(0);
@@ -257,10 +258,31 @@ export function useStreamingStt(options: Options) {
 
   useEffect(() => {
     const listener = AppState.addEventListener("change", (state) => {
-      if (state !== "active") cancelCorrection();
+      const wasActive = appActiveRef.current;
+      appActiveRef.current = state === "active";
+      if (appActiveRef.current) {
+        if (!wasActive && listeningRef.current && !awaitingReplyCycleRef.current && !sessionRef.current) {
+          latestRef.current.onDiagnostic?.("stt_foreground_resume", { version: sessionVersionRef.current });
+          startSessionRef.current();
+        }
+        return;
+      }
+      cancelCorrection();
+      if (!wasActive || !listeningRef.current || awaitingReplyCycleRef.current) return;
+      latestRef.current.onDiagnostic?.("stt_background_suspend", {
+        version: sessionVersionRef.current, sessionOpen: sessionRef.current !== null,
+      });
+      terminalRef.current = true;
+      sessionVersionRef.current += 1;
+      clearTimer(retryTimerRef);
+      const draft = displayStreamingTranscript(transcriptStateRef.current);
+      transcriptStateRef.current = startStreamingTranscript(draft);
+      latestRef.current.setTranscript(draft);
+      void abortSession();
+      setPhase("connecting");
     });
     return () => listener.remove();
-  }, [cancelCorrection]);
+  }, [abortSession, cancelCorrection]);
 
   useEffect(() => {
     const preview = previewRef.current;
@@ -289,9 +311,9 @@ export function useStreamingStt(options: Options) {
 
   const startSession = useCallback(() => {
     if (!listeningRef.current) return;
-    if (latestRef.current.canStart === false) {
+    if (!appActiveRef.current || latestRef.current.canStart === false) {
       setPhase("connecting");
-      scheduleStart();
+      if (appActiveRef.current) scheduleStart();
       return;
     }
     terminalRef.current = false;
@@ -300,7 +322,7 @@ export function useStreamingStt(options: Options) {
     lastPartialCharsRef.current = 0;
     latestRef.current.onDiagnostic?.("stt_session_start", { version });
     void pendingAbortRef.current.then(() => {
-      if (version !== sessionVersionRef.current || !listeningRef.current) return;
+      if (version !== sessionVersionRef.current || !listeningRef.current || !appActiveRef.current) return;
       let session: StreamingSttSession;
       try {
         session = transport.connect(latestRef.current.runnerUrl, latestRef.current.runnerToken, {

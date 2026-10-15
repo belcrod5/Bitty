@@ -1,5 +1,5 @@
 import { act, cleanup, renderHook } from "@testing-library/react-native";
-import { AppState } from "react-native";
+import { AppState, type AppStateStatus } from "react-native";
 import { REPLY_CYCLE_START_TIMEOUT_MS, TTS_START_GRACE_MS, useStreamingStt } from "./useStreamingStt";
 import type { StreamingSttTransportCallbacks } from "./streamingSttTransport";
 import { correctSttTranscript, type SttCorrectionContext } from "./sttSettingsClient";
@@ -89,6 +89,7 @@ async function finishSpeech(session: MockSession, text: string, reason = "speech
 beforeEach(() => {
   jest.useFakeTimers();
   jest.clearAllMocks();
+  AppState.currentState = "active";
   jest.mocked(correctSttTranscript).mockImplementation(async (_url, _token, text) => ({ changed: false, text }));
   mockSessions.length = 0;
 });
@@ -382,6 +383,53 @@ test("guards double start and ignores stale events after auto rearm", async () =
   expect(mockSessions).toHaveLength(2);
   await emit(first, { type: "transcript", text: "stale", isFinal: true });
   expect(options.setTranscript).not.toHaveBeenCalledWith("stale");
+});
+
+test("repeated empty Mac sessions restart beyond the error retry limit and still recognize speech", async () => {
+  const options = createOptions();
+  const { result } = await renderHook(() => useStreamingStt(options));
+  await openReady(result);
+  for (let index = 0; index < 6; index += 1) {
+    const session = mockSessions.at(-1)!;
+    await emit(session, { type: "speech_activity_begin" });
+    await emit(session, { type: "speech_activity_end" });
+    await emit(session, { type: "done", reason: "speech_end_timeout", hasSpeech: false });
+    expect(session.abort).toHaveBeenCalledTimes(1);
+    expect(result.current.isArmed()).toBe(true);
+    await advanceTimers(250);
+    expect(mockSessions).toHaveLength(index + 2);
+    await emit(mockSessions.at(-1)!, { type: "ready" });
+    expect(result.current.phase).toBe("recording");
+  }
+  expect(options.sendTranscript).not.toHaveBeenCalled();
+  expect(options.onError).not.toHaveBeenCalled();
+  expect(options.onDiagnostic.mock.calls.some(([event]) => event === "stt_error_retry")).toBe(false);
+  await finishSpeech(mockSessions.at(-1)!, "再開後の音声");
+  expect(options.sendTranscript).toHaveBeenCalledWith("再開後の音声", expect.any(Function));
+});
+
+test.each(["stop", "abort", "unmount"])("%s cancels empty-session restart during cleanup or its delay", async (action) => {
+  for (const timing of ["cleanup", "delay"]) {
+    const options = createOptions();
+    const hook = await renderHook(() => useStreamingStt(options));
+    const before = mockSessions.length;
+    const session = await openReady(hook.result);
+    let resolveAbort = () => {};
+    if (timing === "cleanup") session.abort.mockImplementation(() => new Promise<void>((resolve) => { resolveAbort = resolve; }));
+    await emit(session, { type: "done", reason: "speech_end_timeout", hasSpeech: false });
+    let abort: Promise<void> | undefined;
+    if (action === "unmount") await hook.unmount();
+    else await act(async () => {
+      if (action === "stop") hook.result.current.stop();
+      else abort = hook.result.current.abort();
+    });
+    await act(async () => { resolveAbort(); await abort; });
+    await advanceTimers(2_000);
+    expect(mockSessions).toHaveLength(before + 1);
+    expect(session.abort).toHaveBeenCalledTimes(1);
+    expect(options.sendTranscript).not.toHaveBeenCalled();
+    if (action !== "unmount") await hook.unmount();
+  }
 });
 
 test("waits for native abort before restarting after stop while connecting", async () => {
@@ -914,8 +962,167 @@ test("limit reached keeps final text but does not rearm", async () => {
   expect(session.abort).toHaveBeenCalledTimes(1);
 });
 
+describe("recording across app state changes", () => {
+  let onAppStateChange: (state: AppStateStatus) => void;
+  const changeAppState = async (state: AppStateStatus) => {
+    await act(async () => { onAppStateChange(state); });
+  };
+
+  beforeEach(() => {
+    jest.replaceProperty(AppState, "currentState", "active");
+    jest.spyOn(AppState, "addEventListener").mockImplementation((_type, listener) => {
+      onAppStateChange = listener;
+      return { remove: jest.fn() };
+    });
+  });
+
+  afterEach(() => { jest.restoreAllMocks(); });
+
+  test("suspends once, preserves the visible draft, and resumes after old capture cleanup", async () => {
+    const options = createOptions();
+    const { result } = await renderHook(() => useStreamingStt(options));
+    const session = await openReady(result);
+    await emit(session, { type: "transcript", text: "背景前の途中結果", isFinal: false });
+    let resolveAbort = () => {};
+    session.abort.mockImplementation(() => new Promise<void>((resolve) => { resolveAbort = resolve; }));
+    await changeAppState("inactive");
+    await changeAppState("background");
+    expect(session.abort).toHaveBeenCalledTimes(1);
+    expect(result.current.isCapturing()).toBe(false);
+    expect(result.current.isArmed()).toBe(true);
+    expect(options.setTranscript).toHaveBeenLastCalledWith("背景前の途中結果");
+    await emit(session, { type: "done", reason: "no_speech_timeout", hasSpeech: false });
+    await act(async () => {
+      session.callbacks.onError("stale transport failure");
+      session.callbacks.onClose();
+    });
+    await advanceTimers(5 * 60_000);
+    expect(mockSessions).toHaveLength(1);
+    await changeAppState("active");
+    await changeAppState("active");
+    expect(mockSessions).toHaveLength(1);
+    await act(async () => { resolveAbort(); });
+    expect(mockSessions).toHaveLength(2);
+    const resumed = mockSessions[1];
+    await emit(resumed, { type: "ready" });
+    expect(result.current.phase).toBe("recording");
+    await emit(session, { type: "transcript", text: "late result", isFinal: true });
+    await emit(resumed, { type: "done", reason: "no_speech_timeout", hasSpeech: false });
+    expect(options.sendTranscript).not.toHaveBeenCalled();
+    await advanceTimers(250);
+    await emit(mockSessions.at(-1)!, { type: "ready" });
+    await finishSpeech(mockSessions.at(-1)!, "復帰後の認識");
+    expect(options.sendTranscript).toHaveBeenCalledWith("背景前の途中結果 復帰後の認識", expect.any(Function));
+    expect(options.onError).not.toHaveBeenCalled();
+    expect(options.onDiagnostic.mock.calls.filter(([event]) => event === "stt_background_suspend")).toHaveLength(1);
+    expect(options.onDiagnostic.mock.calls.filter(([event]) => event === "stt_foreground_resume")).toHaveLength(1);
+    expect(JSON.stringify(options.onDiagnostic.mock.calls)).not.toContain("背景前の途中結果");
+  });
+
+  test("returning to background cancels a pending foreground connection", async () => {
+    const { result } = await renderHook(() => useStreamingStt(createOptions()));
+    const session = await openReady(result);
+    let resolveAbort = () => {};
+    session.abort.mockImplementation(() => new Promise<void>((resolve) => { resolveAbort = resolve; }));
+    await changeAppState("background");
+    await changeAppState("active");
+    await changeAppState("inactive");
+    await act(async () => { resolveAbort(); });
+    await advanceTimers(2_000);
+    expect(mockSessions).toHaveLength(1);
+    await changeAppState("active");
+    expect(mockSessions).toHaveLength(2);
+    await emit(mockSessions[1], { type: "ready" });
+    expect(result.current.phase).toBe("recording");
+  });
+
+  test.each(["stop", "abort", "unmount", "failure"])("%s prevents foreground reactivation", async (action) => {
+    const options = createOptions();
+    const hook = await renderHook(() => useStreamingStt(options));
+    const session = await openReady(hook.result);
+    if (action === "failure") {
+      await emit(session, { type: "error", code: "permission_denied", message: "denied", retryable: false });
+    }
+    await changeAppState("background");
+    if (action === "unmount") await hook.unmount();
+    else await act(async () => {
+      if (action === "stop") hook.result.current.stop();
+      else if (action === "abort") await hook.result.current.abort();
+    });
+    await changeAppState("active");
+    await advanceTimers(2_000);
+    expect(mockSessions).toHaveLength(1);
+    expect(hook.result.current.isArmed()).toBe(false);
+    expect(session.abort).toHaveBeenCalledTimes(1);
+    expect(options.sendTranscript).not.toHaveBeenCalled();
+  });
+
+  test.each(["no_speech", "error", "unavailable"])("suspends a scheduled %s restart until active and available", async (outcome) => {
+    let options = createOptions();
+    const hook = await renderHook((props: Options) => useStreamingStt(props), { initialProps: options });
+    const session = await openReady(hook.result);
+    if (outcome === "unavailable") {
+      options = { ...options, canStart: false };
+      await hook.rerender(options);
+    }
+    await emit(session, outcome === "error"
+      ? { type: "error", code: "macos_recognition_failed", message: "failed", retryable: true }
+      : { type: "done", reason: "no_speech_timeout", hasSpeech: false });
+    await changeAppState("background");
+    await advanceTimers(2_000);
+    expect(mockSessions).toHaveLength(1);
+    await changeAppState("active");
+    if (outcome === "unavailable") {
+      await advanceTimers(1_000);
+      expect(mockSessions).toHaveLength(1);
+      options = { ...options, canStart: true };
+      await hook.rerender(options);
+      await advanceTimers(250);
+    }
+    expect(mockSessions).toHaveLength(2);
+    expect(options.onError).not.toHaveBeenCalled();
+  });
+
+  test("an initially backgrounded hook only starts on foreground after an explicit request", async () => {
+    jest.replaceProperty(AppState, "currentState", "background");
+    const { result } = await renderHook(() => useStreamingStt(createOptions()));
+    await changeAppState("active");
+    expect(mockSessions).toHaveLength(0);
+    await changeAppState("background");
+    await act(async () => result.current.start());
+    expect(result.current.phase).toBe("connecting");
+    await advanceTimers(2_000);
+    expect(mockSessions).toHaveLength(0);
+    await changeAppState("active");
+    expect(mockSessions).toHaveLength(1);
+  });
+
+  test("foreground respects reply and TTS waits, including a reply that settles in background", async () => {
+    let options = createOptions();
+    const hook = await renderHook((props: Options) => useStreamingStt(props), { initialProps: options });
+    await finishSpeech(await openReady(hook.result), "送信済み");
+    options = { ...options, replyLoading: true };
+    await hook.rerender(options);
+    await changeAppState("background");
+    await changeAppState("active");
+    expect(mockSessions).toHaveLength(1);
+    options = { ...options, replyLoading: false, ttsPlaybackActive: true };
+    await hook.rerender(options);
+    expect(mockSessions).toHaveLength(1);
+    await changeAppState("background");
+    options = { ...options, ttsPlaybackActive: false };
+    await hook.rerender(options);
+    await advanceTimers(2_000);
+    expect(mockSessions).toHaveLength(1);
+    await changeAppState("active");
+    expect(mockSessions).toHaveLength(2);
+    expect(options.sendTranscript).toHaveBeenCalledTimes(1);
+    expect(options.onError).not.toHaveBeenCalled();
+  });
+});
+
 test("backgrounding an inline edit restores its latest text and stops sending", async () => {
-  let onAppStateChange: ((state: "background") => void) | undefined;
+  let onAppStateChange: ((state: AppStateStatus) => void) | undefined;
   const subscription = jest.spyOn(AppState, "addEventListener")
     .mockImplementation((_type, listener) => {
       onAppStateChange = listener as typeof onAppStateChange;
@@ -933,6 +1140,9 @@ test("backgrounding an inline edit restores its latest text and stops sending", 
     expect(options.setTranscript).toHaveBeenCalledWith("背景で残す文章");
     await advanceTimers(4000);
     expect(options.sendTranscript).not.toHaveBeenCalled();
+    await act(async () => onAppStateChange?.("active"));
+    expect(mockSessions).toHaveLength(1);
+    expect(result.current.isArmed()).toBe(false);
   } finally {
     cleanup();
     subscription.mockRestore();
