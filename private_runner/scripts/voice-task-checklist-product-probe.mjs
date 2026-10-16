@@ -10,8 +10,8 @@ import { createVoiceContextService } from "../src/voice-context-service.mjs";
 
 const base = fileURLToPath(new URL("../../tmp/", import.meta.url));
 const scenario = process.argv[2] || "code";
-if (!["code", "mail", "legacy", "managed", "native"].includes(scenario) || process.argv.length > 3) {
-  throw new Error("Usage: node voice-task-checklist-product-probe.mjs [code|mail|legacy|managed|native]");
+if (!["code", "mail", "legacy", "managed", "native", "progress"].includes(scenario) || process.argv.length > 3) {
+  throw new Error("Usage: node voice-task-checklist-product-probe.mjs [code|mail|legacy|managed|native|progress]");
 }
 const run = path.join(base, `voice-checklist-product-${randomUUID()}`);
 const rootDir = path.join(run, "voice_context", "v1");
@@ -141,7 +141,8 @@ try {
     if (attempt === 99) throw new Error(`App Server did not listen: ${stderr}`);
     await pause(100);
   }
-  service = createVoiceContextService({ rootDir, createClient, managedSessions,
+  const onChecklistChanged = () => evidence.push({ method: "checklistChanged" });
+  service = createVoiceContextService({ rootDir, createClient, managedSessions, onChecklistChanged,
     ...(scenario === "legacy" ? {} : { taskChecklistPath: "task-checklists/main.md" }) });
   let conversation = await service.open();
   await service.configure("gpt-6.1-sol", "low");
@@ -164,14 +165,17 @@ try {
     console.log(JSON.stringify(row));
     if (result.status !== "completed") throw new Error(`${label} failed: ${result.code}`);
   }
-  if (scenario === "managed") {
+  if (scenario === "progress") {
+    await turn("progress_started", "架空のP-21調査を進めています。まだ結果は未確認です。メインのTo Do原本に未完了として記録してください。ここで他の操作は不要です。");
+    await turn("progress_confirmed", "架空のP-21調査結果を確認し、完了が確定しました。To Do原本を今すぐ完了へ更新してください。ここで他の操作は不要です。");
+  } else if (scenario === "managed") {
     await turn("managed_status", "架空の作業を開始します。まず voice_subagent.status ツールを呼び、委任セッションがないか確認してください。その結果と次の一手を task-checklists/main.md に記録してください。");
   } else if (scenario === "native") {
     await turn("native_delegate", "架空の設計作業です。Codex のネイティブサブエージェントを実際に1人起動し、『A案は速いが複雑、B案は少し遅いが単純』を比較して、どちらが保守しやすいか一言だけ検討させてください。外部アクセスやコマンドは不要です。その結果と次の一手を task-checklists/main.md に記録してください。");
     await turn("native_delegate_confirmed", "はい、ネイティブサブエージェントを1人起動して比較させ、結果を task-checklists/main.md に記録してください。これは実行への明示的な許可です。外部アクセスやコマンドは不要です。");
   } else if (scenario === "legacy") {
     await turn("old_parent", "架空作業。A-01は完了済み、A-02は結果不明です。次はA-02の結果確認です。短く返答して。");
-    service = createVoiceContextService({ rootDir, createClient,
+    service = createVoiceContextService({ rootDir, createClient, onChecklistChanged,
       taskChecklistPath: "task-checklists/main.md" });
     await service.open();
     await turn("legacy_resume", "架空作業の安全な次の一手を教えて。");
@@ -180,7 +184,7 @@ try {
     ? "架空コード作業。P-17の入力検証漏れは修正済み。T-01のテスト実行は終わったが、保存された結果は未確認。テストを再実行せず、次は結果を読む。進行中の作業を記録して。"
     : "架空メール整理。M-01からM-06は確認済みで、許可済みのニュースレター整理も成功済み。M-07はユーザー判断待ちなので整理しない。M-08を次に確認する。確定済み、保留、次の一手を記録して。");
   conversation = await service.clearMessages();
-  service = createVoiceContextService({ rootDir, createClient,
+  service = createVoiceContextService({ rootDir, createClient, onChecklistChanged,
     taskChecklistPath: "task-checklists/main.md" });
   const reopened = await service.open();
   if (reopened.logicalConversationId !== conversation.logicalConversationId) {

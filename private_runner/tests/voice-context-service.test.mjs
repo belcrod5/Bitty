@@ -14,7 +14,8 @@ function fakeCodex({ reply = "answer", summaryReply, topicReplies = [], failTopi
   approvalMethod = "", userInput = false, resolveUserInput = false, nativeRequests = [], threadParents = {},
   threadReadDelayMs = 0, userItem = false, ephemeral = true, mcpPage, configuredMcpServers = {},
   missingTurnId = false, failMethod, failResponseThreadStartAt = 0,
-  loseTurnStartResponseAt = 0, lostTurnStatus = "completed", nativeReadErrors = new Map(), nativeThreads = new Map() } = {}) {
+  loseTurnStartResponseAt = 0, lostTurnStatus = "completed", regularTurnStatus = "completed",
+  nativeReadErrors = new Map(), nativeThreads = new Map() } = {}) {
   const calls = [];
   const releases = [];
   const summaryReleases = [];
@@ -194,7 +195,7 @@ function fakeCodex({ reply = "answer", summaryReply, topicReplies = [], failTopi
               }), 100);
               calls.push({ method: "native/result", request, result: await pending });
               if (native.beforeCompleted) await native.beforeCompleted();
-              if (native.completedItem) listener("item/completed", { threadId: params.threadId, turnId,
+              if (native.completedItem) listener(native.completedMethod || "item/completed", { threadId: params.threadId, turnId,
                 item: native.completedItem });
             }
             if (toolCall && !isIsolated) {
@@ -238,9 +239,10 @@ function fakeCodex({ reply = "answer", summaryReply, topicReplies = [], failTopi
               : isTopicThread ? [] : (contextUsageByTurn[responseIndex] || [])) {
               listener("thread/tokenUsage/updated", { threadId: params.threadId, turnId, tokenUsage });
             }
+            const status = !isIsolated && !isChecklistPreflight ? regularTurnStatus : "completed";
             listener("turn/completed", { threadId: params.threadId, turnId,
-              turn: { status: "completed", ...(completionUsage ? { usage: completionUsage } : {}) } });
-            nativeTurn.status = "completed";
+              turn: { status, ...(completionUsage ? { usage: completionUsage } : {}) } });
+            nativeTurn.status = status;
             if (nativeAnswer) nativeTurn.items.push({ type: "agentMessage", text: nativeAnswer });
             resolveCompletion();
           };
@@ -292,7 +294,8 @@ async function fixture(t, options = {}) {
     await fs.rm(temp, { recursive: true, force: true });
   });
   const service = createVoiceContextService({ rootDir, createClient: codex.createClient,
-    managedSessions: options.managedSessions, taskChecklistPath: options.taskChecklistPath });
+    managedSessions: options.managedSessions, taskChecklistPath: options.taskChecklistPath,
+    onChecklistChanged: options.onChecklistChanged });
   const conversation = await service.open();
   return { rootDir, codex, service, conversation };
 }
@@ -2062,6 +2065,88 @@ test("main checklist history reads one bounded disk original and distinguishes m
   assert.equal((await restarted.history()).logicalConversationId, conversation.logicalConversationId);
 });
 
+test("main reports each completed tool write and unsafe file replacement after disk state changes", async (t) => {
+  const nativeRequests = [checklistReadCall("read")];
+  const changes = [];
+  const { service, conversation } = await fixture(t, { taskChecklistPath: "task-checklists/main.md",
+    nativeRequests, onChecklistChanged: (conversationId) => changes.push(conversationId) });
+  const target = path.join(await service.getWorkspaceDirectory(), "task-checklists", "main.md");
+  nativeRequests.push(
+    { method: "item/commandExecution/requestApproval", threadId: "root", turnId: "root", itemId: "first",
+      startedItem: { id: "first", type: "commandExecution" },
+      beforeCompleted: () => fs.writeFile(target, "- [ ] 確認\n"),
+      completedItem: { id: "first", type: "commandExecution", status: "completed" } },
+    { method: "item/commandExecution/requestApproval", threadId: "root", turnId: "root", itemId: "second",
+      startedItem: { id: "second", type: "commandExecution" },
+      beforeCompleted: async () => {
+        await waitFor(() => changes.length === 1);
+        await fs.writeFile(target, "- [x] 確認\n");
+      },
+      completedItem: { id: "second", type: "commandExecution", status: "completed" } },
+    { method: "item/commandExecution/requestApproval", threadId: "root", turnId: "root", itemId: "unchanged",
+      startedItem: { id: "unchanged", type: "commandExecution" },
+      completedItem: { id: "unchanged", type: "commandExecution", status: "completed" } },
+    { method: "item/commandExecution/requestApproval", threadId: "root", turnId: "root", itemId: "unavailable",
+      startedItem: { id: "unavailable", type: "commandExecution" },
+      beforeCompleted: async () => {
+        await waitFor(() => changes.length === 2);
+        await fs.rm(target);
+        await fs.symlink(path.join(await service.getWorkspaceDirectory(), "voice-memory", "index.md"), target);
+      },
+      completedItem: { id: "unavailable", type: "commandExecution", status: "completed" } },
+  );
+  const { result } = await complete(service, conversation, "record progress", randomUUID(),
+    async () => "accept");
+  assert.equal(result.status, "completed");
+  assert.deepEqual(changes, Array(3).fill(conversation.logicalConversationId));
+  assert.deepEqual((await service.history()).taskChecklist, { status: "unavailable" });
+});
+
+test("a failed tool with a partial checklist write still invalidates the disk-backed view", async (t) => {
+  const nativeRequests = [checklistReadCall("read")];
+  const changes = [];
+  const { service, conversation } = await fixture(t, { taskChecklistPath: "task-checklists/main.md",
+    nativeRequests, onChecklistChanged: (conversationId) => changes.push(conversationId) });
+  const target = path.join(await service.getWorkspaceDirectory(), "task-checklists", "main.md");
+  nativeRequests.push(
+    { method: "item/commandExecution/requestApproval", threadId: "root", turnId: "root", itemId: "partial",
+      startedItem: { id: "partial", type: "commandExecution" },
+      beforeCompleted: () => fs.writeFile(target, "- [ ] 途中まで保存\n"),
+      completedMethod: "item/failed",
+      completedItem: { id: "partial", type: "commandExecution", status: "failed" } },
+    { method: "item/commandExecution/requestApproval", threadId: "root", turnId: "root", itemId: "no-write",
+      startedItem: { id: "no-write", type: "commandExecution" },
+      completedMethod: "item/failed",
+      completedItem: { id: "no-write", type: "commandExecution", status: "failed" } },
+  );
+  const { result } = await complete(service, conversation, "record partial progress", randomUUID(),
+    async () => "accept");
+  assert.equal(result.status, "completed");
+  assert.deepEqual(changes, [conversation.logicalConversationId]);
+  assert.deepEqual((await service.history()).taskChecklist,
+    { status: "present", markdown: "- [ ] 途中まで保存\n" });
+});
+
+test("a failed turn finishes its partial-write notification before reporting failure", async (t) => {
+  const nativeRequests = [checklistReadCall("read")];
+  const changes = [];
+  const { service, conversation } = await fixture(t, { taskChecklistPath: "task-checklists/main.md",
+    regularTurnStatus: "failed", nativeRequests,
+    onChecklistChanged: (conversationId) => changes.push(conversationId) });
+  const target = path.join(await service.getWorkspaceDirectory(), "task-checklists", "main.md");
+  nativeRequests.push({ method: "item/commandExecution/requestApproval", threadId: "root", turnId: "root",
+    itemId: "partial", startedItem: { id: "partial", type: "commandExecution" },
+    beforeCompleted: () => fs.writeFile(target, "- [ ] 失敗した操作の途中結果\n"),
+    completedMethod: "item/failed",
+    completedItem: { id: "partial", type: "commandExecution", status: "failed" } });
+  const { result } = await complete(service, conversation, "record partial result", randomUUID(),
+    async () => "accept");
+  assert.equal(result.status, "failed");
+  assert.deepEqual(changes, [conversation.logicalConversationId]);
+  assert.deepEqual((await service.history()).taskChecklist,
+    { status: "present", markdown: "- [ ] 失敗した操作の途中結果\n" });
+});
+
 test("main checklist approvals require the current root item and exact single-file operation", async (t) => {
   const nativeRequests = [];
   const child = randomUUID();
@@ -2137,7 +2222,9 @@ test("saved custom instructions keep the fixed checklist read and maintenance ru
     ["thread/start", "thread/resume"].includes(method) && params.approvalPolicy === "on-request");
   assert.ok(threads.some(({ params }) => params.developerInstructions.includes("Speak briefly.")));
   assert.ok(threads.some(({ params }) => params.developerInstructions.includes("Use short sentences.")));
-  assert.ok(threads.every(({ params }) => params.developerInstructions.includes("maintain task-checklists/main.md")));
+  assert.ok(threads.every(({ params }) => params.developerInstructions.includes("maintain task-checklists/main.md yourself for active work")));
+  assert.ok(threads.every(({ params }) => params.developerInstructions.includes("- [ ] pending task or - [x] confirmed completion")));
+  assert.ok(threads.every(({ params }) => params.developerInstructions.includes("immediately whenever progress changes")));
   assert.ok(threads.some(({ params }) => params.developerInstructions.includes("task_checklist.read_task_checklist")));
   assert.ok(threads.some(({ params }) => !params.developerInstructions.includes("task_checklist.read_task_checklist")));
   assert.ok(threads.every(({ params }) => params.dynamicTools?.some((tool) => tool.name === "task_checklist")));

@@ -123,13 +123,6 @@ jest.mock("../../runnerWs/RunnerWebSocketContext", () => ({
 jest.mock("../components/VoiceOrchestratorManager", () => ({
   VoiceOrchestratorManager: ({ visible }: { visible: boolean }) => { mockManagerVisible = visible; return null; },
 }));
-jest.mock("../components/MarkdownText", () => ({
-  MarkdownText: ({ content }: { content: string }) => {
-    const ReactModule = require("react");
-    const { Text } = require("react-native");
-    return ReactModule.createElement(Text, { testID: "voice-task-checklist-markdown" }, content);
-  },
-}));
 jest.mock("../../stt/useStreamingStt", () => ({ useStreamingStt: (options: { ttsPlaybackActive: boolean; onDiagnostic: (event: string, payload: Record<string, unknown>) => void }) => {
   mockLastSttOptions = options;
   return mockStt;
@@ -252,30 +245,46 @@ afterEach(() => {
   jest.restoreAllMocks();
 });
 
-test("main history shows the source Markdown in a right panel and folds it to a tab", async () => {
+test("main history shows read-only checklist states without a title and folds to a tab", async () => {
   const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
   await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
-  expect(screen.getByTestId("voice-task-checklist-markdown").props.children)
-    .toBe("# 最優先\n\n- [ ] 確認する");
+  expect(screen.queryByText("To Do")).toBeNull();
+  expect(screen.queryByText("最優先")).toBeNull();
+  expect(screen.getByTestId("voice-task-checklist-item-0").props.accessibilityState)
+    .toMatchObject({ checked: false, disabled: true });
+  expect(screen.getByText("確認する")).toBeTruthy();
   const panelStyle = StyleSheet.flatten(screen.getByTestId("voice-task-checklist-panel").props.style);
   expect(panelStyle.bottom).toBeUndefined();
   expect(panelStyle.width).toBeUndefined();
+  expect(panelStyle.minWidth).toBeUndefined();
   expect(panelStyle.maxWidth).toBeLessThanOrEqual(260);
   expect(panelStyle.maxHeight).toBe("65%");
+  expect(panelStyle.backgroundColor).toBeTruthy();
+  expect(panelStyle.borderLeftWidth).toBe(3);
   expect(StyleSheet.flatten(screen.getByTestId("voice-task-checklist-content").props.style))
     .toMatchObject({ flexGrow: 0, flexShrink: 1 });
-  const longChecklist = Array.from({ length: 40 }, (_, index) => `- [ ] 手順 ${index + 1}`).join("\n");
+  const longChecklist = Array.from({ length: 40 }, (_, index) => `- [${index === 0 ? "x" : " "}] 手順 ${index + 1}`).join("\n");
   mockVoice.taskChecklist = { status: "present", markdown: longChecklist };
   await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
-  expect(screen.getByTestId("voice-task-checklist-markdown").props.children).toBe(longChecklist);
+  expect(screen.getByTestId("voice-task-checklist-item-0").props.accessibilityState.checked).toBe(true);
+  expect(screen.getByTestId("voice-task-checklist-item-39").props.accessibilityState.checked).toBe(false);
   await fireEvent.press(screen.getByTestId("voice-task-checklist-refresh"));
   expect(mockVoice.refreshHistory).toHaveBeenCalled();
   await fireEvent.press(screen.getByTestId("voice-task-checklist-collapse"));
   expect(screen.queryByTestId("voice-task-checklist-panel")).toBeNull();
-  expect(screen.queryByTestId("voice-task-checklist-markdown")).toBeNull();
+  expect(screen.queryByTestId("voice-task-checklist-item-0")).toBeNull();
   expect(screen.getByTestId("voice-task-checklist-expand")).toBeTruthy();
   await fireEvent.press(screen.getByTestId("voice-task-checklist-expand"));
   expect(screen.getByTestId("voice-task-checklist-panel")).toBeTruthy();
+});
+
+test("legacy prose stays visible until the AI rewrites the source file", async () => {
+  mockVoice.taskChecklist = { status: "present", markdown: "# タイトル\n\n進捗は不明\n- [ ] 要確認\n" };
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  expect(screen.queryByText("タイトル")).toBeNull();
+  expect(screen.getByText("進捗は不明")).toBeTruthy();
+  expect(screen.getByText("要確認")).toBeTruthy();
 });
 
 test("task checklist states are distinct and other orchestrators have no panel", async () => {

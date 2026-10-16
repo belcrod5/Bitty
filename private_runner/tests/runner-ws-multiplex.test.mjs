@@ -338,6 +338,18 @@ test("voice text deltas use the authenticated envelope with conversation and ope
   });
 });
 
+test("a main checklist change invalidates all connected voice clients without copying Markdown", async (t) => {
+  const conversationId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const first = createRunnerWsConnectionForTest();
+  const second = createRunnerWsConnectionForTest();
+  t.after(() => { first.close(); second.close(); });
+  __TESTING__.broadcastVoiceChecklistChanged(conversationId);
+  const expected = { channel: "agent", op: "voice.task-checklist.changed",
+    payload: { orchestratorId: "main", logicalConversationId: conversationId } };
+  assert.deepEqual(first.sent.find((message) => message.op === "voice.task-checklist.changed"), expected);
+  assert.deepEqual(second.sent.find((message) => message.op === "voice.task-checklist.changed"), expected);
+});
+
 test("voice interrupt routes to the voice turn instead of the generic agent turn", async (t) => {
   const service = __TESTING__.voiceContextService;
   const originalInterrupt = service.interrupt;

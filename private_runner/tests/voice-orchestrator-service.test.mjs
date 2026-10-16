@@ -8,7 +8,8 @@ import { createCodexScheduleService } from "../src/codex-schedule-service.mjs";
 import { createVoiceContextService } from "../src/voice-context-service.mjs";
 import { createVoiceOrchestratorService } from "../src/voice-orchestrator-service.mjs";
 
-function fakeCodex({ hold = false, failSummary = false, failTurn = false, approval = false } = {}) {
+function fakeCodex({ hold = false, failSummary = false, failTurn = false, approval = false,
+  checklistWrites = [] } = {}) {
   const calls = [];
   const releases = [];
   const threads = new Map();
@@ -66,6 +67,11 @@ function fakeCodex({ hold = false, failSummary = false, failTurn = false, approv
                 params: { threadId: params.threadId, turnId, command: "echo test" } });
               calls.push({ method: "approval.result", result });
             }
+            if (!summary && !threads.get(params.threadId)?.checklistRead && checklistWrites.length) {
+              await fs.writeFile(path.join(params.cwd, "task-checklists", "main.md"), checklistWrites.shift());
+              listener("item/completed", { threadId: params.threadId, turnId,
+                item: { id: randomUUID(), type: "fileChange", status: "completed" } });
+            }
             turn.status = "completed";
             listener("item/completed", { threadId: params.threadId, turnId,
               item: { type: "agentMessage", text: `reply:${params.input[0].text}` } });
@@ -94,7 +100,8 @@ async function fixture(t, options) {
   });
   return { rootDir, codex, service: createVoiceOrchestratorService({ rootDir,
     createClient: codex.createClient, getAgentService: options?.getAgentService,
-    subjectId: "voice-owner", onCompleted: options?.onCompleted, activity: options?.activity }) };
+    subjectId: "voice-owner", onCompleted: options?.onCompleted,
+    onChecklistChanged: options?.onChecklistChanged, activity: options?.activity }) };
 }
 
 async function turn(service, orchestratorId, conversationId, text, operationId = randomUUID()) {
@@ -283,6 +290,18 @@ test("main custom instructions retain fixed checklist guidance on start and resu
   assert.match(resumed.params.developerInstructions, /Custom main rule\./);
   assert.match(resumed.params.developerInstructions, /task-checklists\/main\.md/);
   assert.equal(resumed.params.developerInstructions.includes("新しい親セッションでは"), false);
+});
+
+test("main checklist changes notify on service starts without per-turn hooks", async (t) => {
+  const changed = [];
+  const { service } = await fixture(t, { checklistWrites: ["- [ ] 確認\n", "- [x] 確認\n"],
+    onChecklistChanged: (conversationId) => changed.push(conversationId) });
+  const conversationId = (await service.open("main")).logicalConversationId;
+  assert.equal((await (await turn(service, "main", conversationId, "first")).finished).status, "completed");
+  assert.equal((await (await turn(service, "main", conversationId, "second")).finished).status, "completed");
+  assert.deepEqual(changed, [conversationId, conversationId]);
+  assert.deepEqual((await service.history("main")).taskChecklist,
+    { status: "present", markdown: "- [x] 確認\n" });
 });
 
 test("shared memory clear checks every orchestrator before mutating memory", async (t) => {

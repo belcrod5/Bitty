@@ -5030,12 +5030,20 @@ function createCodexRpcClient({
   }
 }
 
+function broadcastVoiceChecklistChanged(logicalConversationId) {
+  for (const client of runnerWsActiveClients) {
+    sendRunnerWsEnvelope(client, { channel: "agent", op: "voice.task-checklist.changed",
+      payload: { orchestratorId: "main", logicalConversationId } });
+  }
+}
+
 const voiceContextService = createVoiceOrchestratorService({
   rootDir: path.join(WORKSPACE_ROOT, "private_runner/logs/voice_context/v1"),
   createClient: (options) => createCodexRpcClient(options),
   getAgentService: () => agentService,
   subjectId: () => agentOwnerSubjectId,
   activity: orchestratorActivity,
+  onChecklistChanged: broadcastVoiceChecklistChanged,
   onCompleted: (result, orchestratorName) => {
     void broadcastVoiceUnreadState();
     void turnCompletionNotifier.notifyVoiceCompleted({ orchestratorId: result.orchestratorId,
@@ -10338,6 +10346,7 @@ export const __TESTING__ = {
   pickBestRelayForThread,
   runnerWsServer,
   voiceContextService,
+  broadcastVoiceChecklistChanged,
   listLlmDirectories,
   resolveToolRoot,
   resolveCanonicalDirectoryIdentity,

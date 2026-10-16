@@ -28,7 +28,8 @@ function validateIcon(icon) {
   return icon;
 }
 
-export function createVoiceOrchestratorService({ rootDir, createClient, getAgentService, subjectId, onCompleted, activity }) {
+export function createVoiceOrchestratorService({ rootDir, createClient, getAgentService, subjectId,
+  onCompleted, onChecklistChanged, activity }) {
   const root = path.resolve(rootDir);
   const registryFile = path.join(root, "orchestrators.json");
   const orchestratorRoot = path.join(root, "orchestrators");
@@ -175,6 +176,7 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
       selectedId: "main", memoryConversationId: recoveredMemoryConversationId };
     main = createVoiceContextService({ rootDir: root, createClient,
       taskChecklistPath: "task-checklists/main.md",
+      onChecklistChanged,
       memoryConversationId: registry.memoryConversationId || undefined,
       memoryEventPairs: allEventPairs, pairExclusive, managedSessions: managedSessions("main"),
       hasOutstandingActivity: hasOutstandingActivity("main") });

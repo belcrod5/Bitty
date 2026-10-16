@@ -172,6 +172,33 @@ test("main distinguishes missing and unavailable task checklists", async () => {
   expect(result.current.taskChecklist).toEqual({ status: "unavailable" });
 });
 
+test("a checklist change notice reloads the disk-backed history for the matching main conversation", async () => {
+  const request = mockManager.request.getMockImplementation();
+  let markdown: string | null = "- [ ] 確認";
+  mockManager.request.mockImplementation((message: { op: string }) => message.op === "voice.history"
+    ? Promise.resolve({ op: "voice.history.result", payload: { logicalConversationId: conversationId,
+      messages: [], taskChecklist: markdown === null ? { status: "unavailable" }
+        : { status: "present", markdown } } }) : request?.(message));
+  const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
+  await waitFor(() => expect(result.current.ready).toBe(true));
+  await act(async () => { await result.current.refreshHistory(); });
+  expect(result.current.taskChecklist).toEqual({ status: "present", markdown: "- [ ] 確認" });
+  markdown = "- [x] 確認";
+  await act(async () => { handlers.get("voice.task-checklist.changed")?.({ payload: {
+    orchestratorId: "main", logicalConversationId: "another-conversation",
+  } }); });
+  expect(result.current.taskChecklist).toEqual({ status: "present", markdown: "- [ ] 確認" });
+  await act(async () => { handlers.get("voice.task-checklist.changed")?.({ payload: {
+    orchestratorId: "main", logicalConversationId: conversationId,
+  } }); });
+  await waitFor(() => expect(result.current.taskChecklist).toEqual({ status: "present", markdown: "- [x] 確認" }));
+  markdown = null;
+  await act(async () => { handlers.get("voice.task-checklist.changed")?.({ payload: {
+    orchestratorId: "main", logicalConversationId: conversationId,
+  } }); });
+  await waitFor(() => expect(result.current.taskChecklist).toEqual({ status: "unavailable" }));
+});
+
 test("a previous conversation's delayed checklist cannot reappear after a new voice.open", async () => {
   const nextConversationId = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
   let resolveOldHistory!: (response: unknown) => void;

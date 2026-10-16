@@ -491,6 +491,16 @@ export function useVoiceConversation(
   }, [manager, orchestratorId]);
 
   useEffect(() => {
+    if (orchestratorId !== "main") return;
+    return manager.subscribe({ channel: "agent", op: "voice.task-checklist.changed" }, (message) => {
+      const payload = payloadOf(message);
+      if (payload.orchestratorId === "main" && payload.logicalConversationId === conversationIdRef.current) {
+        void refreshHistory();
+      }
+    });
+  }, [manager, orchestratorId, refreshHistory]);
+
+  useEffect(() => {
     if (logicalConversationId && pendingRef.current && !pendingRef.current.text) void refreshHistory();
   }, [logicalConversationId, refreshHistory]);
 

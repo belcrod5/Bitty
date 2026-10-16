@@ -10,7 +10,6 @@ import { ContextUsageIndicator } from "../components/ContextUsageIndicator";
 import { CodexStatusSummaryMenu } from "../components/CodexStatusSummaryMenu";
 import { VoiceOrchestratorIcon, type VoiceOrchestrator } from "../components/VoiceOrchestratorIcon";
 import { VoiceOrchestratorManager } from "../components/VoiceOrchestratorManager";
-import { MarkdownText } from "../components/MarkdownText";
 import { UserInputModal } from "../components/UserInputModal";
 import { useVoiceUserInput } from "../hooks/useVoiceUserInput";
 import { useChatScreen } from "../contexts/ChatScreenContext";
@@ -23,6 +22,7 @@ import { useVisualTheme } from "../theme/VisualThemeContext";
 import { formatMessageTimestampLabel } from "../utils/formatting";
 import { formatOutputTokens } from "../utils/messageTokens";
 import { dismissReadVoiceNotifications } from "../utils/sessionReadNotifications";
+import { parseChecklistFile } from "../utils/checklistFile";
 
 const voicePanelFadeIn = FadeIn.duration(220);
 const voicePanelFadeOut = FadeOut.duration(220);
@@ -196,6 +196,23 @@ function VoiceConversationSession({
       : undefined,
     orchestrator.id,
   );
+  const taskChecklistRows = useMemo(() => {
+    if (voice.taskChecklist?.status !== "present") return [];
+    let firstContent = true;
+    return voice.taskChecklist.markdown.split(/\r?\n/u).flatMap<
+      { kind: "item"; checked: boolean; text: string } | { kind: "text"; text: string }
+    >((line) => {
+      if (!line.trim()) return [];
+      if (firstContent && /^#{1,6}\s/u.test(line)) { firstContent = false; return []; }
+      firstContent = false;
+      try {
+        const [item] = parseChecklistFile(line);
+        return [{ kind: "item" as const, ...item }];
+      } catch {
+        return [{ kind: "text" as const, text: line }];
+      }
+    });
+  }, [voice.taskChecklist]);
   const manager = useRunnerWebSocketManager();
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => setAppActive(state === "active"));
@@ -487,36 +504,49 @@ function VoiceConversationSession({
                 </ScrollView>
                 {orchestrator.id === "main" ? taskChecklistOpen ? (
                   <View testID="voice-task-checklist-panel" style={{ position: "absolute", right: 0, top: 0,
-                    minWidth: Math.min(160, Math.max(0, screenWidth - 64)),
                     maxWidth: Math.min(260, Math.max(0, screenWidth - 64)), maxHeight: "65%",
-                    backgroundColor: theme.colors.surfaceMuted, borderTopLeftRadius: 14,
-                    borderBottomLeftRadius: 14, overflow: "hidden" }}>
-                    <View style={{ flexDirection: "row", alignItems: "center", paddingLeft: 12,
-                      borderBottomWidth: 1, borderBottomColor: theme.colors.infoMuted }}>
-                      <Text style={{ color: theme.colors.textPrimary, fontWeight: "700", flexShrink: 1 }}>To Do</Text>
+                    backgroundColor: theme.colors.floatingSurface, borderTopLeftRadius: 14,
+                    borderBottomLeftRadius: 14, borderWidth: 1, borderColor: theme.colors.borderStrong,
+                    borderLeftWidth: 3, borderLeftColor: theme.colors.accent,
+                    shadowColor: theme.colors.shadow, shadowOffset: { width: -3, height: 6 },
+                    shadowOpacity: 0.24, shadowRadius: 12, elevation: 9, overflow: "hidden" }}>
+                    <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "flex-end",
+                      borderBottomWidth: 1, borderBottomColor: theme.colors.borderSubtle }}>
                       <Pressable testID="voice-task-checklist-refresh" accessibilityRole="button"
                         accessibilityLabel="To Doを更新" onPress={() => void voice.refreshHistory()}
-                        style={{ width: 44, height: 44, alignItems: "center", justifyContent: "center" }}>
-                        <Ionicons name="refresh" size={20} color={theme.colors.textPrimary} />
+                        style={{ width: 38, height: 38, alignItems: "center", justifyContent: "center" }}>
+                        <Ionicons name="refresh" size={18} color={theme.colors.accentStrong} />
                       </Pressable>
                       <Pressable testID="voice-task-checklist-collapse" accessibilityRole="button"
                         accessibilityLabel="To Doを右に折りたたむ" onPress={() => setTaskChecklistOpen(false)}
-                        style={{ width: 44, height: 44, alignItems: "center", justifyContent: "center" }}>
-                        <Ionicons name="chevron-forward" size={22} color={theme.colors.textPrimary} />
+                        style={{ width: 38, height: 38, alignItems: "center", justifyContent: "center" }}>
+                        <Ionicons name="chevron-forward" size={20} color={theme.colors.textSecondary} />
                       </Pressable>
                     </View>
                     <ScrollView testID="voice-task-checklist-content"
                       style={{ flexGrow: 0, flexShrink: 1, alignSelf: "flex-start", maxWidth: "100%" }}
-                      contentContainerStyle={{ padding: 16, alignItems: "flex-start" }}>
+                      contentContainerStyle={{ paddingHorizontal: 12, paddingVertical: 10, alignItems: "flex-start", gap: 8 }}>
                       {!voice.ready || !voice.taskChecklist
                         ? <Text style={{ color: theme.colors.textPrimary }}>To Doを読み込み中…</Text>
                         : voice.taskChecklist.status === "missing"
                           ? <Text style={{ color: theme.colors.textPrimary }}>To Doはまだ作成されていません</Text>
                           : voice.taskChecklist.status === "unavailable"
                             ? <Text style={{ color: theme.colors.textPrimary }}>To Doを読み込めませんでした</Text>
-                            : <MarkdownText content={voice.taskChecklist.markdown} tone="assistant"
-                              containerStyle={{ width: "auto", alignSelf: "flex-start" }}
-                              textStyle={{ color: theme.colors.textPrimary, fontSize: 15, lineHeight: 22 }} />}
+                            : taskChecklistRows.length ? taskChecklistRows.map((row, index) => row.kind === "item"
+                              ? <View key={index} testID={`voice-task-checklist-item-${index}`}
+                                  accessible accessibilityRole="checkbox"
+                                  accessibilityState={{ checked: row.checked, disabled: true }} accessibilityLabel={row.text}
+                                  style={{ flexDirection: "row", alignItems: "flex-start", gap: 8, maxWidth: "100%" }}>
+                                  <Ionicons name={row.checked ? "checkbox" : "square-outline"} size={19}
+                                    color={row.checked ? theme.colors.accentStrong : theme.colors.textSecondary} />
+                                  <Text style={{ color: row.checked
+                                    ? theme.colors.textSecondary : theme.colors.textPrimary,
+                                    fontSize: 14, lineHeight: 20, flexShrink: 1,
+                                    textDecorationLine: row.checked ? "line-through" : "none" }}>{row.text}</Text>
+                                </View>
+                              : <Text key={index} style={{ color: theme.colors.textSecondary,
+                                  fontSize: 13, lineHeight: 18, flexShrink: 1 }}>{row.text}</Text>)
+                              : <Text style={{ color: theme.colors.textSecondary }}>To Doは空です</Text>}
                     </ScrollView>
                   </View>
                 ) : (
@@ -525,8 +555,10 @@ function VoiceConversationSession({
                     style={{ position: "absolute", right: 0, top: 12, width: 44, minHeight: 88,
                       alignItems: "center", justifyContent: "center", gap: 4,
                       borderTopLeftRadius: 12, borderBottomLeftRadius: 12,
-                      backgroundColor: theme.colors.surfaceMuted }}>
-                    <Ionicons name="chevron-back" size={20} color={theme.colors.textPrimary} />
+                      backgroundColor: theme.colors.floatingSurface, borderWidth: 1,
+                      borderColor: theme.colors.borderStrong, borderRightWidth: 0,
+                      borderLeftWidth: 3, borderLeftColor: theme.colors.accent }}>
+                    <Ionicons name="chevron-back" size={20} color={theme.colors.accentStrong} />
                     <Text style={{ color: theme.colors.textPrimary, fontSize: 11 }}>To Do</Text>
                   </Pressable>
                 ) : null}
