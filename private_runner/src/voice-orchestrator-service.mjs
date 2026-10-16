@@ -174,6 +174,7 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
     registry = old || { orchestrators: [{ id: "main", name: "メイン", icon: "" }],
       selectedId: "main", memoryConversationId: recoveredMemoryConversationId };
     main = createVoiceContextService({ rootDir: root, createClient,
+      taskChecklistPath: "task-checklists/main.md",
       memoryConversationId: registry.memoryConversationId || undefined,
       memoryEventPairs: allEventPairs, pairExclusive, managedSessions: managedSessions("main"),
       hasOutstandingActivity: hasOutstandingActivity("main") });

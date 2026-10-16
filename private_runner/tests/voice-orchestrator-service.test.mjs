@@ -32,32 +32,50 @@ function fakeCodex({ hold = false, failSummary = false, failTurn = false, approv
         if (method === "mcpServerStatus/list") return { data: [], nextCursor: null };
         if (method === "thread/start") {
           summary = params.approvalPolicy === "never";
-          const thread = { id: randomUUID(), ephemeral: params.ephemeral, turns: [] };
+          const thread = { id: randomUUID(), ephemeral: params.ephemeral, turns: [],
+            checklistRead: params.developerInstructions?.includes("新しい親セッションでは") };
           threads.set(thread.id, thread);
           return { thread };
         }
-        if (method === "thread/resume" || method === "thread/read") return { thread: threads.get(params.threadId) };
+        if (method === "thread/resume") {
+          const thread = threads.get(params.threadId);
+          thread.checklistRead = params.developerInstructions?.includes("新しい親セッションでは");
+          return { thread };
+        }
+        if (method === "thread/read") return { thread: threads.get(params.threadId) };
         if (method === "turn/start") {
           if (summary && failSummary) throw new Error("summary unavailable");
           if (!summary && failTurn) throw Object.assign(new Error("native turn unavailable"), { code: "backend_unavailable" });
           const turnId = randomUUID();
           const turn = { id: turnId, status: "active", items: [] };
           threads.get(params.threadId)?.turns.push(turn);
-          const finish = () => {
+          const finish = async () => {
+            if (threads.get(params.threadId)?.checklistRead) {
+              const command = "/bin/zsh -lc 'cat task-checklists/main.md'";
+              const itemId = randomUUID();
+              const file = path.join(params.cwd, "task-checklists", "main.md");
+              const markdown = await fs.readFile(file, "utf8").catch((error) => error.code === "ENOENT" ? null : Promise.reject(error));
+              listener("item/started", { threadId: params.threadId, turnId,
+                item: { id: itemId, type: "commandExecution", command } });
+              const readApproval = await serverHandler({ method: "item/commandExecution/requestApproval",
+                params: { threadId: params.threadId, turnId, itemId, command } });
+              if (readApproval.decision === "accept") listener("item/completed", { threadId: params.threadId, turnId,
+                item: { id: itemId, type: "commandExecution", command, exitCode: markdown === null ? 1 : 0,
+                  aggregatedOutput: markdown ?? "cat: task-checklists/main.md: No such file or directory\n" } });
+            }
+            if (approval && !summary) {
+              const result = await serverHandler({ method: "item/commandExecution/requestApproval",
+                params: { threadId: params.threadId, turnId, command: "echo test" } });
+              calls.push({ method: "approval.result", result });
+            }
             turn.status = "completed";
             listener("item/completed", { threadId: params.threadId, turnId,
               item: { type: "agentMessage", text: `reply:${params.input[0].text}` } });
             listener("turn/completed", { threadId: params.threadId, turnId, turn: { status: "completed" } });
             resolveCompletion();
           };
-          if (approval && !summary) {
-            setImmediate(() => void serverHandler({ method: "item/commandExecution/requestApproval",
-              params: { threadId: params.threadId, turnId, command: "echo test" } }).then((result) => {
-                calls.push({ method: "approval.result", result });
-                finish();
-              }));
-          } else if (hold) releases.push(finish);
-          else queueMicrotask(finish);
+          if (hold) releases.push(() => void finish());
+          else queueMicrotask(() => void finish());
           return { turn: { id: turnId } };
         }
         return {};
@@ -210,6 +228,7 @@ test("main migration keeps its native parent; each orchestrator has a separate p
   assert.equal((await old.finished).status, "completed");
   assert.deepEqual((await service.list()).orchestrators.map(({ id }) => id), ["main"]);
   assert.equal((await service.history("main")).messages[0].text, "old main");
+  assert.deepEqual((await service.history("main")).taskChecklist, { status: "missing" });
   const created = await service.create("調査");
   await service.update(created.id, { name: "調査改", icon: "", model: "another-model", effort: "high",
     systemInstruction: "Research carefully." });
@@ -233,14 +252,37 @@ test("main migration keeps its native parent; each orchestrator has a separate p
   assert.ok(codex.calls.some(({ method, params }) => method === "thread/start"
     && params.approvalPolicy === "on-request" && params.model === "another-model"
     && params.developerInstructions.includes("Research carefully.")));
+  const childThread = codex.calls.find(({ method, params }) => method === "thread/start"
+    && params.approvalPolicy === "on-request" && params.model === "another-model");
+  assert.equal(childThread.params.developerInstructions.includes("task-checklists/main.md"), false);
+  assert.ok(codex.calls.some(({ method, params }) => method === "thread/resume"
+    && params.developerInstructions.includes("task-checklists/main.md")));
   const recent = JSON.parse(await fs.readFile(path.join(workspaces[0], "voice-memory", "recent.json"), "utf8"));
   assert.deepEqual(recent.map(({ user }) => user), ["old main", "other only", "main again"]);
   assert.deepEqual((await service.history(created.id)).messages.map(({ text }) => text), ["other only", "reply:other only"]);
+  assert.equal(Object.hasOwn(await service.history(created.id), "taskChecklist"), false);
 
   const reloaded = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
   assert.equal((await reloaded.open(created.id)).logicalConversationId, other.logicalConversationId);
   assert.equal((await reloaded.history("main")).messages.length, 4);
   await assert.rejects(reloaded.remove("main"), { code: "turn_rejected" });
+});
+
+test("main custom instructions retain fixed checklist guidance on start and resume", async (t) => {
+  const { service, codex } = await fixture(t);
+  const conversation = await service.open("main");
+  await service.update("main", { name: "メイン", icon: "", model: "gpt-6-luna", effort: "low",
+    systemInstruction: "Custom main rule." });
+  assert.equal((await (await turn(service, "main", conversation.logicalConversationId, "first")).finished).status, "completed");
+  assert.equal((await (await turn(service, "main", conversation.logicalConversationId, "second")).finished).status, "completed");
+  const started = codex.calls.find(({ method, params }) => method === "thread/start" && params.approvalPolicy === "on-request");
+  const resumed = codex.calls.find(({ method, params }) => method === "thread/resume" && params.approvalPolicy === "on-request");
+  assert.match(started.params.developerInstructions, /Custom main rule\./);
+  assert.match(started.params.developerInstructions, /新しい親セッションでは/);
+  assert.match(started.params.developerInstructions, /task-checklists\/main\.md/);
+  assert.match(resumed.params.developerInstructions, /Custom main rule\./);
+  assert.match(resumed.params.developerInstructions, /task-checklists\/main\.md/);
+  assert.equal(resumed.params.developerInstructions.includes("新しい親セッションでは"), false);
 });
 
 test("shared memory clear checks every orchestrator before mutating memory", async (t) => {

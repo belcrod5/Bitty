@@ -143,15 +143,65 @@ test("an older history response cannot replace a newer one", async () => {
   });
   await act(async () => {
     pending[1]({ op: "voice.history.result", payload: { logicalConversationId: conversationId,
-      messages: [{ role: "user", text: "new", clientOperationId: operationId }] } });
+      messages: [{ role: "user", text: "new", clientOperationId: operationId }],
+      taskChecklist: { status: "present", markdown: "- [ ] new" } } });
     await second;
   });
   await act(async () => {
     pending[0]({ op: "voice.history.result", payload: { logicalConversationId: conversationId,
-      messages: [{ role: "user", text: "old", clientOperationId: operationId }] } });
+      messages: [{ role: "user", text: "old", clientOperationId: operationId }],
+      taskChecklist: { status: "present", markdown: "- [ ] old" } } });
     await first;
   });
   expect(result.current.history[0].text).toBe("new");
+  expect(result.current.taskChecklist).toEqual({ status: "present", markdown: "- [ ] new" });
+});
+
+test("main distinguishes missing and unavailable task checklists", async () => {
+  const request = mockManager.request.getMockImplementation();
+  let status = "missing";
+  mockManager.request.mockImplementation((message: { op: string }) => message.op === "voice.history"
+    ? Promise.resolve({ op: "voice.history.result", payload: { logicalConversationId: conversationId,
+      messages: [], taskChecklist: { status } } }) : request?.(message));
+  const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
+  await waitFor(() => expect(result.current.ready).toBe(true));
+  await act(async () => { await result.current.refreshHistory(); });
+  expect(result.current.taskChecklist).toEqual({ status: "missing" });
+  status = "unavailable";
+  await act(async () => { await result.current.refreshHistory(); });
+  expect(result.current.taskChecklist).toEqual({ status: "unavailable" });
+});
+
+test("a previous conversation's delayed checklist cannot reappear after a new voice.open", async () => {
+  const nextConversationId = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
+  let resolveOldHistory!: (response: unknown) => void;
+  mockManager.request.mockImplementation(({ op }: { op: string }) => {
+    if (op === "voice.open") return Promise.resolve({ op: "voice.open.result", payload: {
+      logicalConversationId: mockSnapshot.generation === 1 ? conversationId : nextConversationId,
+      contextMode: "self_context_array", ...initialStats,
+    } });
+    if (op === "voice.history") return mockSnapshot.generation === 1
+      ? new Promise((resolve) => { resolveOldHistory = resolve; })
+      : Promise.resolve({ op: "voice.history.result", payload: {
+        logicalConversationId: nextConversationId, messages: [],
+        taskChecklist: { status: "present", markdown: "new conversation" },
+      } });
+    throw new Error(`unexpected ${op}`);
+  });
+  const { result, rerender } = await renderHook(() => useVoiceConversation(jest.fn()));
+  await waitFor(() => expect(result.current.ready).toBe(true));
+  let oldHistory!: Promise<void>;
+  await act(async () => { oldHistory = result.current.refreshHistory(); });
+  mockSnapshot = { connected: true, generation: 2 };
+  await rerender(undefined);
+  await waitFor(() => expect(result.current.logicalConversationId).toBe(nextConversationId));
+  await act(async () => { await result.current.refreshHistory(); });
+  await act(async () => {
+    resolveOldHistory({ op: "voice.history.result", payload: { logicalConversationId: conversationId,
+      messages: [], taskChecklist: { status: "present", markdown: "old conversation" } } });
+    await oldHistory;
+  });
+  expect(result.current.taskChecklist).toEqual({ status: "present", markdown: "new conversation" });
 });
 
 test("shows the submitted user message before acknowledgement and streamed replies", async () => {

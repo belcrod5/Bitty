@@ -7,6 +7,7 @@ import type { VoiceContextStats } from "../types/appTypes";
 
 type TurnStatus = "idle" | "sending" | "accepted" | "running" | "completed" | "failed";
 export type VoiceHistoryMessage = { role: "user" | "assistant"; text: string; clientOperationId: string; at?: string; outputTokens?: number; completedOrdinal?: number };
+export type VoiceTaskChecklist = { status: "present"; markdown: string } | { status: "missing" } | { status: "unavailable" };
 type PendingTurn = {
   id: string;
   text?: string;
@@ -89,6 +90,7 @@ export function useVoiceConversation(
   const [history, setHistory] = useState<VoiceHistoryMessage[]>([]);
   const [localHistory, setLocalHistory] = useState<VoiceHistoryMessage[]>([]);
   const [historyError, setHistoryError] = useState("");
+  const [taskChecklist, setTaskChecklist] = useState<VoiceTaskChecklist | null>(null);
   const historyRequestRef = useRef(0);
   const pendingRef = useRef<PendingTurn | null>(null);
   const startTurnTasksRef = useRef(new Map<string, Promise<void>>());
@@ -270,6 +272,7 @@ export function useVoiceConversation(
         setHistory([]);
         setLocalHistory([]);
         setHistoryError("");
+        setTaskChecklist(null);
         setTurnStatus("idle");
       }
       conversationIdRef.current = conversationId;
@@ -466,6 +469,15 @@ export function useVoiceConversation(
         || manager.getSnapshot().generation !== startedGeneration) return;
       const messages = payload.messages as VoiceHistoryMessage[];
       setHistory(messages);
+      if (orchestratorId === "main") {
+        const raw = payload.taskChecklist;
+        const value = raw && typeof raw === "object" && !Array.isArray(raw)
+          ? raw as Record<string, unknown> : null;
+        setTaskChecklist(value
+          && (value.status === "missing" || value.status === "unavailable"
+            || value.status === "present" && typeof value.markdown === "string")
+          ? value as VoiceTaskChecklist : { status: "unavailable" });
+      }
       setLocalHistory((current) => current.filter((local) => !messages.some((message) =>
         message.role === local.role && message.clientOperationId === local.clientOperationId)));
       setHistoryError("");
@@ -473,6 +485,7 @@ export function useVoiceConversation(
       if (aliveRef.current && historyRequestRef.current === requestNumber && conversationIdRef.current === conversationId
         && manager.getSnapshot().generation === startedGeneration) {
         setHistoryError(cause instanceof Error ? cause.message : "音声会話の履歴を読み込めません。");
+        if (orchestratorId === "main") setTaskChecklist({ status: "unavailable" });
       }
     }
   }, [manager, orchestratorId]);
@@ -492,6 +505,7 @@ export function useVoiceConversation(
     contextStats,
     history: visibleHistory,
     historyError,
+    taskChecklist,
     refreshHistory,
     error,
     setError,

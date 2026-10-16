@@ -44,6 +44,8 @@ const mockVoice = {
   contextStats: { contextUsagePercent: 31 as number | null, unsummarizedMessageCount: 8, memoryCharacterCount: 55 },
   history: [] as { role: "user" | "assistant"; text: string; clientOperationId: string; at?: string; completedOrdinal?: number }[],
   historyError: "",
+  taskChecklist: { status: "present", markdown: "# 最優先\n\n- [ ] 確認する" } as
+    { status: "present"; markdown: string } | { status: "missing" | "unavailable" } | null,
   refreshHistory: jest.fn(async () => undefined),
   setError: jest.fn(),
   sendTranscript: jest.fn(async () => undefined),
@@ -120,6 +122,13 @@ jest.mock("../../runnerWs/RunnerWebSocketContext", () => ({
 }));
 jest.mock("../components/VoiceOrchestratorManager", () => ({
   VoiceOrchestratorManager: ({ visible }: { visible: boolean }) => { mockManagerVisible = visible; return null; },
+}));
+jest.mock("../components/MarkdownText", () => ({
+  MarkdownText: ({ content }: { content: string }) => {
+    const ReactModule = require("react");
+    const { Text } = require("react-native");
+    return ReactModule.createElement(Text, { testID: "voice-task-checklist-markdown" }, content);
+  },
 }));
 jest.mock("../../stt/useStreamingStt", () => ({ useStreamingStt: (options: { ttsPlaybackActive: boolean; onDiagnostic: (event: string, payload: Record<string, unknown>) => void }) => {
   mockLastSttOptions = options;
@@ -230,6 +239,7 @@ beforeEach(() => {
   mockVoice.contextStats.contextUsagePercent = 31;
   mockVoice.history = [];
   mockVoice.historyError = "";
+  mockVoice.taskChecklist = { status: "present", markdown: "# 最優先\n\n- [ ] 確認する" };
   mockBackdropOpacity.value = 0;
   mockReduceMotion = false;
   mockManagerVisible = false;
@@ -240,6 +250,36 @@ beforeEach(() => {
 afterEach(() => {
   Object.defineProperty(Platform, "OS", { configurable: true, value: initialPlatform });
   jest.restoreAllMocks();
+});
+
+test("main history shows the source Markdown in a right panel and folds it to a tab", async () => {
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  expect(screen.getByTestId("voice-task-checklist-markdown").props.children)
+    .toBe("# 最優先\n\n- [ ] 確認する");
+  await fireEvent.press(screen.getByTestId("voice-task-checklist-refresh"));
+  expect(mockVoice.refreshHistory).toHaveBeenCalled();
+  await fireEvent.press(screen.getByTestId("voice-task-checklist-collapse"));
+  expect(screen.queryByTestId("voice-task-checklist-panel")).toBeNull();
+  expect(screen.queryByTestId("voice-task-checklist-markdown")).toBeNull();
+  expect(screen.getByTestId("voice-task-checklist-expand")).toBeTruthy();
+  await fireEvent.press(screen.getByTestId("voice-task-checklist-expand"));
+  expect(screen.getByTestId("voice-task-checklist-panel")).toBeTruthy();
+});
+
+test("task checklist states are distinct and other orchestrators have no panel", async () => {
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  mockVoice.taskChecklist = { status: "missing" };
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(screen.getByText("To Doはまだ作成されていません")).toBeTruthy();
+  mockVoice.taskChecklist = { status: "unavailable" };
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(screen.getByText("To Doを読み込めませんでした")).toBeTruthy();
+  await fireEvent.press(screen.getByTestId("voice-orchestrator-other"));
+  await waitFor(() => expect(mockHookOrchestratorIds.at(-1)).toBe("other"));
+  expect(screen.queryByTestId("voice-task-checklist-panel")).toBeNull();
+  expect(screen.queryByTestId("voice-task-checklist-expand")).toBeNull();
 });
 
 test("notification target wins an in-flight list, opens history, and stays selected after reconnect", async () => {

@@ -158,9 +158,13 @@ function fakeCodex({ reply = "answer", summaryReply, topicReplies = [], failTopi
               calls.push({ method: "approval/result", params: result });
             }
             if (!isIsolated) for (const native of nativeRequests) {
+              if (native.startedItem) listener("item/started", { threadId: params.threadId, turnId,
+                item: native.startedItem });
               const request = { id: randomUUID(), method: native.method, params: {
                 threadId: native.threadId === "root" ? params.threadId : native.threadId,
                 turnId: native.turnId === "root" ? turnId : native.turnId,
+                ...(native.itemId ? { itemId: native.itemId } : {}),
+                ...(native.command ? { command: native.command } : {}),
               } };
               const pending = serverHandler(request);
               if (native.resolveAfterForward) {
@@ -184,6 +188,8 @@ function fakeCodex({ reply = "answer", summaryReply, topicReplies = [], failTopi
                 threadId: request.params.threadId, requestId: request.id,
               }), 100);
               calls.push({ method: "native/result", request, result: await pending });
+              if (native.completedItem) listener("item/completed", { threadId: params.threadId, turnId,
+                item: native.completedItem });
             }
             if (toolCall && !isIsolated) {
               const toolParams = { namespace: "voice_subagent", tool: "status", callId: "tool-1",
@@ -280,7 +286,7 @@ async function fixture(t, options = {}) {
     await fs.rm(temp, { recursive: true, force: true });
   });
   const service = createVoiceContextService({ rootDir, createClient: codex.createClient,
-    managedSessions: options.managedSessions });
+    managedSessions: options.managedSessions, taskChecklistPath: options.taskChecklistPath });
   const conversation = await service.open();
   return { rootDir, codex, service, conversation };
 }
@@ -2000,6 +2006,186 @@ test("reply inherits configured MCP and can complete a tool approval", async (t)
   assert.deepEqual(codex.calls.find(({ method: name }) => name === "approval/result")?.params, { decision: "accept" });
   assert.equal(codex.calls.some(({ method: name }) => name === "mcpServerStatus/list"), false);
   assert.equal(codex.calls.some(({ method: name }) => name === "turn/interrupt"), false);
+});
+
+test("main checklist history reads one bounded disk original and distinguishes missing from unavailable", async (t) => {
+  const { rootDir, codex, service, conversation } = await fixture(t, { taskChecklistPath: "task-checklists/main.md" });
+  const workspace = await service.getWorkspaceDirectory();
+  const file = path.join(workspace, "task-checklists", "main.md");
+  assert.deepEqual((await service.history()).taskChecklist, { status: "missing" });
+  const markdown = "# 作業\n- [ ] 確認中\n";
+  await fs.writeFile(file, markdown);
+  assert.deepEqual((await service.history()).taskChecklist, { status: "present", markdown });
+  await fs.writeFile(file, "x".repeat(64 * 1024 + 1));
+  assert.deepEqual((await service.history()).taskChecklist, { status: "unavailable" });
+  await fs.rm(file);
+  await fs.symlink(path.join(workspace, "voice-memory", "index.md"), file);
+  assert.deepEqual((await service.history()).taskChecklist, { status: "unavailable" });
+  await fs.rm(file);
+  await fs.rmdir(path.dirname(file));
+  await fs.symlink(path.join(workspace, "voice-memory"), path.dirname(file));
+  assert.deepEqual((await service.history()).taskChecklist, { status: "unavailable" });
+  assert.equal((await service.history()).logicalConversationId, conversation.logicalConversationId);
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient,
+    taskChecklistPath: "task-checklists/main.md" });
+  assert.deepEqual((await restarted.history()).taskChecklist, { status: "unavailable" });
+  assert.equal((await restarted.history()).logicalConversationId, conversation.logicalConversationId);
+});
+
+test("main checklist approvals require the current root item and exact single-file operation", async (t) => {
+  const nativeRequests = [];
+  const child = randomUUID();
+  const { service, conversation, codex } = await fixture(t, {
+    taskChecklistPath: "task-checklists/main.md", nativeRequests, threadParents: { [child]: "root" },
+  });
+  const target = path.join(await fs.realpath(await service.getWorkspaceDirectory()), "task-checklists", "main.md");
+  const command = "/bin/zsh -lc 'cat task-checklists/main.md'";
+  nativeRequests.push(
+    { method: "item/commandExecution/requestApproval", threadId: "root", turnId: "root",
+      itemId: "read", command, startedItem: { id: "read", type: "commandExecution", command },
+      completedItem: { id: "read", type: "commandExecution", command, exitCode: 1,
+        aggregatedOutput: "cat: task-checklists/main.md: No such file or directory\n" } },
+    { method: "item/fileChange/requestApproval", threadId: "root", turnId: "root", itemId: "add",
+      startedItem: { id: "add", type: "fileChange", changes: [{ path: target, kind: { type: "add" } }] } },
+    { method: "item/fileChange/requestApproval", threadId: child, turnId: randomUUID(), itemId: "child",
+      startedItem: { id: "child", type: "fileChange", changes: [{ path: target, kind: { type: "add" } }] } },
+    { method: "item/commandExecution/requestApproval", threadId: "root", turnId: "root",
+      itemId: "other", command: "echo unsafe", startedItem: { id: "other", type: "commandExecution", command: "echo unsafe" } },
+  );
+  const forwarded = [];
+  const { result } = await complete(service, conversation, "record work", randomUUID(), async (request) => {
+    forwarded.push(request);
+    return "decline";
+  });
+  assert.equal(result.status, "completed");
+  assert.deepEqual(codex.calls.filter(({ method }) => method === "native/result").map(({ result: item }) => item), [
+    { decision: "accept" }, { decision: "accept" }, { decision: "decline" }, { decision: "decline" },
+  ]);
+  assert.equal(forwarded.length, 2);
+  assert.equal((await service.history()).taskChecklist.status, "missing");
+});
+
+test("new main parent fails closed without a completed checklist read and exposes no streamed answer", async (t) => {
+  const nativeRequests = [];
+  const { service, conversation } = await fixture(t, { taskChecklistPath: "task-checklists/main.md",
+    reply: "unsafe answer", nativeRequests });
+  const streamed = [];
+  const { result } = await complete(service, conversation, "continue", randomUUID(), async () => "decline", {
+    onText: (text) => streamed.push(text),
+  });
+  assert.equal(result.status, "failed");
+  assert.equal(result.code, "checklist_read_required");
+  assert.deepEqual(streamed, []);
+  assert.deepEqual((await service.history()).messages.map(({ role }) => role), ["user"]);
+  const command = "/bin/zsh -lc 'cat task-checklists/main.md'";
+  nativeRequests.push({ method: "item/commandExecution/requestApproval", threadId: "root", turnId: "root",
+    itemId: "retry-read", command, startedItem: { id: "retry-read", type: "commandExecution", command },
+    completedItem: { id: "retry-read", type: "commandExecution", command, exitCode: 1,
+      aggregatedOutput: "cat: task-checklists/main.md: No such file or directory\n" } });
+  const retried = await complete(service, conversation, "retry", randomUUID(), async () => "decline", {
+    onText: (text) => streamed.push(text),
+  });
+  assert.equal(retried.result.status, "completed");
+  assert.deepEqual(streamed, [retried.result.text]);
+});
+
+test("new main parent delivers its answer after an approved missing-file read completes", async (t) => {
+  const command = "/bin/zsh -lc 'cat task-checklists/main.md'";
+  const { service, conversation, codex } = await fixture(t, { taskChecklistPath: "task-checklists/main.md",
+    nativeRequests: [{ method: "item/commandExecution/requestApproval", threadId: "root", turnId: "root",
+      itemId: "read", command, startedItem: { id: "read", type: "commandExecution", command },
+      completedItem: { id: "read", type: "commandExecution", command, exitCode: 1,
+        aggregatedOutput: "cat: task-checklists/main.md: No such file or directory\n" } }],
+  });
+  const streamed = [];
+  const { result } = await complete(service, conversation, "continue", randomUUID(), async () => "decline", {
+    onText: (text) => streamed.push(text),
+  });
+  assert.equal(result.status, "completed");
+  assert.deepEqual(streamed, [result.text]);
+  assert.deepEqual(codex.calls.find(({ method }) => method === "native/result").result, { decision: "accept" });
+});
+
+test("new main parent rejects a cat that did not return the existing Markdown", async (t) => {
+  const command = "/bin/zsh -lc 'cat task-checklists/main.md'";
+  const { service, conversation } = await fixture(t, { taskChecklistPath: "task-checklists/main.md",
+    nativeRequests: [{ method: "item/commandExecution/requestApproval", threadId: "root", turnId: "root",
+      itemId: "read", command, startedItem: { id: "read", type: "commandExecution", command },
+      completedItem: { id: "read", type: "commandExecution", command, exitCode: 0,
+        aggregatedOutput: "wrong content\n" } }],
+  });
+  await fs.writeFile(path.join(await service.getWorkspaceDirectory(), "task-checklists", "main.md"), "# Original\n");
+  const result = (await complete(service, conversation, "continue")).result;
+  assert.equal(result.status, "failed");
+  assert.equal(result.code, "checklist_read_required");
+});
+
+test("restart never recovers an unverified checklist parent reply as completed", async (t) => {
+  const nativeThreads = new Map();
+  const nativeRequests = [];
+  const { rootDir, codex, conversation } = await fixture(t, {
+    taskChecklistPath: "task-checklists/main.md", nativeThreads, nativeRequests,
+  });
+  const threadId = randomUUID();
+  const turnId = randomUUID();
+  const clientOperationId = randomUUID();
+  const at = new Date().toISOString();
+  const events = [
+    { seq: 1, at, clientOperationId, type: "accepted", text: "continue" },
+    { seq: 2, at, clientOperationId, type: "dispatching" },
+    { seq: 3, at, clientOperationId, type: "native_started", threadId, turnId },
+  ];
+  await fs.writeFile(path.join(rootDir, conversation.logicalConversationId, "events.jsonl"),
+    `${events.map((item) => JSON.stringify(item)).join("\n")}\n`);
+  const activeFile = path.join(rootDir, "active.json");
+  const active = JSON.parse(await fs.readFile(activeFile, "utf8"));
+  await fs.writeFile(activeFile, JSON.stringify({ ...active, nativeThreadId: threadId,
+    nativeTurnId: turnId, checklistReadPending: true }));
+  nativeThreads.set(threadId, { id: threadId, turns: [{ id: turnId, status: "completed",
+    items: [{ type: "userMessage", text: "continue" }, { type: "agentMessage", text: "unsafe reply" }] }] });
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient,
+    taskChecklistPath: "task-checklists/main.md" });
+  assert.equal((await restarted.open()).status, "failed");
+  assert.deepEqual((await restarted.history()).messages.map(({ role }) => role), ["user"]);
+  assert.equal(JSON.parse(await fs.readFile(activeFile, "utf8")).checklistReadPending, true);
+  const command = "/bin/zsh -lc 'cat task-checklists/main.md'";
+  nativeRequests.push({ method: "item/commandExecution/requestApproval", threadId: "root", turnId: "root",
+    itemId: "recovered-read", command,
+    startedItem: { id: "recovered-read", type: "commandExecution", command },
+    completedItem: { id: "recovered-read", type: "commandExecution", command, exitCode: 1,
+      aggregatedOutput: "cat: task-checklists/main.md: No such file or directory\n" } });
+  const recovered = await complete(restarted, conversation, "retry after restart");
+  assert.equal(recovered.result.status, "completed");
+  assert.equal(JSON.parse(await fs.readFile(activeFile, "utf8")).checklistReadPending, false);
+  assert.ok(codex.calls.some(({ method, params }) => method === "thread/resume"
+    && params.developerInstructions.includes("新しい親セッションでは")));
+});
+
+test("a checklist file change before the first cat is declined and the turn fails", async (t) => {
+  const nativeRequests = [];
+  const { service, conversation, codex } = await fixture(t, {
+    taskChecklistPath: "task-checklists/main.md", nativeRequests,
+  });
+  const target = path.join(await fs.realpath(await service.getWorkspaceDirectory()), "task-checklists", "main.md");
+  nativeRequests.push({ method: "item/fileChange/requestApproval", threadId: "root", turnId: "root", itemId: "early",
+    startedItem: { id: "early", type: "fileChange", changes: [{ path: target, kind: { type: "add" } }] } });
+  const result = (await complete(service, conversation, "continue")).result;
+  assert.equal(result.status, "failed");
+  assert.equal(result.code, "checklist_read_required");
+  assert.deepEqual(codex.calls.find(({ method }) => method === "native/result").result, { decision: "decline" });
+});
+
+test("a managed session tool cannot run before the checklist read", async (t) => {
+  let called = 0;
+  const managedSessions = { refresh: async () => ({ records: [] }), contextOf: () => "",
+    handleTool: async () => { called++; return { success: true }; } };
+  const { service, conversation, codex } = await fixture(t, { taskChecklistPath: "task-checklists/main.md",
+    managedSessions, toolCall: true });
+  const result = (await complete(service, conversation, "continue")).result;
+  assert.equal(result.status, "failed");
+  assert.equal(result.code, "checklist_read_required");
+  assert.equal(called, 0);
+  assert.equal(codex.calls.find(({ method }) => method === "tool/result").params.success, false);
 });
 
 test("declined tool approval still lets the assistant answer", async (t) => {

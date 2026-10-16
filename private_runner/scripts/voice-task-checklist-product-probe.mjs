@@ -1,0 +1,140 @@
+// Run the real voice service in a disposable, worktree-local Git root. Review Markdown by eye.
+import { execFileSync, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { promises as fs } from "node:fs";
+import net from "node:net";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { createCodexAppServerClient } from "../src/codex-app-server-client.mjs";
+import { createVoiceContextService } from "../src/voice-context-service.mjs";
+
+const base = fileURLToPath(new URL("../../tmp/", import.meta.url));
+const scenario = process.argv[2] || "code";
+if (!["code", "mail"].includes(scenario) || process.argv.length > 3) {
+  throw new Error("Usage: node voice-task-checklist-product-probe.mjs [code|mail]");
+}
+const run = path.join(base, `voice-checklist-product-${randomUUID()}`);
+const rootDir = path.join(run, "voice_context", "v1");
+const codexHome = path.join(run, "codex-home");
+const scratch = path.join(run, "scratch");
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+async function within(promise, ms) {
+  let timer;
+  try { return await Promise.race([promise, new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error("Turn timed out")), ms);
+  })]); }
+  finally { clearTimeout(timer); }
+}
+await fs.mkdir(run, { recursive: true, mode: 0o700 });
+await fs.mkdir(codexHome, { mode: 0o700 });
+await fs.mkdir(scratch, { mode: 0o700 });
+execFileSync("git", ["init", "--quiet", "--template=", run]);
+const auth = path.join(process.env.CODEX_HOME || path.join(process.env.HOME, ".codex"), "auth.json");
+await fs.symlink(auth, path.join(codexHome, "auth.json"));
+const listener = net.createServer();
+await new Promise((resolve) => listener.listen(0, "127.0.0.1", resolve));
+const port = listener.address().port;
+await new Promise((resolve) => listener.close(resolve));
+const child = spawn("codex", ["app-server", "--listen", `ws://127.0.0.1:${port}`,
+  "-c", "features.apps=false", "-c", "features.plugins=false", "-c", "web_search=disabled",
+  "-c", "apps._default.enabled=false", "-c", "agents.enabled=false"], {
+  cwd: run, env: { PATH: process.env.PATH, HOME: process.env.HOME,
+    CODEX_HOME: codexHome, TMPDIR: scratch }, stdio: ["ignore", "ignore", "pipe"],
+});
+let stderr = "";
+child.stderr.on("data", (chunk) => { stderr = `${stderr}${chunk}`.slice(-1000); });
+const evidence = [];
+const createClient = () => {
+  const client = createCodexAppServerClient({ upstreamUrl: `ws://127.0.0.1:${port}`,
+    turnCompletionTimeoutMs: 120000 });
+  const originalRequest = client.request.bind(client);
+  client.request = (method, params, timeout) => {
+    if (["thread/start", "thread/resume"].includes(method) && params?.approvalPolicy === "on-request") {
+      evidence.push({ method, hasChecklistInstruction: params.developerInstructions?.includes("task-checklists/main.md"),
+        hasNewParentReadInstruction: params.developerInstructions?.includes("新しい親セッションでは") });
+    }
+    return originalRequest(method, params, timeout);
+  };
+  const originalListener = client.addNotificationListener.bind(client);
+  client.addNotificationListener = (callback) => originalListener((method, params) => {
+    if (["item/started", "item/completed", "item/failed"].includes(method)
+      && ["fileChange", "commandExecution"].includes(params?.item?.type)) {
+      evidence.push({ method, type: params.item.type, id: params.item.id,
+        command: params.item.command, exitCode: params.item.exitCode,
+        ...(params.item.type === "commandExecution" && params.item.command === "/bin/zsh -lc 'cat task-checklists/main.md'"
+          && method === "item/completed" ? { readOutput: params.item.aggregatedOutput } : {}),
+        changes: params.item.changes?.map(({ path: file, kind }) => ({ path: file, kind: kind?.type })) });
+    }
+    callback(method, params);
+  });
+  const originalRequestHandler = client.addServerRequestHandler.bind(client);
+  client.addServerRequestHandler = (callback) => originalRequestHandler(async (request) => {
+    const result = await callback(request);
+    if (request.method?.endsWith("/requestApproval")) evidence.push({ method: request.method,
+      itemId: request.params?.itemId, decision: result?.decision });
+    return result;
+  });
+  return client;
+};
+let service;
+try {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (child.exitCode !== null) throw new Error(`App Server exited: ${stderr}`);
+    const ready = await new Promise((resolve) => {
+      const socket = net.connect(port, "127.0.0.1");
+      socket.once("connect", () => { socket.destroy(); resolve(true); });
+      socket.once("error", () => resolve(false));
+    });
+    if (ready) break;
+    if (attempt === 99) throw new Error(`App Server did not listen: ${stderr}`);
+    await pause(100);
+  }
+  service = createVoiceContextService({ rootDir, createClient,
+    taskChecklistPath: "task-checklists/main.md" });
+  let conversation = await service.open();
+  await service.configure("gpt-6.1-sol", "low");
+  const workspace = await service.getWorkspaceDirectory();
+  const checklist = path.join(workspace, "task-checklists", "main.md");
+  async function turn(label, text) {
+    const operationId = randomUUID();
+    let finish;
+    const terminal = new Promise((resolve) => { finish = resolve; });
+    const request = { operationId, payload: { backendId: "codex",
+      logicalConversationId: conversation.logicalConversationId, clientOperationId: operationId,
+      input: { blocks: [{ type: "text", text }] } } };
+    const start = await service.start(request, finish, async () => "decline");
+    if (start.status === "confirmation_required") throw new Error("Unexpected reset confirmation");
+    const result = await within(terminal, 120000);
+    const markdown = await fs.readFile(checklist, "utf8").catch((error) => error.code === "ENOENT" ? null : Promise.reject(error));
+    const row = { scenario, label, status: result.status, code: result.code,
+      response: result.text, markdown, events: evidence.splice(0) };
+    await fs.appendFile(path.join(run, "evidence.jsonl"), `${JSON.stringify(row)}\n`, { mode: 0o600 });
+    console.log(JSON.stringify(row));
+    if (result.status !== "completed") throw new Error(`${label} failed: ${result.code}`);
+  }
+  await turn("create", scenario === "code"
+    ? "架空コード作業。P-17の入力検証漏れは修正済み。T-01のテスト実行は終わったが、保存された結果は未確認。テストを再実行せず、次は結果を読む。進行中の作業を記録して。"
+    : "架空メール整理。M-01からM-06は確認済みで、許可済みのニュースレター整理も成功済み。M-07はユーザー判断待ちなので整理しない。M-08を次に確認する。確定済み、保留、次の一手を記録して。");
+  conversation = await service.clearMessages();
+  service = createVoiceContextService({ rootDir, createClient,
+    taskChecklistPath: "task-checklists/main.md" });
+  const reopened = await service.open();
+  if (reopened.logicalConversationId !== conversation.logicalConversationId) {
+    throw new Error("Service recreation changed the conversation");
+  }
+  await turn("first_new_parent", scenario === "code"
+    ? "先ほどの架空コード作業の安全な次の一手を教えて。"
+    : "先ほどの架空メール整理の安全な次の一手を教えて。");
+  await turn("uncertain_update", scenario === "code"
+    ? "架空の通知: T-01結果の確認を試みたが、結果を取得できず実行済みか不明。再実行せず保留を記録して。"
+    : "架空の通知: M-08の模擬確認を試みたが、結果を取得できず実行済みか不明。再実行せず保留を記録して。");
+  conversation = await service.clearMessages();
+  await turn("second_new_parent", scenario === "code"
+    ? "架空コード作業を続けて。結果不明の操作を扱う安全な次の一手は？"
+    : "架空メール整理を続けて。結果不明の操作を扱う安全な次の一手は？");
+  console.log(JSON.stringify({ workspace, checklist, evidence: path.join(run, "evidence.jsonl") }));
+} finally {
+  child.kill();
+  if (child.exitCode === null) await Promise.race([new Promise((resolve) => child.once("exit", resolve)), pause(2000)]);
+  if (child.exitCode === null) child.kill("SIGKILL");
+}

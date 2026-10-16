@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Ionicons } from "@expo/vector-icons";
-import { AppState, Platform, Pressable, SafeAreaView, ScrollView, Text, View } from "react-native";
+import { AppState, Platform, Pressable, SafeAreaView, ScrollView, Text, View, useWindowDimensions } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Reanimated, { FadeIn, FadeInDown, FadeOut, FadeOutDown, runOnJS } from "react-native-reanimated";
 import { useStreamingStt } from "../../stt/useStreamingStt";
@@ -10,6 +10,7 @@ import { ContextUsageIndicator } from "../components/ContextUsageIndicator";
 import { CodexStatusSummaryMenu } from "../components/CodexStatusSummaryMenu";
 import { VoiceOrchestratorIcon, type VoiceOrchestrator } from "../components/VoiceOrchestratorIcon";
 import { VoiceOrchestratorManager } from "../components/VoiceOrchestratorManager";
+import { MarkdownText } from "../components/MarkdownText";
 import { UserInputModal } from "../components/UserInputModal";
 import { useVoiceUserInput } from "../hooks/useVoiceUserInput";
 import { useChatScreen } from "../contexts/ChatScreenContext";
@@ -156,6 +157,8 @@ function VoiceConversationSession({
   const { logSessionDiag } = useConversation();
   const reduceMotion = useReduceMotionEnabled();
   const { theme } = useVisualTheme();
+  const { width: screenWidth } = useWindowDimensions();
+  const [taskChecklistOpen, setTaskChecklistOpen] = useState(true);
   const [transcript, setTranscript] = useState("");
   const [editingTranscript, setEditingTranscript] = useState(false);
   const [initialStartPending, setInitialStartPending] = useState(true);
@@ -438,6 +441,7 @@ function VoiceConversationSession({
                     <Ionicons name="close" size={24} color="#ffffff" />
                   </Pressable>
                 </View>
+                <View style={{ flex: 1 }}>
                 <ScrollView ref={historyScrollRef} testID="voice-history-messages" style={{ flex: 1 }}
                   onScroll={(event) => {
                     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
@@ -481,6 +485,49 @@ function VoiceConversationSession({
                     );
                   })}
                 </ScrollView>
+                {orchestrator.id === "main" ? taskChecklistOpen ? (
+                  <View testID="voice-task-checklist-panel" style={{ position: "absolute", right: 0, top: 0, bottom: 0,
+                    width: Math.min(320, Math.max(0, screenWidth - 64)),
+                    backgroundColor: theme.colors.surfaceMuted, borderTopLeftRadius: 14,
+                    borderBottomLeftRadius: 14, overflow: "hidden" }}>
+                    <View style={{ flexDirection: "row", alignItems: "center", paddingLeft: 12,
+                      borderBottomWidth: 1, borderBottomColor: theme.colors.infoMuted }}>
+                      <Text style={{ color: theme.colors.textPrimary, fontWeight: "700", flex: 1 }}>To Do</Text>
+                      <Pressable testID="voice-task-checklist-refresh" accessibilityRole="button"
+                        accessibilityLabel="To Doを更新" onPress={() => void voice.refreshHistory()}
+                        style={{ width: 44, height: 44, alignItems: "center", justifyContent: "center" }}>
+                        <Ionicons name="refresh" size={20} color={theme.colors.textPrimary} />
+                      </Pressable>
+                      <Pressable testID="voice-task-checklist-collapse" accessibilityRole="button"
+                        accessibilityLabel="To Doを右に折りたたむ" onPress={() => setTaskChecklistOpen(false)}
+                        style={{ width: 44, height: 44, alignItems: "center", justifyContent: "center" }}>
+                        <Ionicons name="chevron-forward" size={22} color={theme.colors.textPrimary} />
+                      </Pressable>
+                    </View>
+                    <ScrollView testID="voice-task-checklist-content" style={{ flex: 1 }}
+                      contentContainerStyle={{ padding: 16 }}>
+                      {!voice.ready || !voice.taskChecklist
+                        ? <Text style={{ color: theme.colors.textPrimary }}>To Doを読み込み中…</Text>
+                        : voice.taskChecklist.status === "missing"
+                          ? <Text style={{ color: theme.colors.textPrimary }}>To Doはまだ作成されていません</Text>
+                          : voice.taskChecklist.status === "unavailable"
+                            ? <Text style={{ color: theme.colors.textPrimary }}>To Doを読み込めませんでした</Text>
+                            : <MarkdownText content={voice.taskChecklist.markdown} tone="assistant"
+                              textStyle={{ color: theme.colors.textPrimary, fontSize: 15, lineHeight: 22 }} />}
+                    </ScrollView>
+                  </View>
+                ) : (
+                  <Pressable testID="voice-task-checklist-expand" accessibilityRole="button"
+                    accessibilityLabel="To Doを開く" onPress={() => setTaskChecklistOpen(true)}
+                    style={{ position: "absolute", right: 0, top: 12, width: 44, minHeight: 88,
+                      alignItems: "center", justifyContent: "center", gap: 4,
+                      borderTopLeftRadius: 12, borderBottomLeftRadius: 12,
+                      backgroundColor: theme.colors.surfaceMuted }}>
+                    <Ionicons name="chevron-back" size={20} color={theme.colors.textPrimary} />
+                    <Text style={{ color: theme.colors.textPrimary, fontSize: 11 }}>To Do</Text>
+                  </Pressable>
+                ) : null}
+                </View>
               </Reanimated.View>
             ) : null}
             <View testID="voice-footer-inset"
