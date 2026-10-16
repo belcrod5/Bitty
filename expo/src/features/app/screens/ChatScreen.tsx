@@ -1178,6 +1178,7 @@ export function ChatScreen({
     runnerToken,
     transcript: transcriptForView,
     autoReplyAfterStt,
+    continuousDictation: Platform.OS === "macos",
     correctionContext: conversationMessagesForView.filter((message) => !message.kind && message.content.trim())
       .slice(-12).map((message) => ({ role: message.role, text: message.content.slice(0, 2000) })),
     correctionIdentity: `${panelId}:${backendIdForView}:${selectedSessionIdForView}`,

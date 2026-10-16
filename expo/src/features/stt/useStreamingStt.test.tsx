@@ -409,6 +409,54 @@ test("repeated empty Mac sessions restart beyond the error retry limit and still
   expect(options.sendTranscript).toHaveBeenCalledWith("再開後の音声", expect.any(Function));
 });
 
+test("Mac dictation keeps speech across a pause and sends only on explicit manual send", async () => {
+  const options = { ...createOptions(), continuousDictation: true };
+  const { result } = await renderHook(() => useStreamingStt(options));
+  const first = await openReady(result);
+  await emit(first, { type: "transcript", text: "前の文章", isFinal: false });
+  await emit(first, { type: "transcript", text: "前の文章", isFinal: true });
+  await emit(first, { type: "done", reason: "recognition_segment_end", hasSpeech: true });
+  expect(options.setTranscript).toHaveBeenLastCalledWith("前の文章");
+  expect(options.sendTranscript).not.toHaveBeenCalled();
+  expect(correctSttTranscript).not.toHaveBeenCalled();
+  await advanceTimers(250);
+  const second = mockSessions.at(-1)!;
+  await emit(second, { type: "ready" });
+  await emit(second, { type: "transcript", text: "続き", isFinal: false });
+  expect(options.setTranscript).toHaveBeenLastCalledWith("前の文章 続き");
+  await emit(second, { type: "done", reason: "recognition_segment_end", hasSpeech: false });
+  expect(options.setTranscript).toHaveBeenLastCalledWith("前の文章 続き");
+  expect(options.sendTranscript).not.toHaveBeenCalled();
+  await advanceTimers(250);
+  await emit(mockSessions.at(-1)!, { type: "ready" });
+  await emit(mockSessions.at(-1)!, { type: "transcript", text: "さらに", isFinal: false });
+  expect(options.setTranscript).toHaveBeenLastCalledWith("前の文章 続き さらに");
+  await act(async () => result.current.stop());
+  expect(options.sendTranscript).not.toHaveBeenCalled();
+  await act(async () => result.current.sendManualTranscript("前の文章 続き さらに", () => true));
+  expect(options.sendTranscript).toHaveBeenCalledWith("前の文章 続き さらに", expect.any(Function));
+});
+
+test("speech conversation still auto sends a completed Mac recognition segment", async () => {
+  const options = createOptions();
+  const { result } = await renderHook(() => useStreamingStt(options));
+  await finishSpeech(await openReady(result), "話した内容", "recognition_segment_end");
+  expect(options.sendTranscript).toHaveBeenCalledWith("話した内容", expect.any(Function));
+});
+
+test("retry preserves the partial text already shown in the draft", async () => {
+  const options = { ...createOptions(), continuousDictation: true };
+  const { result } = await renderHook(() => useStreamingStt(options));
+  const first = await openReady(result);
+  await emit(first, { type: "transcript", text: "前の文章", isFinal: false });
+  await emit(first, { type: "error", code: "macos_recognition_failed", message: "retry", retryable: true });
+  expect(options.setTranscript).toHaveBeenLastCalledWith("前の文章");
+  await advanceTimers(250);
+  await emit(mockSessions.at(-1)!, { type: "ready" });
+  await emit(mockSessions.at(-1)!, { type: "transcript", text: "続き", isFinal: false });
+  expect(options.setTranscript).toHaveBeenLastCalledWith("前の文章 続き");
+});
+
 test.each(["stop", "abort", "unmount"])("%s cancels empty-session restart during cleanup or its delay", async (action) => {
   for (const timing of ["cleanup", "delay"]) {
     const options = createOptions();
@@ -635,8 +683,10 @@ test("Runner error is terminal even if a late done arrives", async () => {
   const options = createOptions();
   const { result } = await renderHook(() => useStreamingStt(options));
   const session = await openReady(result);
+  await emit(session, { type: "transcript", text: "画面に見えた文章", isFinal: false });
   await emit(session, { type: "error", code: "cloud_failed", message: "認識できません", retryable: false });
   await emit(session, { type: "done", reason: "no_speech_timeout", hasSpeech: false, usage });
+  expect(options.setTranscript).toHaveBeenLastCalledWith("画面に見えた文章");
   expect(options.onError).toHaveBeenCalledTimes(1);
   expect(options.onUsage).not.toHaveBeenCalled();
   expect(options.onDiagnostic).toHaveBeenCalledWith("stt_runner_error", expect.any(Object));
@@ -656,7 +706,7 @@ test("retryable Runner failure waits for cleanup, preserves the draft, and ignor
   expect(result.current.phase).toBe("connecting");
   expect(result.current.isArmed()).toBe(true);
   expect(session.abort).toHaveBeenCalledTimes(1);
-  expect(options.setTranscript).toHaveBeenLastCalledWith("draft final");
+  expect(options.setTranscript).toHaveBeenLastCalledWith("draft finalprivate partial");
   await act(async () => { session.callbacks.onClose(); session.callbacks.onError("late error"); });
   await emit(session, { type: "done", reason: "no_speech_timeout", hasSpeech: false });
   await advanceTimers(10_000);
@@ -670,7 +720,7 @@ test("retryable Runner failure waits for cleanup, preserves the draft, and ignor
   await emit(retry, { type: "ready" });
   expect(result.current.phase).toBe("recording");
   await emit(retry, { type: "transcript", text: "next", isFinal: false });
-  expect(options.setTranscript).toHaveBeenLastCalledWith("draft final next");
+  expect(options.setTranscript).toHaveBeenLastCalledWith("draft finalprivate partial next");
   expect(options.onError).not.toHaveBeenCalled();
   expect(options.sendTranscript).not.toHaveBeenCalled();
   expect(options.onDiagnostic).toHaveBeenCalledWith("stt_runner_error", {

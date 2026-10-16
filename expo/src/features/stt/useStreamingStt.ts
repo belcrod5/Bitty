@@ -20,6 +20,7 @@ type Options = {
   runnerToken: string;
   transcript: string;
   autoReplyAfterStt: boolean;
+  continuousDictation?: boolean;
   correctionContext: SttCorrectionContext[];
   correctionIdentity: string;
   setTranscript: (text: string) => void;
@@ -186,7 +187,7 @@ export function useStreamingStt(options: Options) {
     clearCorrection();
     clearTimer(retryTimerRef);
     void abortSession();
-    setTranscript(draft ?? finalStreamingTranscript(transcriptStateRef.current));
+    setTranscript(draft ?? displayStreamingTranscript(transcriptStateRef.current));
     setPhase("idle");
     onError(message);
   }, [abortSession, clearCorrection, clearReplyCycleWait, onError, setTranscript]);
@@ -438,7 +439,7 @@ export function useStreamingStt(options: Options) {
         terminalRef.current = true;
         const version = ++sessionVersionRef.current;
         const attempt = ++errorRetriesRef.current;
-        const draft = finalStreamingTranscript(transcriptStateRef.current);
+        const draft = displayStreamingTranscript(transcriptStateRef.current);
         transcriptStateRef.current = startStreamingTranscript(draft);
         latestRef.current.setTranscript(draft);
         setPhase("connecting");
@@ -475,8 +476,17 @@ export function useStreamingStt(options: Options) {
       const finalText = finalStreamingTranscript(transcriptStateRef.current);
       const hasFinalSpeech = transcriptStateRef.current.finalText.trim().length > 0;
       if (message.reason === "limit_reached") listeningRef.current = false;
-      latestRef.current.setTranscript(finalText);
+      if (message.reason === "recognition_segment_end" && latestRef.current.continuousDictation
+        && listeningRef.current) {
+        const draft = displayStreamingTranscript(transcriptStateRef.current);
+        transcriptStateRef.current = startStreamingTranscript(draft);
+        latestRef.current.setTranscript(draft);
+        setPhase("connecting");
+        scheduleStart();
+        return;
+      }
       if (message.hasSpeech && hasFinalSpeech) {
+        latestRef.current.setTranscript(finalText);
         setPhase("idle");
         if (latestRef.current.autoReplyAfterStt && finalText.trim()) {
           setPhase("correcting");
@@ -535,12 +545,14 @@ export function useStreamingStt(options: Options) {
         finalChars: transcriptStateRef.current.finalText.length,
         interimChars: transcriptStateRef.current.interimText.length,
       });
+      const draft = displayStreamingTranscript(transcriptStateRef.current);
+      latestRef.current.setTranscript(draft);
       if (!listeningRef.current || message.reason === "limit_reached") {
         listeningRef.current = false;
         setPhase("idle");
         return;
       }
-      transcriptStateRef.current = startStreamingTranscript(finalText);
+      transcriptStateRef.current = startStreamingTranscript(draft);
       setPhase("connecting");
       scheduleStart();
     });
