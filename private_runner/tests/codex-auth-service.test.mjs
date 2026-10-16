@@ -249,6 +249,50 @@ test("marks only the failing profile unavailable and rejects malformed limits sa
   });
 });
 
+test("a malformed full read cannot clear the previously accepted account quota", async () => {
+  await withService(async (root) => {
+    const usage = createCodexUsageService({ storePath: path.join(root, "usage.json"), now: () => 1_000_100 });
+    const oldLimits = { primary: { usedPercent: 20, windowDurationMins: 300, resetsAt: 2000 } };
+    await usage.observe("a", { rateLimits: oldLimits }, { observedAt: 1_000_000 });
+    const access = `x.${Buffer.from(JSON.stringify({ exp: 4102444800 })).toString("base64url")}.x`;
+    const service = createCodexAuthService({ rootDir: root, now: () => 1_000_100,
+      isolatedProcessFactory: async () => createFakeRateLimitProcess({ rateLimits: {
+        primary: { usedPercent: 25, windowDurationMins: "bad", resetsAt: 2000 },
+        secondary: { usedPercent: 40, windowDurationMins: 10080, resetsAt: 9000 },
+      } }),
+      onRateLimits: async (accountId, update, options) => {
+        await usage.observe(accountId, update, options);
+        return usage.rateLimits(accountId);
+      },
+    });
+    await service.save(profile("a", { tokens: { access_token: access, refresh_token: "refresh", account_id: "a" }, rateLimits: oldLimits }));
+    await assert.rejects(() => service.refreshRateLimits("a"), /rate limits unavailable/);
+    assert.deepEqual(await usage.rateLimits("a"), oldLimits);
+    assert.deepEqual((await service.read("a")).rateLimits, oldLimits);
+  });
+});
+
+test("reads the ordinary Codex bucket when limits are keyed by limit ID", async () => {
+  await withService(async (root) => {
+    const access = `x.${Buffer.from(JSON.stringify({ exp: 4102444800 })).toString("base64url")}.x`;
+    const usage = createCodexUsageService({ storePath: path.join(root, "usage.json") });
+    const service = createCodexAuthService({ rootDir: root,
+      isolatedProcessFactory: async () => createFakeRateLimitProcess({ rateLimitsByLimitId: {
+        codex: { primary: { usedPercent: 25, windowDurationMins: 10080, resetsAt: 9000 } },
+      } }),
+      onRateLimits: async (accountId, update, options) => {
+        await usage.observe(accountId, update, options);
+        return usage.rateLimits(accountId);
+      },
+    });
+    await service.save(profile("a", { tokens: { access_token: access, refresh_token: "refresh", account_id: "a" } }));
+    assert.deepEqual(await service.refreshRateLimits("a"), {
+      primary: { usedPercent: 25, windowDurationMins: 10080, resetsAt: 9000 },
+    });
+    assert.match((await usage.snapshot("a")).statusText, /Weekly limit:[^\n]*75% left/);
+  });
+});
+
 test("failed canonical quota observation cannot save a newer profile percentage", async () => {
   await withService(async (root) => {
     const access = `x.${Buffer.from(JSON.stringify({ exp: 4102444800 })).toString("base64url")}.x`;
@@ -281,7 +325,7 @@ test("shutdown waits for isolated rate-limit cleanup and rejects new auth work",
           if (method === "account/rateLimits/read") {
             rateLimitRequested();
             await responseAllowed;
-            return { rateLimits: { primary: { usedPercent: 12 } } };
+            return { rateLimits: { primary: { usedPercent: 12, windowDurationMins: 300 } } };
           }
           return {};
         },

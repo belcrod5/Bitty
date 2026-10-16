@@ -125,6 +125,71 @@ test("sparse window positions and nullable metadata preserve both quota duration
   });
 });
 
+test("a complete read removes omitted windows and accepts an earlier upstream reset", async () => {
+  await fixture(async ({ service, advance }) => {
+    await service.observe("a", { rateLimits: {
+      primary: window(10, 2000), secondary: window(30, 9000, 10080),
+    } }, { observedAt: 1_000_000 });
+    advance(1_000_100);
+    await service.observe("a", { rateLimits: {
+      primary: window(40, 8000, 10080), secondary: null,
+    } }, { observedAt: 1_000_100 });
+    const limits = await service.rateLimits("a");
+    assert.deepEqual(limits.primary, window(40, 8000, 10080));
+    assert.equal(limits.secondary, undefined);
+    assert.doesNotMatch((await service.snapshot("a")).statusText, /5h limit/);
+    assert.match((await service.snapshot("a")).statusText, /Weekly limit:[^\n]*60% left/);
+  });
+});
+
+test("partial notifications preserve other windows until the next complete read", async () => {
+  await fixture(async ({ service, advance }) => {
+    await service.observe("a", { rateLimits: {
+      primary: window(10, 2000), secondary: window(30, 9000, 10080),
+    } }, { observedAt: 1_000_000 });
+    await service.observeNotification("a", "account/rateLimits/updated", {
+      rateLimits: { primary: window(40, 9000, 10080), secondary: null },
+    });
+    assert.match((await service.snapshot("a")).statusText, /5h limit:[^\n]*90% left/);
+    assert.match((await service.snapshot("a")).statusText, /Weekly limit:[^\n]*60% left/);
+    advance(1_000_100);
+    await service.observe("a", { rateLimits: {
+      primary: null, secondary: window(50, 8000, 10080),
+    } }, { observedAt: 1_000_100 });
+    assert.doesNotMatch((await service.snapshot("a")).statusText, /5h limit/);
+    assert.match((await service.snapshot("a")).statusText, /Weekly limit:[^\n]*50% left/);
+  });
+});
+
+test("a complete window read preserves omitted credit allowance", async () => {
+  await fixture(async ({ service, sent, advance }) => {
+    await service.observe("a", { ordinaryUsageAllowed: false, rateLimits: {
+      primary: window(100), credits: { hasCredits: true, unlimited: false },
+    } }, { observedAt: 1_000_000 });
+    advance(1_000_100);
+    await service.observe("a", { rateLimits: { primary: window(100) } }, { observedAt: 1_000_100 });
+    assert.equal(sent.length, 0);
+    assert.equal((await service.snapshot("a")).usageLimitReached, false);
+    assert.deepEqual((await service.rateLimits("a")).credits, { hasCredits: true, unlimited: false });
+  });
+});
+
+test("a malformed complete read cannot replace a displayable quota", async () => {
+  await fixture(async ({ service, advance }) => {
+    await service.observe("a", { rateLimits: { primary: window(20) } }, { observedAt: 1_000_000 });
+    const before = await service.snapshot("a");
+    advance(1_000_100);
+    await assert.rejects(() => service.observe("a", { rateLimits: {
+      primary: { usedPercent: 25, windowDurationMins: "bad", resetsAt: 2000 },
+    } }, { observedAt: 1_000_100 }), /rate limits unavailable/);
+    assert.deepEqual(await service.snapshot("a"), before);
+    await service.observe("a", { ordinaryUsageAllowed: false, rateLimits: {
+      primary: null, secondary: null,
+    } }, { observedAt: 1_000_100 });
+    assert.match((await service.snapshot("a")).statusText, /5h limit:[^\n]*80% left/);
+  });
+});
+
 test("explicit permission and usable credits govern blocks, null permission cannot infer recovery", async () => {
   await fixture(async ({ service, sent, advance }) => {
     await service.observe("a", { ...update(100), ordinaryUsageAllowed: false,
