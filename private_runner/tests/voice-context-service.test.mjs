@@ -577,6 +577,23 @@ test("a pending native child without a turn blocks until its terminal turn is re
   assert.equal((await service.configure("gpt-6-luna", "low")).model, "gpt-6-luna");
 });
 
+test("subAgentActivity blocks a parent switch while its child has no turn yet", async (t) => {
+  const nativeThreads = new Map();
+  const nativeReadErrors = new Map();
+  const { rootDir, service, conversation } = await fixture(t, { nativeThreads, nativeReadErrors });
+  await complete(service, conversation, "first");
+  const active = JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8"));
+  const childId = randomUUID();
+  nativeThreads.get(active.nativeThreadId).turns[0].items.push({
+    type: "subAgentActivity", agentThreadId: childId, kind: "started" });
+  nativeThreads.set(childId, { id: childId, status: { type: "idle" }, turns: [] });
+  await assert.rejects(service.configure("gpt-6-luna", "low"), { code: "session_busy" });
+  nativeThreads.get(active.nativeThreadId).turns[0].items.push({
+    type: "subAgentActivity", agentThreadId: childId, kind: "completed" });
+  nativeReadErrors.set(childId, new Error(`thread not found: ${childId}`));
+  assert.equal((await service.configure("gpt-6-luna", "low")).model, "gpt-6-luna");
+});
+
 test("terminal ephemeral descendants do not permanently block lifecycle after disappearing", async (t) => {
   const nativeThreads = new Map();
   const nativeReadErrors = new Map();
@@ -2149,6 +2166,45 @@ test("legacy main parent starts a fresh thread before the user's first checklist
   assert.equal(threads.some(({ method, params }) => method === "thread/resume" && params.threadId === oldThreadId), false);
 });
 
+test("agent-disabled checklist parent waits for its native child before migration", async (t) => {
+  const nativeThreads = new Map();
+  const { rootDir, service, conversation, codex } = await fixture(t, {
+    taskChecklistPath: "task-checklists/main.md", nativeThreads,
+    nativeRequests: [checklistReadCall("read")],
+  });
+  assert.equal((await complete(service, conversation, "first task")).result.status, "completed");
+  const activeFile = path.join(rootDir, "active.json");
+  const old = JSON.parse(await fs.readFile(activeFile, "utf8"));
+  assert.equal(old.nativeAgentsEnabled, true);
+  assert.equal(old.checklistReadPending, false);
+  delete old.nativeAgentsEnabled; // State created by the previous release.
+  await fs.writeFile(activeFile, JSON.stringify(old));
+  const childId = randomUUID();
+  nativeThreads.get(old.nativeThreadId).turns[0].items.push({ type: "collabAgentToolCall",
+    status: "completed", receiverThreadIds: [childId] });
+  nativeThreads.set(childId, { id: childId, parentThreadId: old.nativeThreadId,
+    turns: [{ id: randomUUID(), status: "waiting_approval", items: [] }] });
+  const migrated = createVoiceContextService({ rootDir, createClient: codex.createClient,
+    taskChecklistPath: "task-checklists/main.md" });
+  await migrated.open();
+  const callsBeforeMigration = codex.calls.length;
+  const starts = codex.calls.filter(({ method, params }) => method === "thread/start"
+    && params.approvalPolicy === "on-request").length;
+  const blocked = (await complete(migrated, conversation, "continue task")).result;
+  assert.equal(blocked.code, "session_busy");
+  assert.equal(codex.calls.filter(({ method, params }) => method === "thread/start"
+    && params.approvalPolicy === "on-request").length, starts);
+  nativeThreads.get(childId).turns[0].status = "completed";
+  const resumed = (await complete(migrated, conversation, "continue task")).result;
+  assert.equal(resumed.status, "completed");
+  const next = JSON.parse(await fs.readFile(activeFile, "utf8"));
+  assert.notEqual(next.nativeThreadId, old.nativeThreadId);
+  assert.equal(next.nativeAgentsEnabled, true);
+  assert.equal(next.checklistReadPending, false);
+  assert.equal(codex.calls.slice(callsBeforeMigration).some(({ method, params }) => method === "thread/resume"
+    && params.threadId === old.nativeThreadId), false);
+});
+
 test("new main parent rejects a checklist changed during the read tool call", async (t) => {
   let file;
   let revision = 0;
@@ -2188,7 +2244,63 @@ test("checklist preflight declines a command before the user turn", async (t) =>
   assert.equal(result.code, "checklist_preflight_unsafe_tool");
   assert.ok(codex.calls.filter(({ method }) => method === "native/result")
     .every(({ result: decision }) => decision.decision === "decline"));
+  assert.equal(codex.calls.filter(({ method }) => method === "turn/interrupt").length, 1);
   assert.equal(codex.calls.filter(({ method }) => method === "turn/start").length, 1);
+});
+
+test("checklist preflight starts an agent-capable parent but stops unsafe delegation", async (t) => {
+  let delegated = 0;
+  const managedSessions = {
+    refresh: async () => ({ records: [] }), contextOf: () => "",
+    handleTool: async () => { delegated++; return { success: true, contentItems: [] }; },
+  };
+  const { service, conversation, codex } = await fixture(t, {
+    taskChecklistPath: "task-checklists/main.md", managedSessions,
+    nativeRequests: [{ preflight: true, method: "item/tool/call", threadId: "root", turnId: "root",
+      callId: "delegate", namespace: "voice_subagent", tool: "status", arguments: {},
+      startedItem: { id: "delegate", type: "dynamicToolCall", status: "inProgress" } }],
+  });
+  const result = (await complete(service, conversation, "continue")).result;
+  assert.equal(result.status, "preflight_failed");
+  assert.equal(result.code, "checklist_preflight_unsafe_tool");
+  assert.equal(delegated, 0);
+  assert.equal(codex.calls.find(({ method }) => method === "native/result").result.success, false);
+  assert.equal(codex.calls.filter(({ method }) => method === "turn/interrupt").length, 1);
+  const parent = codex.calls.find(({ method, params }) => method === "thread/start"
+    && params.approvalPolicy === "on-request");
+  assert.equal(parent.params.config.agents.enabled, true);
+  assert.equal(parent.params.config.mcp_servers, undefined);
+});
+
+test("native delegation started during checklist read interrupts preflight", async (t) => {
+  const { service, conversation, codex } = await fixture(t, {
+    taskChecklistPath: "task-checklists/main.md", nativeRequests: [checklistReadCall("read")],
+    agentEvents: [{ method: "item/started", params: {
+      item: { id: "agent", type: "collabAgentToolCall", status: "inProgress" } } }],
+  });
+  const result = (await complete(service, conversation, "continue")).result;
+  assert.equal(result.status, "preflight_failed");
+  assert.equal(result.code, "checklist_preflight_unsafe_tool");
+  assert.equal(codex.calls.filter(({ method }) => method === "turn/interrupt").length, 1);
+});
+
+test("native subAgentActivity during checklist read never starts the user's turn", async (t) => {
+  for (const [method, kind] of [
+    ["item/started", "started"], ["item/completed", "started"],
+    ["item/completed", "completed"],
+  ]) {
+    const { service, conversation, codex } = await fixture(t, {
+      taskChecklistPath: "task-checklists/main.md", nativeRequests: [checklistReadCall("read")],
+      agentEvents: [{ method, params: { item: {
+        id: "agent", type: "subAgentActivity", kind, agentThreadId: randomUUID(),
+      } } }],
+    });
+    const result = (await complete(service, conversation, "continue")).result;
+    assert.equal(result.status, "preflight_failed");
+    assert.equal(result.code, "checklist_preflight_unsafe_tool");
+    assert.equal(codex.calls.filter(({ method: call }) => call === "turn/interrupt").length, 1);
+    assert.equal(codex.calls.filter(({ method: call }) => call === "turn/start").length, 1);
+  }
 });
 
 test("restart never recovers an unverified checklist parent reply as completed", async (t) => {
@@ -2211,7 +2323,7 @@ test("restart never recovers an unverified checklist parent reply as completed",
   const activeFile = path.join(rootDir, "active.json");
   const active = JSON.parse(await fs.readFile(activeFile, "utf8"));
   await fs.writeFile(activeFile, JSON.stringify({ ...active, nativeThreadId: threadId,
-    nativeTurnId: turnId, checklistReadPending: true }));
+    nativeTurnId: turnId, checklistReadPending: true, nativeAgentsEnabled: true }));
   nativeThreads.set(threadId, { id: threadId, turns: [{ id: turnId, status: "completed",
     items: [{ type: "userMessage", text: "continue" }, { type: "agentMessage", text: "unsafe reply" }] }] });
   const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient,

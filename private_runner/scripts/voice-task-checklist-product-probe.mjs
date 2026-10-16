@@ -10,8 +10,8 @@ import { createVoiceContextService } from "../src/voice-context-service.mjs";
 
 const base = fileURLToPath(new URL("../../tmp/", import.meta.url));
 const scenario = process.argv[2] || "code";
-if (!["code", "mail", "legacy", "managed"].includes(scenario) || process.argv.length > 3) {
-  throw new Error("Usage: node voice-task-checklist-product-probe.mjs [code|mail|legacy|managed]");
+if (!["code", "mail", "legacy", "managed", "native"].includes(scenario) || process.argv.length > 3) {
+  throw new Error("Usage: node voice-task-checklist-product-probe.mjs [code|mail|legacy|managed|native]");
 }
 const run = path.join(base, `voice-checklist-product-${randomUUID()}`);
 const rootDir = path.join(run, "voice_context", "v1");
@@ -55,7 +55,8 @@ const createClient = () => {
     if (["thread/start", "thread/resume"].includes(method) && params?.approvalPolicy === "on-request") {
       evidence.push({ method, hasChecklistInstruction: params.developerInstructions?.includes("task-checklists/main.md"),
         hasNewParentReadInstruction: params.developerInstructions?.includes("新しい親セッションでは"),
-        sandbox: params.sandbox, dynamicToolCount: params.dynamicTools?.length || 0 });
+        sandbox: params.sandbox, agentsEnabled: params.config?.agents?.enabled,
+        dynamicToolCount: params.dynamicTools?.length || 0 });
     }
     const result = await originalRequest(method, params, timeout);
     if (method === "config/read") evidence.push({ method, mcpNames: Object.keys(result.config?.mcp_servers || {}) });
@@ -98,6 +99,11 @@ const createClient = () => {
         ...(params.item.type === "commandExecution" && params.item.command === "/bin/zsh -lc 'cat task-checklists/main.md'"
           && method === "item/completed" ? { readOutput: params.item.aggregatedOutput } : {}),
         changes: params.item.changes?.map(({ path: file, kind }) => ({ path: file, kind: kind?.type })) });
+    }
+    if (["item/started", "item/completed", "item/failed"].includes(method)
+      && ["collabAgentToolCall", "subAgentActivity"].includes(params?.item?.type)) {
+      evidence.push({ method, type: params.item.type, kind: params.item.kind, status: params.item.status,
+        receiverThreadIds: params.item.receiverThreadIds, agentThreadId: params.item.agentThreadId });
     }
     callback(method, params);
   });
@@ -160,6 +166,9 @@ try {
   }
   if (scenario === "managed") {
     await turn("managed_status", "架空の作業を開始します。まず voice_subagent.status ツールを呼び、委任セッションがないか確認してください。その結果と次の一手を task-checklists/main.md に記録してください。");
+  } else if (scenario === "native") {
+    await turn("native_delegate", "架空の設計作業です。Codex のネイティブサブエージェントを実際に1人起動し、『A案は速いが複雑、B案は少し遅いが単純』を比較して、どちらが保守しやすいか一言だけ検討させてください。外部アクセスやコマンドは不要です。その結果と次の一手を task-checklists/main.md に記録してください。");
+    await turn("native_delegate_confirmed", "はい、ネイティブサブエージェントを1人起動して比較させ、結果を task-checklists/main.md に記録してください。これは実行への明示的な許可です。外部アクセスやコマンドは不要です。");
   } else if (scenario === "legacy") {
     await turn("old_parent", "架空作業。A-01は完了済み、A-02は結果不明です。次はA-02の結果確認です。短く返答して。");
     service = createVoiceContextService({ rootDir, createClient,
