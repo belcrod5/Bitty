@@ -38,6 +38,47 @@ final class Completion: @unchecked Sendable {
     }
 }
 
+final class AudioDiagnostics: @unchecked Sendable {
+    private let lock = NSLock()
+    private var frames = 0
+    private var buffers = 0
+    private weak var task: SFSpeechRecognitionTask?
+    private var nextProgressFrame = 1
+
+    func setTask(_ value: SFSpeechRecognitionTask) {
+        lock.lock()
+        task = value
+        lock.unlock()
+    }
+
+    func appended(_ count: Int) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        frames += count
+        buffers += 1
+        guard frames >= nextProgressFrame else { return false }
+        nextProgressFrame = (frames / 160_000 + 1) * 160_000
+        return true
+    }
+
+    func snapshot() -> [String: Any] {
+        lock.lock()
+        let counts: [String: Any] = ["appendedFrames": frames, "appendedBuffers": buffers]
+        let currentTask = task
+        lock.unlock()
+        let state: String
+        switch currentTask?.state {
+        case .starting: state = "starting"
+        case .running: state = "running"
+        case .finishing: state = "finishing"
+        case .canceling: state = "canceling"
+        case .completed: state = "completed"
+        default: state = "unknown"
+        }
+        return counts.merging(["taskState": state]) { _, next in next }
+    }
+}
+
 @main
 struct BittyMacStt {
     static func main() async {
@@ -71,8 +112,12 @@ struct BittyMacStt {
         request.requiresOnDeviceRecognition = true
         request.taskHint = .dictation
         let completion = Completion()
+        let diagnostics = AudioDiagnostics()
         let task = recognizer.recognitionTask(with: request) { result, error in
             if let result {
+                if result.isFinal {
+                    output.send(diagnostics.snapshot().merging(["type": "audio_summary", "trigger": "final"]) { _, next in next })
+                }
                 output.send([
                     "type": "transcript",
                     "text": result.bestTranscription.formattedString,
@@ -94,10 +139,12 @@ struct BittyMacStt {
                     message["underlyingErrorDomain"] = underlyingError.domain
                     message["underlyingErrorCode"] = underlyingError.code
                 }
+                output.send(diagnostics.snapshot().merging(["type": "audio_summary", "trigger": "error"]) { _, next in next })
                 output.send(message)
                 completion.finish()
             }
         }
+        diagnostics.setTask(task)
         output.send(["type": "ready"])
 
         let input = Task.detached {
@@ -121,6 +168,9 @@ struct BittyMacStt {
                     if let base = bytes.baseAddress { memcpy(samples[0], base, data.count) }
                 }
                 request.append(buffer)
+                if diagnostics.appended(Int(buffer.frameLength)) {
+                    output.send(diagnostics.snapshot().merging(["type": "audio_summary", "trigger": "audio_progress"]) { _, next in next })
+                }
             }
             if !pending.isEmpty {
                 output.send(["type": "error", "code": "macos_invalid_audio"])
@@ -128,6 +178,7 @@ struct BittyMacStt {
                 return
             }
             request.endAudio()
+            output.send(diagnostics.snapshot().merging(["type": "audio_summary", "trigger": "input_ended"]) { _, next in next })
         }
         await input.value
         await completion.wait()

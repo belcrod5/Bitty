@@ -1,3 +1,4 @@
+import { createClientAppLogWriter } from "./client-app-log-writer.mjs";
 import { withLlmSessionRollout } from "./llm-session-rollout-file.mjs";
 import http from "node:http";
 import https from "node:https";
@@ -273,8 +274,9 @@ const CLIENT_APP_LOG_DIR = path.resolve(
   WORKSPACE_ROOT,
   process.env.CLIENT_APP_LOG_DIR || "private_runner/logs/client_auto_logs"
 );
-const CLIENT_APP_LOG_PATH = path.join(CLIENT_APP_LOG_DIR, `${RUNNER_SESSION_STAMP}.jsonl`);
-const CLIENT_APP_LOG_MAX_FILES = Math.max(1, Number(process.env.CLIENT_APP_LOG_MAX_FILES || 10));
+const clientAppLogWriter = createClientAppLogWriter({
+  directory: CLIENT_APP_LOG_DIR, stamp: RUNNER_SESSION_STAMP, maxFiles: process.env.CLIENT_APP_LOG_MAX_FILES,
+});
 const CLIENT_APP_LOG_SESSION_DIAG_DETAIL_ENABLED = (
   String(process.env.CLIENT_APP_LOG_SESSION_DIAG_DETAIL_ENABLED || "0").trim() === "1"
 );
@@ -542,8 +544,6 @@ const CLI_SESSION_INDEX_REFRESH_MIN_INTERVAL_MS = Math.max(
 );
 let llmRequestLogInitPromise = null;
 let llmRequestLogWriteQueue = Promise.resolve();
-let clientAppLogInitPromise = null;
-let clientAppLogWriteQueue = Promise.resolve();
 let codexWsProxyDebugLogInitPromise = null;
 let codexWsProxyDebugWriteQueue = Promise.resolve();
 const codexWsProxyDebugBuffer = [];
@@ -4326,52 +4326,36 @@ function shouldPersistClientAppLogEvent(sourceRaw, eventRaw) {
   return !SESSION_DIAG_DETAIL_EVENTS.has(eventName);
 }
 
-async function ensureClientAppLogInitialized() {
-  if (!clientAppLogInitPromise) {
-    clientAppLogInitPromise = (async () => {
-      await fs.mkdir(CLIENT_APP_LOG_DIR, { recursive: true });
-      await pruneOldJsonlFiles(CLIENT_APP_LOG_DIR, CLIENT_APP_LOG_MAX_FILES - 1, CLIENT_APP_LOG_PATH);
-    })().catch((err) => {
-      clientAppLogInitPromise = null;
-      throw err;
-    });
-  }
-  return clientAppLogInitPromise;
-}
-
-function appendClientAppLogs(entry) {
+async function appendClientAppLogs(entry) {
   const payload = entry && typeof entry === "object" ? entry : {};
-  clientAppLogWriteQueue = clientAppLogWriteQueue
-    .then(async () => {
-      const eventsRaw = Array.isArray(payload.events) ? payload.events : [];
-      if (eventsRaw.length <= 0) return;
-      const source = truncateClientLogString(payload.source || "unknown", 48);
-      const events = eventsRaw
-        .slice(0, CLIENT_APP_LOG_MAX_EVENTS_PER_REQUEST)
-        .map((item, index) => normalizeClientAppLogEvent(item, index))
-        .filter((item) => shouldPersistClientAppLogEvent(source, item.event));
-      if (events.length <= 0) return;
-      await ensureClientAppLogInitialized();
-      const base = {
-        timestamp: new Date().toISOString(),
-        source,
-        sessionId: truncateClientLogString(payload.sessionId || "", 80),
-        device: truncateClientLogString(payload.device || "", 80),
-        remoteAddress: truncateClientLogString(payload.remoteAddress || "", 80),
-      };
-      const lines = events.map((event) => JSON.stringify({
-        ...base,
-        ...event,
-      }));
-      for (const event of events) {
-        logClientSendTrace(source, base.sessionId, event);
-      }
-      await fs.appendFile(CLIENT_APP_LOG_PATH, `${lines.join("\n")}\n`, "utf8");
-    })
-    .catch((err) => {
-      console.error("[client-app-log] failed", err);
-    });
-  return clientAppLogWriteQueue;
+  try {
+    const eventsRaw = Array.isArray(payload.events) ? payload.events : [];
+    if (eventsRaw.length <= 0) return;
+    const source = truncateClientLogString(payload.source || "unknown", 48);
+    const events = eventsRaw
+      .slice(0, CLIENT_APP_LOG_MAX_EVENTS_PER_REQUEST)
+      .map((item, index) => normalizeClientAppLogEvent(item, index))
+      .filter((item) => shouldPersistClientAppLogEvent(source, item.event));
+    if (events.length <= 0) return;
+    const base = {
+      timestamp: new Date().toISOString(),
+      source,
+      sessionId: truncateClientLogString(payload.sessionId || "", 80),
+      device: truncateClientLogString(payload.device || "", 80),
+      remoteAddress: truncateClientLogString(payload.remoteAddress || "", 80),
+    };
+    const lines = events.map((event) => JSON.stringify({
+      ...base,
+      ...event,
+    }));
+    for (const event of events) {
+      logClientSendTrace(source, base.sessionId, event);
+    }
+    const { droppedLines } = await clientAppLogWriter.append(lines);
+    if (droppedLines) console.warn(`[client-app-log] dropped oversized lines=${droppedLines}`);
+  } catch (err) {
+    console.error("[client-app-log] failed", err);
+  }
 }
 
 async function ensureCodexWsProxyDebugLogInitialized() {
@@ -6891,7 +6875,7 @@ const handleRunnerRequest = async (req, res) => {
       return json(res, 200, {
         ok: true,
         accepted: eventsRaw.length,
-        logPath: path.relative(WORKSPACE_ROOT, CLIENT_APP_LOG_PATH),
+        logPath: path.relative(WORKSPACE_ROOT, clientAppLogWriter.path),
       });
     } catch (err) {
       console.error("[client-logs] failed", err);
@@ -10141,9 +10125,9 @@ async function initializeLlmRequestLogRuntime() {
 
 async function initializeClientAppLogRuntime() {
   try {
-    await ensureClientAppLogInitialized();
+    await clientAppLogWriter.initialize();
     console.log(
-      `[client-app-log] file=${path.relative(WORKSPACE_ROOT, CLIENT_APP_LOG_PATH)} maxFiles=${CLIENT_APP_LOG_MAX_FILES} sessionDiagDetail=${CLIENT_APP_LOG_SESSION_DIAG_DETAIL_ENABLED ? "on" : "off"}`
+      `[client-app-log] file=${path.relative(WORKSPACE_ROOT, clientAppLogWriter.path)} maxFiles=${clientAppLogWriter.maxFiles} sessionDiagDetail=${CLIENT_APP_LOG_SESSION_DIAG_DETAIL_ENABLED ? "on" : "off"}`
     );
   } catch (err) {
     console.warn(

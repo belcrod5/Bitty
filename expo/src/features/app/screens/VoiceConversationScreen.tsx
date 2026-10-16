@@ -247,6 +247,7 @@ function VoiceConversationSession({
     onError: voice.setError,
     onDiagnostic: (event, payload) => logSessionDiag(event, {
       source: "voice_conversation",
+      paused, transitioning, ready: voice.ready, replyLoading, turnStatus: voice.turnStatus, playbackActive,
       ...payload,
     }, { throttleMs: 0 }),
     canStart,
@@ -255,6 +256,13 @@ function VoiceConversationSession({
     ttsPlaybackActive: playbackActive,
     voiceInputDuringTtsAllowed: false,
   });
+  useEffect(() => {
+    if (streamingStt.phase !== "connecting" || canStart) return;
+    logSessionDiag("stt_start_gate_changed", {
+      source: "voice_conversation", paused, transitioning, ready: voice.ready,
+      replyLoading, turnStatus: voice.turnStatus, playbackActive,
+    }, { throttleMs: 0 });
+  }, [streamingStt.phase, canStart, paused, transitioning, voice.ready, replyLoading, voice.turnStatus, playbackActive]);
   const footerSwipe = useMemo(() => Gesture.Pan()
     .enabled(!editingTranscript && !streamingStt.correctionPreview?.editing)
     .activeOffsetY([-24, 24])

@@ -570,6 +570,7 @@ test("routes privacy-safe STT diagnostics from the voice conversation to the sha
   mockLastSttOptions?.onDiagnostic("stt_final_transcript_received", { version: 1, chars: 0, lastPartialChars: 7 });
   expect(mockLogSessionDiag).toHaveBeenCalledWith("stt_final_transcript_received", {
     source: "voice_conversation", version: 1, chars: 0, lastPartialChars: 7,
+    paused: false, transitioning: false, ready: true, replyLoading: false, turnStatus: "completed", playbackActive: false,
   }, { throttleMs: 0 });
   expect(JSON.stringify(mockLogSessionDiag.mock.calls)).not.toContain("runner.test");
   await screen.unmount();
@@ -972,5 +973,26 @@ test("a failed orchestrator list leaves a close control", async () => {
   await waitFor(() => screen.getByText("Runner unavailable"));
   await fireEvent.press(screen.getByLabelText("音声会話を閉じる"));
   expect(mockOnClose).toHaveBeenCalledTimes(1);
+  await screen.unmount();
+});
+
+test("records gate changes only while connecting and without repeating unchanged gates", async () => {
+  mockStt.phase = "connecting";
+  mockVoice.ready = false;
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  const gateCalls = () => mockLogSessionDiag.mock.calls.filter(([event]) => event === "stt_start_gate_changed");
+  expect(gateCalls()).toHaveLength(1);
+  expect(gateCalls()[0][1]).toEqual({ source: "voice_conversation", paused: false, transitioning: false,
+    ready: false, replyLoading: false, turnStatus: "completed", playbackActive: false });
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(gateCalls()).toHaveLength(1);
+  mockVoice.turnStatus = "running";
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(gateCalls()).toHaveLength(2);
+  expect(gateCalls()[1][1]).toEqual(expect.objectContaining({ ready: false, replyLoading: true, turnStatus: "running" }));
+  mockStt.phase = "idle";
+  mockVoice.turnStatus = "completed";
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(gateCalls()).toHaveLength(2);
   await screen.unmount();
 });
