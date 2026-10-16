@@ -65,7 +65,8 @@
         }
       ],
       "./plugins/withRemovedLocationPermissions",
-      "./plugins/withPushNotificationPresentation"
+      "./plugins/withPushNotificationPresentation",
+      "./plugins/withSiriVoiceIntent"
     ],
     "ios": {
       "supportsTablet": true,

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useRunnerWebSocketManager, useRunnerWebSocketSnapshot } from "../../runnerWs/RunnerWebSocketContext";
 import type { VoiceOrchestrator } from "../components/VoiceOrchestratorIcon";
+import { mutatePersistedSettings, SIRI_VOICE_ORCHESTRATORS_FIELD } from "../utils/persistedSettingsFile";
 
 export type OrchestratorActivity = {
   id: string;
@@ -37,6 +38,7 @@ export function useOrchestratorActivities(runnerUrl: string, runnerToken: string
   const [orchestrators, setOrchestrators] = useState<VoiceOrchestrator[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const metadataRevision = useRef(0);
+  const siriNamesKey = useRef("");
   const credentials = useRef({ runnerUrl, runnerToken });
 
   useEffect(() => {
@@ -68,12 +70,21 @@ export function useOrchestratorActivities(runnerUrl: string, runnerToken: string
       const items = metadata.orchestrators;
       if (Array.isArray(items) && typeof metadata.selectedId === "string") {
         setSelectedId(metadata.selectedId);
-        setOrchestrators(items.flatMap((item): VoiceOrchestrator[] => {
+        const orchestrators = items.flatMap((item): VoiceOrchestrator[] => {
           if (!item || typeof item !== "object" || typeof item.id !== "string") return [];
           return [{ id: item.id, name: typeof item.name === "string" ? item.name : "?",
             icon: typeof item.icon === "string" ? item.icon : "",
             unreadCount: typeof item.unreadCount === "number" ? item.unreadCount : 0 }];
-        }));
+        });
+        setOrchestrators(orchestrators);
+        const names = orchestrators.map(({ id, name }) => ({ id, name }));
+        const key = JSON.stringify([runnerUrl, names]);
+        if (siriNamesKey.current !== key) {
+          siriNamesKey.current = key;
+          void mutatePersistedSettings((current) => ({ ...current,
+            [SIRI_VOICE_ORCHESTRATORS_FIELD]: { runnerUrl, orchestrators: names },
+          })).catch(() => { siriNamesKey.current = ""; });
+        }
       }
     };
     const unsubscribeActivity = manager.subscribe(

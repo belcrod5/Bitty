@@ -89,8 +89,8 @@ import {
 import type { WorkspaceFileTarget } from "../utils/workspaceFiles";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { VoiceConversationScreen, type VoiceConversationPlayback } from "./VoiceConversationScreen";
-import { clearPendingPushVoiceOrchestratorId, getPendingPushVoiceOrchestratorId,
-  subscribePendingPushVoiceOrchestratorId } from "../utils/pushApprovalNotifications";
+import { clearPendingVoiceOrchestratorId, getPendingVoiceOrchestratorId,
+  subscribePendingVoiceOrchestratorId } from "../utils/pendingVoiceNavigation";
 import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 import {
   SKIA_BOARD_MAX_TEXT_SCALE,
@@ -702,15 +702,15 @@ export function SkiaMiniBoardScreen({
   const hasVoicePlayback = Boolean(voicePlayback);
   useEffect(() => {
     const openPendingVoice = () => {
-      const id = getPendingPushVoiceOrchestratorId();
+      const id = getPendingVoiceOrchestratorId();
       if (!id || activeScreen !== "skia_board" || !hasVoicePlayback) return;
       setVoiceTargetId(id);
       setVoiceOpenSequence((current) => current + 1);
       setVoiceOpen(true);
-      clearPendingPushVoiceOrchestratorId(id);
+      clearPendingVoiceOrchestratorId(id);
     };
     openPendingVoice();
-    return subscribePendingPushVoiceOrchestratorId(openPendingVoice);
+    return subscribePendingVoiceOrchestratorId(openPendingVoice);
   }, [activeScreen, hasVoicePlayback]);
   useEffect(() => {
     if (activeScreen !== "skia_board") setVoiceOpen(false);

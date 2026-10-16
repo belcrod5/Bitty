@@ -1,4 +1,4 @@
-import { parseSessionDeepLink } from "./sessionDeepLink";
+import { parseSessionDeepLink, parseVoiceDeepLink } from "./sessionDeepLink";
 
 it("parses a bounded Bitty session message link", () => {
   expect(parseSessionDeepLink(
@@ -9,6 +9,22 @@ it("parses a bounded Bitty session message link", () => {
     messageId: "msg_1",
     cwd: "/work/project",
   });
+});
+
+it("resolves a Siri voice link to its orchestrator id", () => {
+  expect(parseVoiceDeepLink("bitty://voice/main")).toBe("main");
+  expect(parseVoiceDeepLink("bitty://voice/8e7c-1234")).toBe("8e7c-1234");
+});
+
+it.each([
+  "bitty://voice/",
+  "bitty://voice/main/other",
+  "bitty://voice/main?selected=other",
+  "bitty://voice/main#other",
+  "https://example.com/voice/main",
+  "bitty://voice/%2Fprivate",
+])("rejects an invalid Siri voice link: %s", (url) => {
+  expect(parseVoiceDeepLink(url)).toBeNull();
 });
 
 it.each([

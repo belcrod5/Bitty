@@ -82,13 +82,15 @@ export const SKIA_BOARD_RUNNER_CACHE_FIELD = "skiaBoardRunnerCache";
 
 // ボード配置とは独立した端末固有の表示位置・倍率。
 export const SKIA_BOARD_VIEWPORT_FIELD = "skiaBoardViewport";
+export const SIRI_VOICE_ORCHESTRATORS_FIELD = "siriVoiceOrchestrators";
 
-// React側の設定stateから再構築されず、所有者(Skiaボード)が
-// mutatePersistedSettingsで直接書くフィールド。設定オートセーブは値を保持する。
+// React側の設定stateから再構築されず、所有する画面が直接書くフィールド。
+// 設定オートセーブは値を保持する。
 export const PRESERVED_SETTINGS_FIELDS = [
   SKIA_BOARD_CARD_TEXT_SCALE_FIELD,
   SKIA_BOARD_RUNNER_CACHE_FIELD,
   SKIA_BOARD_VIEWPORT_FIELD,
+  SIRI_VOICE_ORCHESTRATORS_FIELD,
 ] as const;
 
 // Reads a single field from the persisted settings JSON without going through React

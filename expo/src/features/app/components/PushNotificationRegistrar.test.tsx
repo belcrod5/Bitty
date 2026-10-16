@@ -6,8 +6,8 @@ import { useAppSettings } from "../contexts/AppSettingsContext";
 import { useConversation } from "../contexts/ConversationContext";
 import { useRunnerWebSocketSnapshot } from "../../runnerWs/RunnerWebSocketContext";
 import { getOrCreatePushDeviceId, registerPushDevice } from "../utils/pushNotifications";
-import { registerApprovalNotificationCategories, setPendingPushSessionTarget,
-  setPendingPushVoiceOrchestratorId } from "../utils/pushApprovalNotifications";
+import { registerApprovalNotificationCategories, setPendingPushSessionTarget } from "../utils/pushApprovalNotifications";
+import { setPendingVoiceOrchestratorId } from "../utils/pendingVoiceNavigation";
 import { handlePushApprovalAction } from "../utils/pushApprovalActions";
 import {
   reconcileReceivedSessionNotification,
@@ -60,9 +60,12 @@ jest.mock("../utils/pushApprovalNotifications", () => {
     ...actual,
     registerApprovalNotificationCategories: jest.fn(async () => {}),
     setPendingPushSessionTarget: jest.fn(),
-    setPendingPushVoiceOrchestratorId: jest.fn(),
   };
 });
+
+jest.mock("../utils/pendingVoiceNavigation", () => ({
+  setPendingVoiceOrchestratorId: jest.fn(),
+}));
 
 jest.mock("../utils/pushApprovalActions", () => ({
   handlePushApprovalAction: jest.fn(async () => {}),
@@ -80,7 +83,7 @@ const mockGetOrCreatePushDeviceId = getOrCreatePushDeviceId as jest.Mock;
 const mockRegisterPushDevice = registerPushDevice as jest.Mock;
 const mockRegisterApprovalNotificationCategories = registerApprovalNotificationCategories as jest.Mock;
 const mockSetPendingPushSessionTarget = setPendingPushSessionTarget as jest.Mock;
-const mockSetPendingPushVoiceOrchestratorId = setPendingPushVoiceOrchestratorId as jest.Mock;
+const mockSetPendingVoiceOrchestratorId = setPendingVoiceOrchestratorId as jest.Mock;
 const mockHandlePushApprovalAction = handlePushApprovalAction as jest.Mock;
 const mockReconcileReceivedSessionNotification = reconcileReceivedSessionNotification as jest.Mock;
 const mockAddNotificationResponseReceivedListener =
@@ -138,11 +141,11 @@ describe("PushNotificationRegistrar", () => {
       } } } };
     (Notifications.getLastNotificationResponse as jest.Mock).mockReturnValue(response);
     await render(<PushNotificationRegistrar />);
-    expect(mockSetPendingPushVoiceOrchestratorId).toHaveBeenCalledWith("other");
+    expect(mockSetPendingVoiceOrchestratorId).toHaveBeenCalledWith("other");
     expect(mockSetPendingPushSessionTarget).not.toHaveBeenCalled();
     expect(Notifications.clearLastNotificationResponse).toHaveBeenCalledTimes(1);
     capturedResponseListener?.(response);
-    expect(mockSetPendingPushVoiceOrchestratorId).toHaveBeenCalledTimes(1);
+    expect(mockSetPendingVoiceOrchestratorId).toHaveBeenCalledTimes(1);
   });
 
   it("registers a device with the runner once connected with permission granted", async () => {

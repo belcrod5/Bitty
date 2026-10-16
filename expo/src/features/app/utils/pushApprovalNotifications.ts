@@ -129,25 +129,3 @@ export function subscribePendingPushSessionTarget(listener: () => void): () => v
   pendingPushListeners.add(listener);
   return () => pendingPushListeners.delete(listener);
 }
-
-let pendingPushVoiceOrchestratorId = "";
-const pendingPushVoiceListeners = new Set<() => void>();
-
-export function setPendingPushVoiceOrchestratorId(id: string): void {
-  if (!id) return;
-  pendingPushVoiceOrchestratorId = id;
-  for (const listener of pendingPushVoiceListeners) listener();
-}
-
-export function getPendingPushVoiceOrchestratorId(): string {
-  return pendingPushVoiceOrchestratorId;
-}
-
-export function clearPendingPushVoiceOrchestratorId(id: string): void {
-  if (pendingPushVoiceOrchestratorId === id) pendingPushVoiceOrchestratorId = "";
-}
-
-export function subscribePendingPushVoiceOrchestratorId(listener: () => void): () => void {
-  pendingPushVoiceListeners.add(listener);
-  return () => pendingPushVoiceListeners.delete(listener);
-}

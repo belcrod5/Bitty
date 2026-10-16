@@ -1,6 +1,14 @@
 import { act, renderHook } from "@testing-library/react-native";
 import { useOrchestratorActivities } from "./useOrchestratorActivities";
 
+const mockMutatePersistedSettings = jest.fn(async (mutate: (settings: Record<string, unknown>) => Record<string, unknown>) =>
+  mutate({}));
+jest.mock("../utils/persistedSettingsFile", () => ({
+  SIRI_VOICE_ORCHESTRATORS_FIELD: "siriVoiceOrchestrators",
+  mutatePersistedSettings: (mutate: (settings: Record<string, unknown>) => Record<string, unknown>) =>
+    mockMutatePersistedSettings(mutate),
+}));
+
 let mockConnection = { connected: true, generation: 1, appState: "active" };
 const mockHandlers = new Map<string, (message: { payload: unknown }) => void>();
 const mockPendingSnapshots: Array<(response: unknown) => void> = [];
@@ -34,6 +42,31 @@ beforeEach(() => {
   mockPendingSnapshots.length = 0;
   mockRequest.mockReset();
   mockRequest.mockImplementation(mockDefaultRequest);
+  mockMutatePersistedSettings.mockClear();
+});
+
+test("keeps Siri's local name list current without rewriting it for unread counts", async () => {
+  const hook = await renderHook(() => useOrchestratorActivities("url", "token", true));
+  await act(async () => undefined);
+  expect(mockMutatePersistedSettings).toHaveBeenCalledTimes(1);
+  await expect(mockMutatePersistedSettings.mock.results[0].value).resolves.toEqual({
+    siriVoiceOrchestrators: { runnerUrl: "url", orchestrators: [{ id: "parent", name: "親" }] },
+  });
+  await act(async () => mockHandlers.get("voice.unread.changed")?.({ payload: {
+    orchestrators: [{ id: "parent", name: "親", unreadCount: 3 }], selectedId: "parent",
+  } }));
+  expect(mockMutatePersistedSettings).toHaveBeenCalledTimes(1);
+  await act(async () => mockHandlers.get("voice.unread.changed")?.({ payload: {
+    orchestrators: [{ id: "parent", name: "メイン", unreadCount: 3 },
+      { id: "other", name: "調査", unreadCount: 0 }], selectedId: "parent",
+  } }));
+  expect(mockMutatePersistedSettings).toHaveBeenCalledTimes(2);
+  await expect(mockMutatePersistedSettings.mock.results[1].value).resolves.toEqual({
+    siriVoiceOrchestrators: { runnerUrl: "url", orchestrators: [
+      { id: "parent", name: "メイン" }, { id: "other", name: "調査" },
+    ] },
+  });
+  await hook.unmount();
 });
 
 test("loads the current activity snapshot before any update notification", async () => {
