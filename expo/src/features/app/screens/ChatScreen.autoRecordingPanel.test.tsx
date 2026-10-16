@@ -1,7 +1,7 @@
 import { configureCloudflareAccessFetch } from "../utils/cloudflareAccessFetch";
 import React from "react";
 import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
-import { Alert, DeviceEventEmitter, Platform, StyleSheet } from "react-native";
+import { Alert, AppState, DeviceEventEmitter, Platform, StyleSheet } from "react-native";
 import { CHAT_FIND_CANCEL_EVENT, CHAT_FIND_REQUEST_EVENT, ChatScreen } from "./ChatScreen";
 import { CHAT_CONTENT_MAX_WIDTH } from "../styles/layoutConstants";
 import { VisualThemeProvider } from "../theme/VisualThemeContext";
@@ -19,6 +19,8 @@ const mockPushStreamingSample = jest.fn();
 let mockStreamingSttPhase: "idle" | "connecting" | "recording" | "finalizing" = "idle";
 let mockRunnerStatusRenderCount = 0;
 const mockStreamingSttOptions: { current: Record<string, any> | null } = { current: null };
+let mockUseActualStreamingStt = false;
+const mockSttSessions: Array<{ callbacks: { onMessage: (message: string) => void }; abort: jest.Mock }> = [];
 const mockLogSessionDiag = jest.fn();
 const mockLoadOlderSessionHistory = jest.fn();
 const mockCodexScheduleProps: { current: Record<string, any> | null } = { current: null };
@@ -118,6 +120,9 @@ jest.mock("../components/StreamingSttFooter", () => {
 });
 jest.mock("../../stt/useStreamingStt", () => ({
   useStreamingStt: (options: Record<string, any>) => {
+    if (mockUseActualStreamingStt) {
+      return jest.requireActual("../../stt/useStreamingStt").useStreamingStt(options);
+    }
     mockStreamingSttOptions.current = options;
     return {
       active: mockStreamingSttPhase !== "idle",
@@ -135,6 +140,16 @@ jest.mock("../../stt/useStreamingStt", () => ({
       isCapturing: () => false,
     };
   },
+}));
+jest.mock("../../stt/useStreamingSttTransport", () => ({
+  useStreamingSttTransport: () => ({
+    supported: true,
+    connect: (_url: string, _token: string, callbacks: { onMessage: (message: string) => void }) => {
+      const session = { callbacks, abort: jest.fn(async () => {}), stop: jest.fn(async () => {}) };
+      mockSttSessions.push(session);
+      return session;
+    },
+  }),
 }));
 jest.mock("expo-clipboard", () => ({ setStringAsync: (text: string) => mockSetStringAsync(text) }));
 
@@ -449,6 +464,8 @@ jest.mock("../contexts/ConversationContext", () => ({
 
 describe("ChatScreen voice input", () => {
   beforeEach(() => {
+    mockUseActualStreamingStt = false;
+    mockSttSessions.length = 0;
     mockStreamingSttPhase = "idle";
     mockCancelCorrection.mockReturnValue(true);
     mockRunnerStatusRenderCount = 0;
@@ -688,6 +705,37 @@ describe("ChatScreen voice input", () => {
 
     expect(mockStartStreamingStt).toHaveBeenCalledTimes(1);
     await screen.unmount();
+  });
+
+  it("keeps macOS Runner segments in one iPhone chat draft without sending on a pause", async () => {
+    expect(Platform.OS).toBe("ios");
+    AppState.currentState = "active";
+    mockUseActualStreamingStt = true;
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    try {
+      await fireEvent.press(screen.getByTestId("chat-composer-action"));
+      await waitFor(() => expect(mockSttSessions).toHaveLength(1));
+      const first = mockSttSessions[0];
+      await act(async () => {
+        first.callbacks.onMessage('{"type":"ready"}');
+        first.callbacks.onMessage('{"type":"transcript","text":"前の文章","isFinal":false}');
+        first.callbacks.onMessage('{"type":"transcript","text":"前の文章","isFinal":true}');
+        first.callbacks.onMessage('{"type":"done","reason":"recognition_segment_end","hasSpeech":true}');
+        await Promise.resolve();
+      });
+      expect(screen.getByTestId("streaming-stt-footer").props.transcript).toBe("前の文章");
+      expect(mockSendReplyTranscriptForPanel).not.toHaveBeenCalled();
+      await waitFor(() => expect(mockSttSessions).toHaveLength(2));
+      await act(async () => {
+        mockSttSessions[1].callbacks.onMessage('{"type":"ready"}');
+        mockSttSessions[1].callbacks.onMessage('{"type":"transcript","text":"続き","isFinal":false}');
+      });
+      expect(screen.getByTestId("streaming-stt-footer").props.transcript).toBe("前の文章 続き");
+      expect(mockSendReplyTranscriptForPanel).not.toHaveBeenCalled();
+    } finally {
+      await screen.unmount();
+      mockUseActualStreamingStt = false;
+    }
   });
 
   it("shows only send with an existing draft", async () => {
