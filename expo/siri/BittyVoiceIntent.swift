@@ -83,7 +83,6 @@ struct BittyVoiceShortcuts: AppShortcutsProvider {
       "\(.applicationName)で会話",
       "\(.applicationName)で通話",
       "\(.applicationName)で電話",
-      "\(\.$orchestrator)と\(.applicationName)で話す",
     ], shortTitle: "音声入力", systemImageName: "mic.fill")
   }
 }

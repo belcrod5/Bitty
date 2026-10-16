@@ -55,10 +55,16 @@ export function VoiceConversationScreen(props: VoiceConversationPlayback & { onC
 
   const applyList = useCallback((value: { orchestrators: VoiceOrchestrator[]; selectedId: string }) => {
     setList(value);
-    if (props.initialOrchestratorId && consumedInitialTargetRef.current !== props.initialOrchestratorId
-      && value.orchestrators.some((item) => item.id === props.initialOrchestratorId)) {
-      consumedInitialTargetRef.current = props.initialOrchestratorId;
-      setSelectedId(props.initialOrchestratorId);
+    if (props.initialOrchestratorId) {
+      const target = props.initialOrchestratorId;
+      const newTarget = consumedInitialTargetRef.current !== target;
+      consumedInitialTargetRef.current = target;
+      setSelectedId((current) => {
+        if (newTarget || current === target || !current) {
+          return value.orchestrators.some((item) => item.id === target) ? target : "";
+        }
+        return value.orchestrators.some((item) => item.id === current) ? current : value.selectedId;
+      });
     } else {
       setSelectedId((current) => value.orchestrators.some((item) => item.id === current)
         ? current : value.selectedId);
@@ -119,7 +125,8 @@ export function VoiceConversationScreen(props: VoiceConversationPlayback & { onC
       onManage={() => setManagerOpen(true)} paused={managerOpen}
       historyExpanded={historyExpanded} setHistoryExpanded={setHistoryExpanded} /> : (
       <View style={{ position: "absolute", inset: 0, alignItems: "center", justifyContent: "center" }}>
-        <Text style={{ color: "#ffffff" }}>{loadError || "音声会話を読み込み中…"}</Text>
+        <Text style={{ color: "#ffffff" }}>{loadError || (list
+          ? "指定したオーケストレータが見つかりません。" : "音声会話を読み込み中…")}</Text>
         <Pressable accessibilityRole="button" accessibilityLabel="音声会話を閉じる"
           onPress={props.onClose} style={{ marginTop: 20, padding: 12 }}>
           <Text style={{ color: "#ffffff" }}>閉じる</Text>
