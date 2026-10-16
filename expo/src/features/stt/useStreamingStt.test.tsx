@@ -90,6 +90,7 @@ beforeEach(() => {
   jest.useFakeTimers();
   jest.clearAllMocks();
   AppState.currentState = "active";
+  jest.mocked(AppState.addEventListener).mockReturnValue({ remove: jest.fn() });
   jest.mocked(correctSttTranscript).mockImplementation(async (_url, _token, text) => ({ changed: false, text }));
   mockSessions.length = 0;
 });
@@ -748,7 +749,7 @@ test("successful no-speech completion resets the error retry budget", async () =
   await emit(mockSessions.at(-1)!, { type: "error", code: "google_unavailable", message: "failed", retryable: true });
   await advanceTimers(250);
   expect(mockSessions).toHaveLength(4);
-  expect(options.onDiagnostic).toHaveBeenLastCalledWith("stt_session_start", expect.any(Object));
+  expect(options.onDiagnostic).toHaveBeenLastCalledWith("stt_session_connect", expect.any(Object));
   expect(options.onDiagnostic.mock.calls.filter(([event]) => event === "stt_error_retry")
     .map(([, payload]) => payload)).toEqual([
     { version: 2, attempt: 1 }, { version: 6, attempt: 1 },
@@ -1147,4 +1148,58 @@ test("backgrounding an inline edit restores its latest text and stops sending", 
     cleanup();
     subscription.mockRestore();
   }
+});
+
+test("reports start gate wait once across polls, then its elapsed time when resolved", async () => {
+  let options = createOptions();
+  const hook = await renderHook((props: Options) => useStreamingStt(props), { initialProps: options });
+  const session = await openReady(hook.result);
+  options = { ...options, canStart: false };
+  await hook.rerender(options);
+  await emit(session, { type: "done", reason: "no_speech_timeout", hasSpeech: false });
+  await advanceTimers(250);
+  const since = Date.now();
+  expect(options.onDiagnostic).toHaveBeenCalledWith("stt_start_wait_started", {
+    version: 2, reason: "can_start_false", since,
+  });
+  await advanceTimers(5000);
+  expect(options.onDiagnostic.mock.calls.filter(([event]) => event === "stt_start_wait_started")).toHaveLength(1);
+  options = { ...options, canStart: true };
+  await hook.rerender(options);
+  await advanceTimers(250);
+  expect(options.onDiagnostic).toHaveBeenCalledWith("stt_start_wait_ended", {
+    version: 2, reason: "can_start_false", since, durationMs: 5250, outcome: "resolved",
+  });
+  expect(mockSessions).toHaveLength(2);
+});
+
+test("reports cancellation of a blocked start", async () => {
+  let options = createOptions();
+  const hook = await renderHook((props: Options) => useStreamingStt(props), { initialProps: options });
+  const session = await openReady(hook.result);
+  options = { ...options, canStart: false };
+  await hook.rerender(options);
+  await emit(session, { type: "done", reason: "no_speech_timeout", hasSpeech: false });
+  await advanceTimers(1250);
+  await act(async () => { hook.result.current.stop(); });
+  expect(options.onDiagnostic).toHaveBeenCalledWith("stt_start_wait_ended", expect.objectContaining({
+    reason: "can_start_false", durationMs: 1000, outcome: "cancelled",
+  }));
+});
+
+test("shows abort stalls and completion duration before the next connect", async () => {
+  const options = createOptions();
+  const hook = await renderHook(() => useStreamingStt(options));
+  const session = await openReady(hook.result);
+  let resolveAbort!: () => void;
+  session.abort.mockReturnValue(new Promise<void>((resolve) => { resolveAbort = resolve; }));
+  await emit(session, { type: "done", reason: "no_speech_timeout", hasSpeech: false });
+  expect(options.onDiagnostic).toHaveBeenCalledWith("stt_abort_started", expect.objectContaining({ queuedMs: 0 }));
+  await advanceTimers(5000);
+  expect(options.onDiagnostic.mock.calls.filter(([event]) => event === "stt_abort_completed")).toHaveLength(0);
+  expect(mockSessions).toHaveLength(1);
+  await act(async () => { resolveAbort(); await Promise.resolve(); });
+  expect(options.onDiagnostic).toHaveBeenCalledWith("stt_abort_completed", expect.objectContaining({ durationMs: 5000 }));
+  await advanceTimers(250);
+  expect(mockSessions).toHaveLength(2);
 });

@@ -497,7 +497,6 @@ reset_runtime_logs() {
       : >"$log_path"
     fi
   done
-  truncate_log_dir_files "$SCRIPT_DIR/logs/client_auto_logs"
   truncate_log_dir_files "$SCRIPT_DIR/logs/codex_ws_proxy"
   truncate_log_dir_files "$SCRIPT_DIR/logs/llm_request_payloads"
   echo "[run-local] reset runtime logs under $SCRIPT_DIR/logs" >&2

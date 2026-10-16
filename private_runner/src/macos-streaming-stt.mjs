@@ -177,6 +177,18 @@ export function createMacosStreamingSttHandler({
     };
     const onHelperMessage = (message) => {
       if (terminal || !message || typeof message !== "object") return;
+      if (message.type === "audio_summary") {
+        const details = {};
+        for (const key of ["appendedFrames", "appendedBuffers"]) {
+          if (Number.isSafeInteger(message[key]) && message[key] >= 0) details[key] = message[key];
+        }
+        if (["starting", "running", "finishing", "canceling", "completed", "unknown"].includes(message.taskState)) {
+          details.taskState = message.taskState;
+        }
+        if (["audio_progress", "input_ended", "final", "error"].includes(message.trigger)) details.trigger = message.trigger;
+        if (Object.keys(details).length) diagnose("macos_audio_summary", details);
+        return;
+      }
       if (message.type === "ready" && phase === "starting") {
         clearTimeout(startupTimer);
         phase = "ready";

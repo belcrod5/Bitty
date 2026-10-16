@@ -53,6 +53,7 @@ export function useStreamingStt(options: Options) {
   const listeningRef = useRef(false);
   const appActiveRef = useRef(AppState.currentState == null || AppState.currentState === "active");
   const startSessionRef = useRef<() => void>(() => {});
+  const startWaitRef = useRef<{ reason: string; since: number } | null>(null);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const errorRetriesRef = useRef(0);
   const awaitingReplyCycleRef = useRef(false);
@@ -69,6 +70,20 @@ export function useStreamingStt(options: Options) {
   const transport = useStreamingSttTransport();
   const latestRef = useRef(options);
   latestRef.current = options;
+
+  const reportStartWait = useCallback((reason: string | null, outcome = "resolved") => {
+    const previous = startWaitRef.current;
+    if (previous?.reason === reason) return;
+    const now = Date.now();
+    if (previous) latestRef.current.onDiagnostic?.("stt_start_wait_ended", {
+      version: sessionVersionRef.current, reason: previous.reason, since: previous.since,
+      durationMs: now - previous.since, outcome,
+    });
+    startWaitRef.current = reason ? { reason, since: now } : null;
+    if (reason) latestRef.current.onDiagnostic?.("stt_start_wait_started", {
+      version: sessionVersionRef.current, reason, since: now,
+    });
+  }, []);
 
   const clearTimer = (timerRef: typeof retryTimerRef) => {
     if (timerRef.current) clearTimeout(timerRef.current);
@@ -146,7 +161,19 @@ export function useStreamingStt(options: Options) {
     const session = sessionRef.current;
     sessionRef.current = null;
     if (session) {
-      pendingAbortRef.current = pendingAbortRef.current.then(() => session.abort()).catch(() => undefined);
+      const queuedAt = Date.now();
+      const version = sessionVersionRef.current;
+      latestRef.current.onDiagnostic?.("stt_abort_queued", { version });
+      pendingAbortRef.current = pendingAbortRef.current.then(async () => {
+        const startedAt = Date.now();
+        latestRef.current.onDiagnostic?.("stt_abort_started", {
+          version, queuedMs: startedAt - queuedAt,
+        });
+        try { await session.abort(); }
+        finally { latestRef.current.onDiagnostic?.("stt_abort_completed", {
+          version, durationMs: Date.now() - startedAt,
+        }); }
+      }).catch(() => undefined);
     }
     return pendingAbortRef.current;
   }, []);
@@ -312,10 +339,12 @@ export function useStreamingStt(options: Options) {
   const startSession = useCallback(() => {
     if (!listeningRef.current) return;
     if (!appActiveRef.current || latestRef.current.canStart === false) {
+      reportStartWait(appActiveRef.current ? "can_start_false" : "app_inactive");
       setPhase("connecting");
       if (appActiveRef.current) scheduleStart();
       return;
     }
+    reportStartWait(null);
     terminalRef.current = false;
     setPhase("connecting");
     const version = ++sessionVersionRef.current;
@@ -323,6 +352,7 @@ export function useStreamingStt(options: Options) {
     latestRef.current.onDiagnostic?.("stt_session_start", { version });
     void pendingAbortRef.current.then(() => {
       if (version !== sessionVersionRef.current || !listeningRef.current || !appActiveRef.current) return;
+      latestRef.current.onDiagnostic?.("stt_session_connect", { version });
       let session: StreamingSttSession;
       try {
         session = transport.connect(latestRef.current.runnerUrl, latestRef.current.runnerToken, {
@@ -586,6 +616,10 @@ export function useStreamingStt(options: Options) {
     setPhase("idle");
   }, [abortSession, clearCorrection, clearReplyCycleWait, setTranscript]);
 
+  useEffect(() => {
+    if (!listeningRef.current) reportStartWait(null, "cancelled");
+  }, [phase, reportStartWait]);
+
   const isArmed = useCallback(() => listeningRef.current || sessionRef.current !== null, []);
   const isCapturing = useCallback(() => sessionRef.current !== null, []);
 
@@ -595,6 +629,7 @@ export function useStreamingStt(options: Options) {
       sessionOpen: sessionRef.current !== null,
       listening: listeningRef.current,
     });
+    reportStartWait(null, "unmounted");
     listeningRef.current = false;
     terminalRef.current = true;
     sessionVersionRef.current += 1;

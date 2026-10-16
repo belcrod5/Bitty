@@ -463,7 +463,6 @@ test("macOS inactivity finalization stays bounded even while an audio callback i
   assert.equal(child.killed, true);
 });
 
-
 test("native recognition failure records safe Apple error details and stream audio timing", async () => {
   const ws = new FakeSocket();
   const child = new FakeChild();
@@ -563,4 +562,31 @@ test("no-speech native errors remain successful while preserving error metadata 
   assert.equal(nativeError.streamId, done.streamId);
   assert.equal(done.hasSpeech, false);
   assert.deepEqual(ws.sent.at(-1), { type: "done", reason: "no_speech_timeout", hasSpeech: false });
+});
+
+test("native append summaries are diagnostic only and allowlist numeric counts and known states", async () => {
+  const ws = new FakeSocket();
+  const child = new FakeChild();
+  const logs = [];
+  createMacosStreamingSttHandler({ startHelper: async () => child, log: { info: (...entry) => logs.push(entry) } })(ws);
+  start(ws);
+  await tick();
+  child.emitMessage({ type: "ready" });
+  child.emitMessage({ type: "audio_summary", appendedFrames: 672000, appendedBuffers: 88,
+    taskState: "running", trigger: "audio_progress", text: "PRIVATE_AUDIO_SUMMARY", userInfo: { value: "SECRET" } });
+  const summary = logs.find(([event]) => event === "[stream-stt] macos_audio_summary")[1];
+  assert.equal(summary.appendedFrames, 672000);
+  assert.equal(summary.appendedBuffers, 88);
+  assert.equal(summary.taskState, "running");
+  assert.equal(summary.trigger, "audio_progress");
+  assert.deepEqual(ws.sent, [{ type: "ready" }]);
+  const count = logs.length;
+  child.emitMessage({ type: "audio_summary", appendedFrames: -1, appendedBuffers: "88", taskState: "PRIVATE_STATE", trigger: "PRIVATE_TRIGGER" });
+  child.emitMessage({ type: "audio_summary", appendedFrames: Number.MAX_SAFE_INTEGER + 1, appendedBuffers: 0.5 });
+  assert.equal(logs.length, count);
+  child.emitMessage({ type: "audio_summary", appendedFrames: 672001, appendedBuffers: 89, taskState: "completed", trigger: "error" });
+  child.emitMessage({ type: "error", code: "macos_recognition_failed", nativeErrorDomain: "kAFAssistantErrorDomain", nativeErrorCode: 1110 });
+  assert.equal(ws.sent.at(-1).type, "done");
+  assert.ok(logs.findIndex(([event]) => event === "[stream-stt] macos_audio_summary") < logs.findIndex(([event]) => event === "[stream-stt] macos_done_attempted"));
+  assert.doesNotMatch(JSON.stringify(logs), /PRIVATE_|SECRET/);
 });

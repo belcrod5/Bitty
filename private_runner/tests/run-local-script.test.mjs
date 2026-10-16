@@ -438,3 +438,25 @@ test("bootstrap refuses a runner token path that escapes the repository", () => 
     rmSync(repoRoot, { recursive: true, force: true });
   }
 });
+
+test("runtime reset preserves client diagnostics across restart while still resetting other runtime logs", async () => {
+  const runLocal = await readFile("private_runner/run-local.sh", "utf8");
+  const start = runLocal.indexOf("truncate_log_dir_files() {");
+  const end = runLocal.indexOf("screen_session_exists() {", start);
+  const root = mkdtempSync(join(tmpdir(), "bitty-runtime-log-retention-"));
+  try {
+    for (const name of ["client_auto_logs", "codex_ws_proxy", "llm_request_payloads"]) {
+      mkdirSync(join(root, "logs", name), { recursive: true });
+      writeFileSync(join(root, "logs", name, "previous.jsonl"), "previous\n");
+    }
+    writeFileSync(join(root, "logs", "run-local.log"), "previous\n");
+    const result = spawnSync("bash", ["-c", runLocal.slice(start, end) + "\nreset_runtime_logs"], {
+      env: { ...process.env, SCRIPT_DIR: root, RUN_LOCAL_LOG_FILE: join(root, "logs", "run-local.log") }, encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(readFileSync(join(root, "logs/client_auto_logs/previous.jsonl"), "utf8"), "previous\n");
+    assert.equal(readFileSync(join(root, "logs/codex_ws_proxy/previous.jsonl"), "utf8"), "");
+    assert.equal(readFileSync(join(root, "logs/llm_request_payloads/previous.jsonl"), "utf8"), "");
+    assert.equal(readFileSync(join(root, "logs/run-local.log"), "utf8"), "");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

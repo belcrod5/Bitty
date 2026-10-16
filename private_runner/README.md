@@ -86,7 +86,7 @@ private_runner/run-local.sh status
 tail -f private_runner/logs/run-local.log
 ```
 
-`start` / `restart` は起動直前に既存の実行ログを初期化します。セッション索引などの状態ファイルは保持されます。
+`start` / `restart` は起動直前に既存の実行ログを初期化します。ただし `client_auto_logs` の診断ログは再起動後も保持します。セッション索引などの状態ファイルも保持されます。
 
 LAN直結はHTTPS/WSSです。macOSの `LocalHostName.local` とHTTPポート+1
 （既定 `https://<Mac名>.local:8789`）をPairing QRで渡します。
@@ -119,8 +119,10 @@ LAN HTTPSも使う場合は `RUNNER_LOCAL_HOSTNAME` または `RUNNER_LOCAL_URL=
 ## クライアント診断ログ
 `POST /client-logs` で受けたイベントは JSONL で保存されます。
 
-- 保存先: `private_runner/logs/client_auto_logs/<runner起動時刻>.jsonl`
-- 保存世代: `CLIENT_APP_LOG_MAX_FILES`（既定 `10`）
+- 保存先: `private_runner/logs/client_auto_logs/<runner起動時刻>[_連番].jsonl`
+- 保存世代: `CLIENT_APP_LOG_MAX_FILES`（既定 `10`、不正な値は既定値）
+- 容量上限: 1ファイル10MiB、全JSONL合計100MiB。長時間起動中も行単位でローテーションし、起動時と追記時に世代数または容量上限を超えた古いログを削除します。既存の10MiB超ファイルも削除対象です。単独で10MiBを超える行は保存せず、警告に件数を出します。
+- STT診断は入力本文や音声を含まず、開始待機の理由・所要時間、Mac認識器へ追加したフレーム数・タスク状態を記録します。
 - 主要ソース:
   - `app_auto`: 自動録音系ログ（診断モード中心）
   - `session_diag`: セッション履歴/復元/stream再開の恒久低頻度ログ
