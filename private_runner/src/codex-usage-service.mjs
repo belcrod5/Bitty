@@ -39,7 +39,8 @@ function normalizeWindow(raw) {
 }
 
 function mergeLimits(previous = {}, raw = {}, freshRead = false) {
-  const result = { ...previous };
+  // A read reports the current set of windows; notifications can be sparse.
+  const result = freshRead ? {} : { ...previous };
   for (const name of ["primary", "secondary"]) {
     const incoming = normalizeWindow(raw[name]);
     if (!incoming) continue;
