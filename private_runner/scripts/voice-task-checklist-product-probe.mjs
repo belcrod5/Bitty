@@ -10,8 +10,8 @@ import { createVoiceContextService } from "../src/voice-context-service.mjs";
 
 const base = fileURLToPath(new URL("../../tmp/", import.meta.url));
 const scenario = process.argv[2] || "code";
-if (!["code", "mail"].includes(scenario) || process.argv.length > 3) {
-  throw new Error("Usage: node voice-task-checklist-product-probe.mjs [code|mail]");
+if (!["code", "mail", "legacy", "managed"].includes(scenario) || process.argv.length > 3) {
+  throw new Error("Usage: node voice-task-checklist-product-probe.mjs [code|mail|legacy|managed]");
 }
 const run = path.join(base, `voice-checklist-product-${randomUUID()}`);
 const rootDir = path.join(run, "voice_context", "v1");
@@ -28,6 +28,8 @@ async function within(promise, ms) {
 await fs.mkdir(run, { recursive: true, mode: 0o700 });
 await fs.mkdir(codexHome, { mode: 0o700 });
 await fs.mkdir(scratch, { mode: 0o700 });
+await fs.writeFile(path.join(codexHome, "config.toml"),
+  '[mcp_servers.probe]\ncommand = "/bin/false"\n', { mode: 0o600 });
 execFileSync("git", ["init", "--quiet", "--template=", run]);
 const auth = path.join(process.env.CODEX_HOME || path.join(process.env.HOME, ".codex"), "auth.json");
 await fs.symlink(auth, path.join(codexHome, "auth.json"));
@@ -45,18 +47,50 @@ let stderr = "";
 child.stderr.on("data", (chunk) => { stderr = `${stderr}${chunk}`.slice(-1000); });
 const evidence = [];
 const createClient = () => {
+  const preflightTurns = new Set();
   const client = createCodexAppServerClient({ upstreamUrl: `ws://127.0.0.1:${port}`,
     turnCompletionTimeoutMs: 120000 });
   const originalRequest = client.request.bind(client);
-  client.request = (method, params, timeout) => {
+  client.request = async (method, params, timeout) => {
     if (["thread/start", "thread/resume"].includes(method) && params?.approvalPolicy === "on-request") {
       evidence.push({ method, hasChecklistInstruction: params.developerInstructions?.includes("task-checklists/main.md"),
-        hasNewParentReadInstruction: params.developerInstructions?.includes("新しい親セッションでは") });
+        hasNewParentReadInstruction: params.developerInstructions?.includes("新しい親セッションでは"),
+        sandbox: params.sandbox, dynamicToolCount: params.dynamicTools?.length || 0 });
     }
-    return originalRequest(method, params, timeout);
+    const result = await originalRequest(method, params, timeout);
+    if (method === "config/read") evidence.push({ method, mcpNames: Object.keys(result.config?.mcp_servers || {}) });
+    if (["thread/start", "thread/resume"].includes(method) && params?.approvalPolicy === "on-request") {
+      evidence.push({ method: "threadReady", threadId: result.thread?.id });
+      if (method === "thread/resume" && !params.dynamicTools?.length) {
+        const status = await originalRequest("mcpServerStatus/list", { threadId: result.thread.id, cursor: null }, 30000);
+        evidence.push({ method: "normalMcpStatus", servers: status.data?.map(({ name, runtimeStatus }) =>
+          ({ name, runtimeStatus })) });
+      }
+    }
+    if (method === "mcpServerStatus/list") {
+      evidence.push({ method, servers: result.data?.map(({ name, runtimeStatus, tools }) => ({
+        name, runtimeStatus, tools: Object.keys(tools || {}),
+      })) });
+    }
+    if (method === "turn/start" && params?.sandboxPolicy?.type === "readOnly") {
+      preflightTurns.add(result.turn?.id);
+      evidence.push({ method: "preflightTurn", turnId: result.turn?.id,
+        sandboxPolicy: params.sandboxPolicy });
+    }
+    return result;
   };
   const originalListener = client.addNotificationListener.bind(client);
   client.addNotificationListener = (callback) => originalListener((method, params) => {
+    if (preflightTurns.has(params?.turnId) && method.startsWith("item/")
+      && ["item/started", "item/completed", "item/failed"].includes(method)) {
+      evidence.push({ method: "preflightItem", event: method, type: params.item?.type,
+        id: params.item?.id, command: params.item?.command,
+        exitCode: params.item?.exitCode, status: params.item?.status });
+    }
+    if (method === "item/completed" && params?.item?.type === "agentMessage"
+      && preflightTurns.has(params.turnId)) {
+      evidence.push({ method: "preflightMessage", text: String(params.item.text || "").slice(0, 500) });
+    }
     if (["item/started", "item/completed", "item/failed"].includes(method)
       && ["fileChange", "commandExecution"].includes(params?.item?.type)) {
       evidence.push({ method, type: params.item.type, id: params.item.id,
@@ -70,6 +104,10 @@ const createClient = () => {
   const originalRequestHandler = client.addServerRequestHandler.bind(client);
   client.addServerRequestHandler = (callback) => originalRequestHandler(async (request) => {
     const result = await callback(request);
+    if (request.method === "item/tool/call") evidence.push({ method: request.method,
+      namespace: request.params?.namespace, tool: request.params?.tool,
+      callId: request.params?.callId, success: result?.success,
+      content: result?.contentItems?.map((item) => item.text?.slice(0, 100)) });
     if (request.method?.endsWith("/requestApproval")) evidence.push({ method: request.method,
       itemId: request.params?.itemId, decision: result?.decision });
     return result;
@@ -77,6 +115,14 @@ const createClient = () => {
   return client;
 };
 let service;
+const managedSessions = scenario === "managed" ? {
+  refresh: async () => ({ records: [] }), contextOf: () => "",
+  handleTool: async (request) => {
+    evidence.push({ method: "managedToolHandled", namespace: request.params?.namespace,
+      tool: request.params?.tool });
+    return { success: true, contentItems: [{ type: "inputText", text: "No delegated sessions" }] };
+  },
+} : undefined;
 try {
   for (let attempt = 0; attempt < 100; attempt++) {
     if (child.exitCode !== null) throw new Error(`App Server exited: ${stderr}`);
@@ -89,8 +135,8 @@ try {
     if (attempt === 99) throw new Error(`App Server did not listen: ${stderr}`);
     await pause(100);
   }
-  service = createVoiceContextService({ rootDir, createClient,
-    taskChecklistPath: "task-checklists/main.md" });
+  service = createVoiceContextService({ rootDir, createClient, managedSessions,
+    ...(scenario === "legacy" ? {} : { taskChecklistPath: "task-checklists/main.md" }) });
   let conversation = await service.open();
   await service.configure("gpt-6.1-sol", "low");
   const workspace = await service.getWorkspaceDirectory();
@@ -112,6 +158,15 @@ try {
     console.log(JSON.stringify(row));
     if (result.status !== "completed") throw new Error(`${label} failed: ${result.code}`);
   }
+  if (scenario === "managed") {
+    await turn("managed_status", "架空の作業を開始します。まず voice_subagent.status ツールを呼び、委任セッションがないか確認してください。その結果と次の一手を task-checklists/main.md に記録してください。");
+  } else if (scenario === "legacy") {
+    await turn("old_parent", "架空作業。A-01は完了済み、A-02は結果不明です。次はA-02の結果確認です。短く返答して。");
+    service = createVoiceContextService({ rootDir, createClient,
+      taskChecklistPath: "task-checklists/main.md" });
+    await service.open();
+    await turn("legacy_resume", "架空作業の安全な次の一手を教えて。");
+  } else {
   await turn("create", scenario === "code"
     ? "架空コード作業。P-17の入力検証漏れは修正済み。T-01のテスト実行は終わったが、保存された結果は未確認。テストを再実行せず、次は結果を読む。進行中の作業を記録して。"
     : "架空メール整理。M-01からM-06は確認済みで、許可済みのニュースレター整理も成功済み。M-07はユーザー判断待ちなので整理しない。M-08を次に確認する。確定済み、保留、次の一手を記録して。");
@@ -132,6 +187,7 @@ try {
   await turn("second_new_parent", scenario === "code"
     ? "架空コード作業を続けて。結果不明の操作を扱う安全な次の一手は？"
     : "架空メール整理を続けて。結果不明の操作を扱う安全な次の一手は？");
+  }
   console.log(JSON.stringify({ workspace, checklist, evidence: path.join(run, "evidence.jsonl") }));
 } finally {
   child.kill();

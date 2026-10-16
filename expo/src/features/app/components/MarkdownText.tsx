@@ -62,6 +62,7 @@ export type MarkdownTextProps = {
   content: string;
   tone: "user" | "assistant";
   textStyle: StyleProp<TextStyle>;
+  containerStyle?: StyleProp<ViewStyle>;
   resolveImageSource?: (url: string) => { uri: string; headers?: Record<string, string> } | null;
   onLocalFileLinkPress?: (path: string) => void;
   onSelectedTextTtsPress?: (text: string) => void;
@@ -236,8 +237,9 @@ export function MarkdownText(props: MarkdownTextProps) {
       ...(tone === "assistant"
         ? (styles.markdownRootAssistant as ViewStyle)
         : (styles.markdownRootUser as ViewStyle)),
+      ...StyleSheet.flatten(props.containerStyle),
     }),
-    [styles, tone]
+    [styles, tone, props.containerStyle]
   );
 
   const handleOpenLink = useCallback((rawUrl: string) => {

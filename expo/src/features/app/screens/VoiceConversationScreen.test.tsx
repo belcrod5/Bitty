@@ -257,6 +257,17 @@ test("main history shows the source Markdown in a right panel and folds it to a 
   await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
   expect(screen.getByTestId("voice-task-checklist-markdown").props.children)
     .toBe("# 最優先\n\n- [ ] 確認する");
+  const panelStyle = StyleSheet.flatten(screen.getByTestId("voice-task-checklist-panel").props.style);
+  expect(panelStyle.bottom).toBeUndefined();
+  expect(panelStyle.width).toBeUndefined();
+  expect(panelStyle.maxWidth).toBeLessThanOrEqual(260);
+  expect(panelStyle.maxHeight).toBe("65%");
+  expect(StyleSheet.flatten(screen.getByTestId("voice-task-checklist-content").props.style))
+    .toMatchObject({ flexGrow: 0, flexShrink: 1 });
+  const longChecklist = Array.from({ length: 40 }, (_, index) => `- [ ] 手順 ${index + 1}`).join("\n");
+  mockVoice.taskChecklist = { status: "present", markdown: longChecklist };
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(screen.getByTestId("voice-task-checklist-markdown").props.children).toBe(longChecklist);
   await fireEvent.press(screen.getByTestId("voice-task-checklist-refresh"));
   expect(mockVoice.refreshHistory).toHaveBeenCalled();
   await fireEvent.press(screen.getByTestId("voice-task-checklist-collapse"));

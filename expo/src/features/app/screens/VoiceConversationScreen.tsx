@@ -486,13 +486,14 @@ function VoiceConversationSession({
                   })}
                 </ScrollView>
                 {orchestrator.id === "main" ? taskChecklistOpen ? (
-                  <View testID="voice-task-checklist-panel" style={{ position: "absolute", right: 0, top: 0, bottom: 0,
-                    width: Math.min(320, Math.max(0, screenWidth - 64)),
+                  <View testID="voice-task-checklist-panel" style={{ position: "absolute", right: 0, top: 0,
+                    minWidth: Math.min(160, Math.max(0, screenWidth - 64)),
+                    maxWidth: Math.min(260, Math.max(0, screenWidth - 64)), maxHeight: "65%",
                     backgroundColor: theme.colors.surfaceMuted, borderTopLeftRadius: 14,
                     borderBottomLeftRadius: 14, overflow: "hidden" }}>
                     <View style={{ flexDirection: "row", alignItems: "center", paddingLeft: 12,
                       borderBottomWidth: 1, borderBottomColor: theme.colors.infoMuted }}>
-                      <Text style={{ color: theme.colors.textPrimary, fontWeight: "700", flex: 1 }}>To Do</Text>
+                      <Text style={{ color: theme.colors.textPrimary, fontWeight: "700", flexShrink: 1 }}>To Do</Text>
                       <Pressable testID="voice-task-checklist-refresh" accessibilityRole="button"
                         accessibilityLabel="To Doを更新" onPress={() => void voice.refreshHistory()}
                         style={{ width: 44, height: 44, alignItems: "center", justifyContent: "center" }}>
@@ -504,8 +505,9 @@ function VoiceConversationSession({
                         <Ionicons name="chevron-forward" size={22} color={theme.colors.textPrimary} />
                       </Pressable>
                     </View>
-                    <ScrollView testID="voice-task-checklist-content" style={{ flex: 1 }}
-                      contentContainerStyle={{ padding: 16 }}>
+                    <ScrollView testID="voice-task-checklist-content"
+                      style={{ flexGrow: 0, flexShrink: 1, alignSelf: "flex-start", maxWidth: "100%" }}
+                      contentContainerStyle={{ padding: 16, alignItems: "flex-start" }}>
                       {!voice.ready || !voice.taskChecklist
                         ? <Text style={{ color: theme.colors.textPrimary }}>To Doを読み込み中…</Text>
                         : voice.taskChecklist.status === "missing"
@@ -513,6 +515,7 @@ function VoiceConversationSession({
                           : voice.taskChecklist.status === "unavailable"
                             ? <Text style={{ color: theme.colors.textPrimary }}>To Doを読み込めませんでした</Text>
                             : <MarkdownText content={voice.taskChecklist.markdown} tone="assistant"
+                              containerStyle={{ width: "auto", alignSelf: "flex-start" }}
                               textStyle={{ color: theme.colors.textPrimary, fontSize: 15, lineHeight: 22 }} />}
                     </ScrollView>
                   </View>

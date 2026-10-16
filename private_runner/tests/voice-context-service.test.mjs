@@ -111,6 +111,7 @@ function fakeCodex({ reply = "answer", summaryReply, topicReplies = [], failTopi
           isTopicThread = isSummaryThread && Array.isArray(JSON.parse(params.input[0].text).recent);
           const isSummary = isSummaryThread && !isTopicThread;
           const isIsolated = isSummaryThread;
+          const isChecklistPreflight = !isIsolated && params.sandboxPolicy?.type === "readOnly";
           const responseIndex = isIsolated ? -1 : responseTurnIndex++;
           const responseOutputTokens = isIsolated ? [] : (responseOutputTokensByTurn[responseIndex] || []);
           if (isTopicThread && failTopicJudge) throw new Error("topic judge failed");
@@ -157,7 +158,8 @@ function fakeCodex({ reply = "answer", summaryReply, topicReplies = [], failTopi
               } });
               calls.push({ method: "approval/result", params: result });
             }
-            if (!isIsolated) for (const native of nativeRequests) {
+            if (!isIsolated) for (const native of nativeRequests.filter((item) =>
+              Boolean(item.preflight) === isChecklistPreflight)) {
               if (native.startedItem) listener("item/started", { threadId: params.threadId, turnId,
                 item: native.startedItem });
               const request = { id: randomUUID(), method: native.method, params: {
@@ -165,6 +167,9 @@ function fakeCodex({ reply = "answer", summaryReply, topicReplies = [], failTopi
                 turnId: native.turnId === "root" ? turnId : native.turnId,
                 ...(native.itemId ? { itemId: native.itemId } : {}),
                 ...(native.command ? { command: native.command } : {}),
+                ...(native.callId ? { callId: native.callId } : {}),
+                ...(native.namespace ? { namespace: native.namespace, tool: native.tool,
+                  arguments: native.arguments ?? {} } : {}),
               } };
               const pending = serverHandler(request);
               if (native.resolveAfterForward) {
@@ -188,6 +193,7 @@ function fakeCodex({ reply = "answer", summaryReply, topicReplies = [], failTopi
                 threadId: request.params.threadId, requestId: request.id,
               }), 100);
               calls.push({ method: "native/result", request, result: await pending });
+              if (native.beforeCompleted) await native.beforeCompleted();
               if (native.completedItem) listener("item/completed", { threadId: params.threadId, turnId,
                 item: native.completedItem });
             }
@@ -312,6 +318,13 @@ async function complete(service, conversation, text, id = randomUUID(), onApprov
     accepted = await service.start(started.message, started.resolve, onApproval, hooks);
   }
   return { ...started, accepted, result: await started.terminal };
+}
+
+function checklistReadCall(id = randomUUID(), overrides = {}) {
+  return { preflight: true, method: "item/tool/call", threadId: "root", turnId: "root",
+    callId: id, namespace: "task_checklist", tool: "read_task_checklist", arguments: {},
+    startedItem: { id, type: "dynamicToolCall", status: "inProgress" },
+    completedItem: { id, type: "dynamicToolCall", status: "completed" }, ...overrides };
 }
 
 async function seedPairs(rootDir, logicalConversationId, count) {
@@ -2039,18 +2052,16 @@ test("main checklist approvals require the current root item and exact single-fi
     taskChecklistPath: "task-checklists/main.md", nativeRequests, threadParents: { [child]: "root" },
   });
   const target = path.join(await fs.realpath(await service.getWorkspaceDirectory()), "task-checklists", "main.md");
-  const command = "/bin/zsh -lc 'cat task-checklists/main.md'";
   nativeRequests.push(
-    { method: "item/commandExecution/requestApproval", threadId: "root", turnId: "root",
-      itemId: "read", command, startedItem: { id: "read", type: "commandExecution", command },
-      completedItem: { id: "read", type: "commandExecution", command, exitCode: 1,
-        aggregatedOutput: "cat: task-checklists/main.md: No such file or directory\n" } },
+    checklistReadCall("read"),
     { method: "item/fileChange/requestApproval", threadId: "root", turnId: "root", itemId: "add",
       startedItem: { id: "add", type: "fileChange", changes: [{ path: target, kind: { type: "add" } }] } },
     { method: "item/fileChange/requestApproval", threadId: child, turnId: randomUUID(), itemId: "child",
       startedItem: { id: "child", type: "fileChange", changes: [{ path: target, kind: { type: "add" } }] } },
     { method: "item/commandExecution/requestApproval", threadId: "root", turnId: "root",
-      itemId: "other", command: "echo unsafe", startedItem: { id: "other", type: "commandExecution", command: "echo unsafe" } },
+      itemId: "other", command: "/bin/zsh -lc 'cat task-checklists/main.md'",
+      startedItem: { id: "other", type: "commandExecution",
+        command: "/bin/zsh -lc 'cat task-checklists/main.md'" } },
   );
   const forwarded = [];
   const { result } = await complete(service, conversation, "record work", randomUUID(), async (request) => {
@@ -2058,9 +2069,9 @@ test("main checklist approvals require the current root item and exact single-fi
     return "decline";
   });
   assert.equal(result.status, "completed");
-  assert.deepEqual(codex.calls.filter(({ method }) => method === "native/result").map(({ result: item }) => item), [
-    { decision: "accept" }, { decision: "accept" }, { decision: "decline" }, { decision: "decline" },
-  ]);
+  const results = codex.calls.filter(({ method }) => method === "native/result").map(({ result: item }) => item);
+  assert.equal(results[0].success, true);
+  assert.deepEqual(results.slice(1), [{ decision: "accept" }, { decision: "decline" }, { decision: "decline" }]);
   assert.equal(forwarded.length, 2);
   assert.equal((await service.history()).taskChecklist.status, "missing");
 });
@@ -2073,15 +2084,11 @@ test("new main parent fails closed without a completed checklist read and expose
   const { result } = await complete(service, conversation, "continue", randomUUID(), async () => "decline", {
     onText: (text) => streamed.push(text),
   });
-  assert.equal(result.status, "failed");
+  assert.equal(result.status, "preflight_failed");
   assert.equal(result.code, "checklist_read_required");
   assert.deepEqual(streamed, []);
   assert.deepEqual((await service.history()).messages.map(({ role }) => role), ["user"]);
-  const command = "/bin/zsh -lc 'cat task-checklists/main.md'";
-  nativeRequests.push({ method: "item/commandExecution/requestApproval", threadId: "root", turnId: "root",
-    itemId: "retry-read", command, startedItem: { id: "retry-read", type: "commandExecution", command },
-    completedItem: { id: "retry-read", type: "commandExecution", command, exitCode: 1,
-      aggregatedOutput: "cat: task-checklists/main.md: No such file or directory\n" } });
+  nativeRequests.push(checklistReadCall("retry-read"));
   const retried = await complete(service, conversation, "retry", randomUUID(), async () => "decline", {
     onText: (text) => streamed.push(text),
   });
@@ -2089,13 +2096,9 @@ test("new main parent fails closed without a completed checklist read and expose
   assert.deepEqual(streamed, [retried.result.text]);
 });
 
-test("new main parent delivers its answer after an approved missing-file read completes", async (t) => {
-  const command = "/bin/zsh -lc 'cat task-checklists/main.md'";
+test("new main parent delivers its answer after a completed read tool call", async (t) => {
   const { service, conversation, codex } = await fixture(t, { taskChecklistPath: "task-checklists/main.md",
-    nativeRequests: [{ method: "item/commandExecution/requestApproval", threadId: "root", turnId: "root",
-      itemId: "read", command, startedItem: { id: "read", type: "commandExecution", command },
-      completedItem: { id: "read", type: "commandExecution", command, exitCode: 1,
-        aggregatedOutput: "cat: task-checklists/main.md: No such file or directory\n" } }],
+    nativeRequests: [checklistReadCall("read")],
   });
   const streamed = [];
   const { result } = await complete(service, conversation, "continue", randomUUID(), async () => "decline", {
@@ -2103,21 +2106,89 @@ test("new main parent delivers its answer after an approved missing-file read co
   });
   assert.equal(result.status, "completed");
   assert.deepEqual(streamed, [result.text]);
-  assert.deepEqual(codex.calls.find(({ method }) => method === "native/result").result, { decision: "accept" });
+  assert.equal(codex.calls.find(({ method }) => method === "native/result").result.success, true);
 });
 
-test("new main parent rejects a cat that did not return the existing Markdown", async (t) => {
-  const command = "/bin/zsh -lc 'cat task-checklists/main.md'";
+test("saved custom instructions keep the fixed checklist read and maintenance rules", async (t) => {
+  const { service, conversation, codex } = await fixture(t, { taskChecklistPath: "task-checklists/main.md",
+    nativeRequests: [checklistReadCall("read")] });
+  await service.configure("gpt-6-luna", "low", "Speak briefly.");
+  assert.equal((await complete(service, conversation, "first task")).result.status, "completed");
+  await service.configure("gpt-6-luna", "low", "Use short sentences.");
+  assert.equal((await complete(service, conversation, "continue task")).result.status, "completed");
+  const threads = codex.calls.filter(({ method, params }) =>
+    ["thread/start", "thread/resume"].includes(method) && params.approvalPolicy === "on-request");
+  assert.ok(threads.some(({ params }) => params.developerInstructions.includes("Speak briefly.")));
+  assert.ok(threads.some(({ params }) => params.developerInstructions.includes("Use short sentences.")));
+  assert.ok(threads.every(({ params }) => params.developerInstructions.includes("maintain task-checklists/main.md")));
+  assert.ok(threads.some(({ params }) => params.developerInstructions.includes("task_checklist.read_task_checklist")));
+  assert.ok(threads.some(({ params }) => !params.developerInstructions.includes("task_checklist.read_task_checklist")));
+  assert.ok(threads.every(({ params }) => params.dynamicTools?.some((tool) => tool.name === "task_checklist")));
+});
+
+test("legacy main parent starts a fresh thread before the user's first checklist turn", async (t) => {
+  const nativeRequests = [checklistReadCall("read")];
+  const { rootDir, service, conversation, codex } = await fixture(t, { nativeRequests });
+  assert.equal((await complete(service, conversation, "old task")).result.status, "completed");
+  const activeFile = path.join(rootDir, "active.json");
+  const oldThreadId = JSON.parse(await fs.readFile(activeFile, "utf8")).nativeThreadId;
+  assert.ok(oldThreadId);
+  assert.equal(JSON.parse(await fs.readFile(activeFile, "utf8")).checklistReadPending, undefined);
+  const upgraded = createVoiceContextService({ rootDir, createClient: codex.createClient,
+    taskChecklistPath: "task-checklists/main.md" });
+  await upgraded.open();
+  assert.equal((await complete(upgraded, conversation, "resume old task")).result.status, "completed");
+  const threads = codex.calls.filter(({ method, params }) =>
+    ["thread/start", "thread/resume"].includes(method) && params.approvalPolicy === "on-request");
+  const preflightStart = threads.find(({ method, params }) => method === "thread/start"
+    && params.dynamicTools?.some((tool) => tool.name === "task_checklist"));
+  assert.ok(preflightStart);
+  const preflightId = [...codex.nativeThreads.keys()].find((id) => id !== oldThreadId);
+  assert.ok(preflightId);
+  assert.ok(threads.some(({ method, params }) => method === "thread/resume" && params.threadId === preflightId));
+  assert.equal(threads.some(({ method, params }) => method === "thread/resume" && params.threadId === oldThreadId), false);
+});
+
+test("new main parent rejects a checklist changed during the read tool call", async (t) => {
+  let file;
+  let revision = 0;
   const { service, conversation } = await fixture(t, { taskChecklistPath: "task-checklists/main.md",
-    nativeRequests: [{ method: "item/commandExecution/requestApproval", threadId: "root", turnId: "root",
-      itemId: "read", command, startedItem: { id: "read", type: "commandExecution", command },
-      completedItem: { id: "read", type: "commandExecution", command, exitCode: 0,
-        aggregatedOutput: "wrong content\n" } }],
+    nativeRequests: [checklistReadCall("read", {
+      beforeCompleted: async () => fs.writeFile(file, `# Changed ${++revision}\n`),
+    })],
   });
-  await fs.writeFile(path.join(await service.getWorkspaceDirectory(), "task-checklists", "main.md"), "# Original\n");
+  file = path.join(await service.getWorkspaceDirectory(), "task-checklists", "main.md");
+  await fs.writeFile(file, "# Original\n");
   const result = (await complete(service, conversation, "continue")).result;
-  assert.equal(result.status, "failed");
+  assert.equal(result.status, "preflight_failed");
   assert.equal(result.code, "checklist_read_required");
+});
+
+test("checklist preflight requires the exact completed dynamic tool item", async (t) => {
+  for (const [read, code, attempts] of [
+    [checklistReadCall("item", { callId: "other" }), "checklist_preflight_unsafe_tool", 1],
+    [checklistReadCall("item", { completedItem: undefined }), "checklist_read_required", 3],
+  ]) {
+    const { service, conversation, codex } = await fixture(t, { taskChecklistPath: "task-checklists/main.md",
+      nativeRequests: [read] });
+    const result = (await complete(service, conversation, "continue")).result;
+    assert.equal(result.status, "preflight_failed");
+    assert.equal(result.code, code);
+    assert.equal(codex.calls.filter(({ method }) => method === "turn/start").length, attempts);
+  }
+});
+
+test("checklist preflight declines a command before the user turn", async (t) => {
+  const { service, conversation, codex } = await fixture(t, { taskChecklistPath: "task-checklists/main.md",
+    nativeRequests: [{ preflight: true, method: "item/commandExecution/requestApproval",
+      threadId: "root", turnId: "root", itemId: "unsafe", command: "echo unsafe",
+      startedItem: { id: "unsafe", type: "commandExecution", command: "echo unsafe" } }] });
+  const result = (await complete(service, conversation, "continue")).result;
+  assert.equal(result.status, "preflight_failed");
+  assert.equal(result.code, "checklist_preflight_unsafe_tool");
+  assert.ok(codex.calls.filter(({ method }) => method === "native/result")
+    .every(({ result: decision }) => decision.decision === "decline"));
+  assert.equal(codex.calls.filter(({ method }) => method === "turn/start").length, 1);
 });
 
 test("restart never recovers an unverified checklist parent reply as completed", async (t) => {
@@ -2148,12 +2219,7 @@ test("restart never recovers an unverified checklist parent reply as completed",
   assert.equal((await restarted.open()).status, "failed");
   assert.deepEqual((await restarted.history()).messages.map(({ role }) => role), ["user"]);
   assert.equal(JSON.parse(await fs.readFile(activeFile, "utf8")).checklistReadPending, true);
-  const command = "/bin/zsh -lc 'cat task-checklists/main.md'";
-  nativeRequests.push({ method: "item/commandExecution/requestApproval", threadId: "root", turnId: "root",
-    itemId: "recovered-read", command,
-    startedItem: { id: "recovered-read", type: "commandExecution", command },
-    completedItem: { id: "recovered-read", type: "commandExecution", command, exitCode: 1,
-      aggregatedOutput: "cat: task-checklists/main.md: No such file or directory\n" } });
+  nativeRequests.push(checklistReadCall("recovered-read"));
   const recovered = await complete(restarted, conversation, "retry after restart");
   assert.equal(recovered.result.status, "completed");
   assert.equal(JSON.parse(await fs.readFile(activeFile, "utf8")).checklistReadPending, false);
@@ -2161,7 +2227,52 @@ test("restart never recovers an unverified checklist parent reply as completed",
     && params.developerInstructions.includes("新しい親セッションでは")));
 });
 
-test("a checklist file change before the first cat is declined and the turn fails", async (t) => {
+test("restart clears an accepted checklist dispatch intent before the user turn", async (t) => {
+  const { rootDir, codex, conversation } = await fixture(t, { taskChecklistPath: "task-checklists/main.md" });
+  const clientOperationId = randomUUID();
+  const threadId = randomUUID();
+  await fs.writeFile(path.join(rootDir, conversation.logicalConversationId, "events.jsonl"),
+    `${JSON.stringify({ seq: 1, at: new Date().toISOString(), clientOperationId,
+      type: "accepted", text: "resume task" })}\n`);
+  const activeFile = path.join(rootDir, "active.json");
+  const active = JSON.parse(await fs.readFile(activeFile, "utf8"));
+  await fs.writeFile(activeFile, JSON.stringify({ ...active, pendingDispatch: {
+    clientOperationId, threadId, parentGeneration: active.parentGeneration, turnSeq: 1, newParent: true,
+  } }));
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient,
+    taskChecklistPath: "task-checklists/main.md" });
+  await restarted.open();
+  assert.equal((await restarted.status(conversation.logicalConversationId, clientOperationId)).status,
+    "preflight_failed");
+  assert.equal(JSON.parse(await fs.readFile(activeFile, "utf8")).pendingDispatch, undefined);
+  assert.equal(codex.calls.some(({ method }) => method === "turn/start"), false);
+});
+
+test("a journaled checklist dispatch without a user turn stays unknown until interrupted", async (t) => {
+  const nativeThreads = new Map();
+  const { rootDir, codex, conversation } = await fixture(t, { taskChecklistPath: "task-checklists/main.md",
+    nativeThreads });
+  const clientOperationId = randomUUID();
+  const threadId = randomUUID();
+  nativeThreads.set(threadId, { id: threadId, turns: [] });
+  const at = new Date().toISOString();
+  await fs.writeFile(path.join(rootDir, conversation.logicalConversationId, "events.jsonl"),
+    [{ seq: 1, at, clientOperationId, type: "accepted", text: "resume task" },
+      { seq: 2, at, clientOperationId, type: "dispatching" }]
+      .map((event) => `${JSON.stringify(event)}\n`).join(""));
+  const activeFile = path.join(rootDir, "active.json");
+  const active = JSON.parse(await fs.readFile(activeFile, "utf8"));
+  await fs.writeFile(activeFile, JSON.stringify({ ...active, pendingDispatch: {
+    clientOperationId, threadId, parentGeneration: active.parentGeneration, turnSeq: 1, newParent: true,
+  } }));
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient,
+    taskChecklistPath: "task-checklists/main.md" });
+  assert.equal((await restarted.open()).status, "unknown");
+  assert.equal((await restarted.interrupt(conversation.logicalConversationId, clientOperationId)).status, "interrupted");
+  assert.equal(JSON.parse(await fs.readFile(activeFile, "utf8")).pendingDispatch, undefined);
+});
+
+test("a skipped preflight never dispatches the user's file change", async (t) => {
   const nativeRequests = [];
   const { service, conversation, codex } = await fixture(t, {
     taskChecklistPath: "task-checklists/main.md", nativeRequests,
@@ -2170,9 +2281,9 @@ test("a checklist file change before the first cat is declined and the turn fail
   nativeRequests.push({ method: "item/fileChange/requestApproval", threadId: "root", turnId: "root", itemId: "early",
     startedItem: { id: "early", type: "fileChange", changes: [{ path: target, kind: { type: "add" } }] } });
   const result = (await complete(service, conversation, "continue")).result;
-  assert.equal(result.status, "failed");
+  assert.equal(result.status, "preflight_failed");
   assert.equal(result.code, "checklist_read_required");
-  assert.deepEqual(codex.calls.find(({ method }) => method === "native/result").result, { decision: "decline" });
+  assert.equal(codex.calls.some(({ method }) => method === "native/result"), false);
 });
 
 test("a managed session tool cannot run before the checklist read", async (t) => {
@@ -2182,8 +2293,8 @@ test("a managed session tool cannot run before the checklist read", async (t) =>
   const { service, conversation, codex } = await fixture(t, { taskChecklistPath: "task-checklists/main.md",
     managedSessions, toolCall: true });
   const result = (await complete(service, conversation, "continue")).result;
-  assert.equal(result.status, "failed");
-  assert.equal(result.code, "checklist_read_required");
+  assert.equal(result.status, "preflight_failed");
+  assert.equal(result.code, "checklist_preflight_unsafe_tool");
   assert.equal(called, 0);
   assert.equal(codex.calls.find(({ method }) => method === "tool/result").params.success, false);
 });
