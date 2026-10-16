@@ -161,6 +161,19 @@ test("partial notifications preserve other windows until the next complete read"
   });
 });
 
+test("a complete window read preserves omitted credit allowance", async () => {
+  await fixture(async ({ service, sent, advance }) => {
+    await service.observe("a", { ordinaryUsageAllowed: false, rateLimits: {
+      primary: window(100), credits: { hasCredits: true, unlimited: false },
+    } }, { observedAt: 1_000_000 });
+    advance(1_000_100);
+    await service.observe("a", { rateLimits: { primary: window(100) } }, { observedAt: 1_000_100 });
+    assert.equal(sent.length, 0);
+    assert.equal((await service.snapshot("a")).usageLimitReached, false);
+    assert.deepEqual((await service.rateLimits("a")).credits, { hasCredits: true, unlimited: false });
+  });
+});
+
 test("explicit permission and usable credits govern blocks, null permission cannot infer recovery", async () => {
   await fixture(async ({ service, sent, advance }) => {
     await service.observe("a", { ...update(100), ordinaryUsageAllowed: false,

@@ -39,8 +39,13 @@ function normalizeWindow(raw) {
 }
 
 function mergeLimits(previous = {}, raw = {}, freshRead = false) {
-  // A read reports the current set of windows; notifications can be sparse.
-  const result = freshRead ? {} : { ...previous };
+  const result = { ...previous };
+  // A read replaces quota windows, but may omit credits or spend control.
+  // Notifications can be sparse, so they retain untouched windows.
+  if (freshRead) {
+    delete result.primary;
+    delete result.secondary;
+  }
   for (const name of ["primary", "secondary"]) {
     const incoming = normalizeWindow(raw[name]);
     if (!incoming) continue;
