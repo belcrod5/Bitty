@@ -174,6 +174,22 @@ test("a complete window read preserves omitted credit allowance", async () => {
   });
 });
 
+test("a malformed complete read cannot replace a displayable quota", async () => {
+  await fixture(async ({ service, advance }) => {
+    await service.observe("a", { rateLimits: { primary: window(20) } }, { observedAt: 1_000_000 });
+    const before = await service.snapshot("a");
+    advance(1_000_100);
+    await assert.rejects(() => service.observe("a", { rateLimits: {
+      primary: { usedPercent: 25, windowDurationMins: "bad", resetsAt: 2000 },
+    } }, { observedAt: 1_000_100 }), /rate limits unavailable/);
+    assert.deepEqual(await service.snapshot("a"), before);
+    await service.observe("a", { ordinaryUsageAllowed: false, rateLimits: {
+      primary: null, secondary: null,
+    } }, { observedAt: 1_000_100 });
+    assert.match((await service.snapshot("a")).statusText, /5h limit:[^\n]*80% left/);
+  });
+});
+
 test("explicit permission and usable credits govern blocks, null permission cannot infer recovery", async () => {
   await fixture(async ({ service, sent, advance }) => {
     await service.observe("a", { ...update(100), ordinaryUsageAllowed: false,

@@ -137,7 +137,15 @@ export function createCodexUsageService({ storePath, onChanged, onLimitReached, 
       const source = update.rateLimitsByLimitId?.codex || update.rateLimits;
       // Other model buckets do not overwrite the ordinary Codex quota.
       if (source?.limitId && source.limitId !== "codex" && !usageLimitExceeded) return snapshot(previous);
-      const limits = mergeLimits(previous.rateLimits, source, observedAt !== undefined);
+      let completeWindows = false;
+      if (observedAt !== undefined) {
+        for (const window of [source?.primary, source?.secondary]) {
+          if (window == null) continue;
+          if (!normalizeWindow(window)?.windowDurationMins) throw new Error("rate limits unavailable");
+          completeWindows = true;
+        }
+      }
+      const limits = mergeLimits(previous.rateLimits, source, completeWindows);
       const newlyExhausted = [limits.primary, limits.secondary].some((incoming) =>
         incoming?.usedPercent >= 100 && !Object.values(previous.rateLimits).some((old) =>
           old?.windowDurationMins === incoming.windowDurationMins && old.usedPercent >= 100 && old.resetsAt === incoming.resetsAt));
