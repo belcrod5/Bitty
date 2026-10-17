@@ -462,24 +462,70 @@ test("empty recognition segments cannot postpone the last dictated text's idle c
   const { result } = await renderHook(() => useStreamingStt(options));
   const first = await openReady(result);
   await emit(first, { type: "transcript", text: "最初の文章", isFinal: true });
-  const lastTextAt = Date.now();
   await emit(first, { type: "done", reason: "recognition_segment_end", hasSpeech: true });
   await advanceTimers(250);
   await emit(mockSessions.at(-1)!, { type: "ready" });
-  for (const delay of [8_000, 1_000]) {
-    await advanceTimers(delay);
+  for (let index = 0; index < 2; index += 1) {
+    await advanceTimers(800);
     await emit(mockSessions.at(-1)!, { type: "done", reason: "recognition_segment_end", hasSpeech: false });
     expect(options.sendTranscript).not.toHaveBeenCalled();
     await advanceTimers(250);
     await emit(mockSessions.at(-1)!, { type: "ready" });
   }
-  await advanceTimers(CONTINUOUS_DICTATION_IDLE_MS - (Date.now() - lastTextAt) - 1);
+  await advanceTimers(399);
   expect(options.sendTranscript).not.toHaveBeenCalled();
   const activeSession = mockSessions.at(-1)!;
   await advanceTimers(1);
   expect(activeSession.abort).toHaveBeenCalledTimes(1);
   expect(options.sendTranscript).toHaveBeenCalledTimes(1);
   expect(options.sendTranscript).toHaveBeenCalledWith("最初の文章", expect.any(Function));
+});
+
+test("dictation waits for two ready seconds after delayed finalization and reconnect", async () => {
+  const options = { ...createOptions(), continuousDictation: true };
+  const { result } = await renderHook(() => useStreamingStt(options));
+  const first = await openReady(result);
+  await emit(first, { type: "transcript", text: "前半", isFinal: true });
+  await emit(first, { type: "done", reason: "recognition_segment_end", hasSpeech: true });
+  await advanceTimers(250);
+  const second = mockSessions.at(-1)!;
+  await emit(second, { type: "ready" });
+  await emit(second, { type: "transcript", text: "後半", isFinal: false });
+  await emit(second, { type: "speech_activity_end" });
+  await advanceTimers(5_000);
+  expect(options.sendTranscript).not.toHaveBeenCalled();
+  await emit(second, { type: "done", reason: "recognition_segment_end", hasSpeech: false });
+  await advanceTimers(250);
+  await advanceTimers(5_000);
+  expect(options.sendTranscript).not.toHaveBeenCalled();
+  await emit(mockSessions.at(-1)!, { type: "ready" });
+  await advanceTimers(CONTINUOUS_DICTATION_IDLE_MS - 1);
+  expect(options.sendTranscript).not.toHaveBeenCalled();
+  await advanceTimers(1);
+  expect(options.sendTranscript).toHaveBeenCalledWith("前半 後半", expect.any(Function));
+});
+
+test("false speech activity preserves earlier ready time without sending during recognition", async () => {
+  const options = { ...createOptions(), continuousDictation: true };
+  const { result } = await renderHook(() => useStreamingStt(options));
+  const first = await openReady(result);
+  await emit(first, { type: "transcript", text: "残る文章", isFinal: true });
+  await emit(first, { type: "done", reason: "recognition_segment_end", hasSpeech: true });
+  await advanceTimers(250);
+  const second = mockSessions.at(-1)!;
+  await emit(second, { type: "ready" });
+  await advanceTimers(800);
+  await emit(second, { type: "speech_activity_begin" });
+  await advanceTimers(5_000);
+  expect(options.sendTranscript).not.toHaveBeenCalled();
+  await emit(second, { type: "speech_activity_end" });
+  await emit(second, { type: "done", reason: "recognition_segment_end", hasSpeech: false });
+  await advanceTimers(250);
+  await emit(mockSessions.at(-1)!, { type: "ready" });
+  await advanceTimers(1_199);
+  expect(options.sendTranscript).not.toHaveBeenCalled();
+  await advanceTimers(1);
+  expect(options.sendTranscript).toHaveBeenCalledWith("残る文章", expect.any(Function));
 });
 
 test("new dictated text extends the cross-segment idle deadline", async () => {
@@ -493,12 +539,13 @@ test("new dictated text extends the cross-segment idle deadline", async () => {
   await emit(second, { type: "ready" });
   await advanceTimers(CONTINUOUS_DICTATION_IDLE_MS / 2);
   await emit(second, { type: "transcript", text: "後半", isFinal: false });
-  const lastTextAt = Date.now();
   await emit(second, { type: "transcript", text: "後半", isFinal: true });
   await emit(second, { type: "done", reason: "recognition_segment_end", hasSpeech: true });
-  await advanceTimers(CONTINUOUS_DICTATION_IDLE_MS / 2 + 1);
+  await advanceTimers(250);
+  await emit(mockSessions.at(-1)!, { type: "ready" });
+  await advanceTimers(CONTINUOUS_DICTATION_IDLE_MS - 1);
   expect(options.sendTranscript).not.toHaveBeenCalled();
-  await advanceTimers(CONTINUOUS_DICTATION_IDLE_MS - (Date.now() - lastTextAt));
+  await advanceTimers(1);
   expect(options.sendTranscript).toHaveBeenCalledWith("前半 後半", expect.any(Function));
 });
 
@@ -513,10 +560,10 @@ test("repeated unchanged partials do not extend the idle deadline", async () => 
   await emit(second, { type: "ready" });
   await advanceTimers(CONTINUOUS_DICTATION_IDLE_MS / 2);
   await emit(second, { type: "transcript", text: "後半", isFinal: false });
-  await advanceTimers(CONTINUOUS_DICTATION_IDLE_MS - 2_000);
+  await advanceTimers(1_500);
   await emit(second, { type: "transcript", text: "後半", isFinal: false });
   await emit(second, { type: "transcript", text: "後半 ", isFinal: false });
-  await advanceTimers(1_999);
+  await advanceTimers(499);
   expect(options.sendTranscript).not.toHaveBeenCalled();
   await advanceTimers(1);
   expect(options.sendTranscript).toHaveBeenCalledWith("前半 後半", expect.any(Function));
@@ -528,6 +575,8 @@ test("cross-segment idle leaves the draft editable when auto reply is disabled",
   const first = await openReady(result);
   await emit(first, { type: "transcript", text: "残す文章", isFinal: true });
   await emit(first, { type: "done", reason: "recognition_segment_end", hasSpeech: true });
+  await advanceTimers(250);
+  await emit(mockSessions.at(-1)!, { type: "ready" });
   await advanceTimers(CONTINUOUS_DICTATION_IDLE_MS);
   expect(result.current.phase).toBe("idle");
   expect(result.current.isArmed()).toBe(false);

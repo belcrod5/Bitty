@@ -41,7 +41,7 @@ export const REPLY_CYCLE_START_TIMEOUT_MS = 15_000;
 export const TTS_START_GRACE_MS = 500;
 const RETRY_DELAY_MS = 250;
 const MAX_ERROR_RETRIES = 3;
-export const CONTINUOUS_DICTATION_IDLE_MS = 10_000;
+export const CONTINUOUS_DICTATION_IDLE_MS = 2_000;
 
 type DoneMessage = Extract<StreamingSttServerMessage, { type: "done" }>;
 
@@ -53,7 +53,8 @@ export function useStreamingStt(options: Options) {
   const sessionVersionRef = useRef(0);
   const transcriptStateRef = useRef<StreamingTranscript>(EMPTY_TRANSCRIPT);
   const draftAtStartRef = useRef("");
-  const lastDictationTextAtRef = useRef<number | null>(null);
+  const dictationReadyElapsedRef = useRef(0);
+  const dictationReadySinceRef = useRef<number | null>(null);
   const dictationSegmentSeenRef = useRef(false);
   const dictationIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastPartialCharsRef = useRef(0);
@@ -193,7 +194,7 @@ export function useStreamingStt(options: Options) {
     clearReplyCycleWait();
     clearCorrection();
     clearTimer(retryTimerRef);
-    clearTimer(dictationIdleTimerRef);
+    pauseDictationIdle();
     void abortSession();
     setTranscript(draft ?? displayStreamingTranscript(transcriptStateRef.current));
     setPhase("idle");
@@ -215,7 +216,8 @@ export function useStreamingStt(options: Options) {
         latestRef.current.setTranscript("");
         transcriptStateRef.current = startStreamingTranscript("");
         draftAtStartRef.current = "";
-        lastDictationTextAtRef.current = null;
+        dictationReadyElapsedRef.current = 0;
+        dictationReadySinceRef.current = null;
         dictationSegmentSeenRef.current = false;
         clearTimer(dictationIdleTimerRef);
         clearTimer(replyCycleTimeoutRef);
@@ -296,21 +298,31 @@ export function useStreamingStt(options: Options) {
     cancelCorrection(false);
   }, [options.correctionIdentity, cancelCorrection]);
 
+  function pauseDictationIdle() {
+    if (dictationReadySinceRef.current !== null) {
+      dictationReadyElapsedRef.current += Date.now() - dictationReadySinceRef.current;
+      dictationReadySinceRef.current = null;
+    }
+    clearTimer(dictationIdleTimerRef);
+  }
+
   function scheduleDictationIdle() {
     clearTimer(dictationIdleTimerRef);
-    const lastTextAt = lastDictationTextAtRef.current;
+    const readySince = dictationReadySinceRef.current;
     if (!latestRef.current.continuousDictation || !dictationSegmentSeenRef.current
-      || !listeningRef.current || !appActiveRef.current || lastTextAt === null
+      || !listeningRef.current || !appActiveRef.current || readySince === null
       || displayStreamingTranscript(transcriptStateRef.current).trim() === draftAtStartRef.current.trim()) return;
     dictationIdleTimerRef.current = setTimeout(() => {
       dictationIdleTimerRef.current = null;
-      if (!listeningRef.current || !appActiveRef.current || !dictationSegmentSeenRef.current) return;
+      if (!listeningRef.current || !appActiveRef.current || !dictationSegmentSeenRef.current
+        || dictationReadySinceRef.current === null) return;
       const draft = displayStreamingTranscript(transcriptStateRef.current);
       if (draft.trim() === draftAtStartRef.current.trim()) return;
       latestRef.current.onDiagnostic?.("stt_dictation_idle_timeout", { version: sessionVersionRef.current });
       transcriptStateRef.current = startStreamingTranscript(draft);
       finishRecognition({ type: "done", reason: "no_speech_timeout", hasSpeech: false });
-    }, Math.max(0, lastTextAt + CONTINUOUS_DICTATION_IDLE_MS - Date.now()));
+    }, Math.max(0, CONTINUOUS_DICTATION_IDLE_MS - dictationReadyElapsedRef.current
+      - (Date.now() - readySince)));
   }
 
   useEffect(() => {
@@ -320,8 +332,8 @@ export function useStreamingStt(options: Options) {
       if (appActiveRef.current) {
         if (!wasActive && listeningRef.current && !awaitingReplyCycleRef.current && !sessionRef.current) {
           latestRef.current.onDiagnostic?.("stt_foreground_resume", { version: sessionVersionRef.current });
-          lastDictationTextAtRef.current = Date.now();
-          scheduleDictationIdle();
+          dictationReadyElapsedRef.current = 0;
+          dictationReadySinceRef.current = null;
           startSessionRef.current();
         }
         return;
@@ -334,7 +346,7 @@ export function useStreamingStt(options: Options) {
       terminalRef.current = true;
       sessionVersionRef.current += 1;
       clearTimer(retryTimerRef);
-      clearTimer(dictationIdleTimerRef);
+      pauseDictationIdle();
       const draft = displayStreamingTranscript(transcriptStateRef.current);
       transcriptStateRef.current = startStreamingTranscript(draft);
       latestRef.current.setTranscript(draft);
@@ -371,6 +383,7 @@ export function useStreamingStt(options: Options) {
 
   const startSession = useCallback(() => {
     if (!listeningRef.current) return;
+    pauseDictationIdle();
     if (!appActiveRef.current || latestRef.current.canStart === false) {
       reportStartWait(appActiveRef.current ? "can_start_false" : "app_inactive");
       setPhase("connecting");
@@ -427,6 +440,10 @@ export function useStreamingStt(options: Options) {
     }
     if (message.type === "ready") {
       setPhase("recording");
+      if (latestRef.current.continuousDictation && dictationSegmentSeenRef.current) {
+        dictationReadySinceRef.current ??= Date.now();
+        scheduleDictationIdle();
+      }
       return;
     }
     if (message.type === "transcript") {
@@ -446,10 +463,13 @@ export function useStreamingStt(options: Options) {
       transcriptStateRef.current = next;
       const draft = displayStreamingTranscript(next);
       if (latestRef.current.continuousDictation && message.text.trim() && draft.trim() !== previousDraft.trim()) {
-        lastDictationTextAtRef.current = Date.now();
-        if (dictationSegmentSeenRef.current) scheduleDictationIdle();
+        dictationReadyElapsedRef.current = 0;
+        if (dictationReadySinceRef.current !== null) {
+          dictationReadySinceRef.current = Date.now();
+          scheduleDictationIdle();
+        }
       } else if (latestRef.current.continuousDictation && draft.trim() === draftAtStartRef.current.trim()) {
-        clearTimer(dictationIdleTimerRef);
+        pauseDictationIdle();
       }
       if (message.isFinal) latestRef.current.onDiagnostic?.("stt_final_transcript_received", {
         version: sessionVersionRef.current,
@@ -465,10 +485,16 @@ export function useStreamingStt(options: Options) {
       return;
     }
     if (message.type === "speech_activity_begin") {
+      pauseDictationIdle();
       latestRef.current.onSpeechBegin();
       return;
     }
+    if (message.type === "speech_activity_end") {
+      pauseDictationIdle();
+      return;
+    }
     if (message.type === "error") {
+      pauseDictationIdle();
       latestRef.current.onDiagnostic?.("stt_runner_error", {
         version: sessionVersionRef.current,
         code: /^[a-z][a-z0-9_]{0,63}$/.test(message.code) ? message.code : "unknown",
@@ -510,7 +536,7 @@ export function useStreamingStt(options: Options) {
   function finishRecognition(message: DoneMessage) {
     terminalRef.current = true;
     clearTimer(retryTimerRef);
-    clearTimer(dictationIdleTimerRef);
+    pauseDictationIdle();
     errorRetriesRef.current = 0;
     const version = ++sessionVersionRef.current;
     if (message.usage) latestRef.current.onUsage(message.usage);
@@ -528,7 +554,6 @@ export function useStreamingStt(options: Options) {
         transcriptStateRef.current = startStreamingTranscript(draft);
         latestRef.current.setTranscript(draft);
         dictationSegmentSeenRef.current = true;
-        scheduleDictationIdle();
         setPhase("connecting");
         scheduleStart();
         return;
@@ -621,7 +646,8 @@ export function useStreamingStt(options: Options) {
     if (phase !== "idle" || listeningRef.current) return;
     transcriptStateRef.current = startStreamingTranscript(transcript);
     draftAtStartRef.current = transcriptStateRef.current.baseText;
-    lastDictationTextAtRef.current = null;
+    dictationReadyElapsedRef.current = 0;
+    dictationReadySinceRef.current = null;
     dictationSegmentSeenRef.current = false;
     clearTimer(dictationIdleTimerRef);
     errorRetriesRef.current = 0;
@@ -638,7 +664,7 @@ export function useStreamingStt(options: Options) {
     sessionVersionRef.current += 1;
     clearReplyCycleWait();
     clearTimer(retryTimerRef);
-    clearTimer(dictationIdleTimerRef);
+    pauseDictationIdle();
     void abortSession();
     setTranscript(displayStreamingTranscript(transcriptStateRef.current));
     setPhase("idle");
@@ -653,7 +679,8 @@ export function useStreamingStt(options: Options) {
         if (version !== sessionVersionRef.current || !onAccepted()) return;
         transcriptStateRef.current = startStreamingTranscript("");
         draftAtStartRef.current = "";
-        lastDictationTextAtRef.current = null;
+        dictationReadyElapsedRef.current = 0;
+        dictationReadySinceRef.current = null;
         dictationSegmentSeenRef.current = false;
         clearTimer(dictationIdleTimerRef);
         awaitReplyCycle();
@@ -683,7 +710,7 @@ export function useStreamingStt(options: Options) {
     sessionVersionRef.current += 1;
     clearReplyCycleWait();
     clearTimer(retryTimerRef);
-    clearTimer(dictationIdleTimerRef);
+    pauseDictationIdle();
     await abortSession();
     setTranscript(finalStreamingTranscript(transcriptStateRef.current));
     setPhase("idle");
@@ -709,7 +736,7 @@ export function useStreamingStt(options: Options) {
     clearReplyCycleWait();
     clearCorrection();
     clearTimer(retryTimerRef);
-    clearTimer(dictationIdleTimerRef);
+    pauseDictationIdle();
     void abortSession();
   }, [abortSession, clearCorrection, clearReplyCycleWait]);
 
