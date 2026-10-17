@@ -268,11 +268,13 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
         await load();
         const service = await loadedContext(id);
         if (changes.model !== undefined || changes.effort !== undefined || changes.systemInstruction !== undefined
-          || changes.topicModel !== undefined || changes.topicEffort !== undefined) {
+          || changes.topicModel !== undefined || changes.topicEffort !== undefined
+          || changes.overviewModel !== undefined || changes.overviewEffort !== undefined) {
           const current = await service.getSettings();
           await service.configure(changes.model ?? current.model, changes.effort ?? current.effort,
             changes.systemInstruction ?? current.systemInstruction,
-            changes.topicModel ?? current.topicModel, changes.topicEffort ?? current.topicEffort);
+            changes.topicModel ?? current.topicModel, changes.topicEffort ?? current.topicEffort,
+            changes.overviewModel, changes.overviewEffort);
         }
         const orchestrators = registry.orchestrators.map((item) => item.id === id ? { id, name, icon } : item);
         await saveRegistry({ ...registry, orchestrators });
@@ -300,10 +302,11 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
       const item = registry.orchestrators.find((entry) => entry.id === id);
       return { ...await service.getSettings(), ...item, orchestratorId: id };
     },
-    async configure(id, model, effort, systemInstruction, topicModel, topicEffort) {
+    async configure(id, model, effort, systemInstruction, topicModel, topicEffort, overviewModel, overviewEffort) {
       return exclusive(async () => {
         await load();
-        return (await loadedContext(idOf(id))).configure(model, effort, systemInstruction, topicModel, topicEffort);
+        return (await loadedContext(idOf(id))).configure(model, effort, systemInstruction, topicModel, topicEffort,
+          overviewModel, overviewEffort);
       });
     },
     async clearMemory() { return exclusive(async () => {

@@ -7274,7 +7274,8 @@ runnerWsServer.on("connection", (ws, req) => {
       else if (message.op === "voice.settings.update") {
         operation = voiceContextService.configure(orchestratorId, message.payload?.model,
           message.payload?.effort, message.payload?.systemInstruction,
-          message.payload?.topicModel, message.payload?.topicEffort);
+          message.payload?.topicModel, message.payload?.topicEffort,
+          message.payload?.overviewModel, message.payload?.overviewEffort);
       } else if (message.op === "voice.memory.clear") operation = voiceContextService.clearMemory();
       else operation = voiceContextService.clearMessages(orchestratorId);
       void operation.then((payload) => {

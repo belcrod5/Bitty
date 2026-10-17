@@ -103,6 +103,7 @@ test("loads persisted voice history through Runner", async () => {
   await waitFor(() => expect(result.current.ready).toBe(true));
   await act(async () => { await result.current.refreshHistory(); });
   expect(result.current.history.map(({ text }) => text)).toEqual(["以前の発話", "以前の返答"]);
+  expect(result.current.taskChecklistOverview).toBeNull();
   expect(result.current.history.map(({ at }) => at)).toEqual(["2026-09-27T03:04:05.000Z", undefined]);
 });
 
@@ -175,15 +176,18 @@ test("main distinguishes missing and unavailable task checklists", async () => {
 test("a checklist change notice reloads the disk-backed history for the matching main conversation", async () => {
   const request = mockManager.request.getMockImplementation();
   let markdown: string | null = "- [ ] 確認";
+  let overview: { status: "pending" | "unavailable" } | { status: "present"; markdown: string } = { status: "pending" };
   mockManager.request.mockImplementation((message: { op: string }) => message.op === "voice.history"
     ? Promise.resolve({ op: "voice.history.result", payload: { logicalConversationId: conversationId,
       messages: [], taskChecklist: markdown === null ? { status: "unavailable" }
-        : { status: "present", markdown } } }) : request?.(message));
+        : { status: "present", markdown }, taskChecklistOverview: overview } }) : request?.(message));
   const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
   await waitFor(() => expect(result.current.ready).toBe(true));
   await act(async () => { await result.current.refreshHistory(); });
   expect(result.current.taskChecklist).toEqual({ status: "present", markdown: "- [ ] 確認" });
+  expect(result.current.taskChecklistOverview).toEqual({ status: "pending" });
   markdown = "- [x] 確認";
+  overview = { status: "present", markdown: "- [x] 確認済み" };
   await act(async () => { handlers.get("voice.task-checklist.changed")?.({ payload: {
     orchestratorId: "main", logicalConversationId: "another-conversation",
   } }); });
@@ -192,11 +196,14 @@ test("a checklist change notice reloads the disk-backed history for the matching
     orchestratorId: "main", logicalConversationId: conversationId,
   } }); });
   await waitFor(() => expect(result.current.taskChecklist).toEqual({ status: "present", markdown: "- [x] 確認" }));
+  expect(result.current.taskChecklistOverview).toEqual({ status: "present", markdown: "- [x] 確認済み" });
   markdown = null;
+  overview = { status: "unavailable" };
   await act(async () => { handlers.get("voice.task-checklist.changed")?.({ payload: {
     orchestratorId: "main", logicalConversationId: conversationId,
   } }); });
   await waitFor(() => expect(result.current.taskChecklist).toEqual({ status: "unavailable" }));
+  expect(result.current.taskChecklistOverview).toEqual({ status: "unavailable" });
 });
 
 test("a previous conversation's delayed checklist cannot reappear after a new voice.open", async () => {

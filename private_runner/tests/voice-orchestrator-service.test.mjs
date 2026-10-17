@@ -292,6 +292,20 @@ test("main custom instructions retain fixed checklist guidance on start and resu
   assert.equal(resumed.params.developerInstructions.includes("新しい親セッションでは"), false);
 });
 
+test("only main accepts independent To Do display model settings", async (t) => {
+  const { service } = await fixture(t);
+  const child = await service.create("調査");
+  assert.deepEqual([(await service.getSettings("main")).overviewModel,
+    (await service.getSettings("main")).overviewEffort], ["gpt-6-luna", "low"]);
+  assert.equal(Object.hasOwn(await service.getSettings(child.id), "overviewModel"), false);
+  await service.update("main", { name: "メイン", icon: "", overviewModel: "another-model", overviewEffort: "high" });
+  assert.deepEqual([(await service.getSettings("main")).overviewModel,
+    (await service.getSettings("main")).overviewEffort], ["another-model", "high"]);
+  await assert.rejects(service.update(child.id,
+    { name: "調査", icon: "", overviewModel: "another-model", overviewEffort: "high" }),
+  { code: "turn_rejected" });
+});
+
 test("main checklist changes notify on service starts without per-turn hooks", async (t) => {
   const changed = [];
   const { service } = await fixture(t, { checklistWrites: ["- [ ] 確認\n", "- [x] 確認\n"],

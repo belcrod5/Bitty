@@ -8,6 +8,8 @@ import type { VoiceContextStats } from "../types/appTypes";
 type TurnStatus = "idle" | "sending" | "accepted" | "running" | "completed" | "failed";
 export type VoiceHistoryMessage = { role: "user" | "assistant"; text: string; clientOperationId: string; at?: string; outputTokens?: number; completedOrdinal?: number };
 export type VoiceTaskChecklist = { status: "present"; markdown: string } | { status: "missing" } | { status: "unavailable" };
+export type VoiceTaskChecklistOverview = { status: "present"; markdown: string }
+  | { status: "pending" } | { status: "unavailable" };
 type PendingTurn = {
   id: string;
   text?: string;
@@ -91,6 +93,7 @@ export function useVoiceConversation(
   const [localHistory, setLocalHistory] = useState<VoiceHistoryMessage[]>([]);
   const [historyError, setHistoryError] = useState("");
   const [taskChecklist, setTaskChecklist] = useState<VoiceTaskChecklist | null>(null);
+  const [taskChecklistOverview, setTaskChecklistOverview] = useState<VoiceTaskChecklistOverview | null>(null);
   const historyRequestRef = useRef(0);
   const pendingRef = useRef<PendingTurn | null>(null);
   const startTurnTasksRef = useRef(new Map<string, Promise<void>>());
@@ -273,6 +276,7 @@ export function useVoiceConversation(
         setLocalHistory([]);
         setHistoryError("");
         setTaskChecklist(null);
+        setTaskChecklistOverview(null);
         setTurnStatus("idle");
       }
       conversationIdRef.current = conversationId;
@@ -477,6 +481,13 @@ export function useVoiceConversation(
           && (value.status === "missing" || value.status === "unavailable"
             || value.status === "present" && typeof value.markdown === "string")
           ? value as VoiceTaskChecklist : { status: "unavailable" });
+        const overview = payload.taskChecklistOverview;
+        const display = overview && typeof overview === "object" && !Array.isArray(overview)
+          ? overview as Record<string, unknown> : null;
+        setTaskChecklistOverview(overview === undefined ? null : value?.status === "present" && display
+          && (display.status === "pending" || display.status === "unavailable"
+            || display.status === "present" && typeof display.markdown === "string")
+          ? display as VoiceTaskChecklistOverview : { status: "unavailable" });
       }
       setLocalHistory((current) => current.filter((local) => !messages.some((message) =>
         message.role === local.role && message.clientOperationId === local.clientOperationId)));
@@ -486,6 +497,7 @@ export function useVoiceConversation(
         && manager.getSnapshot().generation === startedGeneration) {
         setHistoryError(cause instanceof Error ? cause.message : "音声会話の履歴を読み込めません。");
         if (orchestratorId === "main") setTaskChecklist({ status: "unavailable" });
+        if (orchestratorId === "main") setTaskChecklistOverview(null);
       }
     }
   }, [manager, orchestratorId]);
@@ -516,6 +528,7 @@ export function useVoiceConversation(
     history: visibleHistory,
     historyError,
     taskChecklist,
+    taskChecklistOverview,
     refreshHistory,
     error,
     setError,

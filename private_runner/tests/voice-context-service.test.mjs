@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { createVoiceContextService } from "../src/voice-context-service.mjs";
 
-function fakeCodex({ reply = "answer", summaryReply, topicReplies = [], failTopicJudge = false,
+function fakeCodex({ reply = "answer", summaryReply, topicReplies = [], overviewReplies = [], holdOverviews = false, failTopicJudge = false,
   holdTopicJudges = false, agentEvents, earlyAgentEvents = [], completionUsage, contextUsageByTurn = [], summaryContextUsage,
   responseOutputTokensByTurn = [], failSummary = false, failSummaryCount = 0, holdTurns = false, holdThreadStart = false,
   holdSummaryTurnStart = false, finishOnInterrupt = false, holdInterrupt = false, holdInterruptRpc = false,
@@ -20,6 +20,7 @@ function fakeCodex({ reply = "answer", summaryReply, topicReplies = [], failTopi
   const releases = [];
   const summaryReleases = [];
   const topicReleases = [];
+  const overviewReleases = [];
   const modelReleases = [];
   const threadReleases = [];
   const interruptReleases = [];
@@ -39,6 +40,7 @@ function fakeCodex({ reply = "answer", summaryReply, topicReplies = [], failTopi
     let resolveCompletion = () => {};
     let isSummaryThread = false;
     let isTopicThread = false;
+    let isOverviewThread = false;
     if (!ignoreAbort) signal?.addEventListener("abort", () => resolveCompletion(), { once: true });
     return {
       openPromise: Promise.resolve(),
@@ -72,6 +74,7 @@ function fakeCodex({ reply = "answer", summaryReply, topicReplies = [], failTopi
         }
         if (method === "thread/start") {
           isSummaryThread = params.approvalPolicy === "never";
+          isOverviewThread = isSummaryThread && params.developerInstructions?.startsWith("Summarize the entire supplied task checklist");
           if (!isSummaryThread && ++responseThreadStartCount === failResponseThreadStartAt) {
             throw Object.assign(new Error("response thread start failed"), { code: "app_server_failed" });
           }
@@ -109,8 +112,8 @@ function fakeCodex({ reply = "answer", summaryReply, topicReplies = [], failTopi
         }
         if (method === "mcpServerStatus/list") return mcpPage ?? { data: [], nextCursor: null };
         if (method === "turn/start") {
-          isTopicThread = isSummaryThread && Array.isArray(JSON.parse(params.input[0].text).recent);
-          const isSummary = isSummaryThread && !isTopicThread;
+          isTopicThread = isSummaryThread && !isOverviewThread && Array.isArray(JSON.parse(params.input[0].text).recent);
+          const isSummary = isSummaryThread && !isTopicThread && !isOverviewThread;
           const isIsolated = isSummaryThread;
           const isChecklistPreflight = !isIsolated && params.sandboxPolicy?.type === "readOnly";
           const responseIndex = isIsolated ? -1 : responseTurnIndex++;
@@ -211,7 +214,7 @@ function fakeCodex({ reply = "answer", summaryReply, topicReplies = [], failTopi
                 threadId: params.threadId, turnId, ...event.params,
               });
             } else {
-              const text = isTopicThread
+              const text = isOverviewThread ? overviewReplies.shift() || "- [x] 確認済み\n- [ ] 次を確認" : isTopicThread
                 ? topicReplies.shift() || JSON.stringify({ decision: "continue", reason: "same work" })
                 : isSummary ? summaryReply ?? (() => {
                 const pending = JSON.parse(params.input[0].text);
@@ -247,6 +250,7 @@ function fakeCodex({ reply = "answer", summaryReply, topicReplies = [], failTopi
             resolveCompletion();
           };
           if (isTopicThread && holdTopicJudges) topicReleases.push(finish);
+          else if (isOverviewThread && holdOverviews) overviewReleases.push(finish);
           else if (isSummary && holdSummaries) summaryReleases.push(finish);
           else if (!isIsolated && holdTurns) releases.push(finish);
           else queueMicrotask(() => void finish());
@@ -258,7 +262,7 @@ function fakeCodex({ reply = "answer", summaryReply, topicReplies = [], failTopi
     };
   };
   return { createClient, calls, clients, releases, threadReleases, interruptReleases, summaryReleases,
-    topicReleases, summaryTurnStartReleases, modelReleases, nativeThreads };
+    topicReleases, overviewReleases, summaryTurnStartReleases, modelReleases, nativeThreads };
 }
 
 async function waitFor(check) {
@@ -290,6 +294,7 @@ async function fixture(t, options = {}) {
     for (const finish of codex.releases.splice(0)) finish();
     for (const finish of codex.summaryReleases.splice(0)) finish();
     for (const finish of codex.topicReleases.splice(0)) finish();
+    for (const finish of codex.overviewReleases.splice(0)) finish();
     await new Promise((resolve) => setTimeout(resolve, 20));
     await fs.rm(temp, { recursive: true, force: true });
   });
@@ -326,6 +331,13 @@ async function complete(service, conversation, text, id = randomUUID(), onApprov
 function checklistReadCall(id = randomUUID(), overrides = {}) {
   return { preflight: true, method: "item/tool/call", threadId: "root", turnId: "root",
     callId: id, namespace: "task_checklist", tool: "read_task_checklist", arguments: {},
+    startedItem: { id, type: "dynamicToolCall", status: "inProgress" },
+    completedItem: { id, type: "dynamicToolCall", status: "completed" }, ...overrides };
+}
+
+function checklistTurnCall(id, tool, args = {}, overrides = {}) {
+  return { method: "item/tool/call", threadId: "root", turnId: "root",
+    callId: id, namespace: "task_checklist", tool, arguments: args,
     startedItem: { id, type: "dynamicToolCall", status: "inProgress" },
     completedItem: { id, type: "dynamicToolCall", status: "completed" }, ...overrides };
 }
@@ -2065,6 +2077,214 @@ test("main checklist history reads one bounded disk original and distinguishes m
   assert.equal((await restarted.history()).logicalConversationId, conversation.logicalConversationId);
 });
 
+test("legacy main checklist gets one display-only overview and reuses its source-matched cache", async (t) => {
+  const original = "# 作業\n- 調査は完了\n- 次の確認は未着手\n";
+  const overview = "- [x] 調査を確認済み\n- [ ] 次の確認に着手";
+  const { rootDir, codex, service } = await fixture(t, { taskChecklistPath: "task-checklists/main.md",
+    overviewReplies: [overview] });
+  const target = path.join(await service.getWorkspaceDirectory(), "task-checklists", "main.md");
+  await fs.writeFile(target, original);
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient,
+    taskChecklistPath: "task-checklists/main.md" });
+  await restarted.open();
+  await waitFor(async () => (await restarted.history()).taskChecklistOverview.markdown === overview);
+  assert.deepEqual((await restarted.history()).taskChecklist, { status: "present", markdown: original });
+  const overviewStarts = () => codex.calls.filter(({ method, params }) => method === "thread/start"
+    && params.developerInstructions?.startsWith("Summarize the entire supplied task checklist"));
+  assert.equal(overviewStarts().length, 1);
+  const started = overviewStarts()[0].params;
+  assert.equal(started.ephemeral, true);
+  assert.equal(started.sandbox, "read-only");
+  assert.equal(started.model, "gpt-6-luna");
+  await restarted.history();
+  await restarted.open();
+  assert.equal(overviewStarts().length, 1);
+  const settings = await restarted.getSettings();
+  await restarted.configure(settings.model, settings.effort, settings.systemInstruction,
+    settings.topicModel, settings.topicEffort, "another-model", "medium");
+  assert.deepEqual((await restarted.history()).taskChecklistOverview, { status: "present", markdown: overview });
+  assert.equal(overviewStarts().length, 1);
+  const another = createVoiceContextService({ rootDir, createClient: codex.createClient,
+    taskChecklistPath: "task-checklists/main.md" });
+  assert.deepEqual((await another.history()).taskChecklistOverview, { status: "present", markdown: overview });
+  assert.equal(overviewStarts().length, 1);
+  assert.equal(await fs.readFile(target, "utf8"), original);
+  await fs.writeFile(target, "# 作業\n- 内容が更新された\n");
+  assert.deepEqual((await another.history()).taskChecklistOverview, { status: "unavailable" });
+  assert.equal(overviewStarts().length, 1);
+});
+
+test("invalid overview output leaves the original available and does not retry on history or reopen", async (t) => {
+  const { rootDir, service, codex } = await fixture(t, { taskChecklistPath: "task-checklists/main.md",
+    overviewReplies: ["A title without checklist rows"] });
+  const original = "- [ ] 一件だけ確認\n";
+  const target = path.join(await service.getWorkspaceDirectory(), "task-checklists", "main.md");
+  await fs.writeFile(target, original);
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient,
+    taskChecklistPath: "task-checklists/main.md" });
+  assert.deepEqual((await restarted.history()).taskChecklistOverview, { status: "pending" });
+  await waitFor(async () => (await restarted.history()).taskChecklistOverview.status === "unavailable");
+  assert.deepEqual((await restarted.history()).taskChecklist, { status: "present", markdown: original });
+  const cache = JSON.parse(await fs.readFile(path.join(rootDir, "task-checklist-overview.json"), "utf8"));
+  assert.equal(cache.markdown, null);
+  const count = codex.calls.filter(({ method, params }) => method === "thread/start"
+    && params.developerInstructions?.startsWith("Summarize the entire supplied task checklist")).length;
+  await restarted.history();
+  const another = createVoiceContextService({ rootDir, createClient: codex.createClient,
+    taskChecklistPath: "task-checklists/main.md" });
+  assert.deepEqual((await another.history()).taskChecklistOverview, { status: "unavailable" });
+  assert.equal(codex.calls.filter(({ method, params }) => method === "thread/start"
+    && params.developerInstructions?.startsWith("Summarize the entire supplied task checklist")).length, count);
+});
+
+test("overview cache write failure ends pending and notifies the visible original", async (t) => {
+  const { rootDir, service, codex } = await fixture(t, { taskChecklistPath: "task-checklists/main.md",
+    holdOverviews: true, overviewReplies: ["- [ ] 概要"] });
+  const original = "- [ ] 原本\n";
+  await fs.writeFile(path.join(await service.getWorkspaceDirectory(), "task-checklists", "main.md"), original);
+  const changes = [];
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient,
+    taskChecklistPath: "task-checklists/main.md", onChecklistChanged: (id) => changes.push(id) });
+  assert.deepEqual((await restarted.history()).taskChecklistOverview, { status: "pending" });
+  await waitFor(() => codex.overviewReleases.length === 1);
+  await fs.mkdir(path.join(rootDir, "task-checklist-overview.json"));
+  await codex.overviewReleases.shift()();
+  await waitFor(() => changes.length === 1);
+  assert.deepEqual((await restarted.history()).taskChecklistOverview, { status: "unavailable" });
+  assert.deepEqual((await restarted.history()).taskChecklist, { status: "present", markdown: original });
+});
+
+test("source mismatch at overview completion ends pending without publishing a stale summary", async (t) => {
+  const { rootDir, service, codex } = await fixture(t, { taskChecklistPath: "task-checklists/main.md",
+    holdOverviews: true, overviewReplies: ["- [x] 古い概要"] });
+  const target = path.join(await service.getWorkspaceDirectory(), "task-checklists", "main.md");
+  await fs.writeFile(target, "- [ ] 旧原本\n");
+  const changes = [];
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient,
+    taskChecklistPath: "task-checklists/main.md", onChecklistChanged: (id) => changes.push(id) });
+  assert.deepEqual((await restarted.history()).taskChecklistOverview, { status: "pending" });
+  await waitFor(() => codex.overviewReleases.length === 1);
+  await fs.writeFile(target, "- [ ] 新原本\n");
+  await codex.overviewReleases.shift()();
+  await waitFor(() => changes.length === 1);
+  assert.deepEqual((await restarted.history()).taskChecklistOverview, { status: "unavailable" });
+  assert.deepEqual((await restarted.history()).taskChecklist, { status: "present", markdown: "- [ ] 新原本\n" });
+});
+
+test("a newer checklist write supersedes an in-flight overview", async (t) => {
+  const nativeRequests = [checklistReadCall("read")];
+  const { rootDir, service, codex, conversation } = await fixture(t, {
+    taskChecklistPath: "task-checklists/main.md", nativeRequests, holdOverviews: true,
+    overviewReplies: ["- [ ] 古い概要", "- [x] 新しい概要"] });
+  const target = path.join(await service.getWorkspaceDirectory(), "task-checklists", "main.md");
+  await fs.writeFile(target, "- [ ] 旧作業\n");
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient,
+    taskChecklistPath: "task-checklists/main.md" });
+  await restarted.open();
+  await waitFor(() => codex.overviewReleases.length === 1);
+  nativeRequests.push({ method: "item/commandExecution/requestApproval", threadId: "root", turnId: "root",
+    itemId: "new-progress", startedItem: { id: "new-progress", type: "commandExecution" },
+    beforeCompleted: () => fs.writeFile(target, "- [x] 新作業\n"),
+    completedItem: { id: "new-progress", type: "commandExecution", status: "completed" } });
+  assert.equal((await complete(restarted, conversation, "update", randomUUID(), async () => "accept")).result.status,
+    "completed");
+  assert.deepEqual((await restarted.history()).taskChecklistOverview, { status: "pending" });
+  await waitFor(() => codex.overviewReleases.length === 2);
+  for (const finish of codex.overviewReleases.splice(0)) await finish();
+  await waitFor(async () => (await restarted.history()).taskChecklistOverview.markdown === "- [x] 新しい概要");
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(rootDir, "task-checklist-overview.json"), "utf8")).markdown,
+    "- [x] 新しい概要");
+});
+
+test("returning to a cached source cancels an older overview before the source changes again", async (t) => {
+  const nativeRequests = [checklistReadCall("read")];
+  const { rootDir, service, codex, conversation } = await fixture(t, {
+    taskChecklistPath: "task-checklists/main.md", nativeRequests, holdOverviews: true,
+    overviewReplies: ["- [x] A概要", "- [ ] 古いB概要", "- [x] 新しいB概要"] });
+  const target = path.join(await service.getWorkspaceDirectory(), "task-checklists", "main.md");
+  await fs.writeFile(target, "- [x] A作業\n");
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient,
+    taskChecklistPath: "task-checklists/main.md" });
+  await restarted.open();
+  await waitFor(() => codex.overviewReleases.length === 1);
+  await codex.overviewReleases.shift()();
+  await waitFor(async () => (await restarted.history()).taskChecklistOverview.markdown === "- [x] A概要");
+  for (const [name, markdown] of [["b-one", "- [ ] B作業\n"], ["back-a", "- [x] A作業\n"],
+    ["b-two", "- [ ] B作業\n"]]) {
+    const change = { method: "item/commandExecution/requestApproval", threadId: "root", turnId: "root",
+      itemId: name, startedItem: { id: name, type: "commandExecution" },
+      beforeCompleted: () => fs.writeFile(target, markdown),
+      completedItem: { id: name, type: "commandExecution", status: "completed" } };
+    nativeRequests.push(change);
+    assert.equal((await complete(restarted, conversation, name, randomUUID(), async () => "accept")).result.status,
+      "completed");
+    nativeRequests.pop();
+    if (name === "b-one") await waitFor(() => codex.overviewReleases.length === 1);
+    if (name === "back-a") await waitFor(() => codex.calls.some(({ method }) => method === "turn/interrupt"));
+  }
+  await waitFor(() => codex.overviewReleases.length === 2);
+  for (const finish of codex.overviewReleases.splice(0)) await finish();
+  await waitFor(async () => (await restarted.history()).taskChecklistOverview.markdown === "- [x] 新しいB概要");
+});
+
+test("main overview settings are independent and do not regenerate until a notified original change", async (t) => {
+  const nativeRequests = [checklistReadCall("read")];
+  const { rootDir, codex, service, conversation } = await fixture(t, {
+    taskChecklistPath: "task-checklists/main.md", nativeRequests,
+    overviewReplies: ["- [x] 旧結果\n- [ ] 次へ"] });
+  const initial = await service.getSettings();
+  assert.deepEqual([initial.overviewModel, initial.overviewEffort], ["gpt-6-luna", "low"]);
+  await assert.rejects(service.configure(initial.model, initial.effort, undefined,
+    initial.topicModel, initial.topicEffort, "another-model", "low"), { code: "turn_rejected" });
+  await service.configure(initial.model, initial.effort, undefined,
+    initial.topicModel, initial.topicEffort, "another-model", "medium");
+  assert.equal((await service.getSettings()).overviewModel, "another-model");
+  const target = path.join(await service.getWorkspaceDirectory(), "task-checklists", "main.md");
+  nativeRequests.push({ method: "item/commandExecution/requestApproval", threadId: "root", turnId: "root",
+    itemId: "progress", startedItem: { id: "progress", type: "commandExecution" },
+    beforeCompleted: () => fs.writeFile(target, "- [x] 完了\n- [ ] 次へ\n"),
+    completedItem: { id: "progress", type: "commandExecution", status: "completed" } });
+  assert.equal((await complete(service, conversation, "update progress", randomUUID(), async () => "accept")).result.status,
+    "completed");
+  await waitFor(async () => (await service.history()).taskChecklistOverview.status === "present");
+  const overviewStart = codex.calls.find(({ method, params }) => method === "thread/start"
+    && params.developerInstructions?.startsWith("Summarize the entire supplied task checklist"));
+  assert.equal(overviewStart.params.model, "another-model");
+  const overviewTurn = codex.calls.find(({ method, params }) => method === "turn/start"
+    && params.effort === "medium" && params.input?.[0]?.text?.startsWith("- [x] 完了"));
+  assert.ok(overviewTurn);
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient,
+    taskChecklistPath: "task-checklists/main.md" });
+  assert.equal((await restarted.getSettings()).overviewEffort, "medium");
+  assert.deepEqual((await restarted.history()).taskChecklistOverview,
+    { status: "present", markdown: "- [x] 旧結果\n- [ ] 次へ" });
+});
+
+test("an existing main parent keeps the normal preflight boundary for a legacy checklist", async (t) => {
+  const nativeRequests = [checklistReadCall("read")];
+  const { service, conversation, codex } = await fixture(t, {
+    taskChecklistPath: "task-checklists/main.md", nativeRequests });
+  assert.equal((await complete(service, conversation, "begin", randomUUID(), async () => "accept")).result.status,
+    "completed");
+  const preflights = () => codex.calls.filter(({ method, params }) => method === "turn/start"
+    && params.sandboxPolicy?.type === "readOnly" && params.input?.[0]?.text?.startsWith("Call task_checklist"));
+  assert.equal(preflights().length, 1);
+  const target = path.join(await service.getWorkspaceDirectory(), "task-checklists", "main.md");
+  await fs.writeFile(target, "# 旧形式の目標\n- 完了と確認済み\n- 結果不明\n");
+  nativeRequests.push({ method: "item/commandExecution/requestApproval", threadId: "root", turnId: "root",
+    itemId: "repair", startedItem: { id: "repair", type: "commandExecution" },
+    beforeCompleted: () => fs.writeFile(target, "- [ ] 旧形式の目標\n- [x] 完了と確認済み\n- [ ] 結果不明\n"),
+    completedItem: { id: "repair", type: "commandExecution", status: "completed" } });
+  assert.equal((await complete(service, conversation, "continue", randomUUID(), async () => "accept")).result.status,
+    "completed");
+  assert.equal(preflights().length, 1);
+  assert.ok(codex.calls.some(({ method, params }) => method === "thread/resume"
+    && params.developerInstructions?.includes("Before updating progress")
+    && params.developerInstructions?.includes("format-only normalization")));
+  assert.deepEqual((await service.history()).taskChecklist,
+    { status: "present", markdown: "- [ ] 旧形式の目標\n- [x] 完了と確認済み\n- [ ] 結果不明\n" });
+});
+
 test("main reports each completed tool write and unsafe file replacement after disk state changes", async (t) => {
   const nativeRequests = [checklistReadCall("read")];
   const changes = [];
@@ -2147,7 +2367,7 @@ test("a failed turn finishes its partial-write notification before reporting fai
     { status: "present", markdown: "- [ ] 失敗した操作の途中結果\n" });
 });
 
-test("main checklist approvals require the current root item and exact single-file operation", async (t) => {
+test("main checklist file changes use normal approval after the dedicated write tool", async (t) => {
   const nativeRequests = [];
   const child = randomUUID();
   const { service, conversation, codex } = await fixture(t, {
@@ -2173,9 +2393,147 @@ test("main checklist approvals require the current root item and exact single-fi
   assert.equal(result.status, "completed");
   const results = codex.calls.filter(({ method }) => method === "native/result").map(({ result: item }) => item);
   assert.equal(results[0].success, true);
-  assert.deepEqual(results.slice(1), [{ decision: "accept" }, { decision: "decline" }, { decision: "decline" }]);
-  assert.equal(forwarded.length, 2);
+  assert.deepEqual(results.slice(1), [{ decision: "decline" }, { decision: "decline" }, { decision: "decline" }]);
+  assert.equal(forwarded.length, 3);
   assert.equal((await service.history()).taskChecklist.status, "missing");
+});
+
+test("main checklist write tool saves AI-authored Markdown once and notifies after disk verification", async (t) => {
+  const markdown = "- [x] 完了を確認済み\n- [ ] 次の確認\n";
+  const changes = [];
+  const { service, conversation, codex } = await fixture(t, { taskChecklistPath: "task-checklists/main.md",
+    onChecklistChanged: (id) => changes.push(id), nativeRequests: [
+      checklistReadCall("preflight"),
+      checklistTurnCall("read", "read_task_checklist"),
+      checklistTurnCall("write", "write_task_checklist", { markdown }),
+      checklistTurnCall("write", "write_task_checklist", { markdown }),
+    ] });
+  assert.equal((await complete(service, conversation, "record work")).result.status, "completed");
+  assert.deepEqual((await service.history()).taskChecklist, { status: "present", markdown });
+  assert.deepEqual(changes, [conversation.logicalConversationId]);
+  const results = codex.calls.filter(({ method }) => method === "native/result").map(({ result }) => result);
+  assert.deepEqual(results.map(({ success }) => success), [true, true, true, false]);
+  assert.match(results[3].contentItems[0].text, /already handled/u);
+  assert.equal(codex.calls.some(({ method }) => method === "approval/result"), false);
+});
+
+test("writing identical checklist Markdown does not notify or regenerate its overview", async (t) => {
+  const markdown = "- [ ] 内容は同じ\n";
+  const changes = [];
+  const requests = [checklistReadCall("preflight")];
+  const { service, conversation, codex } = await fixture(t, { taskChecklistPath: "task-checklists/main.md",
+    onChecklistChanged: (id) => changes.push(id), nativeRequests: requests });
+  await fs.writeFile(path.join(await service.getWorkspaceDirectory(), "task-checklists", "main.md"), markdown);
+  requests.push(checklistTurnCall("read", "read_task_checklist"),
+    checklistTurnCall("write", "write_task_checklist", { markdown }));
+  assert.equal((await complete(service, conversation, "keep the same task")).result.status, "completed");
+  assert.deepEqual(changes, []);
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  assert.equal(codex.calls.some(({ method, params }) => method === "thread/start"
+    && params.developerInstructions?.startsWith("Summarize the entire supplied task checklist")), false);
+});
+
+test("legacy checklist normalization preserves every line before a separate progress write", async (t) => {
+  const original = "# 作業目標\n- Aの結果は未確認\n- Bの結果は不明\n";
+  const normalized = "- [ ] 作業目標\n- [ ] Aの結果は未確認\n- [ ] Bの結果は不明\n";
+  const updated = "- [ ] 作業目標\n- [ ] Aの結果は未確認\n- [x] Bの結果を確認済み\n";
+  const changes = [];
+  const requests = [checklistReadCall("preflight")];
+  const { service, conversation, codex } = await fixture(t, { taskChecklistPath: "task-checklists/main.md",
+    onChecklistChanged: (id) => changes.push(id), nativeRequests: requests });
+  const target = path.join(await service.getWorkspaceDirectory(), "task-checklists", "main.md");
+  await fs.writeFile(target, original);
+  requests.push(checklistTurnCall("read-old", "read_task_checklist"),
+    { ...checklistTurnCall("normalize", "write_task_checklist", { markdown: normalized }),
+      beforeCompleted: () => new Promise((resolve) => setTimeout(resolve, 350)) },
+    checklistTurnCall("read-normalized", "read_task_checklist"),
+    checklistTurnCall("progress", "write_task_checklist", { markdown: updated }));
+  assert.equal((await complete(service, conversation, "B is confirmed")).result.status, "completed");
+  assert.equal(await fs.readFile(target, "utf8"), updated);
+  assert.deepEqual(changes, [conversation.logicalConversationId, conversation.logicalConversationId]);
+  assert.deepEqual(codex.calls.filter(({ method }) => method === "native/result")
+    .map(({ result }) => result.success), [true, true, true, true, true]);
+  await waitFor(async () => (await service.history()).taskChecklistOverview.status === "present");
+  const overviewTurns = codex.calls.filter(({ method, params }) => method === "turn/start"
+    && params.sandboxPolicy?.type === "readOnly" && params.input[0].text === updated);
+  assert.equal(overviewTurns.length, 1);
+  assert.equal(codex.calls.filter(({ method, params }) => method === "turn/start"
+    && params.sandboxPolicy?.type === "readOnly" && params.input[0].text === normalized).length, 0);
+});
+
+test("legacy checklist normalization rejects missing lines and retains the original", async (t) => {
+  const original = "# 作業目標\n- Aの結果は未確認\n- Bの結果は不明\n";
+  const requests = [checklistReadCall("preflight")];
+  const { service, conversation, codex } = await fixture(t, { taskChecklistPath: "task-checklists/main.md",
+    nativeRequests: requests });
+  const target = path.join(await service.getWorkspaceDirectory(), "task-checklists", "main.md");
+  await fs.writeFile(target, original);
+  requests.push(checklistTurnCall("read", "read_task_checklist"),
+    checklistTurnCall("bad", "write_task_checklist",
+      { markdown: "- [ ] Aの結果は未確認\n- [x] Bの結果を確認済み\n" }));
+  assert.equal((await complete(service, conversation, "B is confirmed")).result.status, "completed");
+  assert.equal(await fs.readFile(target, "utf8"), original);
+  const results = codex.calls.filter(({ method }) => method === "native/result").map(({ result }) => result);
+  assert.deepEqual(results.map(({ success }) => success), [true, true, false]);
+  assert.match(results[2].contentItems[0].text, /normalize every legacy line exactly/u);
+});
+
+test("mixed or unsupported legacy checklist cannot be overwritten automatically", async (t) => {
+  for (const [name, original] of [
+    ["mixed", "# 作業目標\n- [ ] 既存のチェック\n"],
+    ["prose", "# 作業目標\n通常の説明文\n"],
+    ["unknown checkbox with heading", "# 作業目標\n- [X] 完了\n"],
+    ["unknown checkbox alone", "- [X] 完了\n"],
+  ]) {
+    await t.test(name, async (subtest) => {
+      const requests = [checklistReadCall("preflight")];
+      const { service, conversation, codex } = await fixture(subtest, {
+        taskChecklistPath: "task-checklists/main.md", nativeRequests: requests });
+      const target = path.join(await service.getWorkspaceDirectory(), "task-checklists", "main.md");
+      await fs.writeFile(target, original);
+      requests.push(checklistTurnCall("read", "read_task_checklist"),
+        checklistTurnCall("write", "write_task_checklist",
+          { markdown: "- [ ] 作業目標\n- [ ] 既存のチェック\n" }));
+      assert.equal((await complete(service, conversation, "continue")).result.status, "completed");
+      assert.equal(await fs.readFile(target, "utf8"), original);
+      const results = codex.calls.filter(({ method }) => method === "native/result").map(({ result }) => result);
+      assert.deepEqual(results.map(({ success }) => success), [true, true, false]);
+      assert.match(results[2].contentItems[0].text, /Mixed or unsupported/u);
+    });
+  }
+});
+
+test("main checklist write tool rejects stale, malformed, and foreign-turn writes", async (t) => {
+  const requests = [checklistReadCall("preflight")];
+  const { service, conversation, codex } = await fixture(t, { taskChecklistPath: "task-checklists/main.md",
+    nativeRequests: requests });
+  const target = path.join(await service.getWorkspaceDirectory(), "task-checklists", "main.md");
+  await fs.writeFile(target, "- [ ] 元の内容\n");
+  requests.push(
+    checklistTurnCall("read", "read_task_checklist", {}, {
+      beforeCompleted: () => fs.writeFile(target, "- [ ] 別の更新\n"),
+    }),
+    checklistTurnCall("stale", "write_task_checklist", { markdown: "- [x] 古い内容\n" }),
+    checklistTurnCall("malformed", "write_task_checklist", { markdown: "# 見出し\n" }),
+    checklistTurnCall("foreign", "write_task_checklist", { markdown: "- [x] 外部\n" },
+      { threadId: randomUUID() }),
+  );
+  assert.equal((await complete(service, conversation, "record work")).result.status, "completed");
+  assert.equal(await fs.readFile(target, "utf8"), "- [ ] 別の更新\n");
+  const results = codex.calls.filter(({ method }) => method === "native/result").map(({ result }) => result);
+  assert.deepEqual(results.map((item) => item?.success), [true, true, false, false, undefined]);
+  assert.match(results[2].contentItems[0].text, /changed/u);
+});
+
+test("the read-only checklist preflight rejects its declared write tool", async (t) => {
+  const { service, conversation, codex } = await fixture(t, { taskChecklistPath: "task-checklists/main.md",
+    nativeRequests: [checklistTurnCall("preflight-write", "write_task_checklist",
+      { markdown: "- [ ] 危険\n" }, { preflight: true })] });
+  const result = (await complete(service, conversation, "continue")).result;
+  assert.equal(result.status, "preflight_failed");
+  assert.equal(result.code, "checklist_preflight_unsafe_tool");
+  assert.equal((await service.history()).taskChecklist.status, "missing");
+  assert.equal(codex.calls.find(({ method }) => method === "native/result").result.success, false);
 });
 
 test("new main parent fails closed without a completed checklist read and exposes no streamed answer", async (t) => {
@@ -2226,8 +2584,12 @@ test("saved custom instructions keep the fixed checklist read and maintenance ru
   assert.ok(threads.every(({ params }) => params.developerInstructions.includes("- [ ] pending task or - [x] confirmed completion")));
   assert.ok(threads.every(({ params }) => params.developerInstructions.includes("immediately whenever progress changes")));
   assert.ok(threads.some(({ params }) => params.developerInstructions.includes("task_checklist.read_task_checklist")));
-  assert.ok(threads.some(({ params }) => !params.developerInstructions.includes("task_checklist.read_task_checklist")));
+  assert.ok(threads.every(({ params }) => params.developerInstructions.includes("task_checklist.write_task_checklist")));
+  assert.ok(threads.some(({ params }) => params.developerInstructions.includes("新しい親セッションでは")));
+  assert.ok(threads.some(({ params }) => !params.developerInstructions.includes("新しい親セッションでは")));
   assert.ok(threads.every(({ params }) => params.dynamicTools?.some((tool) => tool.name === "task_checklist")));
+  assert.ok(threads.every(({ params }) => params.dynamicTools?.find((tool) => tool.name === "task_checklist")
+    ?.tools.some((tool) => tool.name === "write_task_checklist")));
 });
 
 test("legacy main parent starts a fresh thread before the user's first checklist turn", async (t) => {
@@ -2253,7 +2615,7 @@ test("legacy main parent starts a fresh thread before the user's first checklist
   assert.equal(threads.some(({ method, params }) => method === "thread/resume" && params.threadId === oldThreadId), false);
 });
 
-test("agent-disabled checklist parent waits for its native child before migration", async (t) => {
+test("main parent without the write tool waits for its native child before migration", async (t) => {
   const nativeThreads = new Map();
   const { rootDir, service, conversation, codex } = await fixture(t, {
     taskChecklistPath: "task-checklists/main.md", nativeThreads,
@@ -2263,8 +2625,9 @@ test("agent-disabled checklist parent waits for its native child before migratio
   const activeFile = path.join(rootDir, "active.json");
   const old = JSON.parse(await fs.readFile(activeFile, "utf8"));
   assert.equal(old.nativeAgentsEnabled, true);
+  assert.equal(old.nativeChecklistWriteEnabled, true);
   assert.equal(old.checklistReadPending, false);
-  delete old.nativeAgentsEnabled; // State created by the previous release.
+  delete old.nativeChecklistWriteEnabled; // State created by the previous release.
   await fs.writeFile(activeFile, JSON.stringify(old));
   const childId = randomUUID();
   nativeThreads.get(old.nativeThreadId).turns[0].items.push({ type: "collabAgentToolCall",
@@ -2287,6 +2650,7 @@ test("agent-disabled checklist parent waits for its native child before migratio
   const next = JSON.parse(await fs.readFile(activeFile, "utf8"));
   assert.notEqual(next.nativeThreadId, old.nativeThreadId);
   assert.equal(next.nativeAgentsEnabled, true);
+  assert.equal(next.nativeChecklistWriteEnabled, true);
   assert.equal(next.checklistReadPending, false);
   assert.equal(codex.calls.slice(callsBeforeMigration).some(({ method, params }) => method === "thread/resume"
     && params.threadId === old.nativeThreadId), false);
@@ -2410,7 +2774,8 @@ test("restart never recovers an unverified checklist parent reply as completed",
   const activeFile = path.join(rootDir, "active.json");
   const active = JSON.parse(await fs.readFile(activeFile, "utf8"));
   await fs.writeFile(activeFile, JSON.stringify({ ...active, nativeThreadId: threadId,
-    nativeTurnId: turnId, checklistReadPending: true, nativeAgentsEnabled: true }));
+    nativeTurnId: turnId, checklistReadPending: true, nativeAgentsEnabled: true,
+    nativeChecklistWriteEnabled: true }));
   nativeThreads.set(threadId, { id: threadId, turns: [{ id: turnId, status: "completed",
     items: [{ type: "userMessage", text: "continue" }, { type: "agentMessage", text: "unsafe reply" }] }] });
   const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient,

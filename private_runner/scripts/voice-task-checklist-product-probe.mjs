@@ -10,8 +10,8 @@ import { createVoiceContextService } from "../src/voice-context-service.mjs";
 
 const base = fileURLToPath(new URL("../../tmp/", import.meta.url));
 const scenario = process.argv[2] || "code";
-if (!["code", "mail", "legacy", "managed", "native", "progress"].includes(scenario) || process.argv.length > 3) {
-  throw new Error("Usage: node voice-task-checklist-product-probe.mjs [code|mail|legacy|managed|native|progress]");
+if (!["code", "mail", "legacy", "managed", "native", "progress", "overview", "repair", "repair-progress", "repair-progress-alt"].includes(scenario) || process.argv.length > 3) {
+  throw new Error("Usage: node voice-task-checklist-product-probe.mjs [code|mail|legacy|managed|native|progress|overview|repair|repair-progress|repair-progress-alt]");
 }
 const run = path.join(base, `voice-checklist-product-${randomUUID()}`);
 const rootDir = path.join(run, "voice_context", "v1");
@@ -57,6 +57,14 @@ const createClient = () => {
         hasNewParentReadInstruction: params.developerInstructions?.includes("新しい親セッションでは"),
         sandbox: params.sandbox, agentsEnabled: params.config?.agents?.enabled,
         dynamicToolCount: params.dynamicTools?.length || 0 });
+    }
+    if (method === "thread/start" && params?.developerInstructions?.startsWith("Summarize the entire supplied task checklist")) {
+      evidence.push({ method: "overviewThread", model: params.model, ephemeral: params.ephemeral,
+        sandbox: params.sandbox });
+    }
+    if (method === "turn/start" && params?.input?.[0]?.text?.startsWith("# 架空作業の原本")) {
+      evidence.push({ method: "overviewTurn", model: params.model, effort: params.effort,
+        sandboxPolicy: params.sandboxPolicy });
     }
     const result = await originalRequest(method, params, timeout);
     if (method === "config/read") evidence.push({ method, mcpNames: Object.keys(result.config?.mcp_servers || {}) });
@@ -113,6 +121,8 @@ const createClient = () => {
     if (request.method === "item/tool/call") evidence.push({ method: request.method,
       namespace: request.params?.namespace, tool: request.params?.tool,
       callId: request.params?.callId, success: result?.success,
+      ...(request.params?.namespace === "task_checklist" && request.params?.tool === "write_task_checklist"
+        ? { authoredMarkdown: request.params?.arguments?.markdown } : {}),
       content: result?.contentItems?.map((item) => item.text?.slice(0, 100)) });
     if (request.method?.endsWith("/requestApproval")) evidence.push({ method: request.method,
       itemId: request.params?.itemId, decision: result?.decision });
@@ -148,6 +158,7 @@ try {
   await service.configure("gpt-6.1-sol", "low");
   const workspace = await service.getWorkspaceDirectory();
   const checklist = path.join(workspace, "task-checklists", "main.md");
+  let repairOriginal = "";
   async function turn(label, text) {
     const operationId = randomUUID();
     let finish;
@@ -160,12 +171,78 @@ try {
     const result = await within(terminal, 120000);
     const markdown = await fs.readFile(checklist, "utf8").catch((error) => error.code === "ENOENT" ? null : Promise.reject(error));
     const row = { scenario, label, status: result.status, code: result.code,
-      response: result.text, markdown, events: evidence.splice(0) };
+      response: result.text, ...(repairOriginal ? { original: repairOriginal } : {}),
+      markdown, events: evidence.splice(0) };
     await fs.appendFile(path.join(run, "evidence.jsonl"), `${JSON.stringify(row)}\n`, { mode: 0o600 });
     console.log(JSON.stringify(row));
     if (result.status !== "completed") throw new Error(`${label} failed: ${result.code}`);
   }
-  if (scenario === "progress") {
+  if (scenario === "overview") {
+    const original = "# 架空作業の原本\n- P-21の調査は完了と確認済み\n- P-22の結果確認を進行中\n- P-23は次に着手予定\n";
+    await fs.writeFile(checklist, original, { mode: 0o600 });
+    service = createVoiceContextService({ rootDir, createClient, onChecklistChanged,
+      taskChecklistPath: "task-checklists/main.md" });
+    await service.open();
+    let history;
+    for (let attempt = 0; attempt < 120; attempt++) {
+      history = await service.history();
+      if (history.taskChecklistOverview?.status === "present") break;
+      await pause(1000);
+    }
+    if (history?.taskChecklistOverview?.status !== "present") throw new Error("Overview did not appear");
+    if (await fs.readFile(checklist, "utf8") !== original) throw new Error("Overview changed the original");
+    const row = { scenario, original, overview: history.taskChecklistOverview.markdown, events: evidence.splice(0) };
+    await fs.appendFile(path.join(run, "evidence.jsonl"), `${JSON.stringify(row)}\n`, { mode: 0o600 });
+    console.log(JSON.stringify(row));
+  } else if (["repair", "repair-progress", "repair-progress-alt"].includes(scenario)) {
+    repairOriginal = (scenario === "repair-progress-alt" ? [
+      "# 架空の移設目標: 権限を確認してから資料を共有する",
+      "- Q-01の診断ログL09は存在するが、内容はまだ読んでいない",
+      "- Q-02の権限付与は申請したが、承認結果が不明",
+      "- Q-03のバックアップC7は復元試験完了と確認済み",
+      "- Q-04は3端末中2端末で表示確認済み、残り1端末は未確認",
+      "- Q-05の通知文案には個人名があり、削除待ち",
+      "- Q-06のA案は期限が短いが監査記録が不足",
+      "- Q-07のB案には監査記録があるが、採否は未決",
+      "- Q-08の結果不明の送信操作は再実行しない",
+      "- Q-09の次の一手は既存の承認記録を読む",
+      "- Q-10の公開は最終承認まで停止",
+      "- Q-11のファイルXのチェックサムab12は記録済み、検証は未実施",
+      "- Q-12の作業者への連絡は下書きのみで、まだ送信していない",
+    ] : [
+      "# 架空の公開作業の目標: 未確認の結果を再実行せず調べ、安全に公開する",
+      "- P-01の入力検証はレビュー記録R-11で完了確認済み",
+      "- P-02の権限境界は設計案Aを検討中で、最終判断はまだ",
+      "- P-03の削除操作は実行した可能性があるが、結果を取得できていない",
+      "- P-04の差分確認はmainとfeatureの比較で完了確認済み",
+      "- P-05の履歴移行は利用者の許可待ちで着手しない",
+      "- P-06の通知仕様はiOSとmacOSの両方を確認する予定",
+      "- P-07の失敗記録には時刻09:14とコードE7が残っている",
+      "- P-08の再実行はP-03の結果が判明するまで保留",
+      "- P-09のUI文言は原本と概要の区別を説明する必要がある",
+      "- P-10のアクセシビリティはチェック状態の読み上げを検証中",
+      "- P-11のバックアップB-42は存在を確認済み、復元試験は未実施",
+      "- P-12の古い設定値は安全に読めるが、保存互換性は未確認",
+      "- P-13のログには個人情報を追加しない方針を確認済み",
+      "- P-14の外部API契約は変更しない予定で、関係者確認が必要",
+      "- P-15のテストT-8は実行済みだが終了コードの記録が欠けている",
+      "- P-16のテストT-9は失敗を確認し、原因を調査中",
+      "- P-17の競合対策は二重書込の再現手順を残している",
+      "- P-18のキャッシュは原本hashと一致するときだけ表示する",
+      "- P-19の不一致キャッシュは廃棄せず表示から除外する予定",
+      "- P-20の作業領域はgit管理下で、共有ログには触れない",
+      "- P-21の公開日は未定で、利用者の承認前に配布しない",
+      "- P-22の監査証跡は書込イベントとディスク内容を照合中",
+      "- P-23の次の一手はP-03の既存記録を読んで結果を確定する",
+      "- P-24のその後の一手はP-16の失敗原因を調査する",
+    ]).join("\n") + "\n";
+    await fs.writeFile(checklist, repairOriginal, { mode: 0o600 });
+    await turn("repair_legacy", scenario === "repair-progress-alt"
+      ? "架空の進捗です。Q-09の既存承認記録を読み、Q-02の権限付与申請はまだ承認されていないと判明しました。この結果をTo Do原本へ反映してください。他の項目の事実と順序を保ち、資料共有や送信は実行しないでください。"
+      : scenario === "repair-progress"
+      ? "架空の進捗です。P-03の削除操作は既存監査記録から未実行と確認できました。この結果をTo Do原本へ反映してください。ほかの項目は今の事実と順序を保ち、作業は実行せず、次の一手を短く答えてください。"
+      : "架空作業を続けます。原本にある安全な次の一手を短く答えてください。");
+  } else if (scenario === "progress") {
     await turn("progress_started", "架空のP-21調査を進めています。まだ結果は未確認です。メインのTo Do原本に未完了として記録してください。ここで他の操作は不要です。");
     await turn("progress_confirmed", "架空のP-21調査結果を確認し、完了が確定しました。To Do原本を今すぐ完了へ更新してください。ここで他の操作は不要です。");
   } else if (scenario === "managed") {

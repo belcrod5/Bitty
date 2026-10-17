@@ -159,6 +159,7 @@ function VoiceConversationSession({
   const { theme } = useVisualTheme();
   const { width: screenWidth } = useWindowDimensions();
   const [taskChecklistOpen, setTaskChecklistOpen] = useState(true);
+  const [taskChecklistOriginal, setTaskChecklistOriginal] = useState(false);
   const [transcript, setTranscript] = useState("");
   const [editingTranscript, setEditingTranscript] = useState(false);
   const [initialStartPending, setInitialStartPending] = useState(true);
@@ -198,13 +199,14 @@ function VoiceConversationSession({
   );
   const taskChecklistRows = useMemo(() => {
     if (voice.taskChecklist?.status !== "present") return [];
-    let firstContent = true;
-    return voice.taskChecklist.markdown.split(/\r?\n/u).flatMap<
+    if (!taskChecklistOriginal && voice.taskChecklistOverview
+      && voice.taskChecklistOverview.status !== "present") return [];
+    const markdown = !taskChecklistOriginal && voice.taskChecklistOverview?.status === "present"
+      ? voice.taskChecklistOverview.markdown : voice.taskChecklist.markdown;
+    return markdown.split(/\r?\n/u).flatMap<
       { kind: "item"; checked: boolean; text: string } | { kind: "text"; text: string }
     >((line) => {
       if (!line.trim()) return [];
-      if (firstContent && /^#{1,6}\s/u.test(line)) { firstContent = false; return []; }
-      firstContent = false;
       try {
         const [item] = parseChecklistFile(line);
         return [{ kind: "item" as const, ...item }];
@@ -212,7 +214,7 @@ function VoiceConversationSession({
         return [{ kind: "text" as const, text: line }];
       }
     });
-  }, [voice.taskChecklist]);
+  }, [taskChecklistOriginal, voice.taskChecklist, voice.taskChecklistOverview]);
   const manager = useRunnerWebSocketManager();
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => setAppActive(state === "active"));
@@ -512,6 +514,15 @@ function VoiceConversationSession({
                     shadowOpacity: 0.24, shadowRadius: 12, elevation: 9, overflow: "hidden" }}>
                     <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "flex-end",
                       borderBottomWidth: 1, borderBottomColor: theme.colors.borderSubtle }}>
+                      {voice.taskChecklist?.status === "present" && voice.taskChecklistOverview
+                        ? <Pressable testID="voice-task-checklist-source-toggle"
+                        accessibilityRole="button" accessibilityLabel={taskChecklistOriginal ? "To Do概要を表示" : "To Do原本を表示"}
+                        onPress={() => setTaskChecklistOriginal((current) => !current)}
+                        style={{ paddingHorizontal: 10, height: 38, justifyContent: "center" }}>
+                        <Text style={{ color: theme.colors.accentStrong, fontSize: 12 }}>
+                          {taskChecklistOriginal ? "概要" : "原本"}
+                        </Text>
+                      </Pressable> : null}
                       <Pressable testID="voice-task-checklist-refresh" accessibilityRole="button"
                         accessibilityLabel="To Doを更新" onPress={() => void voice.refreshHistory()}
                         style={{ width: 38, height: 38, alignItems: "center", justifyContent: "center" }}>
@@ -532,6 +543,14 @@ function VoiceConversationSession({
                           ? <Text style={{ color: theme.colors.textPrimary }}>To Doはまだ作成されていません</Text>
                           : voice.taskChecklist.status === "unavailable"
                             ? <Text style={{ color: theme.colors.textPrimary }}>To Doを読み込めませんでした</Text>
+                            : !voice.taskChecklist.markdown.trim()
+                              ? <Text style={{ color: theme.colors.textSecondary }}>To Doは空です</Text>
+                            : !taskChecklistOriginal && voice.taskChecklistOverview
+                              && voice.taskChecklistOverview.status !== "present"
+                              ? <Text style={{ color: theme.colors.textSecondary }}>
+                                {voice.taskChecklistOverview?.status === "pending"
+                                  ? "概要を作成中…" : "概要を作成できませんでした"}
+                              </Text>
                             : taskChecklistRows.length ? taskChecklistRows.map((row, index) => row.kind === "item"
                               ? <View key={index} testID={`voice-task-checklist-item-${index}`}
                                   accessible accessibilityRole="checkbox"

@@ -125,6 +125,30 @@ test("runner-ws advertises and negotiates the provider-neutral agent protocol", 
   ws.close();
 });
 
+test("runner-ws passes main To Do display settings through the existing voice update route", async () => {
+  const original = __TESTING__.voiceContextService.configure;
+  const calls = [];
+  __TESTING__.voiceContextService.configure = async (...args) => {
+    calls.push(args);
+    return { overviewModel: args[6], overviewEffort: args[7] };
+  };
+  const ws = createRunnerWsConnectionForTest();
+  try {
+    ws.emit("message", JSON.stringify({ channel: "agent", op: "voice.settings.update",
+      requestId: "overview-settings", payload: { orchestratorId: "main", model: "gpt-6-luna",
+        effort: "low", systemInstruction: "Be helpful.", topicModel: "gpt-6-luna",
+        topicEffort: "low", overviewModel: "another-model", overviewEffort: "high" } }), false);
+    await waitFor(() => ws.sent.some((message) => message.requestId === "overview-settings"));
+    assert.deepEqual(calls, [["main", "gpt-6-luna", "low", "Be helpful.", "gpt-6-luna", "low",
+      "another-model", "high"]]);
+    assert.deepEqual(ws.sent.find((message) => message.requestId === "overview-settings")?.payload,
+      { orchestratorId: "main", overviewModel: "another-model", overviewEffort: "high" });
+  } finally {
+    ws.close();
+    __TESTING__.voiceContextService.configure = original;
+  }
+});
+
 test("runner-ws LLM relay keys prefer thread, then session, then operation", () => {
   assert.equal(
     __TESTING__.resolveRunnerWsLlmRelayKey({

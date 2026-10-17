@@ -46,6 +46,8 @@ const mockVoice = {
   historyError: "",
   taskChecklist: { status: "present", markdown: "# 最優先\n\n- [ ] 確認する" } as
     { status: "present"; markdown: string } | { status: "missing" | "unavailable" } | null,
+  taskChecklistOverview: { status: "present", markdown: "- [ ] 確認する" } as
+    { status: "present"; markdown: string } | { status: "pending" | "unavailable" } | null,
   refreshHistory: jest.fn(async () => undefined),
   setError: jest.fn(),
   sendTranscript: jest.fn(async () => undefined),
@@ -233,6 +235,7 @@ beforeEach(() => {
   mockVoice.history = [];
   mockVoice.historyError = "";
   mockVoice.taskChecklist = { status: "present", markdown: "# 最優先\n\n- [ ] 確認する" };
+  mockVoice.taskChecklistOverview = { status: "present", markdown: "- [ ] 確認する" };
   mockBackdropOpacity.value = 0;
   mockReduceMotion = false;
   mockManagerVisible = false;
@@ -265,6 +268,7 @@ test("main history shows read-only checklist states without a title and folds to
     .toMatchObject({ flexGrow: 0, flexShrink: 1 });
   const longChecklist = Array.from({ length: 40 }, (_, index) => `- [${index === 0 ? "x" : " "}] 手順 ${index + 1}`).join("\n");
   mockVoice.taskChecklist = { status: "present", markdown: longChecklist };
+  mockVoice.taskChecklistOverview = { status: "present", markdown: longChecklist };
   await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
   expect(screen.getByTestId("voice-task-checklist-item-0").props.accessibilityState.checked).toBe(true);
   expect(screen.getByTestId("voice-task-checklist-item-39").props.accessibilityState.checked).toBe(false);
@@ -280,11 +284,58 @@ test("main history shows read-only checklist states without a title and folds to
 
 test("legacy prose stays visible until the AI rewrites the source file", async () => {
   mockVoice.taskChecklist = { status: "present", markdown: "# タイトル\n\n進捗は不明\n- [ ] 要確認\n" };
+  mockVoice.taskChecklistOverview = { status: "unavailable" };
   const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
   await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
-  expect(screen.queryByText("タイトル")).toBeNull();
+  expect(screen.getByText("概要を作成できませんでした")).toBeTruthy();
+  await fireEvent.press(screen.getByTestId("voice-task-checklist-source-toggle"));
+  expect(screen.getByText("# タイトル")).toBeTruthy();
   expect(screen.getByText("進捗は不明")).toBeTruthy();
   expect(screen.getByText("要確認")).toBeTruthy();
+});
+
+test("display overview defaults to a few checked rows and switches to the unchanged original", async () => {
+  Object.defineProperty(Platform, "OS", { configurable: true, value: "ios" });
+  mockVoice.taskChecklist = { status: "present", markdown: "# 原本\n- 確認済み\n- 次の確認は未着手\n" };
+  mockVoice.taskChecklistOverview = { status: "present", markdown: "- [x] 確認済みの作業\n- [ ] 次の確認" };
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  expect(screen.getByText("確認済みの作業")).toBeTruthy();
+  expect(screen.getByTestId("voice-task-checklist-item-0").props.accessibilityState)
+    .toMatchObject({ checked: true, disabled: true });
+  expect(StyleSheet.flatten(screen.getByText("確認済みの作業").props.style).textDecorationLine)
+    .toBe("line-through");
+  expect(StyleSheet.flatten(screen.getByText("次の確認").props.style).textDecorationLine)
+    .toBe("none");
+  expect(screen.queryByText("確認済み")).toBeNull();
+  await fireEvent.press(screen.getByTestId("voice-task-checklist-source-toggle"));
+  expect(screen.getByText("- 確認済み")).toBeTruthy();
+  expect(screen.getByText("- 次の確認は未着手")).toBeTruthy();
+  expect(screen.queryByTestId("voice-task-checklist-item-0")).toBeNull();
+  await fireEvent.press(screen.getByTestId("voice-task-checklist-source-toggle"));
+  expect(screen.getByTestId("voice-task-checklist-item-0").props.accessibilityState.checked).toBe(true);
+});
+
+test("pending overview stays compact while the original remains available", async () => {
+  mockVoice.taskChecklist = { status: "present", markdown: Array.from({ length: 25 }, (_, index) =>
+    `- legacy detail ${index + 1}`).join("\n") };
+  mockVoice.taskChecklistOverview = { status: "pending" };
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  expect(screen.getByText("概要を作成中…")).toBeTruthy();
+  expect(screen.queryByText("- legacy detail 1")).toBeNull();
+  await fireEvent.press(screen.getByTestId("voice-task-checklist-source-toggle"));
+  expect(screen.getByText("- legacy detail 1")).toBeTruthy();
+  expect(screen.queryByTestId("voice-task-checklist-item-0")).toBeNull();
+});
+
+test("older Runner without an overview field still shows its original checklist", async () => {
+  mockVoice.taskChecklist = { status: "present", markdown: "- [ ] 旧Runnerの作業\n" };
+  mockVoice.taskChecklistOverview = null;
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  expect(screen.getByText("旧Runnerの作業")).toBeTruthy();
+  expect(screen.queryByTestId("voice-task-checklist-source-toggle")).toBeNull();
 });
 
 test("task checklist states are distinct and other orchestrators have no panel", async () => {
