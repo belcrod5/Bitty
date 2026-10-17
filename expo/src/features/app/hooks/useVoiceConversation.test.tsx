@@ -103,6 +103,7 @@ test("loads persisted voice history through Runner", async () => {
   await waitFor(() => expect(result.current.ready).toBe(true));
   await act(async () => { await result.current.refreshHistory(); });
   expect(result.current.history.map(({ text }) => text)).toEqual(["以前の発話", "以前の返答"]);
+  expect(result.current.taskChecklistOverview).toBeNull();
   expect(result.current.history.map(({ at }) => at)).toEqual(["2026-09-27T03:04:05.000Z", undefined]);
 });
 
@@ -143,15 +144,123 @@ test("an older history response cannot replace a newer one", async () => {
   });
   await act(async () => {
     pending[1]({ op: "voice.history.result", payload: { logicalConversationId: conversationId,
-      messages: [{ role: "user", text: "new", clientOperationId: operationId }] } });
+      messages: [{ role: "user", text: "new", clientOperationId: operationId }],
+      taskChecklist: { status: "present", markdown: "- [ ] new" } } });
     await second;
   });
   await act(async () => {
     pending[0]({ op: "voice.history.result", payload: { logicalConversationId: conversationId,
-      messages: [{ role: "user", text: "old", clientOperationId: operationId }] } });
+      messages: [{ role: "user", text: "old", clientOperationId: operationId }],
+      taskChecklist: { status: "present", markdown: "- [ ] old" } } });
     await first;
   });
   expect(result.current.history[0].text).toBe("new");
+  expect(result.current.taskChecklist).toEqual({ status: "present", markdown: "- [ ] new" });
+});
+
+test("main distinguishes missing and unavailable task checklists", async () => {
+  const request = mockManager.request.getMockImplementation();
+  let status = "missing";
+  mockManager.request.mockImplementation((message: { op: string }) => message.op === "voice.history"
+    ? Promise.resolve({ op: "voice.history.result", payload: { logicalConversationId: conversationId,
+      messages: [], taskChecklist: { status } } }) : request?.(message));
+  const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
+  await waitFor(() => expect(result.current.ready).toBe(true));
+  await act(async () => { await result.current.refreshHistory(); });
+  expect(result.current.taskChecklist).toEqual({ status: "missing" });
+  status = "unavailable";
+  await act(async () => { await result.current.refreshHistory(); });
+  expect(result.current.taskChecklist).toEqual({ status: "unavailable" });
+});
+
+test("completion consent uses the offered source hash and refreshes the server decision", async () => {
+  const request = mockManager.request.getMockImplementation();
+  let offered = true;
+  mockManager.request.mockImplementation((message: { op: string }) => {
+    if (message.op === "voice.history") return Promise.resolve({ op: "voice.history.result",
+      payload: { logicalConversationId: conversationId, messages: [],
+        taskChecklist: { status: "present", markdown: "- [x] 完了\n" },
+        taskChecklistCompletion: offered ? { sourceHash: "a".repeat(64), version: "b".repeat(64) } : null } });
+    if (message.op === "voice.task-checklist.complete.respond") {
+      offered = false;
+      return Promise.resolve({ op: "voice.task-checklist.complete.respond.result", payload: { accepted: true } });
+    }
+    return request?.(message);
+  });
+  const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
+  await waitFor(() => expect(result.current.ready).toBe(true));
+  await act(async () => { await result.current.refreshHistory(); });
+  expect(result.current.taskChecklistCompletion).toEqual({ sourceHash: "a".repeat(64), version: "b".repeat(64) });
+  await act(async () => { await result.current.respondToChecklistCompletion("a".repeat(64), "b".repeat(64), "keep"); });
+  expect(mockManager.request).toHaveBeenCalledWith({ channel: "agent",
+    op: "voice.task-checklist.complete.respond", payload: { orchestratorId: "main",
+      sourceHash: "a".repeat(64), version: "b".repeat(64), decision: "keep" } });
+  expect(result.current.taskChecklistCompletion).toBeNull();
+});
+
+test("a checklist change notice reloads the disk-backed history for the matching main conversation", async () => {
+  const request = mockManager.request.getMockImplementation();
+  let markdown: string | null = "- [ ] 確認";
+  let overview: { status: "pending" | "unavailable" } | { status: "present"; markdown: string } = { status: "pending" };
+  mockManager.request.mockImplementation((message: { op: string }) => message.op === "voice.history"
+    ? Promise.resolve({ op: "voice.history.result", payload: { logicalConversationId: conversationId,
+      messages: [], taskChecklist: markdown === null ? { status: "unavailable" }
+        : { status: "present", markdown }, taskChecklistOverview: overview } }) : request?.(message));
+  const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
+  await waitFor(() => expect(result.current.ready).toBe(true));
+  await act(async () => { await result.current.refreshHistory(); });
+  expect(result.current.taskChecklist).toEqual({ status: "present", markdown: "- [ ] 確認" });
+  expect(result.current.taskChecklistOverview).toEqual({ status: "pending" });
+  markdown = "- [x] 確認";
+  overview = { status: "present", markdown: "- [x] 確認済み" };
+  await act(async () => { handlers.get("voice.task-checklist.changed")?.({ payload: {
+    orchestratorId: "main", logicalConversationId: "another-conversation",
+  } }); });
+  expect(result.current.taskChecklist).toEqual({ status: "present", markdown: "- [ ] 確認" });
+  await act(async () => { handlers.get("voice.task-checklist.changed")?.({ payload: {
+    orchestratorId: "main", logicalConversationId: conversationId,
+  } }); });
+  await waitFor(() => expect(result.current.taskChecklist).toEqual({ status: "present", markdown: "- [x] 確認" }));
+  expect(result.current.taskChecklistOverview).toEqual({ status: "present", markdown: "- [x] 確認済み" });
+  markdown = null;
+  overview = { status: "unavailable" };
+  await act(async () => { handlers.get("voice.task-checklist.changed")?.({ payload: {
+    orchestratorId: "main", logicalConversationId: conversationId,
+  } }); });
+  await waitFor(() => expect(result.current.taskChecklist).toEqual({ status: "unavailable" }));
+  expect(result.current.taskChecklistOverview).toEqual({ status: "unavailable" });
+});
+
+test("a previous conversation's delayed checklist cannot reappear after a new voice.open", async () => {
+  const nextConversationId = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
+  let resolveOldHistory!: (response: unknown) => void;
+  mockManager.request.mockImplementation(({ op }: { op: string }) => {
+    if (op === "voice.open") return Promise.resolve({ op: "voice.open.result", payload: {
+      logicalConversationId: mockSnapshot.generation === 1 ? conversationId : nextConversationId,
+      contextMode: "self_context_array", ...initialStats,
+    } });
+    if (op === "voice.history") return mockSnapshot.generation === 1
+      ? new Promise((resolve) => { resolveOldHistory = resolve; })
+      : Promise.resolve({ op: "voice.history.result", payload: {
+        logicalConversationId: nextConversationId, messages: [],
+        taskChecklist: { status: "present", markdown: "new conversation" },
+      } });
+    throw new Error(`unexpected ${op}`);
+  });
+  const { result, rerender } = await renderHook(() => useVoiceConversation(jest.fn()));
+  await waitFor(() => expect(result.current.ready).toBe(true));
+  let oldHistory!: Promise<void>;
+  await act(async () => { oldHistory = result.current.refreshHistory(); });
+  mockSnapshot = { connected: true, generation: 2 };
+  await rerender(undefined);
+  await waitFor(() => expect(result.current.logicalConversationId).toBe(nextConversationId));
+  await act(async () => { await result.current.refreshHistory(); });
+  await act(async () => {
+    resolveOldHistory({ op: "voice.history.result", payload: { logicalConversationId: conversationId,
+      messages: [], taskChecklist: { status: "present", markdown: "old conversation" } } });
+    await oldHistory;
+  });
+  expect(result.current.taskChecklist).toEqual({ status: "present", markdown: "new conversation" });
 });
 
 test("shows the submitted user message before acknowledgement and streamed replies", async () => {

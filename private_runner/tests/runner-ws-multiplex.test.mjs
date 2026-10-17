@@ -125,6 +125,30 @@ test("runner-ws advertises and negotiates the provider-neutral agent protocol", 
   ws.close();
 });
 
+test("runner-ws passes main To Do display settings through the existing voice update route", async () => {
+  const original = __TESTING__.voiceContextService.configure;
+  const calls = [];
+  __TESTING__.voiceContextService.configure = async (...args) => {
+    calls.push(args);
+    return { overviewModel: args[6], overviewEffort: args[7] };
+  };
+  const ws = createRunnerWsConnectionForTest();
+  try {
+    ws.emit("message", JSON.stringify({ channel: "agent", op: "voice.settings.update",
+      requestId: "overview-settings", payload: { orchestratorId: "main", model: "gpt-6-luna",
+        effort: "low", systemInstruction: "Be helpful.", topicModel: "gpt-6-luna",
+        topicEffort: "low", overviewModel: "another-model", overviewEffort: "high" } }), false);
+    await waitFor(() => ws.sent.some((message) => message.requestId === "overview-settings"));
+    assert.deepEqual(calls, [["main", "gpt-6-luna", "low", "Be helpful.", "gpt-6-luna", "low",
+      "another-model", "high"]]);
+    assert.deepEqual(ws.sent.find((message) => message.requestId === "overview-settings")?.payload,
+      { orchestratorId: "main", overviewModel: "another-model", overviewEffort: "high" });
+  } finally {
+    ws.close();
+    __TESTING__.voiceContextService.configure = original;
+  }
+});
+
 test("runner-ws LLM relay keys prefer thread, then session, then operation", () => {
   assert.equal(
     __TESTING__.resolveRunnerWsLlmRelayKey({
@@ -336,6 +360,18 @@ test("voice text deltas use the authenticated envelope with conversation and ope
     payload: { logicalConversationId: conversationId, orchestratorId: "main",
       clientOperationId: operationId, delta: "Live reply" },
   });
+});
+
+test("a main checklist change invalidates all connected voice clients without copying Markdown", async (t) => {
+  const conversationId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const first = createRunnerWsConnectionForTest();
+  const second = createRunnerWsConnectionForTest();
+  t.after(() => { first.close(); second.close(); });
+  __TESTING__.broadcastVoiceChecklistChanged(conversationId);
+  const expected = { channel: "agent", op: "voice.task-checklist.changed",
+    payload: { orchestratorId: "main", logicalConversationId: conversationId } };
+  assert.deepEqual(first.sent.find((message) => message.op === "voice.task-checklist.changed"), expected);
+  assert.deepEqual(second.sent.find((message) => message.op === "voice.task-checklist.changed"), expected);
 });
 
 test("voice interrupt routes to the voice turn instead of the generic agent turn", async (t) => {

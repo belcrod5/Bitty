@@ -5030,12 +5030,20 @@ function createCodexRpcClient({
   }
 }
 
+function broadcastVoiceChecklistChanged(logicalConversationId) {
+  for (const client of runnerWsActiveClients) {
+    sendRunnerWsEnvelope(client, { channel: "agent", op: "voice.task-checklist.changed",
+      payload: { orchestratorId: "main", logicalConversationId } });
+  }
+}
+
 const voiceContextService = createVoiceOrchestratorService({
   rootDir: path.join(WORKSPACE_ROOT, "private_runner/logs/voice_context/v1"),
   createClient: (options) => createCodexRpcClient(options),
   getAgentService: () => agentService,
   subjectId: () => agentOwnerSubjectId,
   activity: orchestratorActivity,
+  onChecklistChanged: broadcastVoiceChecklistChanged,
   onCompleted: (result, orchestratorName) => {
     void broadcastVoiceUnreadState();
     void turnCompletionNotifier.notifyVoiceCompleted({ orchestratorId: result.orchestratorId,
@@ -7224,6 +7232,14 @@ runnerWsServer.on("connection", (ws, req) => {
       }).catch((error) => sendVoiceError(message, error));
       return true;
     }
+    if (message.op === "voice.task-checklist.complete.respond") {
+      void voiceContextService.respondToChecklistCompletion(orchestratorId,
+        message.payload?.sourceHash, message.payload?.version, message.payload?.decision).then((payload) => {
+        sendRunnerWsEnvelope(ws, { channel: "agent", op: "voice.task-checklist.complete.respond.result",
+          requestId: message.requestId || "", payload: { ...payload, orchestratorId } });
+      }).catch((error) => sendVoiceError(message, error));
+      return true;
+    }
     if (message.op === "voice.read") {
       void voiceContextService.markRead(orchestratorId, message.payload?.logicalConversationId,
         message.payload?.completedOrdinal).then(async (payload) => {
@@ -7266,7 +7282,8 @@ runnerWsServer.on("connection", (ws, req) => {
       else if (message.op === "voice.settings.update") {
         operation = voiceContextService.configure(orchestratorId, message.payload?.model,
           message.payload?.effort, message.payload?.systemInstruction,
-          message.payload?.topicModel, message.payload?.topicEffort);
+          message.payload?.topicModel, message.payload?.topicEffort,
+          message.payload?.overviewModel, message.payload?.overviewEffort);
       } else if (message.op === "voice.memory.clear") operation = voiceContextService.clearMemory();
       else operation = voiceContextService.clearMessages(orchestratorId);
       void operation.then((payload) => {
@@ -10338,6 +10355,7 @@ export const __TESTING__ = {
   pickBestRelayForThread,
   runnerWsServer,
   voiceContextService,
+  broadcastVoiceChecklistChanged,
   listLlmDirectories,
   resolveToolRoot,
   resolveCanonicalDirectoryIdentity,

@@ -28,7 +28,8 @@ function validateIcon(icon) {
   return icon;
 }
 
-export function createVoiceOrchestratorService({ rootDir, createClient, getAgentService, subjectId, onCompleted, activity }) {
+export function createVoiceOrchestratorService({ rootDir, createClient, getAgentService, subjectId,
+  onCompleted, onChecklistChanged, activity }) {
   const root = path.resolve(rootDir);
   const registryFile = path.join(root, "orchestrators.json");
   const orchestratorRoot = path.join(root, "orchestrators");
@@ -174,6 +175,8 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
     registry = old || { orchestrators: [{ id: "main", name: "メイン", icon: "" }],
       selectedId: "main", memoryConversationId: recoveredMemoryConversationId };
     main = createVoiceContextService({ rootDir: root, createClient,
+      taskChecklistPath: "task-checklists/main.md",
+      onChecklistChanged,
       memoryConversationId: registry.memoryConversationId || undefined,
       memoryEventPairs: allEventPairs, pairExclusive, managedSessions: managedSessions("main"),
       hasOutstandingActivity: hasOutstandingActivity("main") });
@@ -265,11 +268,13 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
         await load();
         const service = await loadedContext(id);
         if (changes.model !== undefined || changes.effort !== undefined || changes.systemInstruction !== undefined
-          || changes.topicModel !== undefined || changes.topicEffort !== undefined) {
+          || changes.topicModel !== undefined || changes.topicEffort !== undefined
+          || changes.overviewModel !== undefined || changes.overviewEffort !== undefined) {
           const current = await service.getSettings();
           await service.configure(changes.model ?? current.model, changes.effort ?? current.effort,
             changes.systemInstruction ?? current.systemInstruction,
-            changes.topicModel ?? current.topicModel, changes.topicEffort ?? current.topicEffort);
+            changes.topicModel ?? current.topicModel, changes.topicEffort ?? current.topicEffort,
+            changes.overviewModel, changes.overviewEffort);
         }
         const orchestrators = registry.orchestrators.map((item) => item.id === id ? { id, name, icon } : item);
         await saveRegistry({ ...registry, orchestrators });
@@ -297,10 +302,11 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
       const item = registry.orchestrators.find((entry) => entry.id === id);
       return { ...await service.getSettings(), ...item, orchestratorId: id };
     },
-    async configure(id, model, effort, systemInstruction, topicModel, topicEffort) {
+    async configure(id, model, effort, systemInstruction, topicModel, topicEffort, overviewModel, overviewEffort) {
       return exclusive(async () => {
         await load();
-        return (await loadedContext(idOf(id))).configure(model, effort, systemInstruction, topicModel, topicEffort);
+        return (await loadedContext(idOf(id))).configure(model, effort, systemInstruction, topicModel, topicEffort,
+          overviewModel, overviewEffort);
       });
     },
     async clearMemory() { return exclusive(async () => {
@@ -320,6 +326,10 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
       return result;
     }); },
     async history(id) { return (await context(idOf(id))).history(); },
+    async respondToChecklistCompletion(id, sourceHash, version, decision) {
+      if (id !== "main") throw failure("Task checklist is unavailable", "not_found");
+      return main.respondToChecklistCompletion(sourceHash, version, decision);
+    },
     async open(id) { return withCounts(id, await (await context(idOf(id))).open()); },
     async status(id, conversationId, operationId) {
       return withCounts(id, await (await context(idOf(id))).status(conversationId, operationId));

@@ -8,7 +8,8 @@ import { createCodexScheduleService } from "../src/codex-schedule-service.mjs";
 import { createVoiceContextService } from "../src/voice-context-service.mjs";
 import { createVoiceOrchestratorService } from "../src/voice-orchestrator-service.mjs";
 
-function fakeCodex({ hold = false, failSummary = false, failTurn = false, approval = false } = {}) {
+function fakeCodex({ hold = false, failSummary = false, failTurn = false, approval = false,
+  checklistWrites = [] } = {}) {
   const calls = [];
   const releases = [];
   const threads = new Map();
@@ -32,32 +33,53 @@ function fakeCodex({ hold = false, failSummary = false, failTurn = false, approv
         if (method === "mcpServerStatus/list") return { data: [], nextCursor: null };
         if (method === "thread/start") {
           summary = params.approvalPolicy === "never";
-          const thread = { id: randomUUID(), ephemeral: params.ephemeral, turns: [] };
+          const thread = { id: randomUUID(), ephemeral: params.ephemeral, turns: [],
+            checklistRead: params.developerInstructions?.includes("新しい親セッションでは") };
           threads.set(thread.id, thread);
           return { thread };
         }
-        if (method === "thread/resume" || method === "thread/read") return { thread: threads.get(params.threadId) };
+        if (method === "thread/resume") {
+          const thread = threads.get(params.threadId);
+          thread.checklistRead = params.developerInstructions?.includes("新しい親セッションでは");
+          return { thread };
+        }
+        if (method === "thread/read") return { thread: threads.get(params.threadId) };
         if (method === "turn/start") {
           if (summary && failSummary) throw new Error("summary unavailable");
           if (!summary && failTurn) throw Object.assign(new Error("native turn unavailable"), { code: "backend_unavailable" });
           const turnId = randomUUID();
           const turn = { id: turnId, status: "active", items: [] };
           threads.get(params.threadId)?.turns.push(turn);
-          const finish = () => {
+          const finish = async () => {
+            if (threads.get(params.threadId)?.checklistRead) {
+              const itemId = randomUUID();
+              listener("item/started", { threadId: params.threadId, turnId,
+                item: { id: itemId, type: "dynamicToolCall", status: "inProgress" } });
+              const read = await serverHandler({ method: "item/tool/call", params: {
+                threadId: params.threadId, turnId, callId: itemId,
+                namespace: "task_checklist", tool: "read_task_checklist", arguments: {},
+              } });
+              if (read.success) listener("item/completed", { threadId: params.threadId, turnId,
+                item: { id: itemId, type: "dynamicToolCall", status: "completed" } });
+            }
+            if (approval && !summary && !threads.get(params.threadId)?.checklistRead) {
+              const result = await serverHandler({ method: "item/commandExecution/requestApproval",
+                params: { threadId: params.threadId, turnId, command: "echo test" } });
+              calls.push({ method: "approval.result", result });
+            }
+            if (!summary && !threads.get(params.threadId)?.checklistRead && checklistWrites.length) {
+              await fs.writeFile(path.join(params.cwd, "task-checklists", "main.md"), checklistWrites.shift());
+              listener("item/completed", { threadId: params.threadId, turnId,
+                item: { id: randomUUID(), type: "fileChange", status: "completed" } });
+            }
             turn.status = "completed";
             listener("item/completed", { threadId: params.threadId, turnId,
               item: { type: "agentMessage", text: `reply:${params.input[0].text}` } });
             listener("turn/completed", { threadId: params.threadId, turnId, turn: { status: "completed" } });
             resolveCompletion();
           };
-          if (approval && !summary) {
-            setImmediate(() => void serverHandler({ method: "item/commandExecution/requestApproval",
-              params: { threadId: params.threadId, turnId, command: "echo test" } }).then((result) => {
-                calls.push({ method: "approval.result", result });
-                finish();
-              }));
-          } else if (hold) releases.push(finish);
-          else queueMicrotask(finish);
+          if (hold && !threads.get(params.threadId)?.checklistRead) releases.push(() => void finish());
+          else queueMicrotask(() => void finish());
           return { turn: { id: turnId } };
         }
         return {};
@@ -78,7 +100,8 @@ async function fixture(t, options) {
   });
   return { rootDir, codex, service: createVoiceOrchestratorService({ rootDir,
     createClient: codex.createClient, getAgentService: options?.getAgentService,
-    subjectId: "voice-owner", onCompleted: options?.onCompleted, activity: options?.activity }) };
+    subjectId: "voice-owner", onCompleted: options?.onCompleted,
+    onChecklistChanged: options?.onChecklistChanged, activity: options?.activity }) };
 }
 
 async function turn(service, orchestratorId, conversationId, text, operationId = randomUUID()) {
@@ -202,7 +225,7 @@ test("shared memory clear also drops every retained native parent", async (t) =>
   }
 });
 
-test("main migration keeps its native parent; each orchestrator has a separate parent in one workspace", async (t) => {
+test("main migration switches its legacy parent; each orchestrator shares one workspace", async (t) => {
   const { rootDir, codex, service } = await fixture(t);
   const legacy = createVoiceContextService({ rootDir, createClient: codex.createClient });
   const main = await legacy.open();
@@ -210,6 +233,7 @@ test("main migration keeps its native parent; each orchestrator has a separate p
   assert.equal((await old.finished).status, "completed");
   assert.deepEqual((await service.list()).orchestrators.map(({ id }) => id), ["main"]);
   assert.equal((await service.history("main")).messages[0].text, "old main");
+  assert.deepEqual((await service.history("main")).taskChecklist, { status: "missing" });
   const created = await service.create("調査");
   await service.update(created.id, { name: "調査改", icon: "", model: "another-model", effort: "high",
     systemInstruction: "Research carefully." });
@@ -223,9 +247,10 @@ test("main migration keeps its native parent; each orchestrator has a separate p
   assert.equal((await b.finished).status, "completed");
 
   const injections = codex.calls.filter(({ method }) => method === "thread/inject_items");
-  assert.equal(injections.length, 0);
+  assert.equal(injections.length, 1);
   const turns = codex.calls.filter(({ method }) => method === "turn/start");
-  assert.equal(turns[0].params.threadId, turns[2].params.threadId);
+  assert.notEqual(turns[0].params.threadId, turns[2].params.threadId);
+  assert.equal(turns[2].params.threadId, turns[3].params.threadId);
   assert.notEqual(turns[0].params.threadId, turns[1].params.threadId);
   const workspaces = codex.calls.filter(({ method, params }) => method === "thread/start"
     && params.approvalPolicy === "on-request").map(({ params }) => params.cwd);
@@ -233,14 +258,64 @@ test("main migration keeps its native parent; each orchestrator has a separate p
   assert.ok(codex.calls.some(({ method, params }) => method === "thread/start"
     && params.approvalPolicy === "on-request" && params.model === "another-model"
     && params.developerInstructions.includes("Research carefully.")));
+  const childThread = codex.calls.find(({ method, params }) => method === "thread/start"
+    && params.approvalPolicy === "on-request" && params.model === "another-model");
+  assert.equal(childThread.params.developerInstructions.includes("task-checklists/main.md"), false);
+  assert.equal(childThread.params.dynamicTools?.some((tool) => tool.name === "task_checklist") || false, false);
+  assert.ok(codex.calls.some(({ method, params }) => method === "thread/resume"
+    && params.developerInstructions.includes("task-checklists/main.md")));
   const recent = JSON.parse(await fs.readFile(path.join(workspaces[0], "voice-memory", "recent.json"), "utf8"));
   assert.deepEqual(recent.map(({ user }) => user), ["old main", "other only", "main again"]);
   assert.deepEqual((await service.history(created.id)).messages.map(({ text }) => text), ["other only", "reply:other only"]);
+  assert.equal(Object.hasOwn(await service.history(created.id), "taskChecklist"), false);
 
   const reloaded = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
   assert.equal((await reloaded.open(created.id)).logicalConversationId, other.logicalConversationId);
   assert.equal((await reloaded.history("main")).messages.length, 4);
   await assert.rejects(reloaded.remove("main"), { code: "turn_rejected" });
+});
+
+test("main custom instructions retain fixed checklist guidance on start and resume", async (t) => {
+  const { service, codex } = await fixture(t);
+  const conversation = await service.open("main");
+  await service.update("main", { name: "メイン", icon: "", model: "gpt-6-luna", effort: "low",
+    systemInstruction: "Custom main rule." });
+  assert.equal((await (await turn(service, "main", conversation.logicalConversationId, "first")).finished).status, "completed");
+  assert.equal((await (await turn(service, "main", conversation.logicalConversationId, "second")).finished).status, "completed");
+  const started = codex.calls.find(({ method, params }) => method === "thread/start" && params.approvalPolicy === "on-request");
+  const resumed = codex.calls.find(({ method, params }) => method === "thread/resume" && params.approvalPolicy === "on-request");
+  assert.match(started.params.developerInstructions, /Custom main rule\./);
+  assert.match(started.params.developerInstructions, /新しい親セッションでは/);
+  assert.match(started.params.developerInstructions, /task-checklists\/main\.md/);
+  assert.match(resumed.params.developerInstructions, /Custom main rule\./);
+  assert.match(resumed.params.developerInstructions, /task-checklists\/main\.md/);
+  assert.equal(resumed.params.developerInstructions.includes("新しい親セッションでは"), false);
+});
+
+test("only main accepts independent To Do display model settings", async (t) => {
+  const { service } = await fixture(t);
+  const child = await service.create("調査");
+  assert.deepEqual([(await service.getSettings("main")).overviewModel,
+    (await service.getSettings("main")).overviewEffort], ["gpt-6-luna", "low"]);
+  assert.equal(Object.hasOwn(await service.getSettings(child.id), "overviewModel"), false);
+  await service.update("main", { name: "メイン", icon: "", overviewModel: "another-model", overviewEffort: "high" });
+  assert.deepEqual([(await service.getSettings("main")).overviewModel,
+    (await service.getSettings("main")).overviewEffort], ["another-model", "high"]);
+  await assert.rejects(service.update(child.id,
+    { name: "調査", icon: "", overviewModel: "another-model", overviewEffort: "high" }),
+  { code: "turn_rejected" });
+});
+
+test("main checklist changes notify on service starts without per-turn hooks", async (t) => {
+  const changed = [];
+  const { service } = await fixture(t, { checklistWrites: ["- [ ] 確認\n", "- [x] 確認\n"],
+    onChecklistChanged: (conversationId) => changed.push(conversationId) });
+  const conversationId = (await service.open("main")).logicalConversationId;
+  assert.equal((await (await turn(service, "main", conversationId, "first")).finished).status, "completed");
+  assert.equal((await (await turn(service, "main", conversationId, "second")).finished).status, "completed");
+  assert.deepEqual(changed, [conversationId, conversationId]);
+  assert.deepEqual((await service.history("main")).taskChecklist,
+    { status: "present", markdown: "- [x] 確認\n" });
 });
 
 test("shared memory clear checks every orchestrator before mutating memory", async (t) => {
@@ -525,7 +600,8 @@ test("voice activity binds the registered root before the native turn starts and
   const order = [];
   let nativeCalls = () => [];
   const activity = { registerRoot: ({ orchestratorId, threadId }) => {
-    assert.equal(nativeCalls().some((call) => call.method === "turn/start" && call.params.approvalPolicy === "on-request"), false);
+    assert.equal(nativeCalls().some((call) => call.method === "turn/start"
+      && call.params.input[0].text === "hello"), false);
     order.push(["root", orchestratorId, threadId]);
     return () => order.push(["released", orchestratorId, threadId]);
   } };
@@ -538,7 +614,7 @@ test("voice activity binds the registered root before the native turn starts and
   const root = order.find(([event]) => event === "root");
   assert.equal(root[1], "main");
   assert.ok(root[2]);
-  assert.equal(codex.calls.filter((call) => call.method === "turn/start" && call.params.approvalPolicy === "on-request").length, 1);
+  assert.equal(codex.calls.filter((call) => call.method === "turn/start" && call.params.approvalPolicy === "on-request").length, 2);
   assert.deepEqual(order.map(([event]) => event), ["root", "released"]);
 });
 

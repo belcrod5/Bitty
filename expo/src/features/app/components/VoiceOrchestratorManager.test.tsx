@@ -5,6 +5,7 @@ import { AppModal } from "./AppModal";
 import { VoiceOrchestratorManager } from "./VoiceOrchestratorManager";
 
 const icon = "data:image/png;base64,iVBORw0KGgo=";
+let mockLegacySettings = false;
 const mockPickIcon = jest.fn(async () => icon);
 const mockRequest = jest.fn(async (message: { op: string; payload?: Record<string, unknown> }) => {
   const { op, payload } = message;
@@ -13,6 +14,8 @@ const mockRequest = jest.fn(async (message: { op: string; payload?: Record<strin
     name: payload?.orchestratorId === "main" ? "メイン" : "調査",
     icon: "", model: "gpt-6-luna", effort: "low", systemInstruction: "Be helpful.",
     topicModel: "gpt-6-luna", topicEffort: "low",
+    ...(payload?.orchestratorId === "main" && !mockLegacySettings
+      ? { overviewModel: "gpt-6-luna", overviewEffort: "low" } : {}),
     models: [
       { modelId: "gpt-6-luna", label: "Luna", effortOptions: ["low"] },
       { modelId: "another-model", label: "Another", effortOptions: ["medium", "high"] },
@@ -66,7 +69,7 @@ const onConversationChanged = jest.fn();
 const onClose = jest.fn();
 const props = { visible: true, list, onListChanged, onConversationChanged, onClose };
 
-beforeEach(() => { jest.clearAllMocks(); });
+beforeEach(() => { jest.clearAllMocks(); mockLegacySettings = false; });
 
 test("opens through the platform modal and closes detail before the manager", async () => {
   const screen = await render(<VoiceOrchestratorManager {...props} />);
@@ -109,14 +112,42 @@ test("new detail creates with full settings and main has no delete control", asy
   await fireEvent.press(screen.getByTestId("orchestrator-row-main"));
   await waitFor(() => screen.getByTestId("orchestrator-name"));
   expect(screen.queryByTestId("orchestrator-delete")).toBeNull();
+  expect(screen.getByTestId("select-To Do表示モデル")).toBeTruthy();
+  expect(screen.getByTestId("select-To Do表示エフォート")).toBeTruthy();
   await fireEvent.press(screen.getByLabelText("戻る"));
   await fireEvent.press(screen.getByTestId("orchestrator-add"));
   await waitFor(() => screen.getByTestId("orchestrator-name"));
+  expect(screen.queryByTestId("select-To Do表示モデル")).toBeNull();
   await fireEvent.changeText(screen.getByTestId("orchestrator-name"), "新規");
   await fireEvent.press(screen.getByTestId("orchestrator-save"));
   await waitFor(() => expect(mockRequest).toHaveBeenCalledWith({ channel: "agent", op: "voice.orchestrators.create",
     payload: { name: "新規", icon: "", model: "gpt-6-luna", effort: "low",
       systemInstruction: "Be helpful.", topicModel: "gpt-6-luna", topicEffort: "low" } }));
+  await screen.unmount();
+});
+
+test("main saves independent To Do display model and effort", async () => {
+  const screen = await render(<VoiceOrchestratorManager {...props} />);
+  await fireEvent.press(screen.getByTestId("orchestrator-row-main"));
+  await waitFor(() => screen.getByTestId("select-To Do表示モデル"));
+  await fireEvent.press(screen.getByTestId("select-To Do表示モデル"));
+  await fireEvent.press(screen.getByTestId("select-To Do表示エフォート"));
+  await fireEvent.press(screen.getByTestId("orchestrator-save"));
+  await waitFor(() => expect(mockRequest).toHaveBeenCalledWith({ channel: "agent", op: "voice.orchestrators.update",
+    payload: expect.objectContaining({ orchestratorId: "main", overviewModel: "another-model",
+      overviewEffort: "high" }) }));
+  await screen.unmount();
+});
+
+test("older Runner settings remain editable without unsupported To Do display controls", async () => {
+  mockLegacySettings = true;
+  const screen = await render(<VoiceOrchestratorManager {...props} />);
+  await fireEvent.press(screen.getByTestId("orchestrator-row-main"));
+  await waitFor(() => screen.getByTestId("orchestrator-name"));
+  expect(screen.queryByTestId("select-To Do表示モデル")).toBeNull();
+  await fireEvent.press(screen.getByTestId("orchestrator-save"));
+  await waitFor(() => expect(mockRequest).toHaveBeenCalledWith({ channel: "agent", op: "voice.orchestrators.update",
+    payload: expect.not.objectContaining({ overviewModel: expect.anything() }) }));
   await screen.unmount();
 });
 

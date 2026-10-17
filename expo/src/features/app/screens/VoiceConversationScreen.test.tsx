@@ -44,6 +44,13 @@ const mockVoice = {
   contextStats: { contextUsagePercent: 31 as number | null, unsummarizedMessageCount: 8, memoryCharacterCount: 55 },
   history: [] as { role: "user" | "assistant"; text: string; clientOperationId: string; at?: string; completedOrdinal?: number }[],
   historyError: "",
+  taskChecklist: { status: "present", markdown: "# 最優先\n\n- [ ] 確認する" } as
+    { status: "present"; markdown: string } | { status: "missing" | "unavailable" } | null,
+  taskChecklistOverview: { status: "present", markdown: "- [ ] 確認する" } as
+    { status: "present"; markdown: string } | { status: "pending" | "unavailable" } | null,
+  taskChecklistCompletion: null as { sourceHash: string; version: string } | null,
+  respondToChecklistCompletion: jest.fn(async (_hash: string, _version: string,
+    _decision: "clear" | "keep") => undefined),
   refreshHistory: jest.fn(async () => undefined),
   setError: jest.fn(),
   sendTranscript: jest.fn(async () => undefined),
@@ -230,6 +237,10 @@ beforeEach(() => {
   mockVoice.contextStats.contextUsagePercent = 31;
   mockVoice.history = [];
   mockVoice.historyError = "";
+  mockVoice.taskChecklist = { status: "present", markdown: "# 最優先\n\n- [ ] 確認する" };
+  mockVoice.taskChecklistOverview = { status: "present", markdown: "- [ ] 確認する" };
+  mockVoice.taskChecklistCompletion = null;
+  mockVoice.respondToChecklistCompletion.mockClear();
   mockBackdropOpacity.value = 0;
   mockReduceMotion = false;
   mockManagerVisible = false;
@@ -240,6 +251,177 @@ beforeEach(() => {
 afterEach(() => {
   Object.defineProperty(Platform, "OS", { configurable: true, value: initialPlatform });
   jest.restoreAllMocks();
+});
+
+test("main history shows read-only checklist states without a title and folds to a tab", async () => {
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  expect(screen.queryByText("To Do")).toBeNull();
+  expect(screen.queryByText("最優先")).toBeNull();
+  expect(screen.getByTestId("voice-task-checklist-item-0").props.accessibilityState)
+    .toMatchObject({ checked: false, disabled: true });
+  expect(screen.getByText("確認する")).toBeTruthy();
+  const panelStyle = StyleSheet.flatten(screen.getByTestId("voice-task-checklist-panel").props.style);
+  expect(panelStyle.bottom).toBeUndefined();
+  expect(panelStyle.width).toBeUndefined();
+  expect(panelStyle.minWidth).toBeUndefined();
+  expect(panelStyle.maxWidth).toBeLessThanOrEqual(260);
+  expect(panelStyle.maxHeight).toBe("65%");
+  expect(panelStyle.backgroundColor).toBeTruthy();
+  expect(panelStyle.borderLeftWidth).toBeUndefined();
+  expect(screen.queryByTestId("voice-task-checklist-refresh")).toBeNull();
+  expect(StyleSheet.flatten(screen.getByTestId("voice-task-checklist-content").props.style))
+    .toMatchObject({ flexGrow: 0, flexShrink: 1 });
+  const longChecklist = Array.from({ length: 40 }, (_, index) => `- [${index === 0 ? "x" : " "}] 手順 ${index + 1}`).join("\n");
+  mockVoice.taskChecklist = { status: "present", markdown: longChecklist };
+  mockVoice.taskChecklistOverview = { status: "present", markdown: longChecklist };
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(screen.getByTestId("voice-task-checklist-item-0").props.accessibilityState.checked).toBe(true);
+  expect(screen.getByTestId("voice-task-checklist-item-39").props.accessibilityState.checked).toBe(false);
+  await fireEvent.press(screen.getByTestId("voice-task-checklist-collapse"));
+  expect(screen.queryByTestId("voice-task-checklist-panel")).toBeNull();
+  expect(screen.queryByTestId("voice-task-checklist-item-0")).toBeNull();
+  expect(screen.getByTestId("voice-task-checklist-expand")).toBeTruthy();
+  await fireEvent.press(screen.getByTestId("voice-task-checklist-expand"));
+  expect(screen.getByTestId("voice-task-checklist-panel")).toBeTruthy();
+});
+
+test("checklist retry appears only when history or checklist loading fails", async () => {
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  expect(screen.queryByTestId("voice-task-checklist-refresh")).toBeNull();
+  mockVoice.taskChecklist = { status: "unavailable" };
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await fireEvent.press(screen.getByTestId("voice-task-checklist-refresh"));
+  expect(mockVoice.refreshHistory).toHaveBeenCalled();
+  mockVoice.taskChecklist = { status: "present", markdown: "- [ ] 確認する" };
+  mockVoice.historyError = "履歴を読み込めません";
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(screen.getByTestId("voice-task-checklist-refresh")).toBeTruthy();
+  mockVoice.historyError = "";
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(screen.queryByTestId("voice-task-checklist-refresh")).toBeNull();
+});
+
+test("completed checklist offers one explicit archive and clear action", async () => {
+  mockVoice.taskChecklist = { status: "present", markdown: "- [x] 作業完了\n" };
+  mockVoice.taskChecklistOverview = { status: "present", markdown: "- [x] 作業完了" };
+  mockVoice.taskChecklistCompletion = { sourceHash: "a".repeat(64), version: "b".repeat(64) };
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  const clear = screen.getByTestId("voice-task-checklist-clear");
+  expect(clear.props.accessibilityLabel).toBe("完了した To Do を履歴に保存して空にする");
+  expect(screen.getByText("trash-outline")).toBeTruthy();
+  expect(screen.queryByTestId("voice-task-checklist-keep")).toBeNull();
+  expect(screen.queryByText("すべて完了しました。履歴に保存して To Do を空にしますか？")).toBeNull();
+  await act(async () => { fireEvent.press(clear); });
+  await waitFor(() => expect(mockVoice.respondToChecklistCompletion)
+    .toHaveBeenCalledWith("a".repeat(64), "b".repeat(64), "clear"));
+});
+
+test("legacy prose stays visible until the AI rewrites the source file", async () => {
+  mockVoice.taskChecklist = { status: "present", markdown: "# タイトル\n\n進捗は不明\n- [ ] 要確認\n" };
+  mockVoice.taskChecklistOverview = { status: "unavailable" };
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  expect(screen.getByText("概要を作成できませんでした")).toBeTruthy();
+  await fireEvent.press(screen.getByTestId("voice-task-checklist-source-toggle"));
+  expect(screen.getByText("# タイトル")).toBeTruthy();
+  expect(screen.getByText("進捗は不明")).toBeTruthy();
+  expect(screen.getByText("要確認")).toBeTruthy();
+});
+
+test("display overview defaults to a few checked rows and switches to the unchanged original", async () => {
+  Object.defineProperty(Platform, "OS", { configurable: true, value: "ios" });
+  mockVoice.taskChecklist = { status: "present", markdown: "# 原本\n- 確認済み\n- 次の確認は未着手\n" };
+  mockVoice.taskChecklistOverview = { status: "present", markdown: "- [x] 確認済みの作業\n- [ ] 次の確認" };
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  expect(screen.getByText("確認済みの作業")).toBeTruthy();
+  expect(screen.getByText("document-text-outline")).toBeTruthy();
+  expect(screen.getByTestId("voice-task-checklist-source-toggle").props.accessibilityLabel)
+    .toBe("To Do原本を表示");
+  expect(StyleSheet.flatten(screen.getByTestId("voice-task-checklist-source-toggle").props.style))
+    .toMatchObject({ width: 44, height: 44 });
+  expect(screen.getByTestId("voice-task-checklist-blur")).toBeTruthy();
+  expect(StyleSheet.flatten(screen.getByTestId("voice-task-checklist-tint").props.style).backgroundColor)
+    .toBe("rgba(255, 255, 255, 0.42)");
+  const overviewPanelStyle = StyleSheet.flatten(screen.getByTestId("voice-task-checklist-panel").props.style);
+  expect(overviewPanelStyle.borderColor).toBe(VISUAL_THEMES[DEFAULT_VISUAL_THEME_ID].colors.borderTranslucent);
+  expect(screen.getByTestId("voice-task-checklist-item-0").props.accessibilityState)
+    .toMatchObject({ checked: true, disabled: true });
+  expect(StyleSheet.flatten(screen.getByText("確認済みの作業").props.style).textDecorationLine)
+    .toBe("line-through");
+  expect(StyleSheet.flatten(screen.getByText("次の確認").props.style).textDecorationLine)
+    .toBe("none");
+  expect(screen.queryByText("確認済み")).toBeNull();
+  await fireEvent.press(screen.getByTestId("voice-task-checklist-source-toggle"));
+  expect(screen.getByText("list-outline")).toBeTruthy();
+  expect(screen.getByTestId("voice-task-checklist-source-toggle").props.accessibilityLabel)
+    .toBe("To Do概要を表示");
+  expect(screen.getByTestId("voice-task-checklist-blur")).toBeTruthy();
+  expect(StyleSheet.flatten(screen.getByTestId("voice-task-checklist-tint").props.style).backgroundColor)
+    .toBe("rgba(255, 255, 255, 0.42)");
+  expect(StyleSheet.flatten(screen.getByTestId("voice-task-checklist-panel").props.style).borderColor)
+    .toBe(VISUAL_THEMES[DEFAULT_VISUAL_THEME_ID].colors.borderStrong);
+  expect(screen.getByText("- 確認済み")).toBeTruthy();
+  expect(screen.getByText("- 次の確認は未着手")).toBeTruthy();
+  expect(screen.queryByTestId("voice-task-checklist-item-0")).toBeNull();
+  await fireEvent.press(screen.getByTestId("voice-task-checklist-source-toggle"));
+  expect(screen.getByTestId("voice-task-checklist-item-0").props.accessibilityState.checked).toBe(true);
+});
+
+test("overview has a translucent fallback without native blur", async () => {
+  Object.defineProperty(Platform, "OS", { configurable: true, value: "android" });
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  expect(screen.queryByTestId("voice-task-checklist-blur")).toBeNull();
+  expect(screen.getByTestId("voice-task-checklist-tint")).toBeTruthy();
+  expect(StyleSheet.flatten(screen.getByTestId("voice-task-checklist-tint").props.style).backgroundColor)
+    .toBe(VISUAL_THEMES[DEFAULT_VISUAL_THEME_ID].colors.surfaceTranslucent);
+});
+
+test("pending overview stays compact while the original remains available", async () => {
+  mockVoice.taskChecklist = { status: "present", markdown: Array.from({ length: 25 }, (_, index) =>
+    `- legacy detail ${index + 1}`).join("\n") };
+  mockVoice.taskChecklistOverview = { status: "pending" };
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  expect(screen.getByText("概要を作成中…")).toBeTruthy();
+  expect(screen.queryByText("- legacy detail 1")).toBeNull();
+  await fireEvent.press(screen.getByTestId("voice-task-checklist-source-toggle"));
+  expect(screen.getByText("- legacy detail 1")).toBeTruthy();
+  expect(screen.queryByTestId("voice-task-checklist-item-0")).toBeNull();
+});
+
+test("older Runner without an overview field still shows its original checklist", async () => {
+  Object.defineProperty(Platform, "OS", { configurable: true, value: "ios" });
+  mockVoice.taskChecklist = { status: "present", markdown: "- [ ] 旧Runnerの作業\n" };
+  mockVoice.taskChecklistOverview = null;
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  expect(screen.getByText("旧Runnerの作業")).toBeTruthy();
+  expect(screen.queryByTestId("voice-task-checklist-source-toggle")).toBeNull();
+  expect(screen.getByTestId("voice-task-checklist-blur")).toBeTruthy();
+  expect(screen.getByTestId("voice-task-checklist-tint")).toBeTruthy();
+  expect(StyleSheet.flatten(screen.getByTestId("voice-task-checklist-panel").props.style))
+    .toMatchObject({ backgroundColor: "transparent",
+      borderColor: VISUAL_THEMES[DEFAULT_VISUAL_THEME_ID].colors.borderStrong });
+});
+
+test("task checklist states are distinct and other orchestrators have no panel", async () => {
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  mockVoice.taskChecklist = { status: "missing" };
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(screen.getByText("To Doはまだ作成されていません")).toBeTruthy();
+  mockVoice.taskChecklist = { status: "unavailable" };
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(screen.getByText("To Doを読み込めませんでした")).toBeTruthy();
+  await fireEvent.press(screen.getByTestId("voice-orchestrator-other"));
+  await waitFor(() => expect(mockHookOrchestratorIds.at(-1)).toBe("other"));
+  expect(screen.queryByTestId("voice-task-checklist-panel")).toBeNull();
+  expect(screen.queryByTestId("voice-task-checklist-expand")).toBeNull();
 });
 
 test("notification target wins an in-flight list, opens history, and stays selected after reconnect", async () => {
@@ -447,6 +629,7 @@ test("macOS renders the native within-window blur behind the dark overlay", asyn
   const blur = screen.getByTestId("voice-conversation-board-blur");
   expect(blur.type).toBe("BittyVoiceBlur");
   expect(blur.props.pointerEvents).toBe("none");
+  expect(screen.getByTestId("voice-task-checklist-blur").type).toBe("BittyVoiceBlur");
   expect(StyleSheet.flatten(blur.props.style).opacity).toBeUndefined();
   expect(StyleSheet.flatten(screen.getByTestId("voice-conversation-backdrop").props.style).backgroundColor)
     .toBe("rgba(0, 0, 0, 0.4)");

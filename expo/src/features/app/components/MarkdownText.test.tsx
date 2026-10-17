@@ -15,13 +15,21 @@ jest.mock("react-native-enriched-markdown", () => ({
 }));
 jest.mock("./MermaidCodeBlock", () => ({ MermaidCodeBlock: () => null }));
 jest.mock("../styles", () => ({
-  useAppStyles: () => ({ markdownRoot: {}, markdownRootAssistant: {}, markdownRootUser: {} }),
+  useAppStyles: () => ({ markdownRoot: {}, markdownRootAssistant: { width: "100%" }, markdownRootUser: {} }),
 }));
 jest.mock("../theme/VisualThemeContext", () => ({
   useVisualTheme: () => ({ theme: require("../theme/visualThemes").VISUAL_THEMES[mockThemeId] }),
 }));
 
 describe("MarkdownText theme colors", () => {
+  it("lets the task panel use native content width without changing the default assistant width", async () => {
+    const { rerender } = await render(<MarkdownText content="- [ ] 確認" tone="assistant" textStyle={{}} />);
+    expect(mockMarkdownProps.containerStyle.width).toBe("100%");
+    await rerender(<MarkdownText content="- [ ] 確認" tone="assistant" textStyle={{}}
+      containerStyle={{ width: "auto", alignSelf: "flex-start" }} />);
+    expect(mockMarkdownProps.containerStyle).toMatchObject({ width: "auto", alignSelf: "flex-start" });
+  });
+
   it.each(["standard", "cyberpunk"] as const)("sets themed colors for %s markdown blocks", async (themeId) => {
     mockThemeId = themeId;
     const theme = VISUAL_THEMES[themeId];
