@@ -3,6 +3,7 @@ export type StreamingSttTransportCallbacks = {
   onSample: (rms: number) => void;
   onError: (message: string) => void;
   onClose: () => void;
+  onDiagnostic?: (payload: Record<string, unknown>) => void;
 };
 
 export type StreamingSttSession = {

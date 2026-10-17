@@ -408,6 +408,9 @@ export function useStreamingStt(options: Options) {
           onSample: (rms) => {
             if (sessionRef.current === session) latestRef.current.onSample(rms);
           },
+          onDiagnostic: (payload) => {
+            if (sessionRef.current === session) latestRef.current.onDiagnostic?.("stt_capture_diagnostic", { ...payload, version });
+          },
           onError: (message) => {
             if (sessionRef.current === session) {
               latestRef.current.onDiagnostic?.("stt_transport_error", { version });

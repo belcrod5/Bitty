@@ -1531,3 +1531,16 @@ test("shows abort stalls and completion duration before the next connect", async
   await advanceTimers(250);
   expect(mockSessions).toHaveLength(2);
 });
+
+test("attaches the current hook version to capture diagnostics and ignores retired sessions", async () => {
+  const options = createOptions();
+  const { result } = await renderHook(() => useStreamingStt(options));
+  const session = await openReady(result);
+  const payload = { sessionId: "a1234567-1234-4567-89ab-0123456789ab", stage: "first_tap", elapsedMs: 25, capturedFrames: 4096 };
+  session.callbacks.onDiagnostic?.(payload);
+  expect(options.onDiagnostic).toHaveBeenCalledWith("stt_capture_diagnostic", { ...payload, version: 1 });
+  await act(async () => { await result.current.abort(); });
+  options.onDiagnostic.mockClear();
+  session.callbacks.onDiagnostic?.(payload);
+  expect(options.onDiagnostic).not.toHaveBeenCalled();
+});

@@ -9,7 +9,8 @@ public class BittyStreamingSttModule: Module {
 
   public func definition() -> ModuleDefinition {
     Name("BittyStreamingStt")
-    Events("BittyStreamingSttMessage", "BittyStreamingSttSample", "BittyStreamingSttError", "BittyStreamingSttClose")
+    Constant("captureDiagnosticsVersion") { 1 }
+    Events("BittyStreamingSttMessage", "BittyStreamingSttSample", "BittyStreamingSttError", "BittyStreamingSttClose", "BittyStreamingSttDiagnostic")
 
     AsyncFunction("start") { (urlString: String, headers: [String: String], promise: Promise) in
       self.queue.async {
@@ -70,6 +71,15 @@ private final class StreamingSession: NSObject, URLSessionWebSocketDelegate {
   private let url: URL
   private let headers: [String: String]
   private let emit: (String, [String: Any]) -> Void
+  private let diagnosticSessionId = UUID().uuidString
+  private let diagnosticStartedAt = ProcessInfo.processInfo.systemUptime
+  private var diagnosticStages = Set<String>()
+  private var capturedBuffers = 0
+  private var capturedFrames = 0
+  private var convertedFrames = 0
+  private var queuedAudioBytes = 0
+  private var startedAudioBytes = 0
+  private var sentAudioBytes = 0
   private let tapGroup = DispatchGroup()
   private let tapLock = NSLock()
   private var tapOpen = false
@@ -99,7 +109,31 @@ private final class StreamingSession: NSObject, URLSessionWebSocketDelegate {
     self.emit = emit
   }
 
+  // Called only on the transport queue, never on the real-time audio callback.
+  private func diagnose(_ stage: String, _ details: [String: Any] = [:]) {
+    guard diagnosticStages.insert(stage).inserted else { return }
+    var body: [String: Any] = [
+      "sessionId": diagnosticSessionId,
+      "stage": stage,
+      "elapsedMs": Int((ProcessInfo.processInfo.systemUptime - diagnosticStartedAt) * 1_000),
+      "capturedBuffers": capturedBuffers,
+      "capturedFrames": capturedFrames,
+      "convertedFrames": convertedFrames,
+      "queuedAudioBytes": queuedAudioBytes,
+      "startedAudioBytes": startedAudioBytes,
+      "sentAudioBytes": sentAudioBytes,
+      "pendingAudioBytes": pendingBytes,
+      "partialAudioBytes": partialPcm.count,
+      "ready": ready,
+      "stopping": stopping,
+      "engineRunning": engine?.isRunning ?? false,
+    ]
+    body.merge(details) { _, value in value }
+    emit("BittyStreamingSttDiagnostic", body)
+  }
+
   func start() {
+    diagnose("session_started")
     var request = URLRequest(url: url)
     request.timeoutInterval = 15
     for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
@@ -115,6 +149,7 @@ private final class StreamingSession: NSObject, URLSessionWebSocketDelegate {
   func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
     queue.async { [weak self] in
       guard let self, !self.terminal, self.socket === webSocketTask else { return }
+      self.diagnose("socket_opened")
       self.pending.append(.string("{\"type\":\"start\",\"sampleRate\":16000}"))
       self.sendNext()
       self.receiveNext()
@@ -151,6 +186,7 @@ private final class StreamingSession: NSObject, URLSessionWebSocketDelegate {
       // A final text message and close callback can arrive on different URLSession queues.
       self.queue.asyncAfter(deadline: .now() + .milliseconds(200)) { [weak self] in
         guard let self, !self.terminal, self.socket === webSocketTask else { return }
+        self.diagnose("socket_closed")
         self.terminal = true
         self.cleanup()
         self.emit("BittyStreamingSttClose", [:])
@@ -182,9 +218,11 @@ private final class StreamingSession: NSObject, URLSessionWebSocketDelegate {
               return
             }
             self.ready = true
+            self.diagnose("ready_received")
             self.emit("BittyStreamingSttMessage", ["data": text])
             self.beginCapture()
           } else if type == "done" || type == "error" {
+            self.diagnose(type == "done" ? "runner_done" : "runner_error")
             self.terminal = true
             self.emit("BittyStreamingSttMessage", ["data": text])
             if type == "done" {
@@ -204,10 +242,12 @@ private final class StreamingSession: NSObject, URLSessionWebSocketDelegate {
   }
 
   private func beginCapture() {
+    diagnose("permission_requested")
     AVAudioSession.sharedInstance().requestRecordPermission { [weak self] granted in
       guard let self else { return }
       self.queue.async {
         guard !self.terminal, self.ready, !self.stopping else { return }
+        self.diagnose("permission_result", ["permissionGranted": granted])
         guard granted else {
           self.fail("マイクの使用が許可されていません。")
           return
@@ -219,8 +259,10 @@ private final class StreamingSession: NSObject, URLSessionWebSocketDelegate {
           self.priorAudioOptions = audioSession.categoryOptions
           // Match the former recorder's routing. Restore the previous category on cleanup.
           // A speaker override would also change wired and Bluetooth accessory routing.
+          self.diagnose("audio_session_configuring")
           try audioSession.setCategory(.playAndRecord, mode: .default, options: [.allowBluetoothHFP, .mixWithOthers])
           try audioSession.setActive(true)
+          self.diagnose("audio_session_active")
           let engine = AVAudioEngine()
           let input = engine.inputNode
           let inputFormat = input.outputFormat(forBus: 0)
@@ -247,7 +289,9 @@ private final class StreamingSession: NSObject, URLSessionWebSocketDelegate {
           input.installTap(onBus: 0, bufferSize: 4_096, format: inputFormat) { [weak self] buffer, _ in
             self?.enqueueTap(buffer)
           }
+          self.diagnose("engine_starting", ["inputSampleRate": inputFormat.sampleRate, "inputChannels": inputFormat.channelCount])
           try engine.start()
+          self.diagnose("engine_started")
         } catch {
           self.fail("マイクを開始できませんでした。")
         }
@@ -284,6 +328,11 @@ private final class StreamingSession: NSObject, URLSessionWebSocketDelegate {
         self?.tapLock.unlock()
         self?.tapGroup.leave()
       }
+      if let self, !self.terminal {
+        self.capturedBuffers += 1
+        self.capturedFrames += Int(copy.frameLength)
+        if self.capturedBuffers == 1 { self.diagnose("first_tap") }
+      }
       self?.convert(copy)
     }
   }
@@ -312,6 +361,8 @@ private final class StreamingSession: NSObject, URLSessionWebSocketDelegate {
     }
     let count = Int(converted.frameLength)
     if count == 0 { return }
+    convertedFrames += count
+    if convertedFrames == count { diagnose("first_pcm") }
     partialPcm.append(Data(bytes: samples, count: count * MemoryLayout<Int16>.size))
     let now = CFAbsoluteTimeGetCurrent()
     if now - lastSampleTime >= 0.1 {
@@ -337,6 +388,8 @@ private final class StreamingSession: NSObject, URLSessionWebSocketDelegate {
       return
     }
     pendingBytes += data.count
+    queuedAudioBytes += data.count
+    if queuedAudioBytes == data.count { diagnose("first_audio_queued") }
     pending.append(.data(data))
     sendNext()
   }
@@ -345,6 +398,10 @@ private final class StreamingSession: NSObject, URLSessionWebSocketDelegate {
     guard !terminal, !sending, let socket, !pending.isEmpty else { return }
     sending = true
     let message = pending.removeFirst()
+    if case .data(let data) = message {
+      startedAudioBytes += data.count
+      if startedAudioBytes == data.count { diagnose("first_audio_send_started") }
+    }
     socket.send(message) { [weak self] error in
       guard let self else { return }
       self.queue.async {
@@ -354,6 +411,10 @@ private final class StreamingSession: NSObject, URLSessionWebSocketDelegate {
         if error != nil {
           self.fail("音声の送信に失敗しました。")
           return
+        }
+        if case .data(let data) = message {
+          self.sentAudioBytes += data.count
+          if self.sentAudioBytes == data.count { self.diagnose("first_audio_sent") }
         }
         if case .string(let value) = message, value == "{\"type\":\"stop\"}" {
           self.stopPromise?.resolve(nil)
@@ -370,6 +431,7 @@ private final class StreamingSession: NSObject, URLSessionWebSocketDelegate {
       return
     }
     stopping = true
+    diagnose("stop_requested")
     stopPromise = promise
     stopCapture()
     tapGroup.notify(queue: queue) { [weak self] in
@@ -424,12 +486,14 @@ private final class StreamingSession: NSObject, URLSessionWebSocketDelegate {
 
   func abort() {
     guard !terminal else { return }
+    diagnose("aborted")
     terminal = true
     cleanup()
   }
 
   private func fail(_ message: String) {
     guard !terminal else { return }
+    diagnose("failed")
     terminal = true
     cleanup()
     emit("BittyStreamingSttError", ["message": message])
