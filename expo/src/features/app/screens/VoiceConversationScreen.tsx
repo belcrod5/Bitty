@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Ionicons } from "@expo/vector-icons";
+import { randomUUID } from "expo-crypto";
 import { AppState, Platform, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Reanimated, { FadeIn, FadeInDown, FadeOut, FadeOutDown, runOnJS } from "react-native-reanimated";
@@ -187,9 +188,10 @@ function VoiceConversationSession({
   const mountedRef = useRef(true);
   const transitioningRef = useRef(false);
   const wasPausedRef = useRef(paused);
+  const startAnnouncedRef = useRef(false);
   const voicePlaybackMessageIdRef = useRef("");
 
-  const playReply = useCallback(async (text: string, operationId: string, jobId?: string) => {
+  const playSpeech = useCallback(async (text: string, operationId: string, jobId?: string) => {
     if (!mountedRef.current || paused || transitioningRef.current) return;
     setSynthesisStarting(true);
     setSynthesisRequestSettled(false);
@@ -204,8 +206,8 @@ function VoiceConversationSession({
     }
   }, [paused, synthesizeSpeechStream, orchestrator.ttsProvider, orchestrator.voiceId]);
   const voice = useVoiceConversation(
-    playReply,
-    (jobId, operationId) => { void playReply("", operationId, jobId); },
+    playSpeech,
+    (jobId, operationId) => { void playSpeech("", operationId, jobId); },
     typeof ttsSpeed === "number" ? { speedScale: ttsSpeed } : undefined,
     orchestrator.id,
   );
@@ -354,9 +356,14 @@ function VoiceConversationSession({
 
   useEffect(() => {
     if (!initialStartPending || !canStart) return;
+    if (!startAnnouncedRef.current) {
+      startAnnouncedRef.current = true;
+      void playSpeech(`${orchestrator.name}で開始しました`, `voice-start-${randomUUID()}`);
+      return;
+    }
     setInitialStartPending(false);
     streamingStt.start();
-  }, [canStart, initialStartPending, streamingStt.start]);
+  }, [canStart, initialStartPending, orchestrator.name, playSpeech, streamingStt.start]);
 
   useEffect(() => {
     if (synthesisStarting && (isTtsPlaybackActive || ttsUiStatus === "error"
