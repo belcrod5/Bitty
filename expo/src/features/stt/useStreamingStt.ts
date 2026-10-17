@@ -548,12 +548,12 @@ export function useStreamingStt(options: Options) {
         latestRef.current.onDiagnostic?.("stt_done_superseded", { version });
         return;
       }
-      const finalText = finalStreamingTranscript(transcriptStateRef.current);
+      const draft = displayStreamingTranscript(transcriptStateRef.current);
+      const acceptedText = finalStreamingTranscript(transcriptStateRef.current);
       const hasFinalSpeech = transcriptStateRef.current.finalText.trim().length > 0;
       if (message.reason === "limit_reached") listeningRef.current = false;
       if (message.reason === "recognition_segment_end" && latestRef.current.continuousDictation
         && listeningRef.current) {
-        const draft = displayStreamingTranscript(transcriptStateRef.current);
         transcriptStateRef.current = startStreamingTranscript(draft);
         latestRef.current.setTranscript(draft);
         dictationSegmentSeenRef.current = true;
@@ -563,28 +563,28 @@ export function useStreamingStt(options: Options) {
       }
       const completedDictation = latestRef.current.continuousDictation
         && message.reason === "no_speech_timeout"
-        && finalText.trim() !== draftAtStartRef.current.trim();
+        && acceptedText.trim() !== draftAtStartRef.current.trim();
       if ((message.hasSpeech && hasFinalSpeech) || completedDictation) {
-        latestRef.current.setTranscript(finalText);
+        latestRef.current.setTranscript(draft);
         setPhase("idle");
-        if (latestRef.current.autoReplyAfterStt && finalText.trim()) {
+        if (latestRef.current.autoReplyAfterStt && draft.trim()) {
           setPhase("correcting");
           const controller = new AbortController();
           correctionAbortRef.current = controller;
           latestRef.current.onDiagnostic?.("stt_correction_started", {
-            version, chars: finalText.length, contextMessages: Math.min(12, latestRef.current.correctionContext.length),
+            version, chars: draft.length, contextMessages: Math.min(12, latestRef.current.correctionContext.length),
           });
           try {
             const result = await correctSttTranscript(latestRef.current.runnerUrl, latestRef.current.runnerToken,
-              finalText, latestRef.current.correctionContext.slice(-12), controller.signal);
+              draft, latestRef.current.correctionContext.slice(-12), controller.signal);
             if (version !== sessionVersionRef.current || controller.signal.aborted) return;
             correctionAbortRef.current = null;
             if (!result.changed) {
               latestRef.current.onDiagnostic?.("stt_correction_result", { version, changed: false });
               setPhase("idle");
-              await sendAutoTranscript(finalText, version);
+              await sendAutoTranscript(draft, version);
             } else {
-              const parts = diffSttTranscript(finalText, result.text);
+              const parts = diffSttTranscript(draft, result.text);
               latestRef.current.onDiagnostic?.("stt_correction_result", {
                 version, changed: true,
                 deletedChars: parts.filter((part) => part.kind === "delete")
@@ -593,7 +593,7 @@ export function useStreamingStt(options: Options) {
                   .reduce((count, part) => count + part.text.length, 0),
               });
               const preview = { text: result.text, parts, deadlineMs: null, editing: false };
-              previewRef.current = { ...preview, originalText: finalText, version, sent: false };
+              previewRef.current = { ...preview, originalText: draft, version, sent: false };
               setCorrectionPreview(preview);
               setPhase("preview");
             }
@@ -624,7 +624,6 @@ export function useStreamingStt(options: Options) {
         finalChars: transcriptStateRef.current.finalText.length,
         interimChars: transcriptStateRef.current.interimText.length,
       });
-      const draft = displayStreamingTranscript(transcriptStateRef.current);
       latestRef.current.setTranscript(draft);
       if (!listeningRef.current || message.reason === "limit_reached") {
         listeningRef.current = false;

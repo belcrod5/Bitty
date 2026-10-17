@@ -641,7 +641,7 @@ test.each([
   { priorSpeech: false, final: "" },
   { priorSpeech: false, final: " " },
   { priorSpeech: true, final: "" },
-])("a retracted partial keeps only accepted speech after long idle (prior speech: $priorSpeech, final: '$final')", async ({ priorSpeech, final }) => {
+])("an empty final preserves the latest partial after long idle (prior speech: $priorSpeech, final: '$final')", async ({ priorSpeech, final }) => {
   const options = { ...createOptions(), continuousDictation: true, transcript: "入力済み" };
   const { result } = await renderHook(() => useStreamingStt(options));
   await openReady(result);
@@ -651,16 +651,18 @@ test.each([
     await advanceTimers(250);
     await emit(mockSessions.at(-1)!, { type: "ready" });
   }
-  await emit(mockSessions.at(-1)!, { type: "transcript", text: "取り消される途中結果", isFinal: false });
+  await emit(mockSessions.at(-1)!, { type: "transcript", text: "残す途中結果", isFinal: false });
   await emit(mockSessions.at(-1)!, { type: "transcript", text: final, isFinal: true });
   await emit(mockSessions.at(-1)!, { type: "done", reason: "no_speech_timeout", hasSpeech: false });
+  const expected = priorSpeech
+    ? "入力済み 確定済み 残す途中結果"
+    : "入力済み 残す途中結果";
+  expect(options.setTranscript).toHaveBeenCalledWith(expected);
   if (priorSpeech) {
-    expect(options.sendTranscript).toHaveBeenCalledWith("入力済み 確定済み", expect.any(Function));
+    expect(options.sendTranscript).toHaveBeenCalledWith(expected, expect.any(Function));
   } else {
     expect(options.sendTranscript).not.toHaveBeenCalled();
-    expect(options.setTranscript.mock.calls.at(-1)?.[0].trim()).toBe("入力済み");
-    await advanceTimers(250);
-    expect(result.current.isArmed()).toBe(true);
+    expect(options.setTranscript).toHaveBeenLastCalledWith(expected);
   }
 });
 
@@ -1543,4 +1545,65 @@ test("attaches the current hook version to capture diagnostics and ignores retir
   options.onDiagnostic.mockClear();
   session.callbacks.onDiagnostic?.(payload);
   expect(options.onDiagnostic).not.toHaveBeenCalled();
+});
+
+test.each([false, true])("empty partials and finals preserve the manual-stop draft (continuous: %s)", async (continuousDictation) => {
+  const options = { ...createOptions(), continuousDictation, autoReplyAfterStt: false, transcript: "入力済み" };
+  const { result } = await renderHook(() => useStreamingStt(options));
+  const session = await openReady(result);
+  await emit(session, { type: "transcript", text: "残す文章", isFinal: false });
+  await emit(session, { type: "transcript", text: "", isFinal: false });
+  expect(options.setTranscript).toHaveBeenLastCalledWith("入力済み 残す文章");
+  await emit(session, { type: "transcript", text: " \t", isFinal: true });
+  await act(async () => result.current.stop());
+  expect(options.setTranscript).toHaveBeenLastCalledWith("入力済み 残す文章");
+  await emit(session, { type: "done", reason: "speech_end_timeout", hasSpeech: true });
+  expect(options.setTranscript).toHaveBeenLastCalledWith("入力済み 残す文章");
+  expect(options.sendTranscript).not.toHaveBeenCalled();
+});
+
+test.each([false, true])("a provider correction after empty results sends only the final text (continuous: %s)", async (continuousDictation) => {
+  const options = { ...createOptions(), continuousDictation };
+  const { result } = await renderHook(() => useStreamingStt(options));
+  const session = await openReady(result);
+  await emit(session, { type: "transcript", text: "未訂正", isFinal: false });
+  await emit(session, { type: "transcript", text: "", isFinal: false });
+  await emit(session, { type: "transcript", text: "", isFinal: true });
+  await emit(session, { type: "speech_activity_end" });
+  await advanceTimers(5_000);
+  expect(options.sendTranscript).not.toHaveBeenCalled();
+  await finishSpeech(session, "訂正後");
+  expect(correctSttTranscript).toHaveBeenCalledWith("http://runner.test", "token", "訂正後", [], expect.any(AbortSignal));
+  expect(options.sendTranscript).toHaveBeenCalledTimes(1);
+  expect(options.sendTranscript).toHaveBeenCalledWith("訂正後", expect.any(Function));
+  expect(mockSessions).toHaveLength(1);
+});
+
+test("dictation finishes a Runner-confirmed two-second idle without reconnecting or waiting another two seconds", async () => {
+  const options = { ...createOptions(), continuousDictation: true, autoReplyAfterStt: false };
+  const { result } = await renderHook(() => useStreamingStt(options));
+  const session = await openReady(result);
+  await emit(session, { type: "transcript", text: "残す文章", isFinal: false });
+  await advanceTimers(2_000);
+  await emit(session, { type: "speech_activity_end" });
+  expect(result.current.phase).toBe("recording");
+  await emit(session, { type: "transcript", text: "残す文章", isFinal: true });
+  await emit(session, { type: "done", reason: "speech_end_timeout", hasSpeech: true });
+  expect(result.current.phase).toBe("idle");
+  expect(result.current.isArmed()).toBe(false);
+  expect(options.setTranscript).toHaveBeenLastCalledWith("残す文章");
+  await advanceTimers(2_000);
+  expect(mockSessions).toHaveLength(1);
+  expect(options.sendTranscript).not.toHaveBeenCalled();
+});
+
+test("interim-only completion after an empty final keeps the draft without auto sending", async () => {
+  const options = createOptions();
+  const { result } = await renderHook(() => useStreamingStt(options));
+  const session = await openReady(result);
+  await emit(session, { type: "transcript", text: "残す途中結果", isFinal: false });
+  await emit(session, { type: "transcript", text: "", isFinal: true });
+  await emit(session, { type: "done", reason: "speech_end_timeout", hasSpeech: false });
+  expect(options.setTranscript).toHaveBeenLastCalledWith("残す途中結果");
+  expect(options.sendTranscript).not.toHaveBeenCalled();
 });

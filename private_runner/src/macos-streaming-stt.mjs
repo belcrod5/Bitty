@@ -106,7 +106,7 @@ export function createMacosStreamingSttHandler({
     let finalizationTimer;
     const transcriptInactivity = createTranscriptInactivityTimer(() => {
       send({ type: "speech_activity_end" });
-      endInput("recognition_segment_end", "transcript_inactivity");
+      endInput("speech_end_timeout", "transcript_inactivity");
     });
 
     const clearTimers = () => {
@@ -134,6 +134,12 @@ export function createMacosStreamingSttHandler({
     };
     const finishDone = () => {
       if (terminal) return;
+      if (!finalHadText && lastPartialText) {
+        finalHadText = true;
+        finalChars = lastPartialText.length;
+        diagnose("macos_partial_fallback", { chars: finalChars });
+        send({ type: "transcript", text: lastPartialText, isFinal: true, stability: 1 });
+      }
       diagnose("macos_done_attempted", {
         reason: endReason || (speechBegan ? "speech_end_timeout" : "no_speech_timeout"),
         hasSpeech: finalHadText,
@@ -206,19 +212,19 @@ export function createMacosStreamingSttHandler({
         const nativeHadText = !!message.text.trim();
         if (nativeHadText) beginSpeech();
         if (!message.isFinal && nativeHadText) lastPartialText = message.text;
-        const usedPartialFallback = message.isFinal && !nativeHadText && !finalHadText && !!lastPartialText;
-        const transcript = usedPartialFallback ? lastPartialText : message.text;
-        transcriptInactivity.update(transcript);
+        transcriptInactivity.update(message.text);
         if (message.isFinal) {
-          if (transcript.trim()) {
+          if (nativeHadText) {
             finalHadText = true;
-            finalChars += transcript.length;
+            finalChars += message.text.length;
           }
           diagnose("macos_final_transcript", {
-            chars: message.text.length, nativeHadText, cumulativeChars: finalChars, usedPartialFallback,
+            chars: message.text.length, nativeHadText, cumulativeChars: finalChars,
           });
         }
-        send({ type: "transcript", text: transcript, isFinal: message.isFinal, stability: message.isFinal ? 1 : 0 });
+        if (nativeHadText) {
+          send({ type: "transcript", text: message.text, isFinal: message.isFinal, stability: message.isFinal ? 1 : 0 });
+        }
         if (message.isFinal && !inputEnded) {
           send({ type: "speech_activity_end" });
           endInput("recognition_segment_end", "apple_final");
@@ -320,7 +326,7 @@ export function createMacosStreamingSttHandler({
           maxSilentRms = Math.max(maxSilentRms, lastRms);
           if (silentMs >= VAD_END_MS) {
             send({ type: "speech_activity_end" });
-            endInput("recognition_segment_end", "pcm_silence");
+            endInput("speech_end_timeout", "pcm_silence");
           }
         }
       }

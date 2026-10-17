@@ -7,10 +7,9 @@ export function createTranscriptInactivityTimer(onTimeout) {
 
   return {
     update(text) {
-      if (stopped || text === lastText) return;
+      if (stopped || !text.trim() || text === lastText) return;
       lastText = text;
       clearTimeout(timer);
-      if (!text.trim()) return;
       timer = setTimeout(onTimeout, TRANSCRIPT_INACTIVITY_MS);
       timer.unref?.();
     },

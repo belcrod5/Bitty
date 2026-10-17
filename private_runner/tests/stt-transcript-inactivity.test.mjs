@@ -18,7 +18,7 @@ test("text inactivity starts only with recognized text and ignores duplicate res
   timer.stop();
 });
 
-test("changed text restarts inactivity and empty text disarms it", (t) => {
+test("changed text restarts inactivity and empty results leave its deadline intact", (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   let completions = 0;
   const timer = createTranscriptInactivityTimer(() => { completions += 1; });
@@ -28,11 +28,14 @@ test("changed text restarts inactivity and empty text disarms it", (t) => {
   t.mock.timers.tick(1_500);
   assert.equal(completions, 0);
   timer.update("");
-  t.mock.timers.tick(2_000);
+  timer.update(" \t");
+  t.mock.timers.tick(499);
   assert.equal(completions, 0);
+  t.mock.timers.tick(1);
+  assert.equal(completions, 1);
   timer.update("次");
   t.mock.timers.tick(2_000);
-  assert.equal(completions, 1);
+  assert.equal(completions, 2);
   timer.stop();
 });
 
