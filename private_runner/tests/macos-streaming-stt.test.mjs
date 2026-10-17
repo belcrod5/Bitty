@@ -57,7 +57,7 @@ test("macOS stream sends progressive transcript, detects silence, and completes 
   assert.deepEqual(ws.sent.at(-2), {
     type: "transcript", text: "こんにちは。", isFinal: true, stability: 1,
   });
-  assert.deepEqual(ws.sent.at(-1), { type: "done", reason: "speech_end_timeout", hasSpeech: true });
+  assert.deepEqual(ws.sent.at(-1), { type: "done", reason: "recognition_segment_end", hasSpeech: true });
   assert.equal(child.writes.length, 2);
   const inputEnded = logs.find(([event]) => event === "[stream-stt] macos_input_ended")[1];
   assert.equal(inputEnded.trigger, "pcm_silence");
@@ -97,7 +97,7 @@ test("empty native final commits the last nonempty partial and diagnoses the fal
   assert.deepEqual(ws.sent.find((message) => message.type === "transcript" && message.isFinal), {
     type: "transcript", text: "秘密の途中結果", isFinal: true, stability: 1,
   });
-  assert.deepEqual(ws.sent.at(-1), { type: "done", reason: "speech_end_timeout", hasSpeech: true });
+  assert.deepEqual(ws.sent.at(-1), { type: "done", reason: "recognition_segment_end", hasSpeech: true });
   const final = logs.find(([event]) => event === "[stream-stt] macos_final_transcript")[1];
   const done = logs.find(([event]) => event === "[stream-stt] macos_done_attempted")[1];
   assert.equal(final.chars, 0);
@@ -128,7 +128,7 @@ test("silence-ended macOS stream commits only the latest nonempty partial when n
   assert.deepEqual(ws.sent.at(-2), {
     type: "transcript", text: "新しい途中結果", isFinal: true, stability: 1,
   });
-  assert.deepEqual(ws.sent.at(-1), { type: "done", reason: "speech_end_timeout", hasSpeech: true });
+  assert.deepEqual(ws.sent.at(-1), { type: "done", reason: "recognition_segment_end", hasSpeech: true });
   const final = logs.find(([event]) => event === "[stream-stt] macos_final_transcript")[1];
   assert.equal(final.chars, 2);
   assert.equal(final.nativeHadText, false);
@@ -150,7 +150,7 @@ test("empty native final without a nonempty partial remains no speech", async ()
   assert.deepEqual(ws.sent.find((message) => message.type === "transcript" && message.isFinal), {
     type: "transcript", text: "", isFinal: true, stability: 1,
   });
-  assert.deepEqual(ws.sent.at(-1), { type: "done", reason: "speech_end_timeout", hasSpeech: false });
+  assert.deepEqual(ws.sent.at(-1), { type: "done", reason: "recognition_segment_end", hasSpeech: false });
   const final = logs.find(([event]) => event === "[stream-stt] macos_final_transcript")[1];
   assert.equal(final.nativeHadText, false);
   assert.equal(final.usedPartialFallback, false);
@@ -208,7 +208,7 @@ test("Apple final and user stop remain distinct terminal triggers", async () => 
     assert.equal(JSON.stringify(logs).includes("途中"), false);
     assert.equal(JSON.stringify(logs).includes("確定"), false);
     child.emit("close", 0);
-    assert.equal(ws.sent.at(-1).reason, trigger === "apple_final" ? "speech_end_timeout" : "user_stop");
+    assert.equal(ws.sent.at(-1).reason, trigger === "apple_final" ? "recognition_segment_end" : "user_stop");
   }
 });
 
@@ -262,6 +262,25 @@ test("native no-speech error after timeout completes without a spurious failure"
   assert.deepEqual(ws.sent.at(-1), { type: "done", reason: "no_speech_timeout", hasSpeech: false });
 });
 
+test("native no-speech error after a visible partial leaves it available for the next segment", async () => {
+  const ws = new FakeSocket();
+  const child = new FakeChild();
+  createMacosStreamingSttHandler({ startHelper: async () => child, log: {} })(ws);
+  start(ws);
+  await tick();
+  child.emitMessage({ type: "ready" });
+  child.emitMessage({ type: "transcript", text: "前の文章", isFinal: false });
+  child.emitMessage({
+    type: "error", code: "macos_recognition_failed",
+    nativeErrorDomain: "kAFAssistantErrorDomain", nativeErrorCode: 1110,
+  });
+  assert.deepEqual(ws.sent.at(-1), { type: "done", reason: "recognition_segment_end", hasSpeech: false });
+  assert.deepEqual(ws.sent.filter((message) => message.type === "transcript"), [
+    { type: "transcript", text: "前の文章", isFinal: false, stability: 0 },
+  ]);
+  assert.equal(ws.sent.some((message) => message.type === "error"), false);
+});
+
 test("Apple no-speech completion tolerates PCM activity and preserves the stop reason", async () => {
   for (const outcome of ["ready", "pcm_silence", "user_stop"]) {
     const ws = new FakeSocket();
@@ -288,7 +307,7 @@ test("Apple no-speech completion tolerates PCM activity and preserves the stop r
     });
     assert.deepEqual(ws.sent.at(-1), {
       type: "done", reason: outcome === "ready" ? "no_speech_timeout"
-        : outcome === "user_stop" ? "user_stop" : "speech_end_timeout", hasSpeech: false,
+        : outcome === "user_stop" ? "user_stop" : "recognition_segment_end", hasSpeech: false,
     });
     assert.equal(ws.sent.some((message) => message.type === "error"), false);
     assert.equal(child.killed, true);
@@ -304,9 +323,9 @@ test("Apple no-speech completion tolerates PCM activity and preserves the stop r
   }
 });
 
-test("real failures and no-speech errors with recognized text remain failures", async (t) => {
+test("real failures and no-speech errors after a final remain failures", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  for (const outcome of ["missing_metadata", "other_domain", "other_code", "permission", "starting", "partial", "final"]) {
+  for (const outcome of ["missing_metadata", "other_domain", "other_code", "permission", "starting", "final"]) {
     const ws = new FakeSocket();
     const child = new FakeChild();
     const logs = [];
@@ -314,8 +333,8 @@ test("real failures and no-speech errors with recognized text remain failures", 
     start(ws);
     await tick();
     if (outcome !== "starting") child.emitMessage({ type: "ready" });
-    if (outcome === "partial" || outcome === "final") {
-      child.emitMessage({ type: "transcript", text: "保護する本文", isFinal: outcome === "final" });
+    if (outcome === "final") {
+      child.emitMessage({ type: "transcript", text: "保護する本文", isFinal: true });
       ws.emit("message", Buffer.from('{"type":"stop"}'), false);
       await tick();
     } else if (outcome !== "starting") {
@@ -370,7 +389,7 @@ test("unchanged macOS transcript ends despite loud noise and waits for the nativ
   child.emitMessage({ type: "transcript", text: "", isFinal: true });
   child.emit("close", 0);
   assert.deepEqual(ws.sent.at(-2), { type: "transcript", text: "途中", isFinal: true, stability: 1 });
-  assert.deepEqual(ws.sent.at(-1), { type: "done", reason: "speech_end_timeout", hasSpeech: true });
+  assert.deepEqual(ws.sent.at(-1), { type: "done", reason: "recognition_segment_end", hasSpeech: true });
   t.mock.timers.tick(20_000);
   assert.equal(ws.sent.filter((message) => message.type === "done" || message.type === "error").length, 1);
   assert.doesNotMatch(JSON.stringify(logs), /途中/);

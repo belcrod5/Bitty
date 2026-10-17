@@ -106,7 +106,7 @@ export function createMacosStreamingSttHandler({
     let finalizationTimer;
     const transcriptInactivity = createTranscriptInactivityTimer(() => {
       send({ type: "speech_activity_end" });
-      endInput("speech_end_timeout", "transcript_inactivity");
+      endInput("recognition_segment_end", "transcript_inactivity");
     });
 
     const clearTimers = () => {
@@ -221,7 +221,7 @@ export function createMacosStreamingSttHandler({
         send({ type: "transcript", text: transcript, isFinal: message.isFinal, stability: message.isFinal ? 1 : 0 });
         if (message.isFinal && !inputEnded) {
           send({ type: "speech_activity_end" });
-          endInput("speech_end_timeout", "apple_final");
+          endInput("recognition_segment_end", "apple_final");
         }
         return;
       }
@@ -242,8 +242,9 @@ export function createMacosStreamingSttHandler({
         if (typeof message.recognizerAvailable === "boolean") nativeDetails.recognizerAvailable = message.recognizerAvailable;
         if (message.code === "macos_recognition_failed" && (phase === "ready" || phase === "finalizing")
           && nativeDetails.nativeErrorDomain === "kAFAssistantErrorDomain" && nativeDetails.nativeErrorCode === 1110
-          && !lastPartialText && !finalHadText) {
+          && !finalHadText) {
           diagnose("macos_no_speech_error", nativeDetails);
+          if (lastPartialText) endReason ||= "recognition_segment_end";
           finishDone();
           return;
         }
@@ -319,7 +320,7 @@ export function createMacosStreamingSttHandler({
           maxSilentRms = Math.max(maxSilentRms, lastRms);
           if (silentMs >= VAD_END_MS) {
             send({ type: "speech_activity_end" });
-            endInput("speech_end_timeout", "pcm_silence");
+            endInput("recognition_segment_end", "pcm_silence");
           }
         }
       }
