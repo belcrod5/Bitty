@@ -5,7 +5,7 @@ import { fitTailTextLines, placeOrchestratorActivities, SkiaMiniBoardScreen } fr
 import { gridFromSectionRect } from "../utils/skiaBoardSectionGeometry";
 import { VisualThemeProvider } from "../theme/VisualThemeContext";
 import { VISUAL_THEMES } from "../theme/visualThemes";
-import { setPendingPushVoiceOrchestratorId } from "../utils/pushApprovalNotifications";
+import { setPendingVoiceOrchestratorId } from "../utils/pendingVoiceNavigation";
 
 let mockRunningSessionCount: number | null = 0;
 jest.mock("../hooks/useReduceMotionEnabled", () => ({ useReduceMotionEnabled: () => true }));
@@ -607,7 +607,7 @@ test("mic badge uses latest canonical voice counts and a Push opens its orchestr
     selectedId: "other",
   } }));
   expect(screen.getByText("1")).toBeTruthy();
-  await act(async () => setPendingPushVoiceOrchestratorId("other"));
+  await act(async () => setPendingVoiceOrchestratorId("other"));
   expect(screen.getByTestId("voice-conversation-screen").props.accessibilityLabel).toBe("other");
   expect(screen.queryByTestId("skia-board-voice-unread")).toBeNull();
 });

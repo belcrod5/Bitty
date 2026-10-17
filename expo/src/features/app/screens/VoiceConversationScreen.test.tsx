@@ -23,11 +23,16 @@ const mockRequest = jest.fn(async (message: { op: string; payload?: { orchestrat
   if (message.op === "voice.userInput.respond") return { op: "voice.userInput.respond.result", payload: {} };
   throw new Error(`unexpected ${message.op}`);
 });
-const mockQuestionHandlers = new Map<string, (message: RunnerWsMessage) => void>();
+const mockQuestionHandlers = new Map<string, Set<(message: RunnerWsMessage) => void>>();
 const mockManager = { connect: jest.fn(async () => undefined), request: mockRequest,
   subscribe: ({ op }: { op: string }, listener: (message: RunnerWsMessage) => void) => {
-    mockQuestionHandlers.set(op, listener);
-    return () => { mockQuestionHandlers.delete(op); };
+    if (!mockQuestionHandlers.has(op)) mockQuestionHandlers.set(op, new Set());
+    mockQuestionHandlers.get(op)?.add(listener);
+    return () => {
+      const handlers = mockQuestionHandlers.get(op);
+      handlers?.delete(listener);
+      if (handlers?.size === 0) mockQuestionHandlers.delete(op);
+    };
   },
   subscribeSnapshot: () => () => undefined, getSnapshot: () => ({ connected: true }),
 };
@@ -450,11 +455,11 @@ test("notification target wins an in-flight list, opens history, and stays selec
   const screen = await testingRender(<VoiceConversationScreen {...playback} onClose={mockOnClose}
     initialOrchestratorId="other" />);
   await waitFor(() => expect(mockQuestionHandlers.has("voice.unread.changed")).toBe(true));
-  await act(async () => mockQuestionHandlers.get("voice.unread.changed")?.({ channel: "agent",
+  await act(async () => mockQuestionHandlers.get("voice.unread.changed")?.forEach((listener) => listener({ channel: "agent",
     op: "voice.unread.changed", payload: { orchestrators: [
       { id: "main", name: "メイン", icon: "", unreadCount: 0 },
       { id: "other", name: "調査", icon: "", unreadCount: 1 },
-    ], selectedId: "main" } }));
+    ], selectedId: "main" } })));
   expect(screen.getByTestId("voice-conversation-history")).toBeTruthy();
   expect(screen.getByTestId("voice-orchestrator-unread-other")).toBeTruthy();
   expect(mockHookOrchestratorIds.at(-1)).toBe("other");
@@ -472,6 +477,27 @@ test("notification target wins an in-flight list, opens history, and stays selec
   await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose}
     initialOrchestratorId="other" />);
   expect(mockHookOrchestratorIds.at(-1)).toBe("main");
+});
+
+test("a removed explicit target does not start recording in another orchestrator", async () => {
+  const screen = await testingRender(<VoiceConversationScreen {...playback} onClose={mockOnClose}
+    initialOrchestratorId="removed" />);
+  await waitFor(() => expect(screen.getByText("指定したオーケストレータが見つかりません。")).toBeTruthy());
+  expect(mockHookOrchestratorIds).toHaveLength(0);
+});
+
+test("an explicit target removed after loading does not switch to the default orchestrator", async () => {
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose}
+    initialOrchestratorId="other" />);
+  expect(mockHookOrchestratorIds.at(-1)).toBe("other");
+  const sessionCount = mockHookOrchestratorIds.length;
+  await waitFor(() => expect(mockQuestionHandlers.has("voice.unread.changed")).toBe(true));
+  await act(async () => mockQuestionHandlers.get("voice.unread.changed")?.forEach((listener) => listener({ channel: "agent",
+    op: "voice.unread.changed", payload: {
+      orchestrators: [{ id: "main", name: "メイン", icon: "" }], selectedId: "main",
+    } })));
+  expect(screen.getByText("指定したオーケストレータが見つかりません。")).toBeTruthy();
+  expect(mockHookOrchestratorIds).toHaveLength(sessionCount);
 });
 
 test("history header shares the context indicator without exposing chat session actions", async () => {
@@ -520,12 +546,12 @@ test("the orchestrator renders the shared question form and submits its selected
   AppState.currentState = "active";
   try {
     const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
-    await act(async () => mockQuestionHandlers.get("voice.userInput.request")?.({
+    await act(async () => mockQuestionHandlers.get("voice.userInput.request")?.forEach((listener) => listener({
       channel: "agent", op: "voice.userInput.request", operationId: "operation-question",
       payload: { requestId: "q1", orchestratorId: "main", threadId: "native-thread", startedAtMs: Date.now(),
         params: { questions: [{ id: "choice", header: "選択", question: "どちらですか？", isOther: false, isSecret: false,
           options: [{ label: "A", description: "最初" }, { label: "B", description: "次" }] }] } },
-    }));
+    })));
     expect(screen.getByText("どちらですか？")).toBeTruthy();
     await fireEvent.press(screen.getByText("B"));
     await fireEvent.press(screen.getByText("回答する"));

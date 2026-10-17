@@ -39,3 +39,18 @@ export function parseSessionDeepLink(rawUrl: unknown): SessionDeepLinkTarget | n
   ) return null;
   return { backendId, sessionId, messageId, cwd };
 }
+
+export function parseVoiceDeepLink(rawUrl: unknown): string | null {
+  const raw = String(rawUrl || "").trim();
+  if (!raw || raw.length > MAX_DEEP_LINK_CHARS) return null;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "bitty:" || url.hostname !== "voice" || url.search || url.hash) return null;
+  const segments = url.pathname.split("/").filter(Boolean);
+  const id = segments[0];
+  return segments.length === 1 && id && id.length <= 200 && ID_PATTERN.test(id) ? id : null;
+}

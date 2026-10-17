@@ -10,8 +10,8 @@ import {
   normalizeNotificationMetadata,
   registerApprovalNotificationCategories,
   setPendingPushSessionTarget,
-  setPendingPushVoiceOrchestratorId,
 } from "../utils/pushApprovalNotifications";
+import { setPendingVoiceOrchestratorId } from "../utils/pendingVoiceNavigation";
 import { handlePushApprovalAction } from "../utils/pushApprovalActions";
 import {
   reconcileReceivedSessionNotification,
@@ -67,7 +67,7 @@ export function PushNotificationRegistrar({
         if (categoryIdentifier === VOICE_COMPLETED_CATEGORY && orchestratorId) {
           if (processedResponseKeysRef.current.has(responseKey)) return true;
           processedResponseKeysRef.current.add(responseKey);
-          setPendingPushVoiceOrchestratorId(orchestratorId);
+          setPendingVoiceOrchestratorId(orchestratorId);
           return true;
         }
         if (!sessionId) return false;

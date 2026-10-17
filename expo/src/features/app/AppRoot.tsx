@@ -9,6 +9,7 @@ import {
   DeviceEventEmitter,
   NativeEventEmitter,
   NativeModules,
+  Linking,
   type ImageSourcePropType,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
@@ -81,7 +82,8 @@ import { useRunnerHttpAuthBootstrap } from "./hooks/useRunnerHttpAuthBootstrap";
 import { useSessionStartupRecoveryController } from "./hooks/useSessionStartupRecoveryController";
 import { useReadyDrivenResumeSyncController } from "./hooks/useReadyDrivenResumeSyncController";
 import { usePendingPushSessionNavigationController } from "./hooks/usePendingPushSessionNavigationController";
-import { getPendingPushVoiceOrchestratorId, subscribePendingPushVoiceOrchestratorId } from "./utils/pushApprovalNotifications";
+import { getPendingVoiceOrchestratorId, setPendingVoiceOrchestratorId,
+  subscribePendingVoiceOrchestratorId } from "./utils/pendingVoiceNavigation";
 import { useSessionNotificationLifecycleController } from "./hooks/useSessionNotificationLifecycleController";
 import { useSessionSwitchQueuedSendController } from "./hooks/useSessionSwitchQueuedSendController";
 import { useSessionSwitchQuiesceController } from "./hooks/useSessionSwitchQuiesceController";
@@ -141,7 +143,7 @@ import {
 } from "./hooks/usePanelConversationWriteController";
 import { usePanelHydrationGuard } from "./hooks/usePanelHydrationGuard";
 import { deriveSessionExecutionStatusType } from "./utils/sessionExecutionStatus";
-import type { SessionDeepLinkJumpTarget } from "./utils/sessionDeepLink";
+import { parseVoiceDeepLink, type SessionDeepLinkJumpTarget } from "./utils/sessionDeepLink";
 import { createResyncRateLimiter } from "./utils/resumeSync";
 import {
   buildPanelRuntimeSnapshot,
@@ -5992,10 +5994,17 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   });
   useEffect(() => {
     const openVoiceBoard = () => {
-      if (getPendingPushVoiceOrchestratorId()) setActiveScreen("skia_board");
+      if (getPendingVoiceOrchestratorId()) setActiveScreen("skia_board");
+    };
+    const openVoiceLink = (url: string | null) => {
+      const id = parseVoiceDeepLink(url);
+      if (id) setPendingVoiceOrchestratorId(id);
     };
     openVoiceBoard();
-    return subscribePendingPushVoiceOrchestratorId(openVoiceBoard);
+    void Linking.getInitialURL().then(openVoiceLink);
+    const voiceLink = Linking.addEventListener("url", ({ url }) => openVoiceLink(url));
+    const pendingVoice = subscribePendingVoiceOrchestratorId(openVoiceBoard);
+    return () => { voiceLink.remove(); pendingVoice(); };
   }, [setActiveScreen]);
   const getDeepLinkSessionMessages = useCallback((sessionId: string) => (
     getConversationRuntimeSnapshot(sessionId)?.conversationMessages || []
