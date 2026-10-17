@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Ionicons } from "@expo/vector-icons";
+import { randomUUID } from "expo-crypto";
 import { AppState, Platform, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Reanimated, { FadeIn, FadeOut, runOnJS, useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
@@ -24,13 +25,13 @@ import { formatOutputTokens } from "../utils/messageTokens";
 import { dismissReadVoiceNotifications } from "../utils/sessionReadNotifications";
 import { parseChecklistFile } from "../utils/checklistFile";
 import { DEFAULT_TTS_PROVIDER } from "../utils/audioConfig";
+import type { TtsPlaybackTarget } from "../types/appTypes";
 
 const voicePanelFadeIn = FadeIn.duration(220);
 const voicePanelFadeOut = FadeOut.duration(220);
 
 export type VoiceConversationPlayback = {
-  synthesizeSpeechStream: (text: string, target: { messageId: string; jobId?: string;
-    ttsProvider?: string; voiceId?: string }) => Promise<void>;
+  synthesizeSpeechStream: (text: string, target: TtsPlaybackTarget & { messageId: string }) => Promise<void>;
   stopTtsPlayback: (options?: { interruptStream?: boolean; reason?: string; expectedMessageId?: string }) => Promise<void>;
   isTtsPlaybackActive: boolean;
   isTtsPlaying?: boolean;
@@ -189,6 +190,7 @@ function VoiceConversationSession({
   const mountedRef = useRef(true);
   const transitioningRef = useRef(false);
   const wasPausedRef = useRef(paused);
+  const startAnnouncedRef = useRef(false);
   const voicePlaybackMessageIdRef = useRef("");
 
   useEffect(() => {
@@ -199,13 +201,13 @@ function VoiceConversationSession({
       });
   }, [historyExpanded, historyHeight, reduceMotion, screenHeight]);
 
-  const playReply = useCallback(async (text: string, operationId: string, jobId?: string) => {
+  const playSpeech = useCallback(async (text: string, operationId: string, jobId?: string) => {
     if (!mountedRef.current || paused || transitioningRef.current) return;
     setSynthesisStarting(true);
     setSynthesisRequestSettled(false);
     voicePlaybackMessageIdRef.current = operationId;
     try {
-      await synthesizeSpeechStream(text, { messageId: operationId, ...(jobId ? { jobId } : {}),
+      await synthesizeSpeechStream(text, { scope: "voice", messageId: operationId, ...(jobId ? { jobId } : {}),
         ttsProvider: orchestrator.ttsProvider || DEFAULT_TTS_PROVIDER, voiceId: orchestrator.voiceId || "" });
     } catch {
       if (mountedRef.current) setSynthesisStarting(false);
@@ -214,8 +216,8 @@ function VoiceConversationSession({
     }
   }, [paused, synthesizeSpeechStream, orchestrator.ttsProvider, orchestrator.voiceId]);
   const voice = useVoiceConversation(
-    playReply,
-    (jobId, operationId) => { void playReply("", operationId, jobId); },
+    playSpeech,
+    (jobId, operationId) => { void playSpeech("", operationId, jobId); },
     typeof ttsSpeed === "number" ? { speedScale: ttsSpeed } : undefined,
     orchestrator.id,
   );
@@ -384,9 +386,14 @@ function VoiceConversationSession({
 
   useEffect(() => {
     if (!initialStartPending || !canStart) return;
+    if (!startAnnouncedRef.current) {
+      startAnnouncedRef.current = true;
+      void playSpeech(`${orchestrator.name}で開始しました`, `voice-start-${randomUUID()}`);
+      return;
+    }
     setInitialStartPending(false);
     streamingStt.start();
-  }, [canStart, initialStartPending, streamingStt.start]);
+  }, [canStart, initialStartPending, orchestrator.name, playSpeech, streamingStt.start]);
 
   useEffect(() => {
     if (synthesisStarting && (isTtsPlaybackActive || ttsUiStatus === "error"

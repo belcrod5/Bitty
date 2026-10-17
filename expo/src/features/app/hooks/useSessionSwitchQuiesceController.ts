@@ -3,20 +3,15 @@ import type {
   LlmDeltaEntry,
   LlmProgressEntry,
   StreamSegment,
-  StreamTtsControlState,
+  TtsPlaybackTarget,
 } from "../types/appTypes";
 import type { LlmUiStatus } from "./useLlmRequestStatus";
 
 type UseSessionSwitchQuiesceControllerArgs = {
   suspendCodexTurnRequestForSessionSwitch: () => void;
   closeCodexRelayObserver: (reason: string) => void;
-  stopTtsPlayback: (opts?: { interruptStream?: boolean; clearPlaybackMessageId?: boolean }) => Promise<void>;
-  streamSocketRef: MutableRefObject<WebSocket | null>;
-  streamTtsControlRef: MutableRefObject<StreamTtsControlState | null>;
-  clearStreamAudioQueue: () => void;
-  streamAudioWaveformBarsRef: MutableRefObject<number[][]>;
-  setStreamWaveformPreview: Dispatch<SetStateAction<number[]>>;
-  streamTtsSuppressedRef: MutableRefObject<boolean>;
+  stopTtsPlayback: (opts?: { interruptStream?: boolean; reason?: string }) => Promise<void>;
+  ttsPlaybackProjectionTargetRef: MutableRefObject<TtsPlaybackTarget>;
   setStreamMode: Dispatch<SetStateAction<string>>;
   setStreamLlmNativeDeltaCount: Dispatch<SetStateAction<number>>;
   setStreamLlmPseudoDeltaCount: Dispatch<SetStateAction<number>>;
@@ -37,12 +32,7 @@ export function useSessionSwitchQuiesceController({
   suspendCodexTurnRequestForSessionSwitch,
   closeCodexRelayObserver,
   stopTtsPlayback,
-  streamSocketRef,
-  streamTtsControlRef,
-  clearStreamAudioQueue,
-  streamAudioWaveformBarsRef,
-  setStreamWaveformPreview,
-  streamTtsSuppressedRef,
+  ttsPlaybackProjectionTargetRef,
   setStreamMode,
   setStreamLlmNativeDeltaCount,
   setStreamLlmPseudoDeltaCount,
@@ -69,30 +59,21 @@ export function useSessionSwitchQuiesceController({
     if (opts?.preserveRelayObserver !== true) {
       closeCodexRelayObserver(`session_switch:${reason}`);
     }
-    await stopTtsPlayback({ interruptStream: false }).catch(() => {});
-    const ws = streamSocketRef.current;
-    if (ws) {
-      ws.close();
-      streamSocketRef.current = null;
+    const playbackTarget = ttsPlaybackProjectionTargetRef.current;
+    if (playbackTarget.scope !== "voice") {
+      await stopTtsPlayback({ interruptStream: true, reason: `session_switch:${reason}` }).catch(() => {});
+      if (ttsPlaybackProjectionTargetRef.current === playbackTarget) {
+        setStreamMode("");
+        setStreamSegments([]);
+        setTtsPlaybackMessageIdWithRef("");
+      }
     }
-    const streamTtsControl = streamTtsControlRef.current;
-    if (streamTtsControl) {
-      streamTtsControl.cleanup();
-      streamTtsControlRef.current = null;
-    }
-    clearStreamAudioQueue();
-    streamAudioWaveformBarsRef.current = [];
-    setStreamWaveformPreview([]);
-    streamTtsSuppressedRef.current = false;
-    setStreamMode("");
     setStreamLlmNativeDeltaCount(0);
     setStreamLlmPseudoDeltaCount(0);
     setStreamFirstNativeDeltaOffsetMs(null);
     setStreamLlmDeltas([]);
     setStreamLlmProgress([]);
-    setStreamSegments([]);
     setStreamReplyYouTubeVideoIdsWithRef([]);
-    setTtsPlaybackMessageIdWithRef("");
     setReply("");
     if (replyLoadingRef.current) {
       setReplyLoadingWithRef(false);
@@ -102,7 +83,6 @@ export function useSessionSwitchQuiesceController({
       prev ? `${prev} | session_switch_quiesced reason=${reason}` : `session_switch_quiesced reason=${reason}`
     ));
   }, [
-    clearStreamAudioQueue,
     closeCodexRelayObserver,
     finishLlmRequest,
     replyLoadingRef,
@@ -117,13 +97,9 @@ export function useSessionSwitchQuiesceController({
     setStreamMode,
     setStreamReplyYouTubeVideoIdsWithRef,
     setStreamSegments,
-    setStreamWaveformPreview,
     setTtsPlaybackMessageIdWithRef,
     stopTtsPlayback,
-    streamAudioWaveformBarsRef,
-    streamSocketRef,
-    streamTtsControlRef,
-    streamTtsSuppressedRef,
+    ttsPlaybackProjectionTargetRef,
     suspendCodexTurnRequestForSessionSwitch,
   ]);
 

@@ -151,6 +151,7 @@ export function useSynthesizeSpeechStreamController(
       if (shouldProjectDebugToActiveSession) reportError(raw, scope);
     };
     setTtsPlaybackProjectionTarget({
+      scope: streamOptions?.scope ?? "chat",
       panelId: streamOptions?.panelId,
       sessionId: streamOptions?.sessionId,
       messageId: targetMessageId,

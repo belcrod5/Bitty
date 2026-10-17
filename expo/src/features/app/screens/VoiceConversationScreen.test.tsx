@@ -13,7 +13,7 @@ const mockHistoryHeight = { value: 0 };
 const mockHistoryDragActive = { value: false };
 const mockAbort = jest.fn(async () => undefined);
 const mockStopTtsPlayback = jest.fn(async () => undefined);
-const mockSynthesizeSpeechStream = jest.fn(async (): Promise<void> => undefined);
+const mockSynthesizeSpeechStream = jest.fn(async (_text: string, _target: { messageId: string }): Promise<void> => undefined);
 let mockMainTts: { ttsProvider: string; voiceId: string } | null = null;
 let mockTurnTts: unknown;
 const mockOnClose = jest.fn();
@@ -41,6 +41,7 @@ const mockManager = { connect: jest.fn(async () => undefined), request: mockRequ
   subscribeSnapshot: () => () => undefined, getSnapshot: () => ({ connected: true }),
 };
 let mockManagerVisible = false;
+let mockManagerOnClose: (() => void) | null = null;
 let mockGeneration = 1;
 const mockHookOrchestratorIds: string[] = [];
 const mockLogSessionDiag = jest.fn();
@@ -138,7 +139,11 @@ jest.mock("../../runnerWs/RunnerWebSocketContext", () => ({
   useRunnerWebSocketSnapshot: () => ({ connected: true, generation: mockGeneration }),
 }));
 jest.mock("../components/VoiceOrchestratorManager", () => ({
-  VoiceOrchestratorManager: ({ visible }: { visible: boolean }) => { mockManagerVisible = visible; return null; },
+  VoiceOrchestratorManager: ({ visible, onClose }: { visible: boolean; onClose: () => void }) => {
+    mockManagerVisible = visible;
+    mockManagerOnClose = onClose;
+    return null;
+  },
 }));
 jest.mock("../../stt/useStreamingStt", () => ({ useStreamingStt: (options: { ttsPlaybackActive: boolean; onDiagnostic: (event: string, payload: Record<string, unknown>) => void }) => {
   mockLastSttOptions = options;
@@ -270,6 +275,7 @@ beforeEach(() => {
   mockHistoryDragActive.value = false;
   mockReduceMotion = false;
   mockManagerVisible = false;
+  mockManagerOnClose = null;
   mockGeneration = 1;
   mockHookOrchestratorIds.length = 0;
   mockQuestionHandlers.clear();
@@ -318,8 +324,95 @@ test("orchestrator voice controls generated and manual playback", async () => {
   expect(mockTurnTts).toEqual({ speedScale: 1.4 });
   await act(async () => { mockOnCompleted?.("返答", "voice-operation"); });
   expect(mockSynthesizeSpeechStream).toHaveBeenCalledWith("返答", {
-    messageId: "voice-operation", ttsProvider: "google", voiceId: "ja-JP-Neural2-B",
+    scope: "voice", messageId: "voice-operation", ttsProvider: "google", voiceId: "ja-JP-Neural2-B",
   });
+  await screen.unmount();
+});
+
+test("announces the orchestrator once with its voice before starting STT after playback", async () => {
+  mockMainTts = { ttsProvider: "google", voiceId: "ja-JP-Neural2-B" };
+  mockVoice.ready = false;
+  let finishSynthesis!: () => void;
+  mockSynthesizeSpeechStream.mockImplementationOnce(() => new Promise<void>((resolve) => {
+    finishSynthesis = resolve;
+  }));
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(mockSynthesizeSpeechStream).not.toHaveBeenCalled();
+  mockVoice.ready = true;
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(mockSynthesizeSpeechStream).toHaveBeenCalledTimes(1);
+  expect(mockSynthesizeSpeechStream).toHaveBeenCalledWith("メインで開始しました", {
+    scope: "voice", messageId: expect.stringMatching(/^voice-start-/u), ttsProvider: "google", voiceId: "ja-JP-Neural2-B",
+  });
+  expect(mockStt.start).not.toHaveBeenCalled();
+  expect(mockLastSttOptions?.ttsPlaybackActive).toBe(true);
+  await screen.rerender(<VoiceConversationScreen {...playback} ttsUiStatus="queued" onClose={mockOnClose} />);
+  await act(async () => { finishSynthesis(); });
+  expect(mockStt.start).not.toHaveBeenCalled();
+  await screen.rerender(<VoiceConversationScreen {...playback} isTtsPlaybackActive ttsUiStatus="playing" onClose={mockOnClose} />);
+  expect(mockStt.start).not.toHaveBeenCalled();
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(mockStt.start).toHaveBeenCalledTimes(1);
+
+  mockVoice.ready = false;
+  mockGeneration += 1;
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  mockVoice.ready = true;
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(mockSynthesizeSpeechStream).toHaveBeenCalledTimes(1);
+  expect(mockStt.start).toHaveBeenCalledTimes(1);
+  await screen.unmount();
+});
+
+test("starts STT after a failed start announcement without retrying the announcement", async () => {
+  mockSynthesizeSpeechStream.mockRejectedValueOnce(new Error("TTS unavailable"));
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await waitFor(() => expect(mockStt.start).toHaveBeenCalledTimes(1));
+  expect(mockSynthesizeSpeechStream).toHaveBeenCalledTimes(1);
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(mockSynthesizeSpeechStream).toHaveBeenCalledTimes(1);
+  await screen.unmount();
+});
+
+test("waits for existing chat playback before announcing and starting the microphone", async () => {
+  const screen = await render(<VoiceConversationScreen {...playback} isTtsPlaybackActive
+    ttsUiStatus="playing" onClose={mockOnClose} />);
+  expect(mockSynthesizeSpeechStream).not.toHaveBeenCalled();
+  expect(mockStt.start).not.toHaveBeenCalled();
+  expect(mockStopTtsPlayback).not.toHaveBeenCalled();
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(mockSynthesizeSpeechStream).toHaveBeenCalledTimes(1);
+  expect(mockSynthesizeSpeechStream).toHaveBeenCalledWith("メインで開始しました", expect.any(Object));
+  expect(mockStt.start).toHaveBeenCalledTimes(1);
+  expect(mockStopTtsPlayback).not.toHaveBeenCalled();
+  await screen.unmount();
+});
+
+test("closing during the start announcement stops only that speech and prevents a late microphone start", async () => {
+  let finishSynthesis!: () => void;
+  mockSynthesizeSpeechStream.mockImplementationOnce(() => new Promise<void>((resolve) => {
+    finishSynthesis = resolve;
+  }));
+  const screen = await render(<ClosableVoiceScreen />);
+  const announcementTarget = mockSynthesizeSpeechStream.mock.calls[0][1];
+  expect(mockStt.start).not.toHaveBeenCalled();
+  await fireEvent.press(screen.getByTestId("streaming-stt-stop"));
+  expect(mockStopTtsPlayback).toHaveBeenCalledWith({
+    interruptStream: true, reason: "voice_screen_closed", expectedMessageId: announcementTarget.messageId,
+  });
+  await act(async () => { finishSynthesis(); });
+  expect(mockStt.start).not.toHaveBeenCalled();
+  await screen.unmount();
+});
+
+test("returning from management resumes STT without repeating the start announcement", async () => {
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await fireEvent(screen.getByTestId("voice-orchestrator-floating"), "longPress");
+  expect(mockManagerVisible).toBe(true);
+  await act(async () => { mockManagerOnClose?.(); });
+  expect(mockManagerVisible).toBe(false);
+  expect(mockStt.start).toHaveBeenCalledTimes(2);
+  expect(mockSynthesizeSpeechStream).toHaveBeenCalledTimes(1);
   await screen.unmount();
 });
 
@@ -920,6 +1013,7 @@ test("stopping before voice.open is ready closes the footer and prevents recordi
   mockVoice.ready = true;
   await screen.rerender(<ClosableVoiceScreen />);
   expect(mockStt.start).not.toHaveBeenCalled();
+  expect(mockSynthesizeSpeechStream).not.toHaveBeenCalled();
 });
 
 test("stopping active recording closes the footer immediately", async () => {
@@ -943,6 +1037,7 @@ test("editing before voice is ready prevents late auto-start and sends only the 
   mockVoice.ready = true;
   await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
   expect(mockStt.start).not.toHaveBeenCalled();
+  expect(mockSynthesizeSpeechStream).not.toHaveBeenCalled();
   await act(async () => { await mockFooterProps?.onSubmit?.("typed draft", () => true); });
   expect(mockStt.sendManualTranscript).toHaveBeenCalledWith("typed draft", expect.any(Function));
   await screen.unmount();
@@ -1117,16 +1212,16 @@ test("keeps the speaking animation across streamed chunk gaps", async () => {
 });
 
 test("plays completed replies automatically and keeps STT paused while TTS is queued", async () => {
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
   let finishSynthesis!: () => void;
   mockSynthesizeSpeechStream.mockImplementationOnce(() => new Promise<void>((resolve) => {
     finishSynthesis = resolve;
   }));
-  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
   expect(screen.queryByText("表示しない返答本文")).toBeNull();
   expect(screen.queryByTestId("voice-conversation-replay")).toBeNull();
 
   await act(async () => { mockOnCompleted?.("返答", "operation-1"); });
-  expect(mockSynthesizeSpeechStream).toHaveBeenCalledWith("返答", { messageId: "operation-1",
+  expect(mockSynthesizeSpeechStream).toHaveBeenCalledWith("返答", { scope: "voice", messageId: "operation-1",
     ttsProvider: "aivisspeech", voiceId: "" });
   await screen.rerender(<VoiceConversationScreen {...playback} ttsUiStatus="queued" onClose={mockOnClose} />);
   expect(mockLastSttOptions?.ttsPlaybackActive).toBe(true);
@@ -1139,13 +1234,13 @@ test("plays completed replies automatically and keeps STT paused while TTS is qu
 });
 
 test("attaches voice playback before completion and shows speaking during generation", async () => {
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
   let finishSynthesis!: () => void;
   mockSynthesizeSpeechStream.mockImplementationOnce(() => new Promise<void>((resolve) => {
     finishSynthesis = resolve;
   }));
-  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
   await act(async () => { mockOnJob?.("voice-job", "operation-1"); });
-  expect(mockSynthesizeSpeechStream).toHaveBeenCalledWith("", { messageId: "operation-1", jobId: "voice-job",
+  expect(mockSynthesizeSpeechStream).toHaveBeenCalledWith("", { scope: "voice", messageId: "operation-1", jobId: "voice-job",
     ttsProvider: "aivisspeech", voiceId: "" });
   expect(mockLastSttOptions?.ttsPlaybackActive).toBe(true);
   mockVoice.turnStatus = "running";
@@ -1191,6 +1286,7 @@ test("closing over active chat playback does not stop TTS without a voice reply"
   await screen.unmount();
 
   expect(mockStopTtsPlayback).not.toHaveBeenCalled();
+  expect(mockSynthesizeSpeechStream).not.toHaveBeenCalled();
 });
 
 test("closing after a voice reply requests a stop scoped to that reply", async () => {
@@ -1219,7 +1315,10 @@ test("switching keeps history open and stops the old recording before selecting 
   expect(mockHookOrchestratorIds).toContain("other");
   expect(screen.getByTestId("voice-orchestrator-strip")).toBeTruthy();
   await act(async () => { oldReply?.("late old reply", "old-operation"); });
-  expect(mockSynthesizeSpeechStream).not.toHaveBeenCalled();
+  expect(mockSynthesizeSpeechStream).toHaveBeenCalledTimes(2);
+  expect(mockSynthesizeSpeechStream).toHaveBeenLastCalledWith("調査で開始しました", {
+    scope: "voice", messageId: expect.stringMatching(/^voice-start-/u), ttsProvider: "aivisspeech", voiceId: "",
+  });
   await screen.unmount();
 });
 
@@ -1254,7 +1353,7 @@ test("a reply arriving while audio is being stopped cannot start speech in the n
   const oldReply = mockOnCompleted;
   await act(async () => { fireEvent.press(screen.getByTestId("voice-orchestrator-other")); });
   await act(async () => { oldReply?.("late reply", "old-operation"); });
-  expect(mockSynthesizeSpeechStream).not.toHaveBeenCalled();
+  expect(mockSynthesizeSpeechStream).toHaveBeenCalledTimes(1);
   await act(async () => { finishAbort?.(); });
   await waitFor(() => expect(mockHookOrchestratorIds).toContain("other"));
   await screen.unmount();

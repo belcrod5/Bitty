@@ -1,5 +1,5 @@
 import { useCallback, type MutableRefObject } from "react";
-import type { AudioContainer, TtsDebugStats } from "../types/appTypes";
+import type { AudioContainer, TtsDebugStats, TtsPlaybackTarget } from "../types/appTypes";
 import { trimForInline } from "../utils/statusText";
 import { detectAudioContainer } from "../utils/waveform";
 import { sanitizeTextForTts } from "../utils/statusText";
@@ -19,6 +19,7 @@ type UseSynthesizeSpeechControllerOptions = {
   ttsSynthesisRequestIdRef: MutableRefObject<number>;
   baseUrl: () => string;
   setTtsPlaybackMessageIdWithRef: (value: string) => void;
+  setTtsPlaybackProjectionTarget: (target: TtsPlaybackTarget) => void;
   setTtsLoading: (value: boolean) => void;
   setTtsUiStatus: (value: TtsUiStatus) => void;
   setError: (value: string) => void;
@@ -50,6 +51,7 @@ export function useSynthesizeSpeechController(options: UseSynthesizeSpeechContro
     ttsSynthesisRequestIdRef,
     baseUrl,
     setTtsPlaybackMessageIdWithRef,
+    setTtsPlaybackProjectionTarget,
     setTtsLoading,
     setTtsUiStatus,
     setError,
@@ -75,6 +77,7 @@ export function useSynthesizeSpeechController(options: UseSynthesizeSpeechContro
     const requestId = ttsSynthesisRequestIdRef.current + 1;
     ttsSynthesisRequestIdRef.current = requestId;
     logAuto("tts_trace", { stage: "http_synthesis_start", messageId: targetMessageId, requestId });
+    setTtsPlaybackProjectionTarget({ scope: "chat", messageId: targetMessageId });
     setTtsPlaybackMessageIdWithRef(targetMessageId);
     setTtsLoading(true);
     setTtsUiStatus("synthesizing");
@@ -179,6 +182,7 @@ export function useSynthesizeSpeechController(options: UseSynthesizeSpeechContro
     setTtsDebugStats,
     setTtsLoading,
     setTtsPlaybackMessageIdWithRef,
+    setTtsPlaybackProjectionTarget,
     setTtsUiStatus,
     ttsLoading,
     ttsProvider,

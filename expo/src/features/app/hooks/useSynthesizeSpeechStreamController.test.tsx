@@ -647,6 +647,26 @@ test("busy playback via non-empty queue also defers the target switch", async ()
   expect(options.setTtsPlaybackMessageIdWithRef).not.toHaveBeenCalled();
 });
 
+test("playback ownership follows each synthesis and defaults back to chat", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const { options } = createOptions(manager);
+  const { result } = await renderHook(() => useSynthesizeSpeechStreamController(options));
+
+  await act(async () => {
+    await result.current("メインで開始しました", { scope: "voice", messageId: "voice-start-announcement" });
+  });
+  expect(options.setTtsPlaybackProjectionTarget).toHaveBeenLastCalledWith(expect.objectContaining({
+    scope: "voice", messageId: "voice-start-announcement",
+  }));
+
+  await act(async () => {
+    await result.current("chat reply", { sessionId: "chat-session", messageId: "chat-message" });
+  });
+  expect(options.setTtsPlaybackProjectionTarget).toHaveBeenLastCalledWith(expect.objectContaining({
+    scope: "chat", sessionId: "chat-session", messageId: "chat-message",
+  }));
+});
+
 test("closing a voice stream before its first chunk preserves the chat sound already playing", async () => {
   const manager = new FakeRunnerWebSocketManager();
   const { options } = createOptions(manager);
@@ -703,7 +723,7 @@ test("closing a voice stream before its first chunk preserves the chat sound alr
     stop: useStopTtsPlaybackController(stopOptions).stopTtsPlayback,
   }));
 
-  await act(async () => { await result.current.synthesize("voice reply", { messageId: "voice-operation" }); });
+  await act(async () => { await result.current.synthesize("voice reply", { scope: "voice", messageId: "voice-operation" }); });
   await flushPromises();
   expect(options.ttsPlaybackMessageIdRef.current).toBe("chat-message");
   expect(options.setTtsPlaybackMessageIdWithRef).not.toHaveBeenCalled();
@@ -729,7 +749,7 @@ test("closing a voice stream before its first chunk preserves the chat sound alr
   });
   expect(options.enqueueStreamAudio).not.toHaveBeenCalled();
 
-  await act(async () => { await result.current.synthesize("another voice reply", { messageId: "voice-operation-2" }); });
+  await act(async () => { await result.current.synthesize("another voice reply", { scope: "voice", messageId: "voice-operation-2" }); });
   await act(async () => { await result.current.synthesize("chat reply", { messageId: "chat-message-2" }); });
   await flushPromises();
   const chatControl = options.streamTtsControlRef.current;
