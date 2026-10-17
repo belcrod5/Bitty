@@ -1741,11 +1741,26 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
         throw invalid("checklist_preflight_unsafe_tool", "Voice checklist preflight attempted another tool");
       }
       const status = String(terminal?.params?.turn?.status || terminal?.params?.status || "").toLowerCase();
+      const failNativeTurn = (cause, message) => {
+        if (onApproval && taskChecklistPath && !readOnlyPreflight) {
+          const info = terminal?.params?.turn?.error?.codexErrorInfo;
+          console.warn("[voice-context] native turn failed", {
+            stage: "turn_completion", code: "turn_failed", cause,
+            terminalMethod: terminal?.method === "turn/completed" ? "turn/completed" : "missing",
+            terminalStatus: ["failed", "error", "completed", "complete", "succeeded", "success"].includes(status)
+              ? status : status ? "other" : "missing",
+            codexErrorInfo: ["usageLimitExceeded", "rateLimitExceeded"].includes(info)
+              ? info : info == null ? "missing" : "other",
+            outputPresent: output.some((part) => Boolean(part.trim())),
+          });
+        }
+        throw invalid("turn_failed", message);
+      };
       if (terminal?.method === "turn/interrupted" || ["interrupted", "cancelled", "canceled"].includes(status)) {
         throw invalid("turn_interrupted", "Voice turn was interrupted");
       }
       if (terminal?.method !== "turn/completed" || !["completed", "complete", "succeeded", "success"].includes(status)) {
-        throw invalid("turn_failed", "Voice turn did not complete successfully");
+        failNativeTurn("terminal_non_success", "Voice turn did not complete successfully");
       }
       await checklistReadProof;
       if (readOnlyPreflight && !checklistReadObserved) {
@@ -1753,7 +1768,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
       }
       const text = output.join("\n").trim();
       if (!text && !(readOnlyPreflight && checklistReadObserved)) {
-        throw invalid("turn_failed", "Voice turn completed without an answer");
+        failNativeTurn("empty_answer", "Voice turn completed without an answer");
       }
       if (onText && textStreamingStopped && !textDelivered) {
         try { onText(text); } catch (error) { try { onTextError?.(error); } catch {} }

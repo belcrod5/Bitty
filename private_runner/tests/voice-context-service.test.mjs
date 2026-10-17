@@ -14,7 +14,7 @@ function fakeCodex({ reply = "answer", summaryReply, topicReplies = [], overview
   approvalMethod = "", userInput = false, resolveUserInput = false, nativeRequests = [], threadParents = {},
   threadReadDelayMs = 0, userItem = false, ephemeral = true, mcpPage, configuredMcpServers = {},
   missingTurnId = false, failMethod, failResponseThreadStartAt = 0,
-  loseTurnStartResponseAt = 0, lostTurnStatus = "completed", regularTurnStatus = "completed",
+  loseTurnStartResponseAt = 0, lostTurnStatus = "completed", regularTurnStatus = "completed", regularTurnError,
   nativeReadErrors = new Map(), nativeThreads = new Map() } = {}) {
   const calls = [];
   const releases = [];
@@ -244,7 +244,8 @@ function fakeCodex({ reply = "answer", summaryReply, topicReplies = [], overview
             }
             const status = !isIsolated && !isChecklistPreflight ? regularTurnStatus : "completed";
             listener("turn/completed", { threadId: params.threadId, turnId,
-              turn: { status, ...(completionUsage ? { usage: completionUsage } : {}) } });
+              turn: { status, ...(!isIsolated && !isChecklistPreflight && regularTurnError
+                ? { error: regularTurnError } : {}), ...(completionUsage ? { usage: completionUsage } : {}) } });
             nativeTurn.status = status;
             if (nativeAnswer) nativeTurn.items.push({ type: "agentMessage", text: nativeAnswer });
             resolveCompletion();
@@ -2410,6 +2411,36 @@ test("a failed turn finishes its partial-write notification before reporting fai
   assert.deepEqual((await service.history()).taskChecklist,
     { status: "present", markdown: "- [ ] 失敗した操作の途中結果\n" });
   await waitFor(async () => (await service.history()).taskChecklistOverview.status === "present");
+});
+
+test("main native turn failure logs only bounded terminal facts", async (t) => {
+  const warnings = [];
+  const original = console.warn;
+  console.warn = (message, details) => {
+    if (message === "[voice-context] native turn failed") warnings.push(details);
+    else original(message, details);
+  };
+  t.after(() => { console.warn = original; });
+  for (const [options, expected] of [
+    [{ regularTurnStatus: "failed", regularTurnError: {
+      message: "private message and credential", codexErrorInfo: "usageLimitExceeded",
+    } }, { cause: "terminal_non_success", terminalStatus: "failed", codexErrorInfo: "usageLimitExceeded",
+      outputPresent: true }],
+    [{ regularTurnStatus: "private status and credential", regularTurnError: {
+      message: "private message and credential", codexErrorInfo: "private error and credential",
+    }, agentEvents: [] }, { cause: "terminal_non_success", terminalStatus: "other",
+      codexErrorInfo: "other", outputPresent: false }],
+    [{ agentEvents: [] }, { cause: "empty_answer", terminalStatus: "completed",
+      codexErrorInfo: "missing", outputPresent: false }],
+  ]) {
+    const { service, conversation } = await fixture(t, { taskChecklistPath: "task-checklists/main.md",
+      nativeRequests: [checklistReadCall("read")], ...options });
+    assert.equal((await complete(service, conversation, "private user request", randomUUID(),
+      async () => "accept")).result.status, "failed");
+    assert.deepEqual(warnings.shift(), { stage: "turn_completion", code: "turn_failed",
+      terminalMethod: "turn/completed", ...expected });
+  }
+  assert.deepEqual(warnings, []);
 });
 
 test("main checklist file changes use normal approval after the dedicated write tool", async (t) => {

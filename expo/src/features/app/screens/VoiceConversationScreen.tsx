@@ -515,8 +515,8 @@ function VoiceConversationSession({
                   <View testID="voice-task-checklist-panel" style={{ position: "absolute", right: 0, top: 0,
                     maxWidth: Math.min(260, Math.max(0, screenWidth - 64)), maxHeight: "65%",
                     backgroundColor: isOverviewMode ? "transparent" : theme.colors.floatingSurface, borderTopLeftRadius: 14,
-                    borderBottomLeftRadius: 14, borderWidth: 1, borderColor: theme.colors.borderStrong,
-                    borderLeftWidth: 3, borderLeftColor: isOverviewMode ? theme.colors.accent : theme.colors.borderSubtle,
+                    borderBottomLeftRadius: 14, borderWidth: 1,
+                    borderColor: isOverviewMode ? theme.colors.borderTranslucent : theme.colors.borderStrong,
                     shadowColor: theme.colors.shadow, shadowOffset: { width: -3, height: 6 },
                     shadowOpacity: 0.24, shadowRadius: 12, elevation: 9, overflow: "hidden" }}>
                     {isOverviewMode && IosBlurView ? <IosBlurView testID="voice-task-checklist-blur"
@@ -525,27 +525,25 @@ function VoiceConversationSession({
                     {isOverviewMode && MacBlurView ? <MacBlurView testID="voice-task-checklist-blur"
                       pointerEvents="none" style={StyleSheet.absoluteFill} /> : null}
                     {isOverviewMode ? <View testID="voice-task-checklist-tint" pointerEvents="none" style={[StyleSheet.absoluteFill,
-                      { backgroundColor: theme.colors.surfaceTranslucent }]} /> : null}
+                      { backgroundColor: IosBlurView || MacBlurView
+                        ? theme.colorScheme === "dark" ? "rgba(10, 16, 24, 0.52)" : "rgba(255, 255, 255, 0.42)"
+                        : theme.colors.surfaceTranslucent }]} /> : null}
                     <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "flex-end",
                       borderBottomWidth: 1, borderBottomColor: theme.colors.borderSubtle }}>
                       {voice.taskChecklist?.status === "present" && voice.taskChecklistOverview
                         ? <Pressable testID="voice-task-checklist-source-toggle"
                         accessibilityRole="button" accessibilityLabel={isOverviewMode ? "To Do原本を表示" : "To Do概要を表示"}
                         onPress={() => setTaskChecklistOriginal((current) => !current)}
-                        style={{ paddingHorizontal: 10, height: 30, justifyContent: "center",
-                          borderRadius: 8, borderWidth: 1, borderColor: isOverviewMode
-                            ? theme.colors.borderTranslucent : theme.colors.borderSubtle,
-                          backgroundColor: isOverviewMode ? theme.colors.surfaceActionSoft : theme.colors.surfaceMuted }}>
-                        <Text style={{ color: isOverviewMode ? theme.colors.accentStrong : theme.colors.textSecondary,
-                          fontSize: 12 }}>
-                          {isOverviewMode ? "原本へ" : "概要へ"}
-                        </Text>
+                        style={{ width: 44, height: 44, alignItems: "center", justifyContent: "center" }}>
+                        <Ionicons name={isOverviewMode ? "document-text-outline" : "list-outline"} size={19}
+                          color={isOverviewMode ? theme.colors.accentStrong : theme.colors.textSecondary} />
                       </Pressable> : null}
-                      <Pressable testID="voice-task-checklist-refresh" accessibilityRole="button"
+                      {voice.historyError || voice.taskChecklist?.status === "unavailable" ? <Pressable
+                        testID="voice-task-checklist-refresh" accessibilityRole="button"
                         accessibilityLabel="To Doを更新" onPress={() => void voice.refreshHistory()}
                         style={{ width: 38, height: 38, alignItems: "center", justifyContent: "center" }}>
                         <Ionicons name="refresh" size={18} color={theme.colors.accentStrong} />
-                      </Pressable>
+                      </Pressable> : null}
                       <Pressable testID="voice-task-checklist-collapse" accessibilityRole="button"
                         accessibilityLabel="To Doを右に折りたたむ" onPress={() => setTaskChecklistOpen(false)}
                         style={{ width: 38, height: 38, alignItems: "center", justifyContent: "center" }}>

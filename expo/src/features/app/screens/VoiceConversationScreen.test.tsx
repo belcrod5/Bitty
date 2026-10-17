@@ -268,7 +268,8 @@ test("main history shows read-only checklist states without a title and folds to
   expect(panelStyle.maxWidth).toBeLessThanOrEqual(260);
   expect(panelStyle.maxHeight).toBe("65%");
   expect(panelStyle.backgroundColor).toBeTruthy();
-  expect(panelStyle.borderLeftWidth).toBe(3);
+  expect(panelStyle.borderLeftWidth).toBeUndefined();
+  expect(screen.queryByTestId("voice-task-checklist-refresh")).toBeNull();
   expect(StyleSheet.flatten(screen.getByTestId("voice-task-checklist-content").props.style))
     .toMatchObject({ flexGrow: 0, flexShrink: 1 });
   const longChecklist = Array.from({ length: 40 }, (_, index) => `- [${index === 0 ? "x" : " "}] 手順 ${index + 1}`).join("\n");
@@ -277,14 +278,29 @@ test("main history shows read-only checklist states without a title and folds to
   await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
   expect(screen.getByTestId("voice-task-checklist-item-0").props.accessibilityState.checked).toBe(true);
   expect(screen.getByTestId("voice-task-checklist-item-39").props.accessibilityState.checked).toBe(false);
-  await fireEvent.press(screen.getByTestId("voice-task-checklist-refresh"));
-  expect(mockVoice.refreshHistory).toHaveBeenCalled();
   await fireEvent.press(screen.getByTestId("voice-task-checklist-collapse"));
   expect(screen.queryByTestId("voice-task-checklist-panel")).toBeNull();
   expect(screen.queryByTestId("voice-task-checklist-item-0")).toBeNull();
   expect(screen.getByTestId("voice-task-checklist-expand")).toBeTruthy();
   await fireEvent.press(screen.getByTestId("voice-task-checklist-expand"));
   expect(screen.getByTestId("voice-task-checklist-panel")).toBeTruthy();
+});
+
+test("checklist retry appears only when history or checklist loading fails", async () => {
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  expect(screen.queryByTestId("voice-task-checklist-refresh")).toBeNull();
+  mockVoice.taskChecklist = { status: "unavailable" };
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await fireEvent.press(screen.getByTestId("voice-task-checklist-refresh"));
+  expect(mockVoice.refreshHistory).toHaveBeenCalled();
+  mockVoice.taskChecklist = { status: "present", markdown: "- [ ] 確認する" };
+  mockVoice.historyError = "履歴を読み込めません";
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(screen.getByTestId("voice-task-checklist-refresh")).toBeTruthy();
+  mockVoice.historyError = "";
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(screen.queryByTestId("voice-task-checklist-refresh")).toBeNull();
 });
 
 test("completed original offers explicit archive and clear or keep actions", async () => {
@@ -318,13 +334,16 @@ test("display overview defaults to a few checked rows and switches to the unchan
   const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
   await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
   expect(screen.getByText("確認済みの作業")).toBeTruthy();
-  expect(screen.getByText("原本へ")).toBeTruthy();
+  expect(screen.getByText("document-text-outline")).toBeTruthy();
+  expect(screen.getByTestId("voice-task-checklist-source-toggle").props.accessibilityLabel)
+    .toBe("To Do原本を表示");
+  expect(StyleSheet.flatten(screen.getByTestId("voice-task-checklist-source-toggle").props.style))
+    .toMatchObject({ width: 44, height: 44 });
   expect(screen.getByTestId("voice-task-checklist-blur")).toBeTruthy();
   expect(StyleSheet.flatten(screen.getByTestId("voice-task-checklist-tint").props.style).backgroundColor)
-    .toBe(VISUAL_THEMES[DEFAULT_VISUAL_THEME_ID].colors.surfaceTranslucent);
+    .toBe("rgba(255, 255, 255, 0.42)");
   const overviewPanelStyle = StyleSheet.flatten(screen.getByTestId("voice-task-checklist-panel").props.style);
-  const overviewToggleStyle = StyleSheet.flatten(screen.getByTestId("voice-task-checklist-source-toggle").props.style);
-  expect(overviewPanelStyle.borderLeftColor).toBe(VISUAL_THEMES[DEFAULT_VISUAL_THEME_ID].colors.accent);
+  expect(overviewPanelStyle.borderColor).toBe(VISUAL_THEMES[DEFAULT_VISUAL_THEME_ID].colors.borderTranslucent);
   expect(screen.getByTestId("voice-task-checklist-item-0").props.accessibilityState)
     .toMatchObject({ checked: true, disabled: true });
   expect(StyleSheet.flatten(screen.getByText("確認済みの作業").props.style).textDecorationLine)
@@ -333,13 +352,13 @@ test("display overview defaults to a few checked rows and switches to the unchan
     .toBe("none");
   expect(screen.queryByText("確認済み")).toBeNull();
   await fireEvent.press(screen.getByTestId("voice-task-checklist-source-toggle"));
-  expect(screen.getByText("概要へ")).toBeTruthy();
+  expect(screen.getByText("list-outline")).toBeTruthy();
+  expect(screen.getByTestId("voice-task-checklist-source-toggle").props.accessibilityLabel)
+    .toBe("To Do概要を表示");
   expect(screen.queryByTestId("voice-task-checklist-blur")).toBeNull();
   expect(screen.queryByTestId("voice-task-checklist-tint")).toBeNull();
-  expect(StyleSheet.flatten(screen.getByTestId("voice-task-checklist-panel").props.style).borderLeftColor)
-    .toBe(VISUAL_THEMES[DEFAULT_VISUAL_THEME_ID].colors.borderSubtle);
-  expect(StyleSheet.flatten(screen.getByTestId("voice-task-checklist-source-toggle").props.style).backgroundColor)
-    .not.toBe(overviewToggleStyle.backgroundColor);
+  expect(StyleSheet.flatten(screen.getByTestId("voice-task-checklist-panel").props.style).borderColor)
+    .toBe(VISUAL_THEMES[DEFAULT_VISUAL_THEME_ID].colors.borderStrong);
   expect(screen.getByText("- 確認済み")).toBeTruthy();
   expect(screen.getByText("- 次の確認は未着手")).toBeTruthy();
   expect(screen.queryByTestId("voice-task-checklist-item-0")).toBeNull();
@@ -353,6 +372,8 @@ test("overview has a translucent fallback without native blur", async () => {
   await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
   expect(screen.queryByTestId("voice-task-checklist-blur")).toBeNull();
   expect(screen.getByTestId("voice-task-checklist-tint")).toBeTruthy();
+  expect(StyleSheet.flatten(screen.getByTestId("voice-task-checklist-tint").props.style).backgroundColor)
+    .toBe(VISUAL_THEMES[DEFAULT_VISUAL_THEME_ID].colors.surfaceTranslucent);
 });
 
 test("pending overview stays compact while the original remains available", async () => {
@@ -379,7 +400,7 @@ test("older Runner without an overview field still shows its original checklist"
   expect(screen.queryByTestId("voice-task-checklist-tint")).toBeNull();
   expect(StyleSheet.flatten(screen.getByTestId("voice-task-checklist-panel").props.style))
     .toMatchObject({ backgroundColor: VISUAL_THEMES[DEFAULT_VISUAL_THEME_ID].colors.floatingSurface,
-      borderLeftColor: VISUAL_THEMES[DEFAULT_VISUAL_THEME_ID].colors.borderSubtle });
+      borderColor: VISUAL_THEMES[DEFAULT_VISUAL_THEME_ID].colors.borderStrong });
 });
 
 test("task checklist states are distinct and other orchestrators have no panel", async () => {
