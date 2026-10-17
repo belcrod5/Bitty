@@ -5,8 +5,12 @@ import type { RunnerWsMessage } from "../../runnerWs/types";
 import { DEFAULT_VISUAL_THEME_ID, VISUAL_THEMES } from "../theme/visualThemes";
 import { VoiceConversationScreen } from "./VoiceConversationScreen";
 
-const mockWithTiming = jest.fn((value: number, _config?: unknown) => value);
-const mockBackdropOpacity = { value: 0 };
+const mockWithTiming = jest.fn((value: number, _config?: unknown, callback?: (finished: boolean) => void) => {
+  callback?.(true);
+  return value;
+});
+const mockHistoryHeight = { value: 0 };
+const mockHistoryDragActive = { value: false };
 const mockAbort = jest.fn(async () => undefined);
 const mockStopTtsPlayback = jest.fn(async () => undefined);
 const mockSynthesizeSpeechStream = jest.fn(async (_text: string, _target: { messageId: string }): Promise<void> => undefined);
@@ -177,12 +181,24 @@ jest.mock("react-native-gesture-handler", () => ({
     gesture.enabled = (value: boolean) => { gesture.isEnabled = value; return gesture; };
     gesture.activeOffsetY = (range: number[]) => { gesture.verticalRange = range; return gesture; };
     gesture.failOffsetX = (range: number[]) => { gesture.horizontalRange = range; return gesture; };
-    gesture.onEnd = (callback: (event: { translationY: number }) => void) => { gesture.end = callback; return gesture; };
+    gesture.onStart = (callback: () => void) => { gesture.start = callback; return gesture; };
+    gesture.onUpdate = (callback: (event: { translationY: number }) => void) => { gesture.update = callback; return gesture; };
+    gesture.onFinalize = (callback: (event: { translationY: number }, success: boolean) => void) => {
+      gesture.finalize = callback;
+      return gesture;
+    };
     return gesture;
   } },
   GestureDetector: ({ gesture, children }: { gesture: Record<string, any>; children: React.ReactElement }) => {
     const ReactModule = require("react");
-    return ReactModule.cloneElement(children, { onMockGestureEnd: gesture.end,
+    return ReactModule.cloneElement(children, { onMockGestureStart: gesture.start,
+      onMockGestureUpdate: gesture.update,
+      onMockGestureEnd: (event: { translationY: number }) => {
+        if (!mockHistoryDragActive.value) gesture.start();
+        gesture.finalize(event, true);
+      },
+      onMockGestureCancel: (event: { translationY: number }) => gesture.finalize(event, false),
+      onMockGestureFail: (event: { translationY: number }) => gesture.finalize(event, false),
       gestureEnabled: gesture.isEnabled, gestureVerticalRange: gesture.verticalRange,
       gestureHorizontalRange: gesture.horizontalRange });
   },
@@ -201,13 +217,12 @@ jest.mock("react-native-reanimated", () => {
     default: { View: (props: Record<string, unknown>) => ReactModule.createElement(View, props),
       createAnimatedComponent: (Component: unknown) => Component },
     FadeIn: { duration: (duration: number) => ({ type: "fade-in", duration }) },
-    FadeInDown: { duration: (duration: number) => ({ type: "fade-in-down", duration }) },
     FadeOut: { duration: (duration: number) => ({ type: "fade-out", duration }) },
-    FadeOutDown: { duration: (duration: number) => ({ type: "fade-out-down", duration }) },
     runOnJS: (callback: unknown) => callback,
-    useSharedValue: () => mockBackdropOpacity,
+    useSharedValue: (initial: unknown) => typeof initial === "boolean" ? mockHistoryDragActive : mockHistoryHeight,
     useAnimatedStyle: (callback: () => unknown) => callback(),
-    withTiming: (value: number, config: unknown) => mockWithTiming(value, config),
+    withTiming: (value: number, config: unknown, callback?: (finished: boolean) => void) =>
+      mockWithTiming(value, config, callback),
   };
 });
 
@@ -256,7 +271,8 @@ beforeEach(() => {
   mockVoice.taskChecklistOverview = { status: "present", markdown: "- [ ] 確認する" };
   mockVoice.taskChecklistCompletion = null;
   mockVoice.respondToChecklistCompletion.mockClear();
-  mockBackdropOpacity.value = 0;
+  mockHistoryHeight.value = 0;
+  mockHistoryDragActive.value = false;
   mockReduceMotion = false;
   mockManagerVisible = false;
   mockManagerOnClose = null;
@@ -671,7 +687,7 @@ test("the footer reveals stored messages and closes the history panel", async ()
     backgroundColor: "rgba(0, 0, 0, 0.4)",
   });
   expect(backdrop.props.pointerEvents).toBe("none");
-  expect(mockWithTiming).toHaveBeenCalledWith(0, { duration: 240 });
+  expect(mockWithTiming).toHaveBeenCalledWith(0, { duration: 240 }, expect.any(Function));
   expect(screen.queryByTestId("voice-history-open")).toBeNull();
   expect(screen.getByTestId("voice-history-swipe-area").props).toMatchObject({
     gestureVerticalRange: [-24, 24], gestureHorizontalRange: [-32, 32],
@@ -685,21 +701,18 @@ test("the footer reveals stored messages and closes the history panel", async ()
     .toMatchObject({ width: 44, height: 44 });
   await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
   expect(StyleSheet.flatten(screen.getByTestId("voice-footer-inset").props.style).paddingLeft).toBe(20);
-  expect(mockWithTiming).toHaveBeenCalledWith(1, { duration: 240 });
-  expect(mockBackdropOpacity.value).toBe(1);
+  expect(mockWithTiming).toHaveBeenCalledWith(expect.any(Number), { duration: 240 }, expect.any(Function));
+  expect(mockHistoryHeight.value).toBeGreaterThan(0);
   expect(screen.getByTestId("voice-conversation-backdrop").props.pointerEvents).toBe("auto");
   const blur = screen.getByTestId("voice-conversation-board-blur");
-  expect(screen.getByTestId("voice-conversation-keyboard-avoiding").children[0]).toBe(blur);
+  expect(screen.getByTestId("voice-conversation-keyboard-avoiding").children[0]).toBe(blur.parent);
   expect(blur.props).toMatchObject({ pointerEvents: "none", intensity: 80, tint: "dark" });
   expect(StyleSheet.flatten(blur.props.style)).toMatchObject({
     position: "absolute", top: 0, bottom: 0, left: 0, right: 0,
   });
   expect(StyleSheet.flatten(blur.props.style).opacity).toBeUndefined();
-  expect(screen.getByTestId("voice-conversation-history").props).toMatchObject({
-    entering: { type: "fade-in-down", duration: 240 },
-    exiting: { type: "fade-out-down", duration: 200 },
-  });
-  expect(StyleSheet.flatten(screen.getByTestId("voice-conversation-history").props.style)).toMatchObject({ flex: 1, width: "100%" });
+  expect(StyleSheet.flatten(screen.getByTestId("voice-conversation-history").props.style))
+    .toMatchObject({ flexShrink: 1, width: "100%", overflow: "hidden" });
   expect(StyleSheet.flatten(screen.getByTestId("voice-history-messages").props.style)).toMatchObject({ flex: 1 });
   expect(screen.getByTestId("voice-history-messages").props.contentContainerStyle).toMatchObject({
     paddingHorizontal: 20, paddingBottom: 12,
@@ -730,12 +743,65 @@ test("the footer reveals stored messages and closes the history panel", async ()
   await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: 80 }); });
   expect(screen.getByText("最初の質問")).toBeTruthy();
   await act(async () => { fireEvent.press(screen.getByTestId("voice-history-close")); });
-  expect(mockWithTiming).toHaveBeenLastCalledWith(0, { duration: 240 });
+  expect(mockWithTiming).toHaveBeenLastCalledWith(0, { duration: 240 }, expect.any(Function));
   expect(screen.getByTestId("voice-conversation-backdrop").props.pointerEvents).toBe("none");
   expect(screen.queryByTestId("voice-conversation-board-blur")).toBeNull();
   expect(screen.queryByText("最初の質問")).toBeNull();
   expect(within(screen.getByTestId("streaming-stt-trailing-accessory"))
     .getByTestId("codex-status-summary-menu")).toBeTruthy();
+  await screen.unmount();
+});
+
+test("slow upward dragging reveals history and backdrop in step with the finger", async () => {
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  mockWithTiming.mockClear();
+  await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureStart(); });
+  expect(screen.getByTestId("voice-conversation-history", { includeHiddenElements: true }).props.pointerEvents)
+    .toBe("none");
+  expect(mockFooterProps?.historyExpanded).toBe(false);
+  expect(screen.getByTestId("voice-conversation-backdrop").props.pointerEvents).toBe("none");
+
+  for (const distance of [28, 40, 65]) {
+    await act(async () => {
+      screen.getByTestId("voice-history-swipe-area").props.onMockGestureUpdate({ translationY: -distance });
+    });
+    await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+    expect(StyleSheet.flatten(screen.getByTestId("voice-conversation-history",
+      { includeHiddenElements: true }).props.style).height).toBe(distance);
+    expect(StyleSheet.flatten(screen.getByTestId("voice-conversation-backdrop").props.style).opacity)
+      .toBeCloseTo(distance / 240);
+  }
+  expect(mockWithTiming).not.toHaveBeenCalled();
+  await act(async () => {
+    screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -65 });
+  });
+  expect(mockFooterProps?.historyExpanded).toBe(true);
+  expect(screen.getByTestId("voice-conversation-history").props.pointerEvents).toBe("auto");
+  expect(mockHistoryHeight.value).toBeGreaterThan(65);
+  await screen.unmount();
+});
+
+test("an interrupted or short drag settles closed without activating history", async () => {
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  mockWithTiming.mockClear();
+  await act(async () => {
+    screen.getByTestId("voice-history-swipe-area").props.onMockGestureFail({ translationY: 0 });
+  });
+  expect(screen.queryByTestId("voice-conversation-history")).toBeNull();
+  expect(mockWithTiming).not.toHaveBeenCalled();
+  for (const finish of ["onMockGestureCancel", "onMockGestureEnd"] as const) {
+    await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureStart(); });
+    await act(async () => {
+      screen.getByTestId("voice-history-swipe-area").props.onMockGestureUpdate({ translationY: -40 });
+    });
+    await act(async () => {
+      screen.getByTestId("voice-history-swipe-area").props[finish]({ translationY: -40 });
+    });
+    expect(screen.queryByTestId("voice-conversation-history")).toBeNull();
+    expect(screen.queryByTestId("voice-conversation-board-blur")).toBeNull();
+    expect(mockFooterProps?.historyExpanded).toBe(false);
+    expect(mockHistoryHeight.value).toBe(0);
+  }
   await screen.unmount();
 });
 
@@ -804,7 +870,7 @@ test("reduced motion skips history movement and backdrop transition", async () =
   mockReduceMotion = true;
   const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
   await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
-  expect(mockWithTiming).toHaveBeenLastCalledWith(1, { duration: 0 });
+  expect(mockWithTiming).toHaveBeenLastCalledWith(expect.any(Number), { duration: 0 }, expect.any(Function));
   expect(screen.getByTestId("voice-conversation-history").props.entering).toBeUndefined();
   expect(screen.getByTestId("voice-conversation-history").props.exiting).toBeUndefined();
   await screen.unmount();
