@@ -44,8 +44,10 @@ struct VoiceOrchestratorQuery: EntityStringQuery {
   func entities(matching string: String) async throws -> [VoiceOrchestratorEntity] {
     let query = string.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !query.isEmpty else { return [] }
+    let spokenName = query.applyingTransform(.hiraganaToKatakana, reverse: false) ?? query
     return VoiceOrchestratorStore.all().filter {
-      $0.name.localizedStandardContains(query) || $0.id.localizedStandardContains(query)
+      ($0.name.applyingTransform(.hiraganaToKatakana, reverse: false) ?? $0.name)
+        .localizedStandardContains(spokenName) || $0.id.localizedStandardContains(query)
     }
   }
 
