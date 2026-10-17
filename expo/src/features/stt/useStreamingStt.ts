@@ -441,6 +441,10 @@ export function useStreamingStt(options: Options) {
         terminalRef.current = true;
         const version = ++sessionVersionRef.current;
         const attempt = ++errorRetriesRef.current;
+        if (latestRef.current.continuousDictation && message.code.startsWith("macos_")
+          && (transcriptStateRef.current.finalText.trim() || transcriptStateRef.current.interimText.trim())) {
+          dictatedSinceSendRef.current = true;
+        }
         const draft = displayStreamingTranscript(transcriptStateRef.current);
         transcriptStateRef.current = startStreamingTranscript(draft);
         latestRef.current.setTranscript(draft);

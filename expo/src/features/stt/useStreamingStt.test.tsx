@@ -507,6 +507,33 @@ test("retry preserves the partial text already shown in the draft", async () => 
   expect(options.setTranscript).toHaveBeenLastCalledWith("前の文章 続き");
 });
 
+test.each([
+  { code: "macos_recognition_failed", shouldSend: true },
+  { code: "google_unavailable", shouldSend: false },
+])("$code retry followed by long idle preserves provider-specific send behavior", async ({ code, shouldSend }) => {
+  const options = { ...createOptions(), continuousDictation: true };
+  const { result } = await renderHook(() => useStreamingStt(options));
+  const first = await openReady(result);
+  await emit(first, { type: "transcript", text: "表示済みの途中結果", isFinal: false });
+  await emit(first, { type: "error", code, message: "retry", retryable: true });
+  expect(options.setTranscript).toHaveBeenLastCalledWith("表示済みの途中結果");
+  await advanceTimers(250);
+  const second = mockSessions.at(-1)!;
+  await emit(second, { type: "ready" });
+  await emit(second, { type: "done", reason: "no_speech_timeout", hasSpeech: false });
+  if (shouldSend) {
+    expect(correctSttTranscript).toHaveBeenCalledWith("http://runner.test", "token",
+      "表示済みの途中結果", [], expect.any(AbortSignal));
+    expect(options.sendTranscript).toHaveBeenCalledWith("表示済みの途中結果", expect.any(Function));
+  } else {
+    expect(correctSttTranscript).not.toHaveBeenCalled();
+    expect(options.sendTranscript).not.toHaveBeenCalled();
+    expect(options.setTranscript).toHaveBeenLastCalledWith("表示済みの途中結果");
+    await advanceTimers(250);
+    expect(mockSessions).toHaveLength(3);
+  }
+});
+
 test.each(["stop", "abort", "unmount"])("%s cancels empty-session restart during cleanup or its delay", async (action) => {
   for (const timing of ["cleanup", "delay"]) {
     const options = createOptions();
