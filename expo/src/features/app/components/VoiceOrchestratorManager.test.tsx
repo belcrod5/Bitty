@@ -1,11 +1,12 @@
-import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, waitFor, within } from "@testing-library/react-native";
 import type { ReactNode } from "react";
-import { Alert } from "react-native";
+import { Alert, StyleSheet } from "react-native";
 import { AppModal } from "./AppModal";
 import { VoiceOrchestratorManager } from "./VoiceOrchestratorManager";
 
 const icon = "data:image/png;base64,iVBORw0KGgo=";
 let mockLegacySettings = false;
+let mockSaveFailure = false;
 const mockPickIcon = jest.fn(async () => icon);
 const mockRequest = jest.fn(async (message: { op: string; payload?: Record<string, unknown> }) => {
   const { op, payload } = message;
@@ -26,10 +27,13 @@ const mockRequest = jest.fn(async (message: { op: string; payload?: Record<strin
     orchestrators: [...list.orchestrators, { id: "new-id", name: payload?.name, icon: payload?.icon }],
     selectedId: "main",
   } };
-  if (op === "voice.orchestrators.update") return { op: `${op}.result`, payload: {
-    orchestrators: list.orchestrators.map((item) => item.id === payload?.orchestratorId
-      ? { ...item, name: payload.name, icon: payload.icon } : item), selectedId: "main",
-  } };
+  if (op === "voice.orchestrators.update") {
+    if (mockSaveFailure) throw new Error("保存エラー");
+    return { op: `${op}.result`, payload: {
+      orchestrators: list.orchestrators.map((item) => item.id === payload?.orchestratorId
+        ? { ...item, name: payload.name, icon: payload.icon } : item), selectedId: "main",
+    } };
+  }
   if (op === "voice.orchestrators.delete") return { op: `${op}.result`, payload: {
     orchestrators: [list.orchestrators[0]], selectedId: "main",
   } };
@@ -51,6 +55,7 @@ jest.mock("../utils/voiceOrchestratorIconPicker", () => ({
 }));
 jest.mock("../keyboardController", () => ({
   KeyboardAwareScrollView: require("react-native").ScrollView,
+  KeyboardAvoidingView: require("react-native").View,
 }));
 jest.mock("./AppModal", () => ({
   AppModal: jest.fn(({ children }: { children: ReactNode }) => children),
@@ -75,7 +80,7 @@ const onConversationChanged = jest.fn();
 const onClose = jest.fn();
 const props = { visible: true, list, onListChanged, onConversationChanged, onClose };
 
-beforeEach(() => { jest.clearAllMocks(); mockLegacySettings = false; });
+beforeEach(() => { jest.clearAllMocks(); mockLegacySettings = false; mockSaveFailure = false; });
 
 test("opens through the platform modal and closes detail before the manager", async () => {
   const screen = await render(<VoiceOrchestratorManager {...props} />);
@@ -89,6 +94,32 @@ test("opens through the platform modal and closes detail before the manager", as
   expect(screen.getByTestId("orchestrator-row-other")).toBeTruthy();
   await act(async () => { modalProps()?.onRequestClose?.(); });
   expect(onClose).toHaveBeenCalledTimes(1);
+  await screen.unmount();
+});
+
+test("shows one fixed primary save button only while details are loaded", async () => {
+  const screen = await render(<VoiceOrchestratorManager {...props} />);
+  expect(screen.queryByTestId("orchestrator-save")).toBeNull();
+  await fireEvent.press(screen.getByTestId("orchestrator-row-other"));
+  const save = await screen.findByTestId("orchestrator-save");
+  expect(within(screen.getByTestId("orchestrator-settings-scroll"))
+    .queryByTestId("orchestrator-save")).toBeNull();
+  expect(StyleSheet.flatten(save.props.style)).toMatchObject({ minHeight: 52, width: "100%" });
+  await fireEvent.press(screen.getByLabelText("戻る"));
+  expect(screen.queryByTestId("orchestrator-save")).toBeNull();
+  await screen.unmount();
+});
+
+test("failed save shows its error beside the fixed button", async () => {
+  mockSaveFailure = true;
+  const screen = await render(<VoiceOrchestratorManager {...props} />);
+  await fireEvent.press(screen.getByTestId("orchestrator-row-other"));
+  await screen.findByTestId("orchestrator-save");
+  await fireEvent.press(screen.getByTestId("orchestrator-save"));
+  await waitFor(() => expect(screen.getByText("保存エラー")).toBeTruthy());
+  expect(within(screen.getByTestId("orchestrator-settings-scroll"))
+    .queryByText("保存エラー")).toBeNull();
+  expect(screen.getByTestId("orchestrator-save")).toBeTruthy();
   await screen.unmount();
 });
 

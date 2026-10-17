@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, Pressable, SafeAreaView, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { Alert, Platform, Pressable, SafeAreaView, Text, TextInput, TouchableOpacity, View } from "react-native";
 import { useRunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketContext";
-import { KeyboardAwareScrollView } from "../keyboardController";
+import { KeyboardAwareScrollView, KeyboardAvoidingView } from "../keyboardController";
 import { effortOptionsForModel } from "../modelOptions";
 import { useAppStyles } from "../styles";
 import { useVisualTheme } from "../theme/VisualThemeContext";
@@ -205,8 +205,11 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
 
   return (
     <AppModal visible={visible} animationType="slide" onRequestClose={() => detailId === null ? onClose() : setDetailId(null)}>
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}
+        automaticOffset={Platform.OS === "ios"}>
       <SafeAreaView style={styles.settingsScreen}>
-        <KeyboardAwareScrollView contentContainerStyle={styles.settingsContent} keyboardShouldPersistTaps="handled">
+        <KeyboardAwareScrollView testID="orchestrator-settings-scroll" style={{ flex: 1 }}
+          contentContainerStyle={styles.settingsContent} keyboardShouldPersistTaps="handled">
           <TouchableOpacity accessibilityRole="button" accessibilityLabel="戻る"
             style={styles.settingsBackButton} onPress={() => detailId === null ? onClose() : setDetailId(null)}>
             <Text style={styles.settingsBackButtonText}>‹ {detailId === null ? "音声会話" : "オーケストレータ"}</Text>
@@ -310,10 +313,6 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
                     multiline editable={!busy} style={{ minHeight: 76, padding: 10, borderRadius: 8,
                       color: theme.colors.groupedTextPrimary, backgroundColor: theme.colors.surfaceRaised, textAlignVertical: "top" }} />
                 </View>
-                <TouchableOpacity testID="orchestrator-save" accessibilityRole="button" accessibilityLabel="オーケストレータを保存"
-                  disabled={busy} onPress={() => void save()} style={styles.settingsRow}>
-                  <Text style={styles.settingsActionText}>保存</Text>
-                </TouchableOpacity>
               </View>
               {detailId !== "new" ? <View style={[styles.settingsGroup, { marginTop: 20 }]}>
                 <View style={[styles.settingsRow, styles.settingsRowDivider]}>
@@ -339,9 +338,19 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
               </View> : null}
             </View>
           ) : null}
-          {error ? <Text style={styles.settingsErrorText}>{error}</Text> : null}
+          {error && (!detailId || !detail) ? <Text style={styles.settingsErrorText}>{error}</Text> : null}
         </KeyboardAwareScrollView>
+        {detailId !== null && detail ? <View style={{ width: "100%", maxWidth: 760, alignSelf: "center",
+          paddingHorizontal: 18, paddingTop: 12, paddingBottom: 12, gap: 8 }}>
+          {error ? <Text accessibilityRole="alert" style={styles.settingsErrorText}>{error}</Text> : null}
+          <TouchableOpacity testID="orchestrator-save" accessibilityRole="button" accessibilityLabel="オーケストレータを保存"
+            disabled={busy} onPress={() => void save()}
+            style={[styles.settingsPrimaryButton, { width: "100%", minHeight: 52, alignSelf: "center" }]}>
+            <Text style={styles.settingsPrimaryButtonText}>保存</Text>
+          </TouchableOpacity>
+        </View> : null}
       </SafeAreaView>
+      </KeyboardAvoidingView>
     </AppModal>
   );
 }
