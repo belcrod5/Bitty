@@ -10,8 +10,8 @@ import { createVoiceContextService } from "../src/voice-context-service.mjs";
 
 const base = fileURLToPath(new URL("../../tmp/", import.meta.url));
 const scenario = process.argv[2] || "code";
-if (!["code", "mail", "legacy", "managed", "native", "progress", "overview", "repair", "repair-progress", "repair-progress-alt"].includes(scenario) || process.argv.length > 3) {
-  throw new Error("Usage: node voice-task-checklist-product-probe.mjs [code|mail|legacy|managed|native|progress|overview|repair|repair-progress|repair-progress-alt]");
+if (!["code", "mail", "legacy", "managed", "native", "progress", "progress-clear", "overview", "repair", "repair-progress", "repair-progress-alt"].includes(scenario) || process.argv.length > 3) {
+  throw new Error("Usage: node voice-task-checklist-product-probe.mjs [code|mail|legacy|managed|native|progress|progress-clear|overview|repair|repair-progress|repair-progress-alt]");
 }
 const run = path.join(base, `voice-checklist-product-${randomUUID()}`);
 const rootDir = path.join(run, "voice_context", "v1");
@@ -176,6 +176,7 @@ try {
     await fs.appendFile(path.join(run, "evidence.jsonl"), `${JSON.stringify(row)}\n`, { mode: 0o600 });
     console.log(JSON.stringify(row));
     if (result.status !== "completed") throw new Error(`${label} failed: ${result.code}`);
+    return row;
   }
   if (scenario === "overview") {
     const original = "# 架空作業の原本\n- P-21の調査は完了と確認済み\n- P-22の結果確認を進行中\n- P-23は次に着手予定\n";
@@ -242,9 +243,24 @@ try {
       : scenario === "repair-progress"
       ? "架空の進捗です。P-03の削除操作は既存監査記録から未実行と確認できました。この結果をTo Do原本へ反映してください。ほかの項目は今の事実と順序を保ち、作業は実行せず、次の一手を短く答えてください。"
       : "架空作業を続けます。原本にある安全な次の一手を短く答えてください。");
-  } else if (scenario === "progress") {
+  } else if (scenario === "progress" || scenario === "progress-clear") {
     await turn("progress_started", "架空のP-21調査を進めています。まだ結果は未確認です。メインのTo Do原本に未完了として記録してください。ここで他の操作は不要です。");
     await turn("progress_confirmed", "架空のP-21調査結果を確認し、完了が確定しました。To Do原本を今すぐ完了へ更新してください。ここで他の操作は不要です。");
+    if (scenario === "progress-clear") {
+      const completedMarkdown = await fs.readFile(checklist, "utf8");
+      const cleared = await turn("user_confirmed_clear", "お願いします。先ほど提案した完了To Do原本を履歴に保存して空にしてください。");
+      const archiveDirectory = path.join(workspace, "task-checklists", "completed");
+      const archiveFiles = await fs.readdir(archiveDirectory);
+      if (archiveFiles.length !== 1 || !cleared.events.some((event) => event.method === "item/tool/call"
+        && event.tool === "confirm_completion_clear" && event.success === true)) {
+        throw new Error("Confirmation tool or single archive was not verified");
+      }
+      const archive = JSON.parse(await fs.readFile(path.join(archiveDirectory, archiveFiles[0]), "utf8"));
+      if (archive.markdown !== completedMarkdown || await fs.readFile(checklist, "utf8") !== "") {
+        throw new Error("Completed checklist archive or clear did not match the original");
+      }
+      console.log(JSON.stringify({ scenario, archiveVerified: true, sourceCleared: true }));
+    }
   } else if (scenario === "managed") {
     await turn("managed_status", "架空の作業を開始します。まず voice_subagent.status ツールを呼び、委任セッションがないか確認してください。その結果と次の一手を task-checklists/main.md に記録してください。");
   } else if (scenario === "native") {

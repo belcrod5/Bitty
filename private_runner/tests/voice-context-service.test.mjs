@@ -2533,6 +2533,237 @@ test("a completed main checklist asks once, archives exact content, then clears 
   assert.equal(changes.length, 1);
 });
 
+test("main AI can offer an already completed checklist and clear it after the next user consent", async (t) => {
+  const nativeRequests = [checklistReadCall("preflight"), checklistTurnCall("offer-read", "read_task_checklist"),
+    checklistTurnCall("offer", "offer_completion_clear")];
+  const { service, rootDir, codex, conversation } = await fixture(t, {
+    taskChecklistPath: "task-checklists/main.md", nativeRequests });
+  const workspace = await service.getWorkspaceDirectory();
+  const source = path.join(workspace, "task-checklists", "main.md");
+  const markdown = "- [x] 既存の完了作業\n";
+  await fs.writeFile(source, markdown);
+  assert.equal((await complete(service, conversation, "状況を教えて")).result.status, "completed");
+  const offered = JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8")).checklistCompletion;
+  assert.equal(offered.decision, "offered");
+  assert.equal((await service.history()).taskChecklistCompletion.version, offered.version);
+  assert.equal(await fs.readFile(source, "utf8"), markdown);
+
+  nativeRequests.splice(0, nativeRequests.length, checklistTurnCall("consent-read", "read_task_checklist"),
+    checklistTurnCall("consent", "confirm_completion_clear"));
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient,
+    taskChecklistPath: "task-checklists/main.md" });
+  assert.equal((await complete(restarted, conversation, "お願いします")).result.status, "completed");
+  assert.equal(await fs.readFile(source, "utf8"), "");
+  const files = await fs.readdir(path.join(workspace, "task-checklists", "completed"));
+  assert.equal(files.length, 1);
+  assert.equal(JSON.parse(await fs.readFile(path.join(workspace, "task-checklists", "completed", files[0]), "utf8")).markdown,
+    markdown);
+  assert.equal((await restarted.history()).taskChecklistCompletion, null);
+  assert.deepEqual(codex.calls.filter(({ method }) => method === "native/result").map(({ result }) => result.success),
+    [true, true, true, true, true]);
+});
+
+test("a parent switch preserves the same conversation's immediate AI completion offer", async (t) => {
+  const nativeRequests = [checklistReadCall("preflight"), checklistTurnCall("read", "read_task_checklist"),
+    checklistTurnCall("offer", "offer_completion_clear")];
+  const { service, conversation, codex } = await fixture(t, {
+    taskChecklistPath: "task-checklists/main.md", nativeRequests });
+  const source = path.join(await service.getWorkspaceDirectory(), "task-checklists", "main.md");
+  await fs.writeFile(source, "- [x] 親切替前に完了\n");
+  await complete(service, conversation, "完了を確認して");
+  const originalThread = codex.calls.find(({ method, params }) => method === "turn/start"
+    && params.approvalPolicy === "on-request" && params.sandboxPolicy?.type !== "readOnly")?.params.threadId;
+  await service.configure("gpt-6-luna", "low", "Keep the reply brief.");
+  nativeRequests.splice(0, nativeRequests.length, checklistReadCall("second-preflight"),
+    checklistTurnCall("second-read", "read_task_checklist"),
+    checklistTurnCall("second-confirm", "confirm_completion_clear"));
+  assert.equal((await complete(service, conversation, "お願いします")).result.status, "completed");
+  const latestThread = codex.calls.filter(({ method, params }) => method === "turn/start"
+    && params.approvalPolicy === "on-request" && params.sandboxPolicy?.type !== "readOnly").at(-1).params.threadId;
+  assert.notEqual(latestThread, originalThread);
+  assert.equal(await fs.readFile(source, "utf8"), "");
+});
+
+test("AI completion consent cannot be same-turn, delayed, or for a rewritten checklist", async (t) => {
+  const nativeRequests = [checklistReadCall("preflight"), checklistTurnCall("read", "read_task_checklist"),
+    checklistTurnCall("offer", "offer_completion_clear"),
+    checklistTurnCall("same-turn", "confirm_completion_clear")];
+  const { service, codex, conversation } = await fixture(t, {
+    taskChecklistPath: "task-checklists/main.md", nativeRequests });
+  const source = path.join(await service.getWorkspaceDirectory(), "task-checklists", "main.md");
+  const markdown = "- [x] 同じ作業\n";
+  await fs.writeFile(source, markdown);
+  assert.equal((await complete(service, conversation, "完了です")).result.status, "completed");
+  assert.equal(codex.calls.filter(({ method }) => method === "native/result").at(-1).result.success, false);
+  nativeRequests.splice(0, nativeRequests.length, checklistTurnCall("read2", "read_task_checklist"),
+    checklistTurnCall("stale", "confirm_completion_clear"));
+  const replacement = `${source}.replacement`;
+  await fs.writeFile(replacement, markdown);
+  await fs.rename(replacement, source);
+  assert.equal((await complete(service, conversation, "お願いします")).result.status, "completed");
+  assert.equal(codex.calls.filter(({ method }) => method === "native/result").at(-1).result.success, false);
+  assert.equal(await fs.readFile(source, "utf8"), markdown);
+
+  nativeRequests.splice(0, nativeRequests.length, checklistTurnCall("read3", "read_task_checklist"),
+    checklistTurnCall("late", "confirm_completion_clear"));
+  assert.equal((await complete(service, conversation, "お願いします")).result.status, "completed");
+  assert.equal(codex.calls.filter(({ method }) => method === "native/result").at(-1).result.success, false);
+  assert.equal(await fs.readFile(source, "utf8"), markdown);
+});
+
+test("an unanswered AI offer is not repeated for the same completed checklist", async (t) => {
+  const nativeRequests = [checklistReadCall("preflight"), checklistTurnCall("read", "read_task_checklist"),
+    checklistTurnCall("offer", "offer_completion_clear")];
+  const { service, conversation, codex, rootDir } = await fixture(t, {
+    taskChecklistPath: "task-checklists/main.md", nativeRequests });
+  const source = path.join(await service.getWorkspaceDirectory(), "task-checklists", "main.md");
+  const markdown = "- [x] 回答待ち\n";
+  await fs.writeFile(source, markdown);
+  await complete(service, conversation, "完了を確認");
+  nativeRequests.splice(0, nativeRequests.length);
+  await complete(service, conversation, "別件の話です");
+  nativeRequests.push(checklistTurnCall("read3", "read_task_checklist"),
+    checklistTurnCall("repeat", "offer_completion_clear"),
+    checklistTurnCall("late", "confirm_completion_clear"));
+  await complete(service, conversation, "お願いします");
+  assert.deepEqual(codex.calls.filter(({ method }) => method === "native/result").slice(-3)
+    .map(({ result }) => result.success), [true, false, false]);
+  assert.equal(JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8")).checklistCompletion.decision,
+    "offered");
+  assert.ok((await service.history()).taskChecklistCompletion);
+  assert.equal(await fs.readFile(source, "utf8"), markdown);
+});
+
+test("AI-approved clear waits for child activity and keeps the UI clear action available while offered", async (t) => {
+  let busy = false;
+  const nativeRequests = [checklistReadCall("preflight"), checklistTurnCall("read", "read_task_checklist"),
+    checklistTurnCall("offer", "offer_completion_clear")];
+  const { service, conversation } = await fixture(t, { taskChecklistPath: "task-checklists/main.md",
+    nativeRequests, hasOutstandingActivity: async () => busy });
+  const source = path.join(await service.getWorkspaceDirectory(), "task-checklists", "main.md");
+  await fs.writeFile(source, "- [x] 子作業\n");
+  await complete(service, conversation, "完了を確認");
+  assert.ok((await service.history()).taskChecklistCompletion);
+  nativeRequests.splice(0, nativeRequests.length, checklistTurnCall("read-next", "read_task_checklist"),
+    checklistTurnCall("confirm", "confirm_completion_clear"));
+  busy = true;
+  assert.equal((await complete(service, conversation, "クリアしてください")).result.status, "completed");
+  assert.equal(await fs.readFile(source, "utf8"), "- [x] 子作業\n");
+  busy = false;
+  await service.history();
+  assert.equal(await fs.readFile(source, "utf8"), "");
+});
+
+test("UI can decline or clear an AI offer, and clearing messages invalidates that offer", async (t) => {
+  const nativeRequests = [checklistReadCall("preflight"), checklistTurnCall("read", "read_task_checklist"),
+    checklistTurnCall("offer", "offer_completion_clear")];
+  const { service, conversation, rootDir } = await fixture(t, { taskChecklistPath: "task-checklists/main.md",
+    nativeRequests });
+  const source = path.join(await service.getWorkspaceDirectory(), "task-checklists", "main.md");
+  await fs.writeFile(source, "- [x] 確認済み\n");
+  await complete(service, conversation, "完了です");
+  const offer = (await service.history()).taskChecklistCompletion;
+  assert.ok(offer);
+  assert.deepEqual(await service.respondToChecklistCompletion(offer.sourceHash, offer.version, "keep"),
+    { accepted: true, cleared: false });
+  assert.equal((await service.history()).taskChecklistCompletion, null);
+  const replacement = `${source}.replacement`;
+  await fs.writeFile(replacement, "- [x] 確認済み\n");
+  await fs.rename(replacement, source);
+  nativeRequests.splice(0, nativeRequests.length, checklistTurnCall("read2", "read_task_checklist"),
+    checklistTurnCall("offer2", "offer_completion_clear"));
+  await complete(service, conversation, "新しい完了です");
+  const current = (await service.history()).taskChecklistCompletion;
+  assert.ok(current);
+  assert.deepEqual(await service.respondToChecklistCompletion(current.sourceHash, current.version, "clear"),
+    { accepted: true, cleared: true });
+  assert.equal(await fs.readFile(source, "utf8"), "");
+
+  await fs.writeFile(replacement, "- [x] 次の完了\n");
+  await fs.rename(replacement, source);
+  nativeRequests.splice(0, nativeRequests.length, checklistTurnCall("read3", "read_task_checklist"),
+    checklistTurnCall("offer3", "offer_completion_clear"));
+  await complete(service, conversation, "もう一件完了です");
+  assert.equal(JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8")).checklistCompletion.decision,
+    "offered");
+  await service.clearMessages();
+  assert.equal(JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8")).checklistCompletion, undefined);
+  assert.ok((await service.history()).taskChecklistCompletion);
+});
+
+test("AI-approved clear survives an archive failure and operation replay without duplicate history", async (t) => {
+  const nativeRequests = [checklistReadCall("preflight"), checklistTurnCall("read", "read_task_checklist"),
+    checklistTurnCall("offer", "offer_completion_clear")];
+  const { service, conversation, rootDir, codex } = await fixture(t, {
+    taskChecklistPath: "task-checklists/main.md", nativeRequests });
+  const workspace = await service.getWorkspaceDirectory();
+  const source = path.join(workspace, "task-checklists", "main.md");
+  const archiveDirectory = path.join(workspace, "task-checklists", "completed");
+  const markdown = "- [x] 保存してから空化\n";
+  await fs.writeFile(source, markdown);
+  await complete(service, conversation, "完了です");
+  const activeFile = path.join(rootDir, "active.json");
+  const offeredState = JSON.parse(await fs.readFile(activeFile, "utf8"));
+  nativeRequests.splice(0, nativeRequests.length, checklistTurnCall("read2", "read_task_checklist"),
+    checklistTurnCall("consent", "confirm_completion_clear"));
+  await fs.writeFile(archiveDirectory, "unavailable");
+  const consentId = randomUUID();
+  assert.equal((await complete(service, conversation, "お願いします", consentId)).result.status, "completed");
+  assert.equal(await fs.readFile(source, "utf8"), markdown);
+  assert.equal(JSON.parse(await fs.readFile(activeFile, "utf8")).checklistCompletion.decision,
+    "approved");
+  await fs.rm(archiveDirectory);
+  await fs.writeFile(activeFile, JSON.stringify(offeredState)); // Crash after completed event, before active.json sync.
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient,
+    taskChecklistPath: "task-checklists/main.md" });
+  await restarted.open();
+  assert.equal(await fs.readFile(source, "utf8"), "");
+  const files = await fs.readdir(archiveDirectory);
+  assert.equal(files.length, 1);
+  assert.equal(JSON.parse(await fs.readFile(path.join(archiveDirectory, files[0]), "utf8")).markdown, markdown);
+  const callsBeforeReplay = codex.calls.length;
+  const replay = await restarted.start({ operationId: consentId, payload: {
+    backendId: "codex", logicalConversationId: conversation.logicalConversationId,
+    clientOperationId: consentId, input: { blocks: [{ type: "text", text: "お願いします" }] },
+  } }, () => {}, async () => "decline");
+  assert.equal(replay.status, "completed");
+  assert.equal(codex.calls.length, callsBeforeReplay);
+  assert.deepEqual(await fs.readdir(archiveDirectory), files);
+});
+
+test("corrupt checklist completion fields in the event journal fail closed before archive access", async (t) => {
+  for (const [label, corrupt] of [
+    ["invalid offer", (value) => ({ ...value, offerTurnSeq: 0 })],
+    ["invalid source hash type", (value) => ({ ...value, sourceHash: { toString: null } })],
+    ["invalid source version type", (value) => ({ ...value, version: { toString: null } })],
+    ["invalid offer conversation type", (value) => ({ ...value, conversationId: { toString: null } })],
+    ["invalid offer operation type", (value) => ({ ...value, offerOperationId: { toString: null } })],
+    ["archive path traversal", (value) => ({ sourceHash: value.sourceHash, version: value.version,
+      decision: "approved", archiveId: "../../outside", completedAt: new Date().toISOString() })],
+    ["invalid completion date type", (value) => ({ sourceHash: value.sourceHash, version: value.version,
+      decision: "approved", archiveId: `${Date.now()}-${randomUUID()}`, completedAt: { toString: null } })],
+  ]) {
+    await t.test(label, async (child) => {
+      const nativeRequests = [checklistReadCall("preflight"), checklistTurnCall("read", "read_task_checklist"),
+        checklistTurnCall("offer", "offer_completion_clear")];
+      const { service, conversation, rootDir, codex } = await fixture(child, {
+        taskChecklistPath: "task-checklists/main.md", nativeRequests });
+      const source = path.join(await service.getWorkspaceDirectory(), "task-checklists", "main.md");
+      const markdown = "- [x] 履歴保護\n";
+      await fs.writeFile(source, markdown);
+      await complete(service, conversation, "完了です");
+      const eventFile = path.join(rootDir, conversation.logicalConversationId, "events.jsonl");
+      const events = (await fs.readFile(eventFile, "utf8")).trimEnd().split("\n").map((line) => JSON.parse(line));
+      events.at(-1).checklistCompletion = corrupt(events.at(-1).checklistCompletion);
+      await fs.writeFile(eventFile, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`);
+      const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient,
+        taskChecklistPath: "task-checklists/main.md" });
+      await assert.rejects(restarted.open(), { code: "voice_store_corrupt" });
+      assert.equal(await fs.readFile(source, "utf8"), markdown);
+    });
+  }
+});
+
 test("old consent cannot clear a new identical checklist, and a kept checklist asks again after rewrite", async (t) => {
   const { service } = await fixture(t, { taskChecklistPath: "task-checklists/main.md" });
   const workspace = await service.getWorkspaceDirectory();
@@ -2922,8 +3153,8 @@ test("saved custom instructions keep the fixed checklist read and maintenance ru
   assert.ok(threads.every(({ params }) => params.developerInstructions.includes("maintain task-checklists/main.md yourself for active work")));
   assert.ok(threads.every(({ params }) => params.developerInstructions.includes("- [ ] pending task or - [x] confirmed completion")));
   assert.ok(threads.every(({ params }) => params.developerInstructions.includes("immediately whenever progress changes")));
-  assert.ok(threads.every(({ params }) => params.developerInstructions.includes("ask once in your reply whether to archive and clear")));
-  assert.ok(threads.every(({ params }) => params.developerInstructions.includes("Only the user's selection of that icon")));
+  assert.ok(threads.every(({ params }) => params.developerInstructions.includes("task_checklist.offer_completion_clear")));
+  assert.ok(threads.every(({ params }) => params.developerInstructions.includes("task_checklist.confirm_completion_clear")));
   assert.ok(threads.some(({ params }) => params.developerInstructions.includes("task_checklist.read_task_checklist")));
   assert.ok(threads.every(({ params }) => params.developerInstructions.includes("task_checklist.write_task_checklist")));
   assert.ok(threads.some(({ params }) => params.developerInstructions.includes("新しい親セッションでは")));
@@ -2956,7 +3187,7 @@ test("legacy main parent starts a fresh thread before the user's first checklist
   assert.equal(threads.some(({ method, params }) => method === "thread/resume" && params.threadId === oldThreadId), false);
 });
 
-test("main parent without the write tool waits for its native child before migration", async (t) => {
+test("main parent without the completion tools waits for its native child before migration", async (t) => {
   const nativeThreads = new Map();
   const { rootDir, service, conversation, codex } = await fixture(t, {
     taskChecklistPath: "task-checklists/main.md", nativeThreads,
@@ -2967,8 +3198,9 @@ test("main parent without the write tool waits for its native child before migra
   const old = JSON.parse(await fs.readFile(activeFile, "utf8"));
   assert.equal(old.nativeAgentsEnabled, true);
   assert.equal(old.nativeChecklistWriteEnabled, true);
+  assert.equal(old.nativeChecklistCompletionEnabled, true);
   assert.equal(old.checklistReadPending, false);
-  delete old.nativeChecklistWriteEnabled; // State created by the previous release.
+  delete old.nativeChecklistCompletionEnabled; // State created by the previous release.
   await fs.writeFile(activeFile, JSON.stringify(old));
   const childId = randomUUID();
   nativeThreads.get(old.nativeThreadId).turns[0].items.push({ type: "collabAgentToolCall",
@@ -2992,6 +3224,7 @@ test("main parent without the write tool waits for its native child before migra
   assert.notEqual(next.nativeThreadId, old.nativeThreadId);
   assert.equal(next.nativeAgentsEnabled, true);
   assert.equal(next.nativeChecklistWriteEnabled, true);
+  assert.equal(next.nativeChecklistCompletionEnabled, true);
   assert.equal(next.checklistReadPending, false);
   assert.equal(codex.calls.slice(callsBeforeMigration).some(({ method, params }) => method === "thread/resume"
     && params.threadId === old.nativeThreadId), false);
@@ -3116,7 +3349,7 @@ test("restart never recovers an unverified checklist parent reply as completed",
   const active = JSON.parse(await fs.readFile(activeFile, "utf8"));
   await fs.writeFile(activeFile, JSON.stringify({ ...active, nativeThreadId: threadId,
     nativeTurnId: turnId, checklistReadPending: true, nativeAgentsEnabled: true,
-    nativeChecklistWriteEnabled: true }));
+    nativeChecklistWriteEnabled: true, nativeChecklistCompletionEnabled: true }));
   nativeThreads.set(threadId, { id: threadId, turns: [{ id: turnId, status: "completed",
     items: [{ type: "userMessage", text: "continue" }, { type: "agentMessage", text: "unsafe reply" }] }] });
   const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient,
