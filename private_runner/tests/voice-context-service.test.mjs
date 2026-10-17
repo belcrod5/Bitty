@@ -305,6 +305,17 @@ async function fixture(t, options = {}) {
   return { rootDir, codex, service, conversation };
 }
 
+function overviewWarnings(t) {
+  const original = console.warn;
+  const warnings = [];
+  console.warn = (message, details) => {
+    if (message === "[voice-context] checklist overview failed") warnings.push(details);
+    else original(message, details);
+  };
+  t.after(() => { console.warn = original; });
+  return warnings;
+}
+
 async function beginTurn(service, conversation, text, id = randomUUID(), onApproval = async () => "decline", hooks = {}) {
   let resolve;
   const terminal = new Promise((done) => { resolve = done; });
@@ -2115,6 +2126,7 @@ test("legacy main checklist gets one display-only overview and reuses its source
 });
 
 test("invalid overview output leaves the original available and does not retry on history or reopen", async (t) => {
+  const warnings = overviewWarnings(t);
   const { rootDir, service, codex } = await fixture(t, { taskChecklistPath: "task-checklists/main.md",
     overviewReplies: ["A title without checklist rows"] });
   const original = "- [ ] 一件だけ確認\n";
@@ -2124,6 +2136,7 @@ test("invalid overview output leaves the original available and does not retry o
     taskChecklistPath: "task-checklists/main.md" });
   assert.deepEqual((await restarted.history()).taskChecklistOverview, { status: "pending" });
   await waitFor(async () => (await restarted.history()).taskChecklistOverview.status === "unavailable");
+  assert.deepEqual(warnings, [{ code: "invalid_format" }]);
   assert.deepEqual((await restarted.history()).taskChecklist, { status: "present", markdown: original });
   const cache = JSON.parse(await fs.readFile(path.join(rootDir, "task-checklist-overview.json"), "utf8"));
   assert.equal(cache.markdown, null);
@@ -2135,9 +2148,27 @@ test("invalid overview output leaves the original available and does not retry o
   assert.deepEqual((await another.history()).taskChecklistOverview, { status: "unavailable" });
   assert.equal(codex.calls.filter(({ method, params }) => method === "thread/start"
     && params.developerInstructions?.startsWith("Summarize the entire supplied task checklist")).length, count);
+  assert.deepEqual(warnings, [{ code: "invalid_format" }]);
+});
+
+test("overview model failure logs only a fixed category and does not retry on history", async (t) => {
+  const warnings = overviewWarnings(t);
+  const { rootDir, service, codex } = await fixture(t, {
+    taskChecklistPath: "task-checklists/main.md", failMethod: "turn/start",
+  });
+  await fs.writeFile(path.join(await service.getWorkspaceDirectory(), "task-checklists", "main.md"),
+    "- [ ] 内容確認\n");
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient,
+    taskChecklistPath: "task-checklists/main.md" });
+  assert.deepEqual((await restarted.history()).taskChecklistOverview, { status: "pending" });
+  await waitFor(async () => (await restarted.history()).taskChecklistOverview.status === "unavailable");
+  assert.deepEqual(warnings, [{ code: "model_turn_failed" }]);
+  await restarted.history();
+  assert.deepEqual(warnings, [{ code: "model_turn_failed" }]);
 });
 
 test("overview cache write failure ends pending and notifies the visible original", async (t) => {
+  const warnings = overviewWarnings(t);
   const { rootDir, service, codex } = await fixture(t, { taskChecklistPath: "task-checklists/main.md",
     holdOverviews: true, overviewReplies: ["- [ ] 概要"] });
   const original = "- [ ] 原本\n";
@@ -2151,10 +2182,12 @@ test("overview cache write failure ends pending and notifies the visible origina
   await codex.overviewReleases.shift()();
   await waitFor(() => changes.length === 1);
   assert.deepEqual((await restarted.history()).taskChecklistOverview, { status: "unavailable" });
+  assert.deepEqual(warnings, [{ code: "cache_write_failed" }]);
   assert.deepEqual((await restarted.history()).taskChecklist, { status: "present", markdown: original });
 });
 
 test("source mismatch at overview completion ends pending without publishing a stale summary", async (t) => {
+  const warnings = overviewWarnings(t);
   const { rootDir, service, codex } = await fixture(t, { taskChecklistPath: "task-checklists/main.md",
     holdOverviews: true, overviewReplies: ["- [x] 古い概要"] });
   const target = path.join(await service.getWorkspaceDirectory(), "task-checklists", "main.md");
@@ -2168,6 +2201,7 @@ test("source mismatch at overview completion ends pending without publishing a s
   await codex.overviewReleases.shift()();
   await waitFor(() => changes.length === 1);
   assert.deepEqual((await restarted.history()).taskChecklistOverview, { status: "unavailable" });
+  assert.deepEqual(warnings, []);
   assert.deepEqual((await restarted.history()).taskChecklist, { status: "present", markdown: "- [ ] 新原本\n" });
 });
 
@@ -2350,7 +2384,8 @@ test("a failed tool with a partial checklist write still invalidates the disk-ba
 test("a failed turn finishes its partial-write notification before reporting failure", async (t) => {
   const nativeRequests = [checklistReadCall("read")];
   const changes = [];
-  const { service, conversation } = await fixture(t, { taskChecklistPath: "task-checklists/main.md",
+  let releaseTurn;
+  const { service, conversation, codex } = await fixture(t, { taskChecklistPath: "task-checklists/main.md",
     regularTurnStatus: "failed", nativeRequests,
     onChecklistChanged: (conversationId) => changes.push(conversationId) });
   const target = path.join(await service.getWorkspaceDirectory(), "task-checklists", "main.md");
@@ -2359,12 +2394,22 @@ test("a failed turn finishes its partial-write notification before reporting fai
     beforeCompleted: () => fs.writeFile(target, "- [ ] 失敗した操作の途中結果\n"),
     completedMethod: "item/failed",
     completedItem: { id: "partial", type: "commandExecution", status: "failed" } });
-  const { result } = await complete(service, conversation, "record partial result", randomUUID(),
+  nativeRequests.push(checklistTurnCall("hold", "read_task_checklist", {}, {
+    beforeCompleted: () => new Promise((resolve) => { releaseTurn = resolve; }),
+  }));
+  const completion = complete(service, conversation, "record partial result", randomUUID(),
     async () => "accept");
+  await waitFor(() => Boolean(releaseTurn) && changes.length === 1);
+  assert.deepEqual((await service.history()).taskChecklistOverview, { status: "pending" });
+  assert.equal(codex.calls.filter(({ method, params }) => method === "thread/start"
+    && params.developerInstructions?.startsWith("Summarize the entire supplied task checklist")).length, 0);
+  releaseTurn();
+  const { result } = await completion;
   assert.equal(result.status, "failed");
   assert.deepEqual(changes, [conversation.logicalConversationId]);
   assert.deepEqual((await service.history()).taskChecklist,
     { status: "present", markdown: "- [ ] 失敗した操作の途中結果\n" });
+  await waitFor(async () => (await service.history()).taskChecklistOverview.status === "present");
 });
 
 test("main checklist file changes use normal approval after the dedicated write tool", async (t) => {
@@ -2431,6 +2476,51 @@ test("writing identical checklist Markdown does not notify or regenerate its ove
   await new Promise((resolve) => setTimeout(resolve, 350));
   assert.equal(codex.calls.some(({ method, params }) => method === "thread/start"
     && params.developerInstructions?.startsWith("Summarize the entire supplied task checklist")), false);
+});
+
+test("main checklist writes stay pending until turn end and summarize only the final source", async (t) => {
+  const a = "- [x] A作業\n";
+  const b = "- [ ] B作業\n";
+  const changes = [];
+  const requests = [checklistReadCall("preflight")];
+  const { rootDir, service, codex, conversation } = await fixture(t, {
+    taskChecklistPath: "task-checklists/main.md", nativeRequests: requests,
+    overviewReplies: ["- [x] A概要", "- [ ] B概要"],
+  });
+  await fs.writeFile(path.join(await service.getWorkspaceDirectory(), "task-checklists", "main.md"), a);
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient,
+    taskChecklistPath: "task-checklists/main.md", onChecklistChanged: (id) => changes.push(id) });
+  await restarted.open();
+  await waitFor(async () => (await restarted.history()).taskChecklistOverview.markdown === "- [x] A概要");
+  await waitFor(() => changes.length === 1);
+  changes.length = 0;
+  let paused = 0;
+  let releaseStep;
+  const pause = () => {
+    paused += 1;
+    return new Promise((resolve) => { releaseStep = resolve; });
+  };
+  for (const [name, markdown] of [["b-first", b], ["back-a", a], ["b-final", b], ["b-identical", b]]) {
+    requests.push(checklistTurnCall(`${name}-read`, "read_task_checklist"),
+      checklistTurnCall(name, "write_task_checklist", { markdown }, { beforeCompleted: pause }));
+  }
+  const overviewStarts = () => codex.calls.filter(({ method, params }) => method === "thread/start"
+    && params.developerInstructions?.startsWith("Summarize the entire supplied task checklist"));
+  const completion = complete(restarted, conversation, "update the task", randomUUID(), async () => "accept");
+  for (const [step, expected] of ["pending", "present", "pending", "pending"].entries()) {
+    await waitFor(() => paused === step + 1);
+    assert.equal((await restarted.history()).taskChecklistOverview.status, expected);
+    if (step === 0) await new Promise((resolve) => setTimeout(resolve, 350));
+    assert.equal(overviewStarts().length, 1);
+    assert.equal(changes.length, Math.min(step + 1, 3));
+    const release = releaseStep;
+    releaseStep = null;
+    release();
+  }
+  assert.equal((await completion).result.status, "completed");
+  await waitFor(async () => (await restarted.history()).taskChecklistOverview.markdown === "- [ ] B概要");
+  assert.equal(overviewStarts().length, 2);
+  assert.deepEqual(changes, Array(4).fill(conversation.logicalConversationId));
 });
 
 test("legacy checklist normalization preserves every line before a separate progress write", async (t) => {

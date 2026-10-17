@@ -4,15 +4,17 @@ import Reanimated, { useAnimatedStyle, useSharedValue, withTiming } from "react-
 
 let macBlurView: ReturnType<typeof requireNativeComponent<ViewProps>> | null = null;
 
+export function getMacVoiceBlurView() {
+  if (!macBlurView) macBlurView = requireNativeComponent<ViewProps>("BittyVoiceBlur");
+  return macBlurView;
+}
+
 export function VoiceHistoryBackdrop({ expanded, reduceMotion }: { expanded: boolean; reduceMotion: boolean }) {
   const opacity = useSharedValue(0);
   const animatedStyle = useAnimatedStyle(() => ({ opacity: opacity.value }));
   const IosBlurView = useMemo(() => Platform.OS === "ios"
     ? require("expo-blur").BlurView as typeof import("expo-blur").BlurView : null, []);
-  if (Platform.OS === "macos" && !macBlurView) {
-    macBlurView = requireNativeComponent<ViewProps>("BittyVoiceBlur");
-  }
-  const MacBlurView = Platform.OS === "macos" ? macBlurView : null;
+  const MacBlurView = Platform.OS === "macos" ? getMacVoiceBlurView() : null;
 
   useEffect(() => {
     opacity.value = withTiming(expanded ? 1 : 0, { duration: reduceMotion ? 0 : 240 });

@@ -301,6 +301,13 @@ test("display overview defaults to a few checked rows and switches to the unchan
   const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
   await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
   expect(screen.getByText("確認済みの作業")).toBeTruthy();
+  expect(screen.getByText("原本へ")).toBeTruthy();
+  expect(screen.getByTestId("voice-task-checklist-blur")).toBeTruthy();
+  expect(StyleSheet.flatten(screen.getByTestId("voice-task-checklist-tint").props.style).backgroundColor)
+    .toBe(VISUAL_THEMES[DEFAULT_VISUAL_THEME_ID].colors.surfaceTranslucent);
+  const overviewPanelStyle = StyleSheet.flatten(screen.getByTestId("voice-task-checklist-panel").props.style);
+  const overviewToggleStyle = StyleSheet.flatten(screen.getByTestId("voice-task-checklist-source-toggle").props.style);
+  expect(overviewPanelStyle.borderLeftColor).toBe(VISUAL_THEMES[DEFAULT_VISUAL_THEME_ID].colors.accent);
   expect(screen.getByTestId("voice-task-checklist-item-0").props.accessibilityState)
     .toMatchObject({ checked: true, disabled: true });
   expect(StyleSheet.flatten(screen.getByText("確認済みの作業").props.style).textDecorationLine)
@@ -309,11 +316,26 @@ test("display overview defaults to a few checked rows and switches to the unchan
     .toBe("none");
   expect(screen.queryByText("確認済み")).toBeNull();
   await fireEvent.press(screen.getByTestId("voice-task-checklist-source-toggle"));
+  expect(screen.getByText("概要へ")).toBeTruthy();
+  expect(screen.queryByTestId("voice-task-checklist-blur")).toBeNull();
+  expect(screen.queryByTestId("voice-task-checklist-tint")).toBeNull();
+  expect(StyleSheet.flatten(screen.getByTestId("voice-task-checklist-panel").props.style).borderLeftColor)
+    .toBe(VISUAL_THEMES[DEFAULT_VISUAL_THEME_ID].colors.borderSubtle);
+  expect(StyleSheet.flatten(screen.getByTestId("voice-task-checklist-source-toggle").props.style).backgroundColor)
+    .not.toBe(overviewToggleStyle.backgroundColor);
   expect(screen.getByText("- 確認済み")).toBeTruthy();
   expect(screen.getByText("- 次の確認は未着手")).toBeTruthy();
   expect(screen.queryByTestId("voice-task-checklist-item-0")).toBeNull();
   await fireEvent.press(screen.getByTestId("voice-task-checklist-source-toggle"));
   expect(screen.getByTestId("voice-task-checklist-item-0").props.accessibilityState.checked).toBe(true);
+});
+
+test("overview has a translucent fallback without native blur", async () => {
+  Object.defineProperty(Platform, "OS", { configurable: true, value: "android" });
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  expect(screen.queryByTestId("voice-task-checklist-blur")).toBeNull();
+  expect(screen.getByTestId("voice-task-checklist-tint")).toBeTruthy();
 });
 
 test("pending overview stays compact while the original remains available", async () => {
@@ -336,6 +358,11 @@ test("older Runner without an overview field still shows its original checklist"
   await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
   expect(screen.getByText("旧Runnerの作業")).toBeTruthy();
   expect(screen.queryByTestId("voice-task-checklist-source-toggle")).toBeNull();
+  expect(screen.queryByTestId("voice-task-checklist-blur")).toBeNull();
+  expect(screen.queryByTestId("voice-task-checklist-tint")).toBeNull();
+  expect(StyleSheet.flatten(screen.getByTestId("voice-task-checklist-panel").props.style))
+    .toMatchObject({ backgroundColor: VISUAL_THEMES[DEFAULT_VISUAL_THEME_ID].colors.floatingSurface,
+      borderLeftColor: VISUAL_THEMES[DEFAULT_VISUAL_THEME_ID].colors.borderSubtle });
 });
 
 test("task checklist states are distinct and other orchestrators have no panel", async () => {
@@ -558,6 +585,7 @@ test("macOS renders the native within-window blur behind the dark overlay", asyn
   const blur = screen.getByTestId("voice-conversation-board-blur");
   expect(blur.type).toBe("BittyVoiceBlur");
   expect(blur.props.pointerEvents).toBe("none");
+  expect(screen.getByTestId("voice-task-checklist-blur").type).toBe("BittyVoiceBlur");
   expect(StyleSheet.flatten(blur.props.style).opacity).toBeUndefined();
   expect(StyleSheet.flatten(screen.getByTestId("voice-conversation-backdrop").props.style).backgroundColor)
     .toBe("rgba(0, 0, 0, 0.4)");

@@ -262,6 +262,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
   let overviewRevision = 0;
   let overviewRequest = 0;
   let overviewTarget = null;
+  let overviewAwaitingTurnHash = "";
 
   function settings() {
     return { model: active.model || DEFAULT_MODEL, effort: active.effort || DEFAULT_EFFORT,
@@ -376,9 +377,14 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
       const controller = new AbortController();
       const task = { controller };
       overviewTask = task;
+      let failure = "";
       void modelTurn({ input: target.markdown, instructions: CHECKLIST_OVERVIEW_INSTRUCTIONS,
         model: target.model, effort: target.effort, signal: controller.signal })
-        .then(({ text }) => validOverview(text) ? text.trim() : null, () => null)
+        .then(({ text }) => {
+          if (validOverview(text)) return text.trim();
+          failure = "invalid_format";
+          return null;
+        }, () => { failure = "model_turn_failed"; return null; })
         .then((markdown) => exclusive(async () => {
           if (revision !== overviewRevision || overviewTask !== task) return;
           const current = await readTaskChecklist();
@@ -388,7 +394,10 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
           try {
             await atomicWrite(overviewFile, JSON.stringify(next));
             overviewCache = next;
-          } catch {}
+          } catch {
+            failure = "cache_write_failed";
+          }
+          if (failure) console.warn("[voice-context] checklist overview failed", { code: failure });
         })).catch(() => {}).finally(() => {
           if (overviewTask === task) overviewTask = null;
           if (overviewTarget === target) {
@@ -1079,6 +1088,9 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
           if (current.status === checklistSnapshot.status
             && (current.status !== "present" || current.markdown === checklistSnapshot.markdown)) return;
           checklistSnapshot = current;
+          const sourceHash = current.status === "present" && current.markdown.trim()
+            ? checklistHash(current.markdown) : "";
+          overviewAwaitingTurnHash = sourceHash && overviewCache?.sourceHash !== sourceHash ? sourceHash : "";
           try { onChecklistChanged?.(checklistConversationId); } catch {}
           checklistOverviewDirty = true;
         }).catch(() => {});
@@ -1597,7 +1609,10 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
       removeAbortListener();
       client?.close();
       await checklistChangeProof;
-      if (checklistOverviewDirty) await scheduleChecklistOverview().catch(() => {});
+      if (checklistOverviewDirty) {
+        await scheduleChecklistOverview().catch(() => {});
+        overviewAwaitingTurnHash = "";
+      }
     }
   }
 
@@ -2096,7 +2111,8 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
         const taskChecklistOverview = sourceHash && overviewCache?.sourceHash === sourceHash
           && validOverview(overviewCache.markdown)
           ? { status: "present", markdown: overviewCache.markdown }
-          : sourceHash && overviewTarget?.sourceHash === sourceHash && (overviewTimer || overviewTask)
+          : sourceHash && (overviewAwaitingTurnHash === sourceHash
+            || overviewTarget?.sourceHash === sourceHash && (overviewTimer || overviewTask))
             ? { status: "pending" } : { status: "unavailable" };
         return { logicalConversationId: active.logicalConversationId, messages, taskChecklist, taskChecklistOverview };
       });

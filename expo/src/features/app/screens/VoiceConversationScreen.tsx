@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Ionicons } from "@expo/vector-icons";
-import { AppState, Platform, Pressable, SafeAreaView, ScrollView, Text, View, useWindowDimensions } from "react-native";
+import { AppState, Platform, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Reanimated, { FadeIn, FadeInDown, FadeOut, FadeOutDown, runOnJS } from "react-native-reanimated";
 import { useStreamingStt } from "../../stt/useStreamingStt";
 import { StreamingSttFooter, type StreamingSttFooterHandle } from "../components/StreamingSttFooter";
-import { VoiceHistoryBackdrop } from "../components/VoiceHistoryBackdrop";
+import { VoiceHistoryBackdrop, getMacVoiceBlurView } from "../components/VoiceHistoryBackdrop";
 import { ContextUsageIndicator } from "../components/ContextUsageIndicator";
 import { CodexStatusSummaryMenu } from "../components/CodexStatusSummaryMenu";
 import { VoiceOrchestratorIcon, type VoiceOrchestrator } from "../components/VoiceOrchestratorIcon";
@@ -158,6 +158,9 @@ function VoiceConversationSession({
   const reduceMotion = useReduceMotionEnabled();
   const { theme } = useVisualTheme();
   const { width: screenWidth } = useWindowDimensions();
+  const IosBlurView = useMemo(() => Platform.OS === "ios"
+    ? require("expo-blur").BlurView as typeof import("expo-blur").BlurView : null, []);
+  const MacBlurView = Platform.OS === "macos" ? getMacVoiceBlurView() : null;
   const [taskChecklistOpen, setTaskChecklistOpen] = useState(true);
   const [taskChecklistOriginal, setTaskChecklistOriginal] = useState(false);
   const [transcript, setTranscript] = useState("");
@@ -197,11 +200,13 @@ function VoiceConversationSession({
       : undefined,
     orchestrator.id,
   );
+  const isOverviewMode = voice.taskChecklist?.status === "present"
+    && Boolean(voice.taskChecklist.markdown.trim()) && Boolean(voice.taskChecklistOverview)
+    && !taskChecklistOriginal;
   const taskChecklistRows = useMemo(() => {
     if (voice.taskChecklist?.status !== "present") return [];
-    if (!taskChecklistOriginal && voice.taskChecklistOverview
-      && voice.taskChecklistOverview.status !== "present") return [];
-    const markdown = !taskChecklistOriginal && voice.taskChecklistOverview?.status === "present"
+    if (isOverviewMode && voice.taskChecklistOverview?.status !== "present") return [];
+    const markdown = isOverviewMode && voice.taskChecklistOverview?.status === "present"
       ? voice.taskChecklistOverview.markdown : voice.taskChecklist.markdown;
     return markdown.split(/\r?\n/u).flatMap<
       { kind: "item"; checked: boolean; text: string } | { kind: "text"; text: string }
@@ -214,7 +219,7 @@ function VoiceConversationSession({
         return [{ kind: "text" as const, text: line }];
       }
     });
-  }, [taskChecklistOriginal, voice.taskChecklist, voice.taskChecklistOverview]);
+  }, [isOverviewMode, voice.taskChecklist, voice.taskChecklistOverview]);
   const manager = useRunnerWebSocketManager();
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => setAppActive(state === "active"));
@@ -507,20 +512,31 @@ function VoiceConversationSession({
                 {orchestrator.id === "main" ? taskChecklistOpen ? (
                   <View testID="voice-task-checklist-panel" style={{ position: "absolute", right: 0, top: 0,
                     maxWidth: Math.min(260, Math.max(0, screenWidth - 64)), maxHeight: "65%",
-                    backgroundColor: theme.colors.floatingSurface, borderTopLeftRadius: 14,
+                    backgroundColor: isOverviewMode ? "transparent" : theme.colors.floatingSurface, borderTopLeftRadius: 14,
                     borderBottomLeftRadius: 14, borderWidth: 1, borderColor: theme.colors.borderStrong,
-                    borderLeftWidth: 3, borderLeftColor: theme.colors.accent,
+                    borderLeftWidth: 3, borderLeftColor: isOverviewMode ? theme.colors.accent : theme.colors.borderSubtle,
                     shadowColor: theme.colors.shadow, shadowOffset: { width: -3, height: 6 },
                     shadowOpacity: 0.24, shadowRadius: 12, elevation: 9, overflow: "hidden" }}>
+                    {isOverviewMode && IosBlurView ? <IosBlurView testID="voice-task-checklist-blur"
+                      pointerEvents="none" intensity={65} tint={theme.colorScheme}
+                      style={StyleSheet.absoluteFill} /> : null}
+                    {isOverviewMode && MacBlurView ? <MacBlurView testID="voice-task-checklist-blur"
+                      pointerEvents="none" style={StyleSheet.absoluteFill} /> : null}
+                    {isOverviewMode ? <View testID="voice-task-checklist-tint" pointerEvents="none" style={[StyleSheet.absoluteFill,
+                      { backgroundColor: theme.colors.surfaceTranslucent }]} /> : null}
                     <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "flex-end",
                       borderBottomWidth: 1, borderBottomColor: theme.colors.borderSubtle }}>
                       {voice.taskChecklist?.status === "present" && voice.taskChecklistOverview
                         ? <Pressable testID="voice-task-checklist-source-toggle"
-                        accessibilityRole="button" accessibilityLabel={taskChecklistOriginal ? "To Do概要を表示" : "To Do原本を表示"}
+                        accessibilityRole="button" accessibilityLabel={isOverviewMode ? "To Do原本を表示" : "To Do概要を表示"}
                         onPress={() => setTaskChecklistOriginal((current) => !current)}
-                        style={{ paddingHorizontal: 10, height: 38, justifyContent: "center" }}>
-                        <Text style={{ color: theme.colors.accentStrong, fontSize: 12 }}>
-                          {taskChecklistOriginal ? "概要" : "原本"}
+                        style={{ paddingHorizontal: 10, height: 30, justifyContent: "center",
+                          borderRadius: 8, borderWidth: 1, borderColor: isOverviewMode
+                            ? theme.colors.borderTranslucent : theme.colors.borderSubtle,
+                          backgroundColor: isOverviewMode ? theme.colors.surfaceActionSoft : theme.colors.surfaceMuted }}>
+                        <Text style={{ color: isOverviewMode ? theme.colors.accentStrong : theme.colors.textSecondary,
+                          fontSize: 12 }}>
+                          {isOverviewMode ? "原本へ" : "概要へ"}
                         </Text>
                       </Pressable> : null}
                       <Pressable testID="voice-task-checklist-refresh" accessibilityRole="button"
@@ -545,7 +561,7 @@ function VoiceConversationSession({
                             ? <Text style={{ color: theme.colors.textPrimary }}>To Doを読み込めませんでした</Text>
                             : !voice.taskChecklist.markdown.trim()
                               ? <Text style={{ color: theme.colors.textSecondary }}>To Doは空です</Text>
-                            : !taskChecklistOriginal && voice.taskChecklistOverview
+                            : isOverviewMode && voice.taskChecklistOverview
                               && voice.taskChecklistOverview.status !== "present"
                               ? <Text style={{ color: theme.colors.textSecondary }}>
                                 {voice.taskChecklistOverview?.status === "pending"
