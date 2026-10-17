@@ -348,6 +348,21 @@ test("uses RunnerWebSocketManager for stream TTS control traffic when manager is
   expect(streamSocketRef.current).toBeNull();
 });
 
+test("text playback uses the target voice while ordinary chat keeps its own voice", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const { options } = createOptions(manager);
+  const { result } = await renderHook(() => useSynthesizeSpeechStreamController(options));
+  await result.current("orchestrator reply", { messageId: "voice-1",
+    ttsProvider: "google", voiceId: "ja-JP-Neural2-B" });
+  expect(manager.sent.at(-1)?.payload).toMatchObject({
+    ttsProvider: "google", voiceId: "ja-JP-Neural2-B",
+  });
+  await result.current("ordinary reply", { messageId: "chat-1" });
+  expect(manager.sent.at(-1)?.payload).toMatchObject({
+    ttsProvider: "mock", voiceId: "voice-1",
+  });
+});
+
 test("text TTS resumes missed audio after the shared runner socket reconnects", async () => {
   const manager = new FakeRunnerWebSocketManager();
   const { options } = createOptions(manager);

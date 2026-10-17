@@ -10,6 +10,9 @@ export const TTS_SPEED_MIN = 0.5;
 export const TTS_SPEED_MAX = 2.0;
 export const TTS_SPEED_STEP = 0.1;
 export const TTS_PROVIDERS: TtsProvider[] = ["elevenlabs", "google", "aivisspeech"];
+export const TTS_PROVIDER_LABELS: Record<TtsProvider, string> = {
+  elevenlabs: "ElevenLabs", google: "Google", aivisspeech: "AivisSpeech",
+};
 export const DEFAULT_SELECTED_VOICE_IDS: SelectedVoiceIdByProvider = {
   elevenlabs: "",
   google: "",

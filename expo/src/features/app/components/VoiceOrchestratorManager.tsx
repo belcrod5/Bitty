@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useState } from "react";
-import { Alert, Pressable, SafeAreaView, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Alert, Platform, Pressable, SafeAreaView, Text, TextInput, TouchableOpacity, View } from "react-native";
 import { useRunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketContext";
-import { KeyboardAwareScrollView } from "../keyboardController";
+import { KeyboardAwareScrollView, KeyboardAvoidingView } from "../keyboardController";
 import { effortOptionsForModel } from "../modelOptions";
 import { useAppStyles } from "../styles";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { isReasoningEffort, type ReasoningEffort } from "../utils/settingsParsers";
+import { DEFAULT_TTS_PROVIDER, TTS_PROVIDERS, TTS_PROVIDER_LABELS, type TtsProvider } from "../utils/audioConfig";
 import { pickVoiceOrchestratorIcon, supportsVoiceOrchestratorIconPicking } from "../utils/voiceOrchestratorIconPicker";
 import { AppModal } from "./AppModal";
 import { SettingsSelect } from "./SettingsSelect";
@@ -14,6 +15,7 @@ import { VoiceOrchestratorIcon, type VoiceOrchestrator } from "./VoiceOrchestrat
 type VoiceModel = { modelId: string; label: string; effortOptions: ReasoningEffort[] };
 type Detail = {
   name: string; icon: string; model: string; effort: ReasoningEffort; systemInstruction: string;
+  ttsProvider: TtsProvider; voiceId: string;
   topicModel: string; topicEffort: ReasoningEffort;
   overviewModel?: string; overviewEffort?: ReasoningEffort;
   models: VoiceModel[]; storedMessageCount: number; memoryCharacterCount: number;
@@ -23,9 +25,11 @@ const EFFORT_LABELS: Record<ReasoningEffort, string> = {
   low: "低", medium: "中", high: "高", xhigh: "非常に高い", max: "最大", ultra: "Ultra",
 };
 
-export function VoiceOrchestratorManager({ visible, list, onListChanged, onConversationChanged, onClose }: {
+export function VoiceOrchestratorManager({ visible, list, onListChanged, onConversationChanged,
+  onClose, runnerBaseUrl, runnerToken }: {
   visible: boolean; list: List; onListChanged: (list: List) => void;
   onConversationChanged: (id: string) => void; onClose: () => void;
+  runnerBaseUrl?: string; runnerToken?: string;
 }) {
   const manager = useRunnerWebSocketManager();
   const styles = useAppStyles();
@@ -34,6 +38,12 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
   const [detail, setDetail] = useState<Detail | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [voices, setVoices] = useState<{ voiceId: string; name: string }[]>([]);
+  const [voicesLoading, setVoicesLoading] = useState(false);
+  const [voiceFilter, setVoiceFilter] = useState("");
+  const voiceCatalogKeyRef = useRef("");
+  const voiceCatalogRequestRef = useRef(0);
+  voiceCatalogKeyRef.current = detail ? `${detailId}:${detail.ttsProvider}` : "";
   const request = useCallback(async (op: string, payload?: Record<string, unknown>) => {
     const response = await manager.request({ channel: "agent", op, ...(payload ? { payload } : {}) });
     const result = response.payload && typeof response.payload === "object" && !Array.isArray(response.payload)
@@ -44,12 +54,17 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
   }, [manager]);
 
   useEffect(() => {
-    if (!visible) { setDetailId(null); setDetail(null); setError(""); }
+    if (!visible) { setDetailId(null); setDetail(null); setError(""); setVoices([]);
+      voiceCatalogRequestRef.current += 1; }
   }, [visible]);
 
   useEffect(() => {
     if (!visible || detailId === null) return;
     let current = true;
+    voiceCatalogRequestRef.current += 1;
+    setVoices([]);
+    setVoicesLoading(false);
+    setVoiceFilter("");
     setDetail(null);
     setError("");
     void request("voice.settings", { orchestratorId: detailId === "new" ? "main" : detailId })
@@ -69,6 +84,9 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
         setDetail({
           name: detailId === "new" ? "" : String(value.name || ""),
           icon: detailId === "new" ? "" : String(value.icon || ""),
+          ttsProvider: TTS_PROVIDERS.includes(value.ttsProvider as TtsProvider)
+            ? value.ttsProvider as TtsProvider : DEFAULT_TTS_PROVIDER,
+          voiceId: detailId === "new" ? "" : String(value.voiceId || ""),
           model: value.model, effort: value.effort, systemInstruction: value.systemInstruction,
           topicModel: value.topicModel, topicEffort: value.topicEffort,
           ...(detailId === "main" && typeof value.overviewModel === "string"
@@ -80,6 +98,30 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
       }).catch((cause) => { if (current) setError(cause instanceof Error ? cause.message : "設定を読み込めません。"); });
     return () => { current = false; };
   }, [detailId, request, visible]);
+
+  const loadVoices = useCallback(async () => {
+    if (!detail || !runnerBaseUrl || !runnerToken || voicesLoading) return;
+    const catalogKey = `${detailId}:${detail.ttsProvider}`;
+    const requestId = ++voiceCatalogRequestRef.current;
+    setVoicesLoading(true);
+    try {
+      const response = await fetch(`${runnerBaseUrl}/voices?ttsProvider=${encodeURIComponent(detail.ttsProvider)}`,
+        { headers: { authorization: `Bearer ${runnerToken.trim()}` } });
+      const data = await response.json();
+      if (!response.ok) throw new Error(String(data?.message || data?.error || `HTTP ${response.status}`));
+      if (requestId !== voiceCatalogRequestRef.current || catalogKey !== voiceCatalogKeyRef.current) return;
+      setVoices(Array.isArray(data?.voices) ? data.voices.flatMap((item: unknown) => {
+        if (!item || typeof item !== "object" || typeof (item as { voiceId?: unknown }).voiceId !== "string") return [];
+        const voice = item as { voiceId: string; name?: string };
+        return [{ voiceId: voice.voiceId, name: String(voice.name || voice.voiceId) }];
+      }) : []);
+    } catch (cause) { if (requestId === voiceCatalogRequestRef.current
+      && catalogKey === voiceCatalogKeyRef.current) {
+      setError(cause instanceof Error ? cause.message : "声を読み込めません。");
+    } }
+    finally { if (requestId === voiceCatalogRequestRef.current
+      && catalogKey === voiceCatalogKeyRef.current) setVoicesLoading(false); }
+  }, [detail, detailId, runnerBaseUrl, runnerToken, voicesLoading]);
 
   const applyList = (value: Record<string, unknown>) => {
     if (!Array.isArray(value.orchestrators) || typeof value.selectedId !== "string") {
@@ -96,6 +138,7 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
       const result = await request(detailId === "new" ? "voice.orchestrators.create" : "voice.orchestrators.update", {
         ...(detailId === "new" ? {} : { orchestratorId: detailId }),
         name: detail.name, icon: detail.icon, model: detail.model,
+        ttsProvider: detail.ttsProvider, voiceId: detail.voiceId,
         effort: detail.effort, systemInstruction: detail.systemInstruction,
         topicModel: detail.topicModel, topicEffort: detail.topicEffort,
         ...(detailId === "main" && detail.overviewModel && detail.overviewEffort
@@ -162,8 +205,11 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
 
   return (
     <AppModal visible={visible} animationType="slide" onRequestClose={() => detailId === null ? onClose() : setDetailId(null)}>
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}
+        automaticOffset={Platform.OS === "ios"}>
       <SafeAreaView style={styles.settingsScreen}>
-        <KeyboardAwareScrollView contentContainerStyle={styles.settingsContent} keyboardShouldPersistTaps="handled">
+        <KeyboardAwareScrollView testID="orchestrator-settings-scroll" style={{ flex: 1 }}
+          contentContainerStyle={styles.settingsContent} keyboardShouldPersistTaps="handled">
           <TouchableOpacity accessibilityRole="button" accessibilityLabel="戻る"
             style={styles.settingsBackButton} onPress={() => detailId === null ? onClose() : setDetailId(null)}>
             <Text style={styles.settingsBackButtonText}>‹ {detailId === null ? "音声会話" : "オーケストレータ"}</Text>
@@ -217,6 +263,21 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
                 <SettingsSelect icon="options-outline" label="エフォート"
                   options={efforts.map((effort) => ({ value: effort, label: EFFORT_LABELS[effort] }))}
                   selectedValue={detail.effort} onSelect={(effort) => setDetail({ ...detail, effort: effort as ReasoningEffort })} />
+                <SettingsSelect icon="headset-outline" label="読み上げサービス"
+                  options={TTS_PROVIDERS.map((provider) => ({ value: provider, label: TTS_PROVIDER_LABELS[provider] }))}
+                  selectedValue={detail.ttsProvider} onSelect={(ttsProvider) => {
+                    voiceCatalogRequestRef.current += 1;
+                    setDetail({ ...detail, ttsProvider, voiceId: "" }); setVoices([]); setVoiceFilter("");
+                    setVoicesLoading(false);
+                  }} />
+                <SettingsSelect icon="person-circle-outline" label="読み上げの声"
+                  options={[{ value: "", label: "サービスの既定" }, ...voices
+                    .filter((voice) => !voiceFilter || `${voice.name} ${voice.voiceId}`.toLowerCase()
+                      .includes(voiceFilter.trim().toLowerCase()))
+                    .map((voice) => ({ value: voice.voiceId, label: voice.name, description: voice.voiceId }))]}
+                  selectedValue={detail.voiceId} onSelect={(voiceId) => setDetail({ ...detail, voiceId })}
+                  loading={voicesLoading} searchValue={voiceFilter} onSearchChange={setVoiceFilter}
+                  searchPlaceholder="声の名前で検索" onOpen={() => void loadVoices()} />
                 <SettingsSelect icon="git-branch-outline" label="話題判定モデル"
                   options={detail.models.map((model) => ({ value: model.modelId, label: model.label }))}
                   selectedValue={detail.topicModel} onSelect={(topicModel) => {
@@ -252,10 +313,6 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
                     multiline editable={!busy} style={{ minHeight: 76, padding: 10, borderRadius: 8,
                       color: theme.colors.groupedTextPrimary, backgroundColor: theme.colors.surfaceRaised, textAlignVertical: "top" }} />
                 </View>
-                <TouchableOpacity testID="orchestrator-save" accessibilityRole="button" accessibilityLabel="オーケストレータを保存"
-                  disabled={busy} onPress={() => void save()} style={styles.settingsRow}>
-                  <Text style={styles.settingsActionText}>保存</Text>
-                </TouchableOpacity>
               </View>
               {detailId !== "new" ? <View style={[styles.settingsGroup, { marginTop: 20 }]}>
                 <View style={[styles.settingsRow, styles.settingsRowDivider]}>
@@ -281,9 +338,19 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
               </View> : null}
             </View>
           ) : null}
-          {error ? <Text style={styles.settingsErrorText}>{error}</Text> : null}
+          {error && (!detailId || !detail) ? <Text style={styles.settingsErrorText}>{error}</Text> : null}
         </KeyboardAwareScrollView>
+        {detailId !== null && detail ? <View style={{ width: "100%", maxWidth: 760, alignSelf: "center",
+          paddingHorizontal: 18, paddingTop: 12, paddingBottom: 12, gap: 8 }}>
+          {error ? <Text accessibilityRole="alert" style={styles.settingsErrorText}>{error}</Text> : null}
+          <TouchableOpacity testID="orchestrator-save" accessibilityRole="button" accessibilityLabel="オーケストレータを保存"
+            disabled={busy} onPress={() => void save()}
+            style={[styles.settingsPrimaryButton, { width: "100%", minHeight: 52, alignSelf: "center" }]}>
+            <Text style={styles.settingsPrimaryButtonText}>保存</Text>
+          </TouchableOpacity>
+        </View> : null}
       </SafeAreaView>
+      </KeyboardAvoidingView>
     </AppModal>
   );
 }

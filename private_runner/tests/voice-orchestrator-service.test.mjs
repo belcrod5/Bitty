@@ -132,6 +132,57 @@ async function waitFor(check) {
   throw new Error("condition did not become true");
 }
 
+test("orchestrators persist independent TTS voices and legacy entries get a default", async (t) => {
+  const { rootDir, codex, service } = await fixture(t);
+  const child = await service.create("調査", "", undefined, undefined, undefined, undefined, undefined,
+    "google", "ja-JP-Neural2-B");
+  assert.equal((await service.getSettings(child.id)).voiceId, "ja-JP-Neural2-B");
+  await service.update("main", { name: "メイン", icon: "", ttsProvider: "aivisspeech", voiceId: "123" });
+  await service.update(child.id, { name: "調査", icon: "", voiceId: "ja-JP-Neural2-C" });
+  const opened = await service.open(child.id);
+  const operationId = randomUUID();
+  let acceptedVoice;
+  let finish;
+  const finished = new Promise((resolve) => { finish = resolve; });
+  await service.start({ operationId, payload: { orchestratorId: child.id, backendId: "codex",
+    logicalConversationId: opened.logicalConversationId, clientOperationId: operationId,
+    input: { blocks: [{ type: "text", text: "speak" }] } } }, finish, async () => "decline",
+  { onAccepted: (voice) => { acceptedVoice = voice; } });
+  assert.deepEqual(acceptedVoice, { ttsProvider: "google", voiceId: "ja-JP-Neural2-C" });
+  await finished;
+  const restarted = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
+  assert.deepEqual((await restarted.list()).orchestrators.map(({ ttsProvider, voiceId }) =>
+    ({ ttsProvider, voiceId })), [
+    { ttsProvider: "aivisspeech", voiceId: "123" },
+    { ttsProvider: "google", voiceId: "ja-JP-Neural2-C" },
+  ]);
+  await assert.rejects(() => restarted.update(child.id, { name: "調査", icon: "", ttsProvider: "invalid" }),
+    /TTS voice is invalid/);
+  await restarted.update(child.id, { name: "調査", icon: "", ttsProvider: "elevenlabs" });
+  assert.equal((await restarted.getSettings(child.id)).voiceId, "");
+  const registryFile = path.join(rootDir, "orchestrators.json");
+  const registry = JSON.parse(await fs.readFile(registryFile, "utf8"));
+  await fs.writeFile(registryFile, JSON.stringify({ ...registry, orchestrators: registry.orchestrators.map(
+    ({ ttsProvider: _provider, voiceId: _voice, ...item }) => item) }));
+  const legacy = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient,
+    defaultTtsProvider: "elevenlabs" });
+  assert.deepEqual((await legacy.list()).orchestrators.map(({ ttsProvider, voiceId }) =>
+    ({ ttsProvider, voiceId })), [
+    { ttsProvider: "elevenlabs", voiceId: "" }, { ttsProvider: "elevenlabs", voiceId: "" },
+  ]);
+});
+
+test("invalid TTS settings reject an update before changing model or instructions", async (t) => {
+  const { service } = await fixture(t);
+  const original = await service.getSettings("main");
+  await assert.rejects(() => service.update("main", { name: "メイン", icon: "",
+    model: "another-model", effort: "high", systemInstruction: "Changed instruction",
+    ttsProvider: "invalid", voiceId: "bad" }), /TTS voice is invalid/);
+  const after = await service.getSettings("main");
+  assert.deepEqual([after.model, after.effort, after.systemInstruction],
+    [original.model, original.effort, original.systemInstruction]);
+});
+
 test("unread ordinals survive restart, cross-orchestrator pair gaps, and message clear", async (t) => {
   const { rootDir, codex, service } = await fixture(t);
   const child = await service.create("調査");

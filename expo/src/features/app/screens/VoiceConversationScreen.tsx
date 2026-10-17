@@ -23,6 +23,7 @@ import { formatMessageTimestampLabel } from "../utils/formatting";
 import { formatOutputTokens } from "../utils/messageTokens";
 import { dismissReadVoiceNotifications } from "../utils/sessionReadNotifications";
 import { parseChecklistFile } from "../utils/checklistFile";
+import { DEFAULT_TTS_PROVIDER } from "../utils/audioConfig";
 
 const voicePanelFadeIn = FadeIn.duration(220);
 const voicePanelFadeOut = FadeOut.duration(220);
@@ -30,14 +31,15 @@ const historyFadeIn = FadeInDown.duration(240);
 const historyFadeOut = FadeOutDown.duration(200);
 
 export type VoiceConversationPlayback = {
-  synthesizeSpeechStream: (text: string, target: { messageId: string; jobId?: string }) => Promise<void>;
+  synthesizeSpeechStream: (text: string, target: { messageId: string; jobId?: string;
+    ttsProvider?: string; voiceId?: string }) => Promise<void>;
   stopTtsPlayback: (options?: { interruptStream?: boolean; reason?: string; expectedMessageId?: string }) => Promise<void>;
   isTtsPlaybackActive: boolean;
   isTtsPlaying?: boolean;
   ttsUiStatus: "idle" | "queued" | "synthesizing" | "playing" | "error";
-  ttsProvider?: string;
-  selectedVoiceId?: string;
   ttsSpeed?: number;
+  runnerBaseUrl?: string;
+  runnerToken?: string;
 };
 
 export function VoiceConversationScreen(props: VoiceConversationPlayback & { onClose: () => void; initialOrchestratorId?: string }) {
@@ -129,6 +131,7 @@ export function VoiceConversationScreen(props: VoiceConversationPlayback & { onC
     )}
     {list ? <VoiceOrchestratorManager visible={managerOpen} list={list}
       onListChanged={listChanged} onConversationChanged={conversationChanged}
+      runnerBaseUrl={props.runnerBaseUrl} runnerToken={props.runnerToken}
       onClose={() => setManagerOpen(false)} /> : null}
   </>;
 }
@@ -139,8 +142,6 @@ function VoiceConversationSession({
   isTtsPlaybackActive,
   isTtsPlaying,
   ttsUiStatus,
-  ttsProvider,
-  selectedVoiceId,
   ttsSpeed,
   onClose,
   orchestrator,
@@ -187,19 +188,18 @@ function VoiceConversationSession({
     setSynthesisRequestSettled(false);
     voicePlaybackMessageIdRef.current = operationId;
     try {
-      await synthesizeSpeechStream(text, { messageId: operationId, ...(jobId ? { jobId } : {}) });
+      await synthesizeSpeechStream(text, { messageId: operationId, ...(jobId ? { jobId } : {}),
+        ttsProvider: orchestrator.ttsProvider || DEFAULT_TTS_PROVIDER, voiceId: orchestrator.voiceId || "" });
     } catch {
       if (mountedRef.current) setSynthesisStarting(false);
     } finally {
       if (mountedRef.current) setSynthesisRequestSettled(true);
     }
-  }, [paused, synthesizeSpeechStream]);
+  }, [paused, synthesizeSpeechStream, orchestrator.ttsProvider, orchestrator.voiceId]);
   const voice = useVoiceConversation(
     playReply,
     (jobId, operationId) => { void playReply("", operationId, jobId); },
-    ttsProvider && typeof ttsSpeed === "number"
-      ? { ttsProvider, voiceId: selectedVoiceId?.trim() || undefined, speedScale: ttsSpeed }
-      : undefined,
+    typeof ttsSpeed === "number" ? { speedScale: ttsSpeed } : undefined,
     orchestrator.id,
   );
   const isOverviewMode = voice.taskChecklist?.status === "present"

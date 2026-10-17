@@ -5,14 +5,9 @@ import { useAppStyles } from "../styles";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import {
   TTS_PROVIDERS,
+  TTS_PROVIDER_LABELS,
 } from "../utils/audioConfig";
 import { SettingsSelect } from "./SettingsSelect";
-
-const TTS_PROVIDER_LABELS = {
-  elevenlabs: "ElevenLabs",
-  google: "Google",
-  aivisspeech: "AivisSpeech",
-} as const;
 
 const SETTING_ICONS = [
   "volume-mute-outline",

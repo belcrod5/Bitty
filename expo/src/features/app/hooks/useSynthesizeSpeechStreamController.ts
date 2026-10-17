@@ -215,8 +215,8 @@ export function useSynthesizeSpeechStreamController(
       type: "start",
       mode: "text",
       text,
-      ttsProvider,
-      voiceId: selectedVoiceId.trim() || undefined,
+      ttsProvider: streamOptions?.ttsProvider || ttsProvider,
+      voiceId: (streamOptions?.voiceId ?? selectedVoiceId).trim() || undefined,
       speedScale: ttsSpeed,
     };
 

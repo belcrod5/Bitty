@@ -448,7 +448,7 @@ test("voice TTS sends audio before turn completion and stays cancelled while gen
   service.start = async (_message, onResult, _onApproval, callbacks) => {
     hooks = callbacks;
     notify = onResult;
-    callbacks.onAccepted();
+    callbacks.onAccepted({ ttsProvider: "elevenlabs", voiceId: "test-voice" });
     return { clientOperationId: operationId, status: "accepted" };
   };
   globalThis.fetch = (url, init) => {
@@ -474,7 +474,7 @@ test("voice TTS sends audio before turn completion and stays cancelled while gen
     channel: "agent", op: "turn.start", requestId: "voice-stream-start", operationId,
     payload: { backendId: "codex", logicalConversationId: "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
       clientOperationId: operationId, input: { blocks: [{ type: "text", text: "hello" }] },
-      tts: { ttsProvider: "elevenlabs", speedScale: 1 } },
+      tts: { speedScale: 1 } },
   }), false);
   await waitFor(() => ws.sent.some((message) => message.op === "turn.accepted"));
   const jobId = ws.sent.find((message) => message.op === "turn.accepted").payload.jobId;
