@@ -163,6 +163,8 @@ function VoiceConversationSession({
   const MacBlurView = Platform.OS === "macos" ? getMacVoiceBlurView() : null;
   const [taskChecklistOpen, setTaskChecklistOpen] = useState(true);
   const [taskChecklistOriginal, setTaskChecklistOriginal] = useState(false);
+  const [checklistCompletionBusy, setChecklistCompletionBusy] = useState(false);
+  const [checklistCompletionError, setChecklistCompletionError] = useState("");
   const [transcript, setTranscript] = useState("");
   const [editingTranscript, setEditingTranscript] = useState(false);
   const [initialStartPending, setInitialStartPending] = useState(true);
@@ -583,6 +585,33 @@ function VoiceConversationSession({
                                   fontSize: 13, lineHeight: 18, flexShrink: 1 }}>{row.text}</Text>)
                               : <Text style={{ color: theme.colors.textSecondary }}>To Doは空です</Text>}
                     </ScrollView>
+                    {voice.taskChecklistCompletion ? <View testID="voice-task-checklist-completion"
+                      style={{ paddingHorizontal: 12, paddingBottom: 10, gap: 8 }}>
+                      <Text style={{ color: theme.colors.textPrimary, fontSize: 12 }}>
+                        すべて完了しました。履歴に保存して To Do を空にしますか？
+                      </Text>
+                      <View style={{ flexDirection: "row", gap: 8 }}>
+                        {([ ["残す", "keep"], ["空にする", "clear"] ] as const).map(([label, decision]) => (
+                          <Pressable key={decision} testID={`voice-task-checklist-${decision}`}
+                            accessibilityRole="button" disabled={checklistCompletionBusy}
+                            onPress={() => {
+                              setChecklistCompletionBusy(true);
+                              setChecklistCompletionError("");
+                              void voice.respondToChecklistCompletion(voice.taskChecklistCompletion!.sourceHash,
+                                voice.taskChecklistCompletion!.version, decision)
+                                .catch((cause) => setChecklistCompletionError(cause instanceof Error
+                                  ? cause.message : "To Do の完了確認を保存できませんでした。"))
+                                .finally(() => setChecklistCompletionBusy(false));
+                            }}
+                            style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8,
+                              backgroundColor: decision === "clear" ? theme.colors.surfaceActionSoft : theme.colors.surfaceMuted }}>
+                            <Text style={{ color: theme.colors.textPrimary, fontSize: 12 }}>{label}</Text>
+                          </Pressable>
+                        ))}
+                      </View>
+                      {checklistCompletionError ? <Text style={{ color: theme.colors.textPrimary, fontSize: 12 }}>
+                        {checklistCompletionError}</Text> : null}
+                    </View> : null}
                   </View>
                 ) : (
                   <Pressable testID="voice-task-checklist-expand" accessibilityRole="button"

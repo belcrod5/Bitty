@@ -7232,6 +7232,14 @@ runnerWsServer.on("connection", (ws, req) => {
       }).catch((error) => sendVoiceError(message, error));
       return true;
     }
+    if (message.op === "voice.task-checklist.complete.respond") {
+      void voiceContextService.respondToChecklistCompletion(orchestratorId,
+        message.payload?.sourceHash, message.payload?.version, message.payload?.decision).then((payload) => {
+        sendRunnerWsEnvelope(ws, { channel: "agent", op: "voice.task-checklist.complete.respond.result",
+          requestId: message.requestId || "", payload: { ...payload, orchestratorId } });
+      }).catch((error) => sendVoiceError(message, error));
+      return true;
+    }
     if (message.op === "voice.read") {
       void voiceContextService.markRead(orchestratorId, message.payload?.logicalConversationId,
         message.payload?.completedOrdinal).then(async (payload) => {

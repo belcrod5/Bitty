@@ -300,7 +300,7 @@ async function fixture(t, options = {}) {
   });
   const service = createVoiceContextService({ rootDir, createClient: codex.createClient,
     managedSessions: options.managedSessions, taskChecklistPath: options.taskChecklistPath,
-    onChecklistChanged: options.onChecklistChanged });
+    onChecklistChanged: options.onChecklistChanged, hasOutstandingActivity: options.hasOutstandingActivity });
   const conversation = await service.open();
   return { rootDir, codex, service, conversation };
 }
@@ -2460,6 +2460,224 @@ test("main checklist write tool saves AI-authored Markdown once and notifies aft
   assert.deepEqual(results.map(({ success }) => success), [true, true, true, false]);
   assert.match(results[3].contentItems[0].text, /already handled/u);
   assert.equal(codex.calls.some(({ method }) => method === "approval/result"), false);
+});
+
+test("a completed main checklist asks once, archives exact content, then clears only after approval", async (t) => {
+  const changes = [];
+  const { service } = await fixture(t, { taskChecklistPath: "task-checklists/main.md",
+    onChecklistChanged: (id) => changes.push(id) });
+  const workspace = await service.getWorkspaceDirectory();
+  const source = path.join(workspace, "task-checklists", "main.md");
+  const markdown = "- [x] 具体的な作業を完了\n- [x] 結果を確認\n";
+  await fs.writeFile(source, markdown);
+  const offer = (await service.history()).taskChecklistCompletion;
+  assert.match(offer.sourceHash, /^[0-9a-f]{64}$/u);
+  assert.equal((await service.history()).taskChecklistCompletion.sourceHash, offer.sourceHash);
+
+  assert.deepEqual(await service.respondToChecklistCompletion(offer.sourceHash, offer.version, "keep"),
+    { accepted: true, cleared: false });
+  assert.equal((await service.history()).taskChecklistCompletion, null);
+  assert.equal(await fs.readFile(source, "utf8"), markdown);
+  await assert.rejects(service.respondToChecklistCompletion("0".repeat(64), offer.version, "clear"),
+    { code: "checklist_changed" });
+
+  await fs.writeFile(source, "- [ ] 別の進行中の作業\n");
+  assert.equal((await service.history()).taskChecklistCompletion, null);
+  await fs.writeFile(source, markdown);
+  const nextOffer = (await service.history()).taskChecklistCompletion;
+  assert.equal(nextOffer.sourceHash, offer.sourceHash);
+  assert.notEqual(nextOffer.version, offer.version);
+  assert.deepEqual(await service.respondToChecklistCompletion(nextOffer.sourceHash, nextOffer.version, "clear"),
+    { accepted: true, cleared: true });
+  assert.equal(await fs.readFile(source, "utf8"), "");
+  assert.equal((await service.history()).taskChecklistCompletion, null);
+  const files = await fs.readdir(path.join(workspace, "task-checklists", "completed"));
+  assert.equal(files.length, 1);
+  const archived = JSON.parse(await fs.readFile(path.join(workspace, "task-checklists", "completed", files[0]), "utf8"));
+  assert.equal(archived.markdown, markdown);
+  assert.equal(archived.sourcePath, "task-checklists/main.md");
+  assert.equal(archived.workspaceId, path.basename(workspace));
+  assert.equal(archived.sourceHash, offer.sourceHash);
+  assert.ok(Number.isFinite(Date.parse(archived.completedAt)));
+  assert.equal(changes.length, 1);
+});
+
+test("old consent cannot clear a new identical checklist, and a kept checklist asks again after rewrite", async (t) => {
+  const { service } = await fixture(t, { taskChecklistPath: "task-checklists/main.md" });
+  const workspace = await service.getWorkspaceDirectory();
+  const source = path.join(workspace, "task-checklists", "main.md");
+  const markdown = "- [x] 同じ作業\n";
+  await fs.writeFile(source, markdown);
+  const first = (await service.history()).taskChecklistCompletion;
+  await service.respondToChecklistCompletion(first.sourceHash, first.version, "clear");
+  const replacement = `${source}.replacement`;
+  await fs.writeFile(replacement, markdown);
+  await fs.rename(replacement, source);
+  const second = (await service.history()).taskChecklistCompletion;
+  assert.equal(second.sourceHash, first.sourceHash);
+  assert.notEqual(second.version, first.version);
+  await assert.rejects(service.respondToChecklistCompletion(first.sourceHash, first.version, "clear"),
+    { code: "checklist_changed" });
+  assert.equal(await fs.readFile(source, "utf8"), markdown);
+  await service.respondToChecklistCompletion(second.sourceHash, second.version, "keep");
+  await fs.writeFile(replacement, markdown);
+  await fs.rename(replacement, source);
+  const third = (await service.history()).taskChecklistCompletion;
+  assert.equal(third.sourceHash, first.sourceHash);
+  assert.notEqual(third.version, second.version);
+});
+
+test("an approved checklist clear resumes after restart without another prompt or archive", async (t) => {
+  const { service, rootDir, codex } = await fixture(t, { taskChecklistPath: "task-checklists/main.md" });
+  const workspace = await service.getWorkspaceDirectory();
+  const source = path.join(workspace, "task-checklists", "main.md");
+  const markdown = "- [x] 保存済み\n";
+  await fs.writeFile(source, markdown);
+  const { sourceHash, version } = (await service.history()).taskChecklistCompletion;
+  const activeFile = path.join(rootDir, "active.json");
+  const active = JSON.parse(await fs.readFile(activeFile, "utf8"));
+  const archiveId = `${Date.now()}-${randomUUID()}`;
+  active.checklistCompletion = { sourceHash, version, decision: "approved", archiveId,
+    completedAt: new Date().toISOString() };
+  await fs.writeFile(activeFile, JSON.stringify(active));
+  const recovered = createVoiceContextService({ rootDir, createClient: codex.createClient,
+    taskChecklistPath: "task-checklists/main.md" });
+  await recovered.open();
+  assert.equal(await fs.readFile(source, "utf8"), "");
+  assert.equal((await recovered.history()).taskChecklistCompletion, null);
+  const files = await fs.readdir(path.join(workspace, "task-checklists", "completed"));
+  assert.deepEqual(files, [`${archiveId}.json`]);
+  assert.equal(JSON.parse(await fs.readFile(path.join(workspace, "task-checklists", "completed", files[0]), "utf8")).markdown,
+    markdown);
+});
+
+test("recovery reuses a matching archived snapshot before clearing", async (t) => {
+  const { service, rootDir, codex } = await fixture(t, { taskChecklistPath: "task-checklists/main.md" });
+  const workspace = await service.getWorkspaceDirectory();
+  const source = path.join(workspace, "task-checklists", "main.md");
+  const markdown = "- [x] 再開する\n";
+  await fs.writeFile(source, markdown);
+  const { sourceHash, version } = (await service.history()).taskChecklistCompletion;
+  const archiveId = `${Date.now()}-${randomUUID()}`;
+  const completedAt = new Date().toISOString();
+  const directory = path.join(workspace, "task-checklists", "completed");
+  await fs.mkdir(directory);
+  await fs.writeFile(path.join(directory, `${archiveId}.json`), JSON.stringify({ archiveId, completedAt,
+    workspaceId: path.basename(workspace), sourcePath: "task-checklists/main.md", sourceHash, markdown }));
+  const activeFile = path.join(rootDir, "active.json");
+  const active = JSON.parse(await fs.readFile(activeFile, "utf8"));
+  active.checklistCompletion = { sourceHash, version, decision: "approved", archiveId, completedAt };
+  await fs.writeFile(activeFile, JSON.stringify(active));
+  const recovered = createVoiceContextService({ rootDir, createClient: codex.createClient,
+    taskChecklistPath: "task-checklists/main.md" });
+  const openFile = fs.open;
+  let archiveSyncs = 0;
+  fs.open = async (...args) => {
+    const handle = await openFile(...args);
+    if (args[0] === directory && args[1] === "r") {
+      const sync = handle.sync.bind(handle);
+      handle.sync = async () => {
+        assert.equal(await fs.readFile(source, "utf8"), markdown);
+        archiveSyncs += 1;
+        await sync();
+      };
+    }
+    return handle;
+  };
+  try { await recovered.open(); } finally { fs.open = openFile; }
+  assert.ok(archiveSyncs >= 1);
+  assert.equal(await fs.readFile(source, "utf8"), "");
+  assert.deepEqual(await fs.readdir(directory), [`${archiveId}.json`]);
+});
+
+test("restart recovery waits for an active child before clearing an approved checklist", async (t) => {
+  const { service, rootDir, codex } = await fixture(t, { taskChecklistPath: "task-checklists/main.md" });
+  const workspace = await service.getWorkspaceDirectory();
+  const source = path.join(workspace, "task-checklists", "main.md");
+  const markdown = "- [x] 子作業完了\n";
+  await fs.writeFile(source, markdown);
+  const { sourceHash, version } = (await service.history()).taskChecklistCompletion;
+  const activeFile = path.join(rootDir, "active.json");
+  const active = JSON.parse(await fs.readFile(activeFile, "utf8"));
+  active.checklistCompletion = { sourceHash, version, decision: "approved",
+    archiveId: `${Date.now()}-${randomUUID()}`, completedAt: new Date().toISOString() };
+  await fs.writeFile(activeFile, JSON.stringify(active));
+  let busy = true;
+  const recovered = createVoiceContextService({ rootDir, createClient: codex.createClient,
+    taskChecklistPath: "task-checklists/main.md", hasOutstandingActivity: async () => busy });
+  await recovered.open();
+  assert.equal(await fs.readFile(source, "utf8"), markdown);
+  busy = false;
+  await recovered.history();
+  assert.equal(await fs.readFile(source, "utf8"), "");
+});
+
+test("stale completion consent and an unavailable archive never clear the source", async (t) => {
+  const { service } = await fixture(t, { taskChecklistPath: "task-checklists/main.md" });
+  const workspace = await service.getWorkspaceDirectory();
+  const source = path.join(workspace, "task-checklists", "main.md");
+  await fs.writeFile(source, "- [x] 最初の完了\n");
+  const { sourceHash, version } = (await service.history()).taskChecklistCompletion;
+  await fs.writeFile(source, "- [ ] 追加作業\n");
+  await assert.rejects(service.respondToChecklistCompletion(sourceHash, version, "clear"), { code: "checklist_changed" });
+  assert.equal(await fs.readFile(source, "utf8"), "- [ ] 追加作業\n");
+  await fs.writeFile(source, "- [x] 追加作業\n");
+  const nextOffer = (await service.history()).taskChecklistCompletion;
+  await fs.writeFile(path.join(workspace, "task-checklists", "completed"), "blocked");
+  await assert.rejects(service.respondToChecklistCompletion(nextOffer.sourceHash, nextOffer.version, "clear"));
+  assert.equal(await fs.readFile(source, "utf8"), "- [x] 追加作業\n");
+});
+
+test("the main AI can list completed checklist metadata and read an exact archived snapshot", async (t) => {
+  const nativeRequests = [checklistReadCall("preflight")];
+  const { service, conversation, codex } = await fixture(t, {
+    taskChecklistPath: "task-checklists/main.md", nativeRequests });
+  const workspace = await service.getWorkspaceDirectory();
+  const markdown = "- [x] 完了履歴を確認\n";
+  await fs.writeFile(path.join(workspace, "task-checklists", "main.md"), markdown);
+  const { sourceHash, version } = (await service.history()).taskChecklistCompletion;
+  await service.respondToChecklistCompletion(sourceHash, version, "clear");
+  const archiveId = (await fs.readdir(path.join(workspace, "task-checklists", "completed")))[0].slice(0, -5);
+  nativeRequests.push(checklistTurnCall("list", "read_completed_checklists"),
+    checklistTurnCall("item", "read_completed_checklists", { archiveId }));
+  assert.equal((await complete(service, conversation, "以前の完了を調べる")).result.status, "completed");
+  const results = codex.calls.filter(({ method }) => method === "native/result").map(({ result }) => result);
+  assert.deepEqual(results.map(({ success }) => success), [true, true, true]);
+  const listed = JSON.parse(results[1].contentItems[0].text);
+  assert.equal(listed[0].archiveId, archiveId);
+  assert.equal(Object.hasOwn(listed[0], "markdown"), false);
+  const archived = JSON.parse(results[2].contentItems[0].text);
+  assert.equal(archived.markdown, markdown);
+  assert.equal(archived.sourceHash, sourceHash);
+});
+
+test("a valid near-limit checklist remains readable after JSON archive escaping", async (t) => {
+  const { service } = await fixture(t, { taskChecklistPath: "task-checklists/main.md" });
+  const workspace = await service.getWorkspaceDirectory();
+  const markdown = "- [x] A\n".repeat(7_600);
+  assert.ok(Buffer.byteLength(markdown) < 64 * 1024);
+  await fs.writeFile(path.join(workspace, "task-checklists", "main.md"), markdown);
+  const { sourceHash, version } = (await service.history()).taskChecklistCompletion;
+  await service.respondToChecklistCompletion(sourceHash, version, "clear");
+  const file = path.join(workspace, "task-checklists", "completed",
+    (await fs.readdir(path.join(workspace, "task-checklists", "completed")))[0]);
+  assert.ok((await fs.stat(file)).size > 64 * 1024 + 1024);
+  assert.equal(JSON.parse(await fs.readFile(file, "utf8")).markdown, markdown);
+  assert.equal(await fs.readFile(path.join(workspace, "task-checklists", "main.md"), "utf8"), "");
+});
+
+test("completion confirmation waits for outstanding child activity", async (t) => {
+  let busy = true;
+  const { service } = await fixture(t, { taskChecklistPath: "task-checklists/main.md",
+    hasOutstandingActivity: async () => busy });
+  const workspace = await service.getWorkspaceDirectory();
+  const source = path.join(workspace, "task-checklists", "main.md");
+  await fs.writeFile(source, "- [x] 子エージェントの結果を確認\n");
+  const { sourceHash, version } = (await service.history()).taskChecklistCompletion;
+  await assert.rejects(service.respondToChecklistCompletion(sourceHash, version, "clear"), { code: "session_busy" });
+  assert.equal(await fs.readFile(source, "utf8"), "- [x] 子エージェントの結果を確認\n");
+  busy = false;
+  assert.equal((await service.respondToChecklistCompletion(sourceHash, version, "clear")).cleared, true);
 });
 
 test("writing identical checklist Markdown does not notify or regenerate its overview", async (t) => {

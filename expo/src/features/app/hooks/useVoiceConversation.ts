@@ -10,6 +10,7 @@ export type VoiceHistoryMessage = { role: "user" | "assistant"; text: string; cl
 export type VoiceTaskChecklist = { status: "present"; markdown: string } | { status: "missing" } | { status: "unavailable" };
 export type VoiceTaskChecklistOverview = { status: "present"; markdown: string }
   | { status: "pending" } | { status: "unavailable" };
+export type VoiceTaskChecklistCompletion = { sourceHash: string; version: string };
 type PendingTurn = {
   id: string;
   text?: string;
@@ -94,6 +95,7 @@ export function useVoiceConversation(
   const [historyError, setHistoryError] = useState("");
   const [taskChecklist, setTaskChecklist] = useState<VoiceTaskChecklist | null>(null);
   const [taskChecklistOverview, setTaskChecklistOverview] = useState<VoiceTaskChecklistOverview | null>(null);
+  const [taskChecklistCompletion, setTaskChecklistCompletion] = useState<VoiceTaskChecklistCompletion | null>(null);
   const historyRequestRef = useRef(0);
   const pendingRef = useRef<PendingTurn | null>(null);
   const startTurnTasksRef = useRef(new Map<string, Promise<void>>());
@@ -276,6 +278,7 @@ export function useVoiceConversation(
         setLocalHistory([]);
         setHistoryError("");
         setTaskChecklist(null);
+        setTaskChecklistCompletion(null);
         setTaskChecklistOverview(null);
         setTurnStatus("idle");
       }
@@ -488,6 +491,13 @@ export function useVoiceConversation(
           && (display.status === "pending" || display.status === "unavailable"
             || display.status === "present" && typeof display.markdown === "string")
           ? display as VoiceTaskChecklistOverview : { status: "unavailable" });
+        const completion = payload.taskChecklistCompletion;
+        const offer = completion && typeof completion === "object" && !Array.isArray(completion)
+          ? completion as Record<string, unknown> : null;
+        setTaskChecklistCompletion(offer && typeof offer.sourceHash === "string"
+          && typeof offer.version === "string" && /^[0-9a-f]{64}$/.test(offer.sourceHash)
+          && /^[0-9a-f]{64}$/.test(offer.version)
+          ? { sourceHash: offer.sourceHash, version: offer.version } : null);
       }
       setLocalHistory((current) => current.filter((local) => !messages.some((message) =>
         message.role === local.role && message.clientOperationId === local.clientOperationId)));
@@ -498,9 +508,20 @@ export function useVoiceConversation(
         setHistoryError(cause instanceof Error ? cause.message : "音声会話の履歴を読み込めません。");
         if (orchestratorId === "main") setTaskChecklist({ status: "unavailable" });
         if (orchestratorId === "main") setTaskChecklistOverview(null);
+        if (orchestratorId === "main") setTaskChecklistCompletion(null);
       }
     }
   }, [manager, orchestratorId]);
+
+  const respondToChecklistCompletion = useCallback(async (sourceHash: string, version: string,
+    decision: "clear" | "keep") => {
+    const response = await manager.request({ channel: "agent", op: "voice.task-checklist.complete.respond",
+      payload: { orchestratorId, sourceHash, version, decision } });
+    if (response.op !== "voice.task-checklist.complete.respond.result") {
+      throw new Error("To Do の完了確認を保存できませんでした。");
+    }
+    await refreshHistory();
+  }, [manager, orchestratorId, refreshHistory]);
 
   useEffect(() => {
     if (orchestratorId !== "main") return;
@@ -529,6 +550,8 @@ export function useVoiceConversation(
     historyError,
     taskChecklist,
     taskChecklistOverview,
+    taskChecklistCompletion,
+    respondToChecklistCompletion,
     refreshHistory,
     error,
     setError,

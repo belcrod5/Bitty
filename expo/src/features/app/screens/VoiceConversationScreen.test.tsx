@@ -48,6 +48,9 @@ const mockVoice = {
     { status: "present"; markdown: string } | { status: "missing" | "unavailable" } | null,
   taskChecklistOverview: { status: "present", markdown: "- [ ] 確認する" } as
     { status: "present"; markdown: string } | { status: "pending" | "unavailable" } | null,
+  taskChecklistCompletion: null as { sourceHash: string; version: string } | null,
+  respondToChecklistCompletion: jest.fn(async (_hash: string, _version: string,
+    _decision: "clear" | "keep") => undefined),
   refreshHistory: jest.fn(async () => undefined),
   setError: jest.fn(),
   sendTranscript: jest.fn(async () => undefined),
@@ -236,6 +239,8 @@ beforeEach(() => {
   mockVoice.historyError = "";
   mockVoice.taskChecklist = { status: "present", markdown: "# 最優先\n\n- [ ] 確認する" };
   mockVoice.taskChecklistOverview = { status: "present", markdown: "- [ ] 確認する" };
+  mockVoice.taskChecklistCompletion = null;
+  mockVoice.respondToChecklistCompletion.mockClear();
   mockBackdropOpacity.value = 0;
   mockReduceMotion = false;
   mockManagerVisible = false;
@@ -280,6 +285,18 @@ test("main history shows read-only checklist states without a title and folds to
   expect(screen.getByTestId("voice-task-checklist-expand")).toBeTruthy();
   await fireEvent.press(screen.getByTestId("voice-task-checklist-expand"));
   expect(screen.getByTestId("voice-task-checklist-panel")).toBeTruthy();
+});
+
+test("completed original offers explicit archive and clear or keep actions", async () => {
+  mockVoice.taskChecklist = { status: "present", markdown: "- [x] 作業完了\n" };
+  mockVoice.taskChecklistOverview = { status: "present", markdown: "- [x] 作業完了" };
+  mockVoice.taskChecklistCompletion = { sourceHash: "a".repeat(64), version: "b".repeat(64) };
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  expect(screen.getByText("すべて完了しました。履歴に保存して To Do を空にしますか？")).toBeTruthy();
+  await act(async () => { fireEvent.press(screen.getByTestId("voice-task-checklist-keep")); });
+  await waitFor(() => expect(mockVoice.respondToChecklistCompletion)
+    .toHaveBeenCalledWith("a".repeat(64), "b".repeat(64), "keep"));
 });
 
 test("legacy prose stays visible until the AI rewrites the source file", async () => {

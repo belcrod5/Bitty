@@ -173,6 +173,31 @@ test("main distinguishes missing and unavailable task checklists", async () => {
   expect(result.current.taskChecklist).toEqual({ status: "unavailable" });
 });
 
+test("completion consent uses the offered source hash and refreshes the server decision", async () => {
+  const request = mockManager.request.getMockImplementation();
+  let offered = true;
+  mockManager.request.mockImplementation((message: { op: string }) => {
+    if (message.op === "voice.history") return Promise.resolve({ op: "voice.history.result",
+      payload: { logicalConversationId: conversationId, messages: [],
+        taskChecklist: { status: "present", markdown: "- [x] 完了\n" },
+        taskChecklistCompletion: offered ? { sourceHash: "a".repeat(64), version: "b".repeat(64) } : null } });
+    if (message.op === "voice.task-checklist.complete.respond") {
+      offered = false;
+      return Promise.resolve({ op: "voice.task-checklist.complete.respond.result", payload: { accepted: true } });
+    }
+    return request?.(message);
+  });
+  const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
+  await waitFor(() => expect(result.current.ready).toBe(true));
+  await act(async () => { await result.current.refreshHistory(); });
+  expect(result.current.taskChecklistCompletion).toEqual({ sourceHash: "a".repeat(64), version: "b".repeat(64) });
+  await act(async () => { await result.current.respondToChecklistCompletion("a".repeat(64), "b".repeat(64), "keep"); });
+  expect(mockManager.request).toHaveBeenCalledWith({ channel: "agent",
+    op: "voice.task-checklist.complete.respond", payload: { orchestratorId: "main",
+      sourceHash: "a".repeat(64), version: "b".repeat(64), decision: "keep" } });
+  expect(result.current.taskChecklistCompletion).toBeNull();
+});
+
 test("a checklist change notice reloads the disk-backed history for the matching main conversation", async () => {
   const request = mockManager.request.getMockImplementation();
   let markdown: string | null = "- [ ] 確認";
