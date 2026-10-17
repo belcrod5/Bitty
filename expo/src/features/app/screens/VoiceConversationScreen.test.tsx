@@ -303,16 +303,20 @@ test("checklist retry appears only when history or checklist loading fails", asy
   expect(screen.queryByTestId("voice-task-checklist-refresh")).toBeNull();
 });
 
-test("completed original offers explicit archive and clear or keep actions", async () => {
+test("completed checklist offers one explicit archive and clear action", async () => {
   mockVoice.taskChecklist = { status: "present", markdown: "- [x] 作業完了\n" };
   mockVoice.taskChecklistOverview = { status: "present", markdown: "- [x] 作業完了" };
   mockVoice.taskChecklistCompletion = { sourceHash: "a".repeat(64), version: "b".repeat(64) };
   const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
   await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
-  expect(screen.getByText("すべて完了しました。履歴に保存して To Do を空にしますか？")).toBeTruthy();
-  await act(async () => { fireEvent.press(screen.getByTestId("voice-task-checklist-keep")); });
+  const clear = screen.getByTestId("voice-task-checklist-clear");
+  expect(clear.props.accessibilityLabel).toBe("完了した To Do を履歴に保存して空にする");
+  expect(screen.getByText("trash-outline")).toBeTruthy();
+  expect(screen.queryByTestId("voice-task-checklist-keep")).toBeNull();
+  expect(screen.queryByText("すべて完了しました。履歴に保存して To Do を空にしますか？")).toBeNull();
+  await act(async () => { fireEvent.press(clear); });
   await waitFor(() => expect(mockVoice.respondToChecklistCompletion)
-    .toHaveBeenCalledWith("a".repeat(64), "b".repeat(64), "keep"));
+    .toHaveBeenCalledWith("a".repeat(64), "b".repeat(64), "clear"));
 });
 
 test("legacy prose stays visible until the AI rewrites the source file", async () => {
@@ -355,8 +359,9 @@ test("display overview defaults to a few checked rows and switches to the unchan
   expect(screen.getByText("list-outline")).toBeTruthy();
   expect(screen.getByTestId("voice-task-checklist-source-toggle").props.accessibilityLabel)
     .toBe("To Do概要を表示");
-  expect(screen.queryByTestId("voice-task-checklist-blur")).toBeNull();
-  expect(screen.queryByTestId("voice-task-checklist-tint")).toBeNull();
+  expect(screen.getByTestId("voice-task-checklist-blur")).toBeTruthy();
+  expect(StyleSheet.flatten(screen.getByTestId("voice-task-checklist-tint").props.style).backgroundColor)
+    .toBe("rgba(255, 255, 255, 0.42)");
   expect(StyleSheet.flatten(screen.getByTestId("voice-task-checklist-panel").props.style).borderColor)
     .toBe(VISUAL_THEMES[DEFAULT_VISUAL_THEME_ID].colors.borderStrong);
   expect(screen.getByText("- 確認済み")).toBeTruthy();
@@ -390,16 +395,17 @@ test("pending overview stays compact while the original remains available", asyn
 });
 
 test("older Runner without an overview field still shows its original checklist", async () => {
+  Object.defineProperty(Platform, "OS", { configurable: true, value: "ios" });
   mockVoice.taskChecklist = { status: "present", markdown: "- [ ] 旧Runnerの作業\n" };
   mockVoice.taskChecklistOverview = null;
   const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
   await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
   expect(screen.getByText("旧Runnerの作業")).toBeTruthy();
   expect(screen.queryByTestId("voice-task-checklist-source-toggle")).toBeNull();
-  expect(screen.queryByTestId("voice-task-checklist-blur")).toBeNull();
-  expect(screen.queryByTestId("voice-task-checklist-tint")).toBeNull();
+  expect(screen.getByTestId("voice-task-checklist-blur")).toBeTruthy();
+  expect(screen.getByTestId("voice-task-checklist-tint")).toBeTruthy();
   expect(StyleSheet.flatten(screen.getByTestId("voice-task-checklist-panel").props.style))
-    .toMatchObject({ backgroundColor: VISUAL_THEMES[DEFAULT_VISUAL_THEME_ID].colors.floatingSurface,
+    .toMatchObject({ backgroundColor: "transparent",
       borderColor: VISUAL_THEMES[DEFAULT_VISUAL_THEME_ID].colors.borderStrong });
 });
 

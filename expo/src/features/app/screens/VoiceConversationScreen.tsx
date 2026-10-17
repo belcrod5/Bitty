@@ -514,20 +514,20 @@ function VoiceConversationSession({
                 {orchestrator.id === "main" ? taskChecklistOpen ? (
                   <View testID="voice-task-checklist-panel" style={{ position: "absolute", right: 0, top: 0,
                     maxWidth: Math.min(260, Math.max(0, screenWidth - 64)), maxHeight: "65%",
-                    backgroundColor: isOverviewMode ? "transparent" : theme.colors.floatingSurface, borderTopLeftRadius: 14,
+                    backgroundColor: "transparent", borderTopLeftRadius: 14,
                     borderBottomLeftRadius: 14, borderWidth: 1,
                     borderColor: isOverviewMode ? theme.colors.borderTranslucent : theme.colors.borderStrong,
                     shadowColor: theme.colors.shadow, shadowOffset: { width: -3, height: 6 },
                     shadowOpacity: 0.24, shadowRadius: 12, elevation: 9, overflow: "hidden" }}>
-                    {isOverviewMode && IosBlurView ? <IosBlurView testID="voice-task-checklist-blur"
+                    {IosBlurView ? <IosBlurView testID="voice-task-checklist-blur"
                       pointerEvents="none" intensity={65} tint={theme.colorScheme}
                       style={StyleSheet.absoluteFill} /> : null}
-                    {isOverviewMode && MacBlurView ? <MacBlurView testID="voice-task-checklist-blur"
+                    {MacBlurView ? <MacBlurView testID="voice-task-checklist-blur"
                       pointerEvents="none" style={StyleSheet.absoluteFill} /> : null}
-                    {isOverviewMode ? <View testID="voice-task-checklist-tint" pointerEvents="none" style={[StyleSheet.absoluteFill,
+                    <View testID="voice-task-checklist-tint" pointerEvents="none" style={[StyleSheet.absoluteFill,
                       { backgroundColor: IosBlurView || MacBlurView
                         ? theme.colorScheme === "dark" ? "rgba(10, 16, 24, 0.52)" : "rgba(255, 255, 255, 0.42)"
-                        : theme.colors.surfaceTranslucent }]} /> : null}
+                        : theme.colors.surfaceTranslucent }]} />
                     <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "flex-end",
                       borderBottomWidth: 1, borderBottomColor: theme.colors.borderSubtle }}>
                       {voice.taskChecklist?.status === "present" && voice.taskChecklistOverview
@@ -543,6 +543,21 @@ function VoiceConversationSession({
                         accessibilityLabel="To Doを更新" onPress={() => void voice.refreshHistory()}
                         style={{ width: 38, height: 38, alignItems: "center", justifyContent: "center" }}>
                         <Ionicons name="refresh" size={18} color={theme.colors.accentStrong} />
+                      </Pressable> : null}
+                      {voice.taskChecklistCompletion ? <Pressable testID="voice-task-checklist-clear"
+                        accessibilityRole="button" accessibilityLabel="完了した To Do を履歴に保存して空にする"
+                        disabled={checklistCompletionBusy}
+                        onPress={() => {
+                          setChecklistCompletionBusy(true);
+                          setChecklistCompletionError("");
+                          void voice.respondToChecklistCompletion(voice.taskChecklistCompletion!.sourceHash,
+                            voice.taskChecklistCompletion!.version, "clear")
+                            .catch((cause) => setChecklistCompletionError(cause instanceof Error
+                              ? cause.message : "To Do の完了確認を保存できませんでした。"))
+                            .finally(() => setChecklistCompletionBusy(false));
+                        }}
+                        style={{ width: 44, height: 44, alignItems: "center", justifyContent: "center" }}>
+                        <Ionicons name="trash-outline" size={20} color={theme.colors.accentStrong} />
                       </Pressable> : null}
                       <Pressable testID="voice-task-checklist-collapse" accessibilityRole="button"
                         accessibilityLabel="To Doを右に折りたたむ" onPress={() => setTaskChecklistOpen(false)}
@@ -583,33 +598,9 @@ function VoiceConversationSession({
                                   fontSize: 13, lineHeight: 18, flexShrink: 1 }}>{row.text}</Text>)
                               : <Text style={{ color: theme.colors.textSecondary }}>To Doは空です</Text>}
                     </ScrollView>
-                    {voice.taskChecklistCompletion ? <View testID="voice-task-checklist-completion"
-                      style={{ paddingHorizontal: 12, paddingBottom: 10, gap: 8 }}>
-                      <Text style={{ color: theme.colors.textPrimary, fontSize: 12 }}>
-                        すべて完了しました。履歴に保存して To Do を空にしますか？
-                      </Text>
-                      <View style={{ flexDirection: "row", gap: 8 }}>
-                        {([ ["残す", "keep"], ["空にする", "clear"] ] as const).map(([label, decision]) => (
-                          <Pressable key={decision} testID={`voice-task-checklist-${decision}`}
-                            accessibilityRole="button" disabled={checklistCompletionBusy}
-                            onPress={() => {
-                              setChecklistCompletionBusy(true);
-                              setChecklistCompletionError("");
-                              void voice.respondToChecklistCompletion(voice.taskChecklistCompletion!.sourceHash,
-                                voice.taskChecklistCompletion!.version, decision)
-                                .catch((cause) => setChecklistCompletionError(cause instanceof Error
-                                  ? cause.message : "To Do の完了確認を保存できませんでした。"))
-                                .finally(() => setChecklistCompletionBusy(false));
-                            }}
-                            style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8,
-                              backgroundColor: decision === "clear" ? theme.colors.surfaceActionSoft : theme.colors.surfaceMuted }}>
-                            <Text style={{ color: theme.colors.textPrimary, fontSize: 12 }}>{label}</Text>
-                          </Pressable>
-                        ))}
-                      </View>
-                      {checklistCompletionError ? <Text style={{ color: theme.colors.textPrimary, fontSize: 12 }}>
-                        {checklistCompletionError}</Text> : null}
-                    </View> : null}
+                    {checklistCompletionError ? <Text style={{ color: theme.colors.textPrimary,
+                      fontSize: 12, paddingHorizontal: 12, paddingBottom: 10 }}>
+                      {checklistCompletionError}</Text> : null}
                   </View>
                 ) : (
                   <Pressable testID="voice-task-checklist-expand" accessibilityRole="button"

@@ -2922,6 +2922,8 @@ test("saved custom instructions keep the fixed checklist read and maintenance ru
   assert.ok(threads.every(({ params }) => params.developerInstructions.includes("maintain task-checklists/main.md yourself for active work")));
   assert.ok(threads.every(({ params }) => params.developerInstructions.includes("- [ ] pending task or - [x] confirmed completion")));
   assert.ok(threads.every(({ params }) => params.developerInstructions.includes("immediately whenever progress changes")));
+  assert.ok(threads.every(({ params }) => params.developerInstructions.includes("ask once in your reply whether to archive and clear")));
+  assert.ok(threads.every(({ params }) => params.developerInstructions.includes("Only the user's selection of that icon")));
   assert.ok(threads.some(({ params }) => params.developerInstructions.includes("task_checklist.read_task_checklist")));
   assert.ok(threads.every(({ params }) => params.developerInstructions.includes("task_checklist.write_task_checklist")));
   assert.ok(threads.some(({ params }) => params.developerInstructions.includes("新しい親セッションでは")));
