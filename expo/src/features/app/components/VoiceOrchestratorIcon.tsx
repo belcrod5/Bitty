@@ -2,7 +2,8 @@ import { useState } from "react";
 import { Image, Text, View } from "react-native";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 
-export type VoiceOrchestrator = { id: string; name: string; icon: string; unreadCount?: number };
+export type VoiceOrchestrator = { id: string; name: string; icon: string; unreadCount?: number;
+  ttsProvider?: string; voiceId?: string };
 
 export function VoiceOrchestratorIcon({ orchestrator, size = 40, active = false }: {
   orchestrator: VoiceOrchestrator; size?: number; active?: boolean;

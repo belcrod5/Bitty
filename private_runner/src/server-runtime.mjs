@@ -5043,6 +5043,7 @@ const voiceContextService = createVoiceOrchestratorService({
   getAgentService: () => agentService,
   subjectId: () => agentOwnerSubjectId,
   activity: orchestratorActivity,
+  defaultTtsProvider: TTS_PROVIDER,
   onChecklistChanged: broadcastVoiceChecklistChanged,
   onCompleted: (result, orchestratorName) => {
     void broadcastVoiceUnreadState();
@@ -7204,7 +7205,8 @@ runnerWsServer.on("connection", (ws, req) => {
           : message.op === "voice.orchestrators.create"
             ? voiceContextService.create(message.payload?.name, message.payload?.icon,
               message.payload?.model, message.payload?.effort, message.payload?.systemInstruction,
-              message.payload?.topicModel, message.payload?.topicEffort)
+              message.payload?.topicModel, message.payload?.topicEffort,
+              message.payload?.ttsProvider, message.payload?.voiceId)
             : message.op === "voice.orchestrators.update"
               ? voiceContextService.update(orchestratorId, message.payload)
               : voiceContextService.remove(orchestratorId);
@@ -7317,7 +7319,7 @@ runnerWsServer.on("connection", (ws, req) => {
     const hooks = {
       onUserInput: (request, signal) => voiceRequests.request(operationId, request,
         voicePayload.orchestratorId || "main", "", signal),
-      onAccepted: () => {
+      onAccepted: (orchestratorTts) => {
         if (voiceTts === undefined) return;
         try {
           voiceJob = createLlmJob({}, { mode: "voice", endpoint: "voice.turn", clientRequestId: operationId });
@@ -7325,19 +7327,17 @@ runnerWsServer.on("connection", (ws, req) => {
           llmJobSetStatus(voiceJob, "running");
           rememberRunnerWsTtsOperationJob(operationId, voiceJob);
           llmJobEmit(voiceJob, { type: "job_started", jobId: voiceJob.jobId, mode: "voice", endpoint: "voice.turn" });
-          if (!voiceTts || typeof voiceTts !== "object" || !String(voiceTts.ttsProvider || "").trim()) {
-            throw new Error("Voice TTS provider and speedScale are required");
-          }
-          const ttsProvider = resolveTtsProvider(voiceTts.ttsProvider);
+          if (!voiceTts || typeof voiceTts !== "object") throw new Error("Voice TTS speedScale is required");
+          const ttsProvider = orchestratorTts.ttsProvider;
           const speedScale = parseOptionalSpeedScale(voiceTts.speedScale);
-          if (speedScale === undefined) throw new Error("Voice TTS provider and speedScale are required");
+          if (speedScale === undefined) throw new Error("Voice TTS speedScale is required");
           if (!isSupportedTtsProvider(ttsProvider)) throw new Error(`Unsupported ttsProvider: ${ttsProvider}`);
           const validation = validateTtsProviderRequirements(ttsProvider, "/stream-tts");
           if (validation) throw new Error(validation.payload.message || validation.payload.error);
           voiceSegments = createRunnerStreamTtsSegments({
             emit: (event) => llmJobEmit(voiceJob, event),
             signal: voiceJob.abortController.signal, publicBaseUrl,
-            ttsProvider, voiceId: String(voiceTts?.voiceId || "").trim(), speedScale,
+            ttsProvider, voiceId: orchestratorTts.voiceId, speedScale,
           });
           llmJobEmit(voiceJob, { type: "started", provider: ttsProvider, route: "voice.turn", mode: "voice" });
         } catch (error) {

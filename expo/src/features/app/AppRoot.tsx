@@ -6118,9 +6118,9 @@ function AppContent({ onReady }: { onReady?: () => void }) {
           isTtsPlaybackActive,
           isTtsPlaying: ttsPlaying,
           ttsUiStatus,
-          ttsProvider,
-          selectedVoiceId,
           ttsSpeed,
+          runnerBaseUrl: baseUrl(),
+          runnerToken,
         }}
       />
       <SafeAreaView pointerEvents="box-none" style={styles.appOverlaySafeArea}>

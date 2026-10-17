@@ -8,6 +8,14 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const MAX_ICON_BYTES = 1024 * 1024;
 const iconPattern = /^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/]+={0,2})$/;
 const failure = (message, code = "turn_rejected") => Object.assign(new Error(message), { code });
+const TTS_PROVIDERS = new Set(["elevenlabs", "google", "aivisspeech"]);
+
+function validateTtsVoice(provider, voiceId) {
+  if (!TTS_PROVIDERS.has(provider) || typeof voiceId !== "string" || voiceId.length > 200) {
+    throw failure("Orchestrator TTS voice is invalid");
+  }
+  return { ttsProvider: provider, voiceId: voiceId.trim() };
+}
 
 function validateName(name) {
   if (typeof name !== "string" || !name.trim() || [...name].length > 80) throw failure("Orchestrator name is invalid");
@@ -29,7 +37,7 @@ function validateIcon(icon) {
 }
 
 export function createVoiceOrchestratorService({ rootDir, createClient, getAgentService, subjectId,
-  onCompleted, onChecklistChanged, activity }) {
+  onCompleted, onChecklistChanged, activity, defaultTtsProvider = "aivisspeech" }) {
   const root = path.resolve(rootDir);
   const registryFile = path.join(root, "orchestrators.json");
   const orchestratorRoot = path.join(root, "orchestrators");
@@ -90,8 +98,9 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
     }
     registry = next;
   };
-  const publicList = async () => ({ orchestrators: await Promise.all(registry.orchestrators.map(async ({ id, name, icon }) =>
-    ({ id, name, icon, unreadCount: await (await loadedContext(id)).unread() }))),
+  const publicList = async () => ({ orchestrators: await Promise.all(registry.orchestrators.map(async (item) =>
+    ({ ...item, ttsProvider: item.ttsProvider || defaultTtsProvider, voiceId: item.voiceId || "",
+      unreadCount: await (await loadedContext(item.id)).unread() }))),
   selectedId: registry.selectedId });
 
   async function allEventPairs(mainPairs) {
@@ -143,8 +152,10 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
       throw error;
     });
     if (old && (!Array.isArray(old.orchestrators) || old.orchestrators[0]?.id !== "main"
-      || !old.orchestrators.every(({ id, name, icon }) => (id === "main" || UUID.test(id))
-        && typeof name === "string" && name.trim() && typeof icon === "string")
+      || !old.orchestrators.every(({ id, name, icon, ttsProvider, voiceId }) => (id === "main" || UUID.test(id))
+        && typeof name === "string" && name.trim() && typeof icon === "string"
+        && (ttsProvider === undefined || TTS_PROVIDERS.has(ttsProvider))
+        && (voiceId === undefined || typeof voiceId === "string" && voiceId.length <= 200))
       || new Set(old.orchestrators.map(({ id }) => id)).size !== old.orchestrators.length
       || !old.orchestrators.some(({ id }) => id === old.selectedId)
       || !UUID.test(old.memoryConversationId))) throw failure("Voice orchestrator registry is invalid", "voice_store_corrupt");
@@ -239,8 +250,10 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
         return publicList();
       });
     },
-    async create(name, icon = "", model, effort, systemInstruction, topicModel, topicEffort) {
-      const item = { id: randomUUID(), name: validateName(name), icon: validateIcon(icon) };
+    async create(name, icon = "", model, effort, systemInstruction, topicModel, topicEffort,
+      ttsProvider = defaultTtsProvider, voiceId = "") {
+      const item = { id: randomUUID(), name: validateName(name), icon: validateIcon(icon),
+        ...validateTtsVoice(ttsProvider, voiceId) };
       return exclusive(async () => {
         await load();
         await fs.mkdir(orchestratorRoot, { recursive: true, mode: 0o700 });
@@ -266,6 +279,9 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
       const icon = validateIcon(changes?.icon);
       return exclusive(async () => {
         await load();
+        const orchestrators = registry.orchestrators.map((item) => item.id === id
+          ? { ...item, name, icon, ...validateTtsVoice(changes.ttsProvider ?? item.ttsProvider ?? defaultTtsProvider,
+            changes.voiceId ?? (changes.ttsProvider && changes.ttsProvider !== item.ttsProvider ? "" : item.voiceId ?? "")) } : item);
         const service = await loadedContext(id);
         if (changes.model !== undefined || changes.effort !== undefined || changes.systemInstruction !== undefined
           || changes.topicModel !== undefined || changes.topicEffort !== undefined
@@ -276,9 +292,8 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
             changes.topicModel ?? current.topicModel, changes.topicEffort ?? current.topicEffort,
             changes.overviewModel, changes.overviewEffort);
         }
-        const orchestrators = registry.orchestrators.map((item) => item.id === id ? { id, name, icon } : item);
         await saveRegistry({ ...registry, orchestrators });
-        return { id, name, icon, ...await publicList() };
+        return { ...orchestrators.find((item) => item.id === id), ...await publicList() };
       });
     },
     async remove(id) {
@@ -300,7 +315,8 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
     async getSettings(id) {
       const service = await context(idOf(id));
       const item = registry.orchestrators.find((entry) => entry.id === id);
-      return { ...await service.getSettings(), ...item, orchestratorId: id };
+      return { ...await service.getSettings(), ...item, ttsProvider: item.ttsProvider || defaultTtsProvider,
+        voiceId: item.voiceId || "", orchestratorId: id };
     },
     async configure(id, model, effort, systemInstruction, topicModel, topicEffort, overviewModel, overviewEffort) {
       return exclusive(async () => {
@@ -345,6 +361,7 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
       return exclusive(async () => {
         await load();
         const service = await loadedContext(id);
+        const orchestrator = registry.orchestrators.find((item) => item.id === id);
         const operationId = message.payload?.clientOperationId;
         const reservation = `${id}:${operationId}`;
         await allEventPairs([]);
@@ -369,7 +386,8 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
         }, onApproval, { ...hooks, onAccepted: () => {
           operationOwners.set(operationId, id);
           reservations.add(reservation);
-          hooks?.onAccepted?.();
+          hooks?.onAccepted?.({ ttsProvider: orchestrator.ttsProvider || defaultTtsProvider,
+            voiceId: orchestrator.voiceId || "" });
         }, onNativeRoot: ({ threadId, client }) => activity?.registerRoot({ threadId, client, orchestratorId: id }), onSettled: () => {
           reservations.delete(reservation);
           hooks?.onSettled?.();

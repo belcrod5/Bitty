@@ -134,6 +134,8 @@ export type TtsPlaybackTarget = {
   panelId?: string;
   sessionId?: string;
   jobId?: string;
+  ttsProvider?: string;
+  voiceId?: string;
 };
 export type StreamTtsControlState = {
   operationId: string;

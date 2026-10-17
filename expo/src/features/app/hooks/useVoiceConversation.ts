@@ -20,7 +20,7 @@ type PendingTurn = {
   readAloud: boolean;
   accepted: boolean;
   jobId?: string;
-  tts?: { ttsProvider: string; voiceId?: string; speedScale: number };
+  tts?: { speedScale: number };
 };
 
 function payloadOf(message: RunnerWsMessage): Record<string, unknown> {
@@ -79,7 +79,7 @@ function resetDecision(required: boolean) {
 export function useVoiceConversation(
   onCompleted: (text: string, operationId: string) => void,
   onJob?: (jobId: string, operationId: string) => void,
-  tts?: { ttsProvider: string; voiceId?: string; speedScale: number },
+  tts?: { speedScale: number },
   orchestratorId = "main",
 ) {
   const manager = useRunnerWebSocketManager();

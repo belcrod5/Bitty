@@ -13,6 +13,7 @@ const mockRequest = jest.fn(async (message: { op: string; payload?: Record<strin
     orchestratorId: payload?.orchestratorId,
     name: payload?.orchestratorId === "main" ? "メイン" : "調査",
     icon: "", model: "gpt-6-luna", effort: "low", systemInstruction: "Be helpful.",
+    ttsProvider: "aivisspeech", voiceId: "",
     topicModel: "gpt-6-luna", topicEffort: "low",
     ...(payload?.orchestratorId === "main" && !mockLegacySettings
       ? { overviewModel: "gpt-6-luna", overviewEffort: "low" } : {}),
@@ -55,12 +56,17 @@ jest.mock("./AppModal", () => ({
   AppModal: jest.fn(({ children }: { children: ReactNode }) => children),
 }));
 jest.mock("./SettingsSelect", () => ({
-  SettingsSelect: ({ label, onSelect, options }: { label: string; onSelect: (value: string) => void;
+  SettingsSelect: ({ label, onSelect, options, onOpen, searchValue, onSearchChange }: { label: string;
+    onSelect: (value: string) => void; onOpen?: () => void;
+    searchValue?: string; onSearchChange?: (value: string) => void;
     options: { value: string }[] }) => {
     const ReactModule = require("react");
     const { Pressable, Text } = require("react-native");
     return ReactModule.createElement(Pressable, { testID: `select-${label}`,
-      onPress: () => onSelect(options[options.length - 1].value) }, ReactModule.createElement(Text, null, label));
+      accessibilityValue: { text: searchValue || "" },
+      onLongPress: () => onSearchChange?.("old filter"),
+      onPress: () => { onOpen?.(); onSelect(options[options.length - 1].value); } },
+    ReactModule.createElement(Text, null, label));
   },
 }));
 
@@ -101,9 +107,40 @@ test("list opens detail; name, uploaded icon, model, effort, and instructions sa
   await fireEvent.press(screen.getByTestId("orchestrator-save"));
   await waitFor(() => expect(mockRequest).toHaveBeenCalledWith({ channel: "agent", op: "voice.orchestrators.update",
     payload: { orchestratorId: "other", name: "新しい名前", icon, model: "another-model",
+      ttsProvider: "aivisspeech", voiceId: "",
       effort: "high", systemInstruction: "Research carefully.",
       topicModel: "another-model", topicEffort: "high" } }));
   expect(onListChanged).toHaveBeenCalled();
+  await screen.unmount();
+});
+
+test("selects a voice from the orchestrator's own provider catalog and saves it", async () => {
+  const fetchMock = jest.spyOn(global, "fetch").mockResolvedValue({ ok: true,
+    json: async () => ({ voices: [{ voiceId: "speaker-7", name: "声7" }] }) } as Response);
+  const screen = await render(<VoiceOrchestratorManager {...props}
+    runnerBaseUrl="https://runner.example" runnerToken="secret" />);
+  await fireEvent.press(screen.getByTestId("orchestrator-row-other"));
+  await waitFor(() => screen.getByTestId("select-読み上げの声"));
+  await fireEvent.press(screen.getByTestId("select-読み上げの声"));
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+    "https://runner.example/voices?ttsProvider=aivisspeech", expect.any(Object)));
+  await waitFor(() => fireEvent.press(screen.getByTestId("select-読み上げの声")));
+  await fireEvent.press(screen.getByTestId("orchestrator-save"));
+  await waitFor(() => expect(mockRequest).toHaveBeenCalledWith({ channel: "agent", op: "voice.orchestrators.update",
+    payload: expect.objectContaining({ orchestratorId: "other", ttsProvider: "aivisspeech",
+      voiceId: "speaker-7" }) }));
+  await screen.unmount();
+});
+
+test("opening another orchestrator clears the previous voice search", async () => {
+  const screen = await render(<VoiceOrchestratorManager {...props} />);
+  await fireEvent.press(screen.getByTestId("orchestrator-row-other"));
+  await waitFor(() => screen.getByTestId("select-読み上げの声"));
+  await fireEvent(screen.getByTestId("select-読み上げの声"), "longPress");
+  expect(screen.getByTestId("select-読み上げの声").props.accessibilityValue.text).toBe("old filter");
+  await fireEvent.press(screen.getByLabelText("戻る"));
+  await fireEvent.press(screen.getByTestId("orchestrator-row-main"));
+  await waitFor(() => expect(screen.getByTestId("select-読み上げの声").props.accessibilityValue.text).toBe(""));
   await screen.unmount();
 });
 
@@ -122,6 +159,7 @@ test("new detail creates with full settings and main has no delete control", asy
   await fireEvent.press(screen.getByTestId("orchestrator-save"));
   await waitFor(() => expect(mockRequest).toHaveBeenCalledWith({ channel: "agent", op: "voice.orchestrators.create",
     payload: { name: "新規", icon: "", model: "gpt-6-luna", effort: "low",
+      ttsProvider: "aivisspeech", voiceId: "",
       systemInstruction: "Be helpful.", topicModel: "gpt-6-luna", topicEffort: "low" } }));
   await screen.unmount();
 });

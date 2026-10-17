@@ -672,7 +672,7 @@ test("attaches the accepted voice job once and skips full-text synthesis on comp
   });
   const onCompleted = jest.fn();
   const onJob = jest.fn();
-  const settings = { ttsProvider: "google", voiceId: "voice-1", speedScale: 1.2 };
+  const settings = { speedScale: 1.2 };
   const { result } = await renderHook(() => useVoiceConversation(onCompleted, onJob, settings));
   await waitFor(() => expect(result.current.ready).toBe(true));
   let sent!: Promise<void>;
