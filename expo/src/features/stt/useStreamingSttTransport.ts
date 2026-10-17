@@ -6,11 +6,23 @@ import type { StreamingSttSession, StreamingSttTransportCallbacks } from "./stre
 
 type Subscription = { remove(): void };
 type NativeStreamingStt = {
+  captureDiagnosticsVersion?: number;
   start(url: string, headers: Record<string, string>): Promise<void>;
   stop(): Promise<void>;
   abort(): Promise<void>;
   addListener(name: string, listener: (event: any) => void): Subscription;
 };
+
+const CAPTURE_STAGES = new Set([
+  "session_started", "socket_opened", "ready_received", "permission_requested", "permission_result",
+  "audio_session_configuring", "audio_session_active", "engine_starting", "engine_started",
+  "first_tap", "first_pcm", "first_audio_queued", "first_audio_send_started", "first_audio_sent",
+  "stop_requested", "runner_done", "runner_error", "socket_closed", "aborted", "failed",
+]);
+const CAPTURE_COUNTS = [
+  "capturedBuffers", "capturedFrames", "convertedFrames", "queuedAudioBytes", "startedAudioBytes",
+  "sentAudioBytes", "pendingAudioBytes", "partialAudioBytes", "inputSampleRate", "inputChannels",
+];
 
 export function useStreamingSttTransport() {
   const connect = useCallback((runnerUrl: string, runnerToken: string, callbacks: StreamingSttTransportCallbacks): StreamingSttSession => {
@@ -38,6 +50,33 @@ export function useStreamingSttTransport() {
         if (active) callbacks.onClose();
       }),
     ];
+    // Old native builds do not declare this event; leave their listener contract unchanged.
+    if (native.captureDiagnosticsVersion === 1 && callbacks.onDiagnostic) {
+      let sessionId: string | undefined;
+      const stages = new Set<string>();
+      try {
+        subscriptions.push(native.addListener("BittyStreamingSttDiagnostic", (event: unknown) => {
+          if (!active || !event || typeof event !== "object") return;
+          const value = event as Record<string, unknown>;
+          if (typeof value.sessionId !== "string" || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(value.sessionId)
+            || typeof value.stage !== "string" || !CAPTURE_STAGES.has(value.stage)
+            || !Number.isSafeInteger(value.elapsedMs) || (value.elapsedMs as number) < 0) return;
+          if (!sessionId && value.stage === "session_started") sessionId = value.sessionId;
+          if (sessionId !== value.sessionId || stages.has(value.stage)) return;
+          const payload: Record<string, unknown> = { sessionId, stage: value.stage, elapsedMs: value.elapsedMs };
+          for (const key of CAPTURE_COUNTS) {
+            if (Number.isSafeInteger(value[key]) && (value[key] as number) >= 0) payload[key] = value[key];
+          }
+          for (const key of ["ready", "stopping", "engineRunning", "permissionGranted"]) {
+            if (typeof value[key] === "boolean") payload[key] = value[key];
+          }
+          stages.add(value.stage);
+          try { callbacks.onDiagnostic?.(payload); } catch { /* Diagnostics must not interrupt recording. */ }
+        }));
+      } catch {
+        // Optional diagnostics must never prevent recording on an older native build.
+      }
+    }
     const abort = async () => {
       if (!active) return;
       active = false;
