@@ -49,7 +49,7 @@ export function useStreamingStt(options: Options) {
   const pendingAbortRef = useRef<Promise<void>>(Promise.resolve());
   const sessionVersionRef = useRef(0);
   const transcriptStateRef = useRef<StreamingTranscript>(EMPTY_TRANSCRIPT);
-  const dictatedSinceSendRef = useRef(false);
+  const draftAtStartRef = useRef("");
   const lastPartialCharsRef = useRef(0);
   const terminalRef = useRef(false);
   const listeningRef = useRef(false);
@@ -207,7 +207,7 @@ export function useStreamingStt(options: Options) {
         if (version !== sessionVersionRef.current) return;
         latestRef.current.setTranscript("");
         transcriptStateRef.current = startStreamingTranscript("");
-        dictatedSinceSendRef.current = false;
+        draftAtStartRef.current = "";
         clearTimer(replyCycleTimeoutRef);
       });
       if (version === sessionVersionRef.current && awaitingReplyCycleRef.current) {
@@ -441,10 +441,6 @@ export function useStreamingStt(options: Options) {
         terminalRef.current = true;
         const version = ++sessionVersionRef.current;
         const attempt = ++errorRetriesRef.current;
-        if (latestRef.current.continuousDictation && message.code.startsWith("macos_")
-          && (transcriptStateRef.current.finalText.trim() || transcriptStateRef.current.interimText.trim())) {
-          dictatedSinceSendRef.current = true;
-        }
         const draft = displayStreamingTranscript(transcriptStateRef.current);
         transcriptStateRef.current = startStreamingTranscript(draft);
         latestRef.current.setTranscript(draft);
@@ -484,7 +480,6 @@ export function useStreamingStt(options: Options) {
       if (message.reason === "limit_reached") listeningRef.current = false;
       if (message.reason === "recognition_segment_end" && latestRef.current.continuousDictation
         && listeningRef.current) {
-        if (hasFinalSpeech || transcriptStateRef.current.interimText.trim()) dictatedSinceSendRef.current = true;
         const draft = displayStreamingTranscript(transcriptStateRef.current);
         transcriptStateRef.current = startStreamingTranscript(draft);
         latestRef.current.setTranscript(draft);
@@ -493,7 +488,8 @@ export function useStreamingStt(options: Options) {
         return;
       }
       const completedDictation = latestRef.current.continuousDictation
-        && message.reason === "no_speech_timeout" && dictatedSinceSendRef.current && !!finalText.trim();
+        && message.reason === "no_speech_timeout"
+        && finalText.trim() !== draftAtStartRef.current.trim();
       if ((message.hasSpeech && hasFinalSpeech) || completedDictation) {
         latestRef.current.setTranscript(finalText);
         setPhase("idle");
@@ -578,7 +574,7 @@ export function useStreamingStt(options: Options) {
     }
     if (phase !== "idle" || listeningRef.current) return;
     transcriptStateRef.current = startStreamingTranscript(transcript);
-    dictatedSinceSendRef.current = false;
+    draftAtStartRef.current = transcriptStateRef.current.baseText;
     errorRetriesRef.current = 0;
     listeningRef.current = true;
     startSession();
@@ -606,7 +602,7 @@ export function useStreamingStt(options: Options) {
       await latestRef.current.sendTranscript(text, () => {
         if (version !== sessionVersionRef.current || !onAccepted()) return;
         transcriptStateRef.current = startStreamingTranscript("");
-        dictatedSinceSendRef.current = false;
+        draftAtStartRef.current = "";
         awaitReplyCycle();
       });
       if (version === sessionVersionRef.current && awaitingReplyCycleRef.current) {
