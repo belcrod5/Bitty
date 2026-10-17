@@ -49,6 +49,7 @@ export function useStreamingStt(options: Options) {
   const pendingAbortRef = useRef<Promise<void>>(Promise.resolve());
   const sessionVersionRef = useRef(0);
   const transcriptStateRef = useRef<StreamingTranscript>(EMPTY_TRANSCRIPT);
+  const dictatedSinceSendRef = useRef(false);
   const lastPartialCharsRef = useRef(0);
   const terminalRef = useRef(false);
   const listeningRef = useRef(false);
@@ -206,6 +207,7 @@ export function useStreamingStt(options: Options) {
         if (version !== sessionVersionRef.current) return;
         latestRef.current.setTranscript("");
         transcriptStateRef.current = startStreamingTranscript("");
+        dictatedSinceSendRef.current = false;
         clearTimer(replyCycleTimeoutRef);
       });
       if (version === sessionVersionRef.current && awaitingReplyCycleRef.current) {
@@ -478,6 +480,7 @@ export function useStreamingStt(options: Options) {
       if (message.reason === "limit_reached") listeningRef.current = false;
       if (message.reason === "recognition_segment_end" && latestRef.current.continuousDictation
         && listeningRef.current) {
+        if (hasFinalSpeech || transcriptStateRef.current.interimText.trim()) dictatedSinceSendRef.current = true;
         const draft = displayStreamingTranscript(transcriptStateRef.current);
         transcriptStateRef.current = startStreamingTranscript(draft);
         latestRef.current.setTranscript(draft);
@@ -485,7 +488,9 @@ export function useStreamingStt(options: Options) {
         scheduleStart();
         return;
       }
-      if (message.hasSpeech && hasFinalSpeech) {
+      const completedDictation = latestRef.current.continuousDictation
+        && message.reason === "no_speech_timeout" && dictatedSinceSendRef.current && !!finalText.trim();
+      if ((message.hasSpeech && hasFinalSpeech) || completedDictation) {
         latestRef.current.setTranscript(finalText);
         setPhase("idle");
         if (latestRef.current.autoReplyAfterStt && finalText.trim()) {
@@ -569,6 +574,7 @@ export function useStreamingStt(options: Options) {
     }
     if (phase !== "idle" || listeningRef.current) return;
     transcriptStateRef.current = startStreamingTranscript(transcript);
+    dictatedSinceSendRef.current = false;
     errorRetriesRef.current = 0;
     listeningRef.current = true;
     startSession();
@@ -596,6 +602,7 @@ export function useStreamingStt(options: Options) {
       await latestRef.current.sendTranscript(text, () => {
         if (version !== sessionVersionRef.current || !onAccepted()) return;
         transcriptStateRef.current = startStreamingTranscript("");
+        dictatedSinceSendRef.current = false;
         awaitReplyCycle();
       });
       if (version === sessionVersionRef.current && awaitingReplyCycleRef.current) {
