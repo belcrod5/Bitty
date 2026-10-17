@@ -1,6 +1,6 @@
 import { act, cleanup, renderHook } from "@testing-library/react-native";
 import { AppState, type AppStateStatus } from "react-native";
-import { REPLY_CYCLE_START_TIMEOUT_MS, TTS_START_GRACE_MS, useStreamingStt } from "./useStreamingStt";
+import { CONTINUOUS_DICTATION_IDLE_MS, REPLY_CYCLE_START_TIMEOUT_MS, TTS_START_GRACE_MS, useStreamingStt } from "./useStreamingStt";
 import type { StreamingSttTransportCallbacks } from "./streamingSttTransport";
 import { correctSttTranscript, type SttCorrectionContext } from "./sttSettingsClient";
 
@@ -455,6 +455,107 @@ test.each([1, 2])("Mac dictation sends the accumulated draft after %i segment(s)
     [], expect.any(AbortSignal));
   expect(options.sendTranscript).toHaveBeenCalledWith(draft, expect.any(Function));
   expect(options.setTranscript).toHaveBeenLastCalledWith("");
+});
+
+test("empty recognition segments cannot postpone the last dictated text's idle completion", async () => {
+  const options = { ...createOptions(), continuousDictation: true };
+  const { result } = await renderHook(() => useStreamingStt(options));
+  const first = await openReady(result);
+  await emit(first, { type: "transcript", text: "最初の文章", isFinal: true });
+  const lastTextAt = Date.now();
+  await emit(first, { type: "done", reason: "recognition_segment_end", hasSpeech: true });
+  await advanceTimers(250);
+  await emit(mockSessions.at(-1)!, { type: "ready" });
+  for (const delay of [8_000, 1_000]) {
+    await advanceTimers(delay);
+    await emit(mockSessions.at(-1)!, { type: "done", reason: "recognition_segment_end", hasSpeech: false });
+    expect(options.sendTranscript).not.toHaveBeenCalled();
+    await advanceTimers(250);
+    await emit(mockSessions.at(-1)!, { type: "ready" });
+  }
+  await advanceTimers(CONTINUOUS_DICTATION_IDLE_MS - (Date.now() - lastTextAt) - 1);
+  expect(options.sendTranscript).not.toHaveBeenCalled();
+  const activeSession = mockSessions.at(-1)!;
+  await advanceTimers(1);
+  expect(activeSession.abort).toHaveBeenCalledTimes(1);
+  expect(options.sendTranscript).toHaveBeenCalledTimes(1);
+  expect(options.sendTranscript).toHaveBeenCalledWith("最初の文章", expect.any(Function));
+});
+
+test("new dictated text extends the cross-segment idle deadline", async () => {
+  const options = { ...createOptions(), continuousDictation: true };
+  const { result } = await renderHook(() => useStreamingStt(options));
+  const first = await openReady(result);
+  await emit(first, { type: "transcript", text: "前半", isFinal: true });
+  await emit(first, { type: "done", reason: "recognition_segment_end", hasSpeech: true });
+  await advanceTimers(250);
+  const second = mockSessions.at(-1)!;
+  await emit(second, { type: "ready" });
+  await advanceTimers(CONTINUOUS_DICTATION_IDLE_MS / 2);
+  await emit(second, { type: "transcript", text: "後半", isFinal: false });
+  const lastTextAt = Date.now();
+  await emit(second, { type: "transcript", text: "後半", isFinal: true });
+  await emit(second, { type: "done", reason: "recognition_segment_end", hasSpeech: true });
+  await advanceTimers(CONTINUOUS_DICTATION_IDLE_MS / 2 + 1);
+  expect(options.sendTranscript).not.toHaveBeenCalled();
+  await advanceTimers(CONTINUOUS_DICTATION_IDLE_MS - (Date.now() - lastTextAt));
+  expect(options.sendTranscript).toHaveBeenCalledWith("前半 後半", expect.any(Function));
+});
+
+test("repeated unchanged partials do not extend the idle deadline", async () => {
+  const options = { ...createOptions(), continuousDictation: true };
+  const { result } = await renderHook(() => useStreamingStt(options));
+  const first = await openReady(result);
+  await emit(first, { type: "transcript", text: "前半", isFinal: true });
+  await emit(first, { type: "done", reason: "recognition_segment_end", hasSpeech: true });
+  await advanceTimers(250);
+  const second = mockSessions.at(-1)!;
+  await emit(second, { type: "ready" });
+  await advanceTimers(CONTINUOUS_DICTATION_IDLE_MS / 2);
+  await emit(second, { type: "transcript", text: "後半", isFinal: false });
+  await advanceTimers(CONTINUOUS_DICTATION_IDLE_MS - 2_000);
+  await emit(second, { type: "transcript", text: "後半", isFinal: false });
+  await emit(second, { type: "transcript", text: "後半 ", isFinal: false });
+  await advanceTimers(1_999);
+  expect(options.sendTranscript).not.toHaveBeenCalled();
+  await advanceTimers(1);
+  expect(options.sendTranscript).toHaveBeenCalledWith("前半 後半", expect.any(Function));
+});
+
+test("cross-segment idle leaves the draft editable when auto reply is disabled", async () => {
+  const options = { ...createOptions(), continuousDictation: true, autoReplyAfterStt: false };
+  const { result } = await renderHook(() => useStreamingStt(options));
+  const first = await openReady(result);
+  await emit(first, { type: "transcript", text: "残す文章", isFinal: true });
+  await emit(first, { type: "done", reason: "recognition_segment_end", hasSpeech: true });
+  await advanceTimers(CONTINUOUS_DICTATION_IDLE_MS);
+  expect(result.current.phase).toBe("idle");
+  expect(result.current.isArmed()).toBe(false);
+  expect(options.setTranscript).toHaveBeenLastCalledWith("残す文章");
+  expect(options.sendTranscript).not.toHaveBeenCalled();
+});
+
+test("a Google session without a Mac segment marker does not acquire the cross-segment timer", async () => {
+  const options = { ...createOptions(), continuousDictation: true };
+  const { result } = await renderHook(() => useStreamingStt(options));
+  const session = await openReady(result);
+  await emit(session, { type: "transcript", text: "途中結果", isFinal: false });
+  await advanceTimers(CONTINUOUS_DICTATION_IDLE_MS + 1);
+  expect(options.sendTranscript).not.toHaveBeenCalled();
+  expect(result.current.phase).toBe("recording");
+});
+
+test("manual stop cancels cross-segment completion after the draft is sent", async () => {
+  const options = { ...createOptions(), continuousDictation: true };
+  const { result } = await renderHook(() => useStreamingStt(options));
+  const first = await openReady(result);
+  await emit(first, { type: "transcript", text: "手動で送る", isFinal: true });
+  await emit(first, { type: "done", reason: "recognition_segment_end", hasSpeech: true });
+  await act(async () => result.current.stop());
+  await act(async () => result.current.sendManualTranscript("手動で送る", () => true));
+  await advanceTimers(CONTINUOUS_DICTATION_IDLE_MS + 1);
+  expect(options.sendTranscript).toHaveBeenCalledTimes(1);
+  expect(options.sendTranscript).toHaveBeenCalledWith("手動で送る", expect.any(Function));
 });
 
 test("Mac dictation stops with the accumulated draft when auto reply is disabled", async () => {
@@ -1179,6 +1280,23 @@ describe("recording across app state changes", () => {
     await emit(mockSessions[1], { type: "ready" });
     await emit(mockSessions[1], { type: "done", reason: "no_speech_timeout", hasSpeech: false });
     expect(options.sendTranscript).toHaveBeenCalledWith("背景前の音声", expect.any(Function));
+  });
+
+  test("cross-segment idle pauses in the background and resumes on foreground", async () => {
+    const options = { ...createOptions(), continuousDictation: true };
+    const { result } = await renderHook(() => useStreamingStt(options));
+    const first = await openReady(result);
+    await emit(first, { type: "transcript", text: "背景前の文章", isFinal: true });
+    await emit(first, { type: "done", reason: "recognition_segment_end", hasSpeech: true });
+    await changeAppState("background");
+    await advanceTimers(CONTINUOUS_DICTATION_IDLE_MS + 1);
+    expect(options.sendTranscript).not.toHaveBeenCalled();
+    await changeAppState("active");
+    await emit(mockSessions.at(-1)!, { type: "ready" });
+    await advanceTimers(CONTINUOUS_DICTATION_IDLE_MS - 1);
+    expect(options.sendTranscript).not.toHaveBeenCalled();
+    await advanceTimers(1);
+    expect(options.sendTranscript).toHaveBeenCalledWith("背景前の文章", expect.any(Function));
   });
 
   test("returning to background cancels a pending foreground connection", async () => {
