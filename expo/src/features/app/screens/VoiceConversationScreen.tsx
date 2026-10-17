@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Ionicons } from "@expo/vector-icons";
 import { AppState, Platform, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
-import Reanimated, { FadeIn, FadeInDown, FadeOut, FadeOutDown, runOnJS } from "react-native-reanimated";
+import Reanimated, { FadeIn, FadeOut, runOnJS, useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
 import { useStreamingStt } from "../../stt/useStreamingStt";
 import { StreamingSttFooter, type StreamingSttFooterHandle } from "../components/StreamingSttFooter";
 import { VoiceHistoryBackdrop, getMacVoiceBlurView } from "../components/VoiceHistoryBackdrop";
@@ -27,8 +27,6 @@ import { DEFAULT_TTS_PROVIDER } from "../utils/audioConfig";
 
 const voicePanelFadeIn = FadeIn.duration(220);
 const voicePanelFadeOut = FadeOut.duration(220);
-const historyFadeIn = FadeInDown.duration(240);
-const historyFadeOut = FadeOutDown.duration(200);
 
 export type VoiceConversationPlayback = {
   synthesizeSpeechStream: (text: string, target: { messageId: string; jobId?: string;
@@ -165,7 +163,7 @@ function VoiceConversationSession({
   const { logSessionDiag } = useConversation();
   const reduceMotion = useReduceMotionEnabled();
   const { theme } = useVisualTheme();
-  const { width: screenWidth } = useWindowDimensions();
+  const { width: screenWidth, height: screenHeight } = useWindowDimensions();
   const IosBlurView = useMemo(() => Platform.OS === "ios"
     ? require("expo-blur").BlurView as typeof import("expo-blur").BlurView : null, []);
   const MacBlurView = Platform.OS === "macos" ? getMacVoiceBlurView() : null;
@@ -175,6 +173,10 @@ function VoiceConversationSession({
   const [checklistCompletionError, setChecklistCompletionError] = useState("");
   const [transcript, setTranscript] = useState("");
   const [editingTranscript, setEditingTranscript] = useState(false);
+  const [historyMounted, setHistoryMounted] = useState(historyExpanded);
+  const historyHeight = useSharedValue(historyExpanded ? screenHeight : 0);
+  const historyDragActive = useSharedValue(false);
+  const historyStyle = useAnimatedStyle(() => ({ height: historyHeight.value }));
   const [initialStartPending, setInitialStartPending] = useState(true);
   const [synthesisStarting, setSynthesisStarting] = useState(false);
   const [synthesisRequestSettled, setSynthesisRequestSettled] = useState(false);
@@ -188,6 +190,14 @@ function VoiceConversationSession({
   const transitioningRef = useRef(false);
   const wasPausedRef = useRef(paused);
   const voicePlaybackMessageIdRef = useRef("");
+
+  useEffect(() => {
+    if (historyExpanded) setHistoryMounted(true);
+    historyHeight.value = withTiming(historyExpanded ? screenHeight : 0,
+      { duration: reduceMotion === true ? 0 : 240 }, (finished) => {
+        if (finished && !historyExpanded) runOnJS(setHistoryMounted)(false);
+      });
+  }, [historyExpanded, historyHeight, reduceMotion, screenHeight]);
 
   const playReply = useCallback(async (text: string, operationId: string, jobId?: string) => {
     if (!mountedRef.current || paused || transitioningRef.current) return;
@@ -303,9 +313,29 @@ function VoiceConversationSession({
     .enabled(!editingTranscript && !streamingStt.correctionPreview?.editing)
     .activeOffsetY([-24, 24])
     .failOffsetX([-32, 32])
-    .onEnd(({ translationY }) => {
-      if (translationY < -50) runOnJS(setHistoryExpanded)(true);
-    }), [editingTranscript, streamingStt.correctionPreview?.editing]);
+    .onStart(() => {
+      if (!historyExpanded) {
+        historyDragActive.value = true;
+        historyHeight.value = 0;
+        runOnJS(setHistoryMounted)(true);
+      }
+    })
+    .onUpdate(({ translationY }) => {
+      if (!historyExpanded) historyHeight.value = Math.min(screenHeight, Math.max(0, -translationY));
+    })
+    .onFinalize(({ translationY }, success) => {
+      if (!historyDragActive.value) return;
+      historyDragActive.value = false;
+      if (historyExpanded) return;
+      if (success && translationY < -50) {
+        runOnJS(setHistoryExpanded)(true);
+      } else {
+        historyHeight.value = withTiming(0, { duration: reduceMotion === true ? 0 : 200 }, (finished) => {
+          if (finished) runOnJS(setHistoryMounted)(false);
+        });
+      }
+    }), [editingTranscript, historyDragActive, historyExpanded, historyHeight, reduceMotion,
+      screenHeight, setHistoryExpanded, streamingStt.correctionPreview?.editing]);
 
   const quietAudio = useCallback(async () => {
     await streamingStt.abort();
@@ -428,7 +458,8 @@ function VoiceConversationSession({
       pointerEvents="box-none"
       style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, justifyContent: "flex-end" }}
     >
-      <VoiceHistoryBackdrop expanded={historyExpanded} reduceMotion={reduceMotion === true} />
+      <VoiceHistoryBackdrop expanded={historyExpanded} visible={historyMounted}
+        height={historyHeight} />
       <Reanimated.View
         testID="voice-conversation-transition"
         entering={voicePanelFadeIn}
@@ -439,11 +470,12 @@ function VoiceConversationSession({
         <SafeAreaView testID="voice-conversation-screen" pointerEvents="box-none" style={{ flex: 1 }}>
           <View testID="voice-conversation-content" pointerEvents="box-none"
             style={{ flex: 1, justifyContent: "flex-end" }}>
-            {historyExpanded ? (
+            {historyMounted ? (
               <Reanimated.View testID="voice-conversation-history"
-                entering={reduceMotion ? undefined : historyFadeIn}
-                exiting={reduceMotion ? undefined : historyFadeOut}
-                style={{ flex: 1, width: "100%" }}>
+                pointerEvents={historyExpanded ? "auto" : "none"}
+                accessibilityElementsHidden={!historyExpanded}
+                importantForAccessibility={historyExpanded ? "auto" : "no-hide-descendants"}
+                style={[{ flexShrink: 1, width: "100%", overflow: "hidden" }, historyStyle]}>
                 <View style={{ paddingHorizontal: 20, paddingTop: 20, paddingBottom: 8,
                   flexDirection: "row", alignItems: "center", gap: 12 }}>
                   <Pressable testID="voice-orchestrator-strip" style={{ flex: 1 }}
