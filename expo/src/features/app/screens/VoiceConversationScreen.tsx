@@ -25,6 +25,7 @@ import { formatOutputTokens } from "../utils/messageTokens";
 import { dismissReadVoiceNotifications } from "../utils/sessionReadNotifications";
 import { parseChecklistFile } from "../utils/checklistFile";
 import { DEFAULT_TTS_PROVIDER } from "../utils/audioConfig";
+import type { TtsPlaybackTarget } from "../types/appTypes";
 
 const voicePanelFadeIn = FadeIn.duration(220);
 const voicePanelFadeOut = FadeOut.duration(220);
@@ -32,8 +33,7 @@ const historyFadeIn = FadeInDown.duration(240);
 const historyFadeOut = FadeOutDown.duration(200);
 
 export type VoiceConversationPlayback = {
-  synthesizeSpeechStream: (text: string, target: { messageId: string; jobId?: string;
-    ttsProvider?: string; voiceId?: string }) => Promise<void>;
+  synthesizeSpeechStream: (text: string, target: TtsPlaybackTarget & { messageId: string }) => Promise<void>;
   stopTtsPlayback: (options?: { interruptStream?: boolean; reason?: string; expectedMessageId?: string }) => Promise<void>;
   isTtsPlaybackActive: boolean;
   isTtsPlaying?: boolean;
@@ -197,7 +197,7 @@ function VoiceConversationSession({
     setSynthesisRequestSettled(false);
     voicePlaybackMessageIdRef.current = operationId;
     try {
-      await synthesizeSpeechStream(text, { messageId: operationId, ...(jobId ? { jobId } : {}),
+      await synthesizeSpeechStream(text, { scope: "voice", messageId: operationId, ...(jobId ? { jobId } : {}),
         ttsProvider: orchestrator.ttsProvider || DEFAULT_TTS_PROVIDER, voiceId: orchestrator.voiceId || "" });
     } catch {
       if (mountedRef.current) setSynthesisStarting(false);

@@ -2740,6 +2740,9 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     ttsSynthesisRequestIdRef,
     baseUrl,
     setTtsPlaybackMessageIdWithRef,
+    setTtsPlaybackProjectionTarget: (target) => {
+      ttsPlaybackProjectionTargetRef.current = target;
+    },
     setTtsLoading,
     setTtsUiStatus,
     setError,
@@ -3451,12 +3454,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     suspendCodexTurnRequestForSessionSwitch,
     closeCodexRelayObserver,
     stopTtsPlayback,
-    streamSocketRef,
-    streamTtsControlRef,
-    clearStreamAudioQueue,
-    streamAudioWaveformBarsRef,
-    setStreamWaveformPreview,
-    streamTtsSuppressedRef,
+    ttsPlaybackProjectionTargetRef,
     setStreamMode,
     setStreamLlmNativeDeltaCount,
     setStreamLlmPseudoDeltaCount,

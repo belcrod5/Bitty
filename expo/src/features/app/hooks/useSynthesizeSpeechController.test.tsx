@@ -13,6 +13,7 @@ test("counts the server-reported TTS audio size after playback loads", async () 
     }),
   } as Response);
   const playTtsAudio = jest.fn(async () => {});
+  const setTtsPlaybackProjectionTarget = jest.fn();
   const { result } = await renderHook(() => useSynthesizeSpeechController({
     reply: "hello",
     runnerUrl: "https://runner.example",
@@ -24,6 +25,7 @@ test("counts the server-reported TTS audio size after playback loads", async () 
     ttsSynthesisRequestIdRef: { current: 0 },
     baseUrl: () => "https://runner.example",
     setTtsPlaybackMessageIdWithRef: jest.fn(),
+    setTtsPlaybackProjectionTarget,
     setTtsLoading: jest.fn(),
     setTtsUiStatus: jest.fn(),
     setError: jest.fn(),
@@ -37,6 +39,7 @@ test("counts the server-reported TTS audio size after playback loads", async () 
   try {
     await act(async () => { await result.current(); });
     expect(playTtsAudio).toHaveBeenCalledTimes(1);
+    expect(setTtsPlaybackProjectionTarget).toHaveBeenCalledWith({ scope: "chat", messageId: "" });
     expect(getNetworkUsageSnapshot().httpByCategory["tts-media"].receivedBytes).toBe(4096);
   } finally {
     fetchMock.mockRestore();
