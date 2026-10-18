@@ -186,6 +186,7 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
     registry = old || { orchestrators: [{ id: "main", name: "メイン", icon: "" }],
       selectedId: "main", memoryConversationId: recoveredMemoryConversationId };
     main = createVoiceContextService({ rootDir: root, createClient,
+      getOrchestratorName: () => registry.orchestrators.find((item) => item.id === "main")?.name,
       taskChecklistPath: "task-checklists/main.md",
       onChecklistChanged,
       memoryConversationId: registry.memoryConversationId || undefined,
@@ -212,6 +213,7 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
     if (!registry.orchestrators.some((item) => item.id === id)) throw failure("Orchestrator was not found", "not_found");
     if (contexts.has(id)) return contexts.get(id);
     const service = createVoiceContextService({ rootDir: path.join(orchestratorRoot, id), createClient,
+      getOrchestratorName: () => registry.orchestrators.find((item) => item.id === id)?.name,
       sharedWorkspaceDirectory: workspaceDirectory, sharedMemoryStore: memoryStore, pairExclusive,
       managedSessions: managedSessions(id), hasOutstandingActivity: hasOutstandingActivity(id) });
     contexts.set(id, service);
@@ -258,6 +260,7 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
         await load();
         await fs.mkdir(orchestratorRoot, { recursive: true, mode: 0o700 });
         const service = createVoiceContextService({ rootDir: path.join(orchestratorRoot, item.id), createClient,
+          getOrchestratorName: () => registry.orchestrators.find((entry) => entry.id === item.id)?.name,
           sharedWorkspaceDirectory: workspaceDirectory, sharedMemoryStore: memoryStore, pairExclusive,
           managedSessions: managedSessions(item.id), hasOutstandingActivity: hasOutstandingActivity(item.id) });
         await service.open();
