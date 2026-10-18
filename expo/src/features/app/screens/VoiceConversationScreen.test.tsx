@@ -1,6 +1,6 @@
 import { useState, type ReactElement, type ReactNode } from "react";
 import { act, fireEvent, render as testingRender, waitFor, within } from "@testing-library/react-native";
-import { AppState, Platform, ScrollView, StyleSheet } from "react-native";
+import { AppState, Platform, ScrollView, StyleSheet, type AppStateStatus } from "react-native";
 import type { RunnerWsMessage } from "../../runnerWs/types";
 import { DEFAULT_VISUAL_THEME_ID, VISUAL_THEMES } from "../theme/visualThemes";
 import { VoiceConversationScreen } from "./VoiceConversationScreen";
@@ -1439,4 +1439,24 @@ test("voice conversation uses the shared continuation transport and merges resum
   expect(mockVoice.sendTranscript).toHaveBeenCalledWith("前半 後半", expect.any(Function));
   expect(mockNativeStt.start).toHaveBeenCalledTimes(1);
   await screen.unmount();
+});
+
+test("a widget voice target waits for foreground before announcing and recording once", async () => {
+  AppState.currentState = "background";
+  let changeState: ((state: AppStateStatus) => void) | undefined;
+  jest.spyOn(AppState, "addEventListener").mockImplementation((_event, listener) => {
+    changeState = listener;
+    return { remove: jest.fn() };
+  });
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose}
+    initialOrchestratorId="other" />);
+  expect(mockHookOrchestratorIds.at(-1)).toBe("other");
+  expect(mockSynthesizeSpeechStream).not.toHaveBeenCalled();
+  expect(mockStt.start).not.toHaveBeenCalled();
+  await act(async () => { changeState?.("active"); });
+  expect(mockSynthesizeSpeechStream).toHaveBeenCalledWith("調査で開始しました", expect.any(Object));
+  expect(mockStt.start).toHaveBeenCalledTimes(1);
+  await act(async () => { changeState?.("active"); });
+  expect(mockStt.start).toHaveBeenCalledTimes(1);
+  screen.unmount();
 });

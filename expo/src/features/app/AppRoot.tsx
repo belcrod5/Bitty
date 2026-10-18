@@ -1,3 +1,4 @@
+import { OrchestratorStatusProvider } from "./contexts/OrchestratorStatusContext";
 import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import {
   GestureHandlerRootView,
@@ -6104,6 +6105,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
         chatVisual={chatVisualContextValue}
         chatScreen={chatScreenContextValue}
       >
+      <OrchestratorStatusProvider>
       <KeyboardProvider>
         <AppDrawerLayout
         open={drawerOpen}
@@ -6177,6 +6179,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
         </SafeAreaView>
         <PushNotificationRegistrar onUnreadCountSnapshot={sessionNotificationLifecycle.applyUnreadCountSnapshot} />
       </KeyboardProvider>
+      </OrchestratorStatusProvider>
       </AppProviders>
       </RunnerWebSocketProvider>
       <ThemeSplash ready={settingsLoaded} onReady={onReady} />

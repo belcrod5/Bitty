@@ -275,7 +275,7 @@ function VoiceConversationSession({
   }, [historyExpanded, voice.logicalConversationId]);
   const replyLoading = voice.turnStatus === "accepted" || voice.turnStatus === "running";
   const playbackActive = synthesisStarting || isTtsPlaybackActive;
-  const canStart = !paused && !transitioning && voice.ready && !replyLoading && voice.turnStatus !== "sending" && !playbackActive;
+  const canStart = appActive && !paused && !transitioning && voice.ready && !replyLoading && voice.turnStatus !== "sending" && !playbackActive;
   const streamingStt = useStreamingStt({
     runnerUrl,
     runnerToken,

@@ -11,8 +11,11 @@ import { usePendingVoiceNavigationController } from "../hooks/usePendingVoiceNav
 
 let mockRunningSessionCount: number | null = 0;
 jest.mock("../hooks/useReduceMotionEnabled", () => ({ useReduceMotionEnabled: () => true }));
-jest.mock("../hooks/useRegisteredDirectoryActiveSessionCount", () => ({
-  useRegisteredDirectoryActiveSessionCount: () => mockRunningSessionCount,
+jest.mock("../contexts/OrchestratorStatusContext", () => ({
+  useOrchestratorStatus: () => ({
+    ...require("../hooks/useOrchestratorActivities").useOrchestratorActivities("url", "token", true),
+    runningSessionCount: mockRunningSessionCount,
+  }),
 }));
 
 jest.mock("../components/CodexStatusSummaryMenu", () => ({
