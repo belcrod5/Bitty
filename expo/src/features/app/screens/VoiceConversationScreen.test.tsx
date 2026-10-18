@@ -862,6 +862,31 @@ test("macOS renders the native within-window blur behind the dark overlay", asyn
   await remounted.unmount();
 });
 
+test.each(["ios", "macos"])("%s checklist blur mounts without an ancestor opacity transition", async (platform) => {
+  Object.defineProperty(Platform, "OS", { configurable: true, value: platform });
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose}
+    initialOrchestratorId="main" />);
+  const expectUnfadedBlur = () => {
+    const blur = screen.getByTestId("voice-task-checklist-blur");
+    let ancestor: typeof blur | null = blur;
+    while (ancestor) {
+      // Native backdrop sampling must not start inside a flattened opacity transition.
+      expect(ancestor.props.entering).toBeUndefined();
+      expect(ancestor.props.exiting).toBeUndefined();
+      expect(StyleSheet.flatten(ancestor.props.style)?.opacity ?? 1).toBe(1);
+      ancestor = ancestor.parent;
+    }
+  };
+  expectUnfadedBlur();
+  await fireEvent.press(screen.getByTestId("voice-task-checklist-collapse"));
+  await fireEvent.press(screen.getByTestId("voice-task-checklist-expand"));
+  expectUnfadedBlur();
+  await fireEvent.press(screen.getByTestId("voice-orchestrator-other"));
+  await waitFor(() => expect(mockHookOrchestratorIds.at(-1)).toBe("other"));
+  expectUnfadedBlur();
+  await screen.unmount();
+});
+
 test("Android keeps the dark fallback without loading native blur", async () => {
   Object.defineProperty(Platform, "OS", { configurable: true, value: "android" });
   const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
@@ -989,19 +1014,12 @@ test("shows only the shared footer immediately and starts recording once voice.o
   expect(screen.queryByText("音声会話")).toBeNull();
   expect(screen.queryByText("返答を再生")).toBeNull();
   expect(screen.queryByTestId("voice-conversation-microphone")).toBeNull();
-  expect(screen.getByTestId("voice-conversation-transition").props).toMatchObject({
-    entering: { type: "fade-in", duration: 220 },
-    exiting: { type: "fade-out", duration: 220 },
-  });
-  expect(StyleSheet.flatten(screen.getByTestId("voice-conversation-transition").props.style)).toMatchObject({
-    flex: 1, width: "100%",
-  });
-  expect(screen.getByTestId("voice-conversation-transition").props.pointerEvents).toBe("box-none");
   expect(StyleSheet.flatten(screen.getByTestId("voice-conversation-keyboard-avoiding").props.style)).toMatchObject({
     position: "absolute", top: 0, bottom: 0, justifyContent: "flex-end",
   });
   expect(screen.getByTestId("voice-conversation-keyboard-avoiding").props.behavior).toBe("padding");
-  expect(StyleSheet.flatten(screen.getByTestId("voice-conversation-screen").props.style)).toMatchObject({ flex: 1 });
+  expect(StyleSheet.flatten(screen.getByTestId("voice-conversation-screen").props.style))
+    .toMatchObject({ flex: 1, width: "100%" });
   expect(screen.getByTestId("voice-conversation-screen").props.pointerEvents).toBe("box-none");
   expect(StyleSheet.flatten(screen.getByTestId("voice-conversation-content").props.style)).toMatchObject({
     flex: 1, justifyContent: "flex-end",
@@ -1025,7 +1043,7 @@ test("stopping before voice.open is ready closes the footer and prevents recordi
   expect(mockStt.stop).toHaveBeenCalledTimes(1);
   expect(mockOnClose).toHaveBeenCalledTimes(1);
   expect(screen.queryByTestId("streaming-stt-footer")).toBeNull();
-  expect(screen.queryByTestId("voice-conversation-transition")).toBeNull();
+  expect(screen.queryByTestId("voice-conversation-screen")).toBeNull();
   expect(mockAbort).toHaveBeenCalled();
   expect(mockStopTtsPlayback).not.toHaveBeenCalled();
 

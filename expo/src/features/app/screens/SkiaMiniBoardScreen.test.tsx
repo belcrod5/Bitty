@@ -226,7 +226,8 @@ jest.mock("@expo/vector-icons", () => {
   const ReactModule = require("react");
   const { Text } = require("react-native");
   return {
-    Ionicons: ({ name }: { name: string }) => ReactModule.createElement(Text, null, name),
+    Ionicons: ({ name, color }: { name: string; color: string }) =>
+      ReactModule.createElement(Text, { style: { color } }, name),
   };
 });
 
@@ -1362,6 +1363,26 @@ test("tidies board cards only after confirmation without touching the viewport",
   expect(mockTidyBoard).toHaveBeenCalledTimes(1);
   expect(mockPersistViewport).not.toHaveBeenCalled();
   alertSpy.mockRestore();
+});
+
+test.each(["standard", "cyberpunk"] as const)("%s pairs board header icons with their control surface", async (themeId) => {
+  const screen = await render(
+    <VisualThemeProvider themeId={themeId} onSelectTheme={jest.fn()}>
+      <SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />
+    </VisualThemeProvider>,
+  );
+  const colors = VISUAL_THEMES[themeId].colors;
+  for (const label of ["ナビゲーションを開く", "ボードメニューを開く"]) {
+    expect(StyleSheet.flatten(screen.getByLabelText(label).props.style).backgroundColor)
+      .toBe(colors.floatingControlSurface);
+  }
+  expect(StyleSheet.flatten(screen.getByText("☰").props.style).color).toBe(colors.floatingControlText);
+  expect(StyleSheet.flatten(screen.getByText("ellipsis-horizontal").props.style).color)
+    .toBe(colors.floatingControlText);
+  await fireEvent.press(screen.getByLabelText("ボードメニューを開く"));
+  for (const icon of ["grid-outline", "locate-outline"]) {
+    expect(StyleSheet.flatten(screen.getByText(icon).props.style).color).toBe(colors.iconSecondary);
+  }
 });
 
 test("keeps board menu actions clickable through the shared modal", async () => {
