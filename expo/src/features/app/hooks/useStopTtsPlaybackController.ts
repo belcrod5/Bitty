@@ -3,6 +3,12 @@ import { Audio } from "../audio";
 import type { StreamTtsControlState, TtsPlaybackTarget } from "../types/appTypes";
 
 type TtsUiStatus = "idle" | "queued" | "synthesizing" | "playing" | "error";
+export type TtsStopOptions = {
+  interruptStream?: boolean;
+  reason?: string;
+  expectedMessageId?: string;
+  expectedTarget?: { scope: "voice"; orchestratorId: string } | { scope: "chat"; sessionId: string; panelId?: string };
+};
 type AudioModeSwitchOptions = {
   reason?: string;
   allowsRecordingIOS?: boolean;
@@ -81,10 +87,19 @@ export function useStopTtsPlaybackController(options: UseStopTtsPlaybackControll
     setTtsSoundWithRef,
   } = options;
 
-  const stopTtsPlayback = useCallback(async (
-    stopOptions?: { interruptStream?: boolean; reason?: string; expectedMessageId?: string }
-  ) => {
-    const expectedMessageId = stopOptions?.expectedMessageId;
+  const stopTtsPlayback = useCallback(async function stopPlayback(
+    stopOptions?: TtsStopOptions
+  ): Promise<void> {
+    const target = stopOptions?.expectedTarget;
+    const playback = ttsPlaybackProjectionTargetRef.current;
+    if (target && (target.scope !== playback.scope || (target.scope === "voice"
+      ? target.orchestratorId !== playback.orchestratorId
+      : target.sessionId !== playback.sessionId || target.panelId !== playback.panelId))) {
+      logAuto("tts_trace", { stage: "stop_ignored", reason: "target_mismatch" });
+      return;
+    }
+    const expectedMessageId = stopOptions?.expectedMessageId || (target ? playback.messageId : undefined);
+    if (target && !expectedMessageId) return;
     if (expectedMessageId) {
       if (ttsPlaybackProjectionTargetRef.current.messageId !== expectedMessageId) {
         logAuto("tts_trace", {
@@ -127,6 +142,8 @@ export function useStopTtsPlaybackController(options: UseStopTtsPlaybackControll
         runId: ttsPlaybackRunIdRef.current,
       });
       await ttsStopInFlightRef.current;
+      // Joining an older stop does not release a stream attached while it was stopping.
+      if (expectedMessageId) return stopPlayback({ ...stopOptions, expectedMessageId });
       return;
     }
     const stopTask = (async () => {
@@ -192,7 +209,7 @@ export function useStopTtsPlaybackController(options: UseStopTtsPlaybackControll
       markTtsPlaybackStopped();
       const activeTtsSound = ttsSoundRef.current;
       if (!activeTtsSound) {
-        await setAudioModeForPlayback({ reason: "tts_stop_without_sound" }).catch(() => {});
+        await setAudioModeForPlayback({ reason: "tts_stop_without_sound" }).catch((error) => { if (target) throw error; });
         clearTtsPlaybackWatchdogTimer();
         logAuto("tts_stop_completed", {
           interruptStream,
@@ -203,14 +220,18 @@ export function useStopTtsPlaybackController(options: UseStopTtsPlaybackControll
         return;
       }
       activeTtsSound.setOnPlaybackStatusUpdate(null);
+      let nativeReleased = false;
       try {
         await activeTtsSound.stopAsync();
+        nativeReleased = true;
       } catch {}
       try {
         await activeTtsSound.unloadAsync();
+        nativeReleased = true;
       } catch {}
+      if (target && !nativeReleased) throw new Error("speech_release_unconfirmed");
       setTtsSoundWithRef((current) => (current === activeTtsSound ? null : current));
-      await setAudioModeForPlayback({ reason: "tts_stop_with_sound" }).catch(() => {});
+      await setAudioModeForPlayback({ reason: "tts_stop_with_sound" }).catch((error) => { if (target) throw error; });
       clearTtsPlaybackWatchdogTimer();
       logAuto("tts_stop_completed", {
         interruptStream,

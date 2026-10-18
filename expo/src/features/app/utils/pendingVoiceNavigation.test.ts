@@ -1,6 +1,7 @@
 import {
   clearPendingVoiceOrchestratorId,
   getPendingVoiceOrchestratorId,
+  getPendingVoiceControlSignal,
   setPendingVoiceOrchestratorId,
   subscribePendingVoiceOrchestratorId,
 } from "./pendingVoiceNavigation";
@@ -23,4 +24,18 @@ test("shared voice navigation works without native push notification support", (
     unsubscribe();
     clearPendingVoiceOrchestratorId("voice-123");
   }
+});
+
+test("canceled remote navigation clears only its own pending destination", () => {
+  const remote = new AbortController();
+  setPendingVoiceOrchestratorId("remote", remote.signal);
+  expect(getPendingVoiceControlSignal()).toBe(remote.signal);
+  remote.abort();
+  expect(getPendingVoiceOrchestratorId()).toBe("");
+  const old = new AbortController();
+  setPendingVoiceOrchestratorId("old", old.signal);
+  setPendingVoiceOrchestratorId("manual");
+  old.abort();
+  expect(getPendingVoiceOrchestratorId()).toBe("manual");
+  clearPendingVoiceOrchestratorId("manual");
 });

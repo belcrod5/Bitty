@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createCodexBackend, executeCodexTurn, startCodexTurn } from "../src/codex-turn-execution.mjs";
+import { APP_CONTROL_UNAVAILABLE_INSTRUCTION, createCodexBackend, executeCodexTurn, startCodexTurn } from "../src/codex-turn-execution.mjs";
 import { serializeAgentError } from "../src/agent/agent-protocol.mjs";
 import { CONVERSATION_HISTORY_TOOL_INSTRUCTIONS } from "../src/agent/agent-runtime.mjs";
 
@@ -263,6 +263,7 @@ test("starts an unattended new thread with questions disabled and forwards turn 
   assert.equal(client.calls.some((call) => call.method === "thread/resume"), false);
   assert.deepEqual(client.calls.find((call) => call.method === "turn/start")?.params, {
     threadId: "thread-new",
+    additionalContext: { "bitty.appControl": { kind: "application", value: APP_CONTROL_UNAVAILABLE_INSTRUCTION } },
     input: [{ type: "text", text: "run checks" }],
     cwd: "/work/project",
     approvalPolicy: "on-request",
@@ -988,4 +989,48 @@ test("usage quota failures preserve their precise code through execution and age
     assert.equal(serializeAgentError(error, "codex").code, "usage_limit_exceeded");
     return true;
   });
+});
+
+test("per-invocation control instruction replaces prior reference on Codex fresh and resumed requests without input injection", async () => {
+  for (const sessionRef of [null, { backendId: "codex", nativeSessionId: "thread-existing" }]) {
+    const clients = [];
+    const backend = createCodexBackend({ createClient: () => { const client = fakeClient(); client.close = () => {}; clients.push(client); return client; },
+      resolveSessionCwd: async () => "/work/project", listSessions: async () => ({ sessions: [] }), readHistory: async () => ({ items: [] }),
+      developerInstructions: "base history instruction" });
+    const input = { blocks: [{ type: "text", text: "stop voice input" }] };
+    for (const trustedInstructions of ["Bitty app controlContext: ctx_first.", "Bitty app controlContext: ctx_second.", ""]) {
+      await backend.startTurn({ runId: `run-${clients.length}`, sessionRef, cwd: "/work/project", input,
+        trustedInstructions, resolveSession: async () => {}, emit: () => {} });
+      const method = sessionRef ? "thread/resume" : "thread/start";
+      const instruction = clients.at(-1).calls.find((call) => call.method === method).params.developerInstructions;
+      assert.equal(instruction, "base history instruction");
+      assert.deepEqual(clients.at(-1).calls.find((call) => call.method === "turn/start").params.additionalContext,
+        { "bitty.appControl": { kind: "application", value: trustedInstructions || APP_CONTROL_UNAVAILABLE_INSTRUCTION } });
+      const turnInput = clients.at(-1).calls.find((call) => call.method === "turn/start").params.input;
+      assert.equal(JSON.stringify(turnInput).includes("ctx_"), false);
+    }
+  }
+});
+
+test("resume failure prevents turn start instead of silently using previous thread configuration", async () => {
+  const client = fakeClient();
+  const original = client.request.bind(client);
+  client.request = async (method, params) => {
+    if (method === "thread/resume") throw new Error("resume failed");
+    return original(method, params);
+  };
+  await assert.rejects(startCodexTurn({ client, clientName: "control-test", threadId: "existing",
+    inputText: "stop voice", trustedInstructions: "CURRENT_CONTROL_REFERENCE" }), { message: "resume failed" });
+  assert.equal(client.calls.some((call) => call.method === "turn/start"), false);
+});
+
+test("resume must confirm the exact requested thread before starting the control invocation", async () => {
+  for (const thread of [undefined, { id: "other-thread" }]) {
+    const client = fakeClient();
+    const original = client.request.bind(client);
+    client.request = async (method, params) => method === "thread/resume" ? { thread } : original(method, params);
+    await assert.rejects(startCodexTurn({ client, clientName: "control-test", threadId: "existing",
+      inputText: "stop voice", trustedInstructions: "CURRENT_CONTROL_REFERENCE" }), /resumed thread identity/);
+    assert.equal(client.calls.some((call) => call.method === "turn/start"), false);
+  }
 });

@@ -1,3 +1,4 @@
+import { getVoiceControl, type AppControlOrigin } from "../../appControl/voiceControl";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { randomUUID } from "expo-crypto";
 import { Alert } from "react-native";
@@ -19,6 +20,7 @@ type PendingTurn = {
   reject?: (error: Error) => void;
   readAloud: boolean;
   accepted: boolean;
+  appControlOrigin?: AppControlOrigin;
   jobId?: string;
   tts?: { speedScale: number };
 };
@@ -196,6 +198,7 @@ export function useVoiceConversation(
             operationId: pending.id,
             payload: {
               backendId: "codex",
+              ...(pending.appControlOrigin ? { appControlOrigin: pending.appControlOrigin } : {}),
               orchestratorId,
               logicalConversationId: conversationIdRef.current,
               clientOperationId: pending.id,
@@ -427,6 +430,7 @@ export function useVoiceConversation(
       const pending: PendingTurn = {
         id: randomUUID(), text: trimmed, onAccepted, resolve, reject,
         readAloud: true, accepted: false,
+        appControlOrigin: getVoiceControl(manager).origin(undefined, { kind: "orchestrator", orchestratorId }),
         tts: ttsRef.current,
       };
       turnRevisionRef.current += 1;
@@ -435,7 +439,7 @@ export function useVoiceConversation(
         at: new Date().toISOString() }]);
       if (manager.getSnapshot().connected) void startTurn(pending);
     });
-  }, [manager, startTurn]);
+  }, [manager, startTurn, orchestratorId]);
 
   const interrupt = useCallback(() => {
     const pending = pendingRef.current;

@@ -73,7 +73,7 @@ function safeEnvironment(source) {
   const exact = new Set([
     "HOME", "USER", "LOGNAME", "PATH", "SHELL", "TMPDIR", "LANG", "TERM", "COLORTERM",
     "CLAUDE_CONFIG_DIR", "SSL_CERT_FILE", "SSL_CERT_DIR", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY",
-    "BITTY_RUNNER_URL", "BITTY_RUNNER_TOKEN_FILE", "RUNNER_TOKEN_FILE",
+    "BITTY_RUNNER_URL", "BITTY_RUNNER_TOKEN_FILE", "RUNNER_TOKEN_FILE", "BITTY_REPO_ROOT",
   ]);
   const target = {};
   for (const [key, value] of Object.entries(source || {})) {
@@ -296,7 +296,7 @@ export function createClaudeBackend({
     return ["--safe-mode", "--permission-mode", "dontAsk"];
   }
 
-  async function startTurn({ runId, sessionRef, cwd, input, model, effort, policyProfileId, signal, resolveSession, setNativeProcessIdentity, emit }) {
+  async function startTurn({ runId, sessionRef, cwd, input, model, effort, policyProfileId, signal, resolveSession, setNativeProcessIdentity, emit, trustedInstructions = "" }) {
     if (signal?.aborted) {
       const error = agentError("turn_failed", "Claude turn was interrupted before start", { backendId: "claude" });
       error.nativeActivity = "not_started";
@@ -475,8 +475,8 @@ export function createClaudeBackend({
     // 永遠に来ない=「終わったらお知らせします」のまま無反応になる根本原因)。
     const args = [
       "-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose", "--include-partial-messages",
-      ...(String(developerInstructions || "").trim()
-        ? ["--append-system-prompt", String(developerInstructions).trim()]
+      ...([developerInstructions, trustedInstructions].filter(Boolean).join("\n").trim()
+        ? ["--append-system-prompt", [developerInstructions, trustedInstructions].filter(Boolean).join("\n").trim()]
         : []),
       ...(requestedSessionId ? ["--resume", requestedSessionId] : ["--session-id", freshSessionId]),
       ...(selectedModel ? ["--model", selectedModel] : []),

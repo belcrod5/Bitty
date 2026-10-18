@@ -1,3 +1,4 @@
+import { getVoiceControl } from "../appControl/voiceControl";
 import { WidgetSnapshotPublisher } from "./components/WidgetSnapshotPublisher";
 import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import {
@@ -110,7 +111,7 @@ import { useSlashCommandResultAppender } from "./hooks/useSlashCommandResultAppe
 import { useSlashStatusCommandController } from "./hooks/useSlashStatusCommandController";
 import { useSendReplyRequestController } from "./hooks/useSendReplyRequestController";
 import { useSynthesizeSpeechStreamController } from "./hooks/useSynthesizeSpeechStreamController";
-import { useStopTtsPlaybackController } from "./hooks/useStopTtsPlaybackController";
+import { useStopTtsPlaybackController, type TtsStopOptions } from "./hooks/useStopTtsPlaybackController";
 import { useEnqueueStreamAudioController } from "./hooks/useEnqueueStreamAudioController";
 import { useProcessStreamAudioQueueController } from "./hooks/useProcessStreamAudioQueueController";
 import { usePrepareTtsPlaybackSessionController } from "./hooks/usePrepareTtsPlaybackSessionController";
@@ -962,7 +963,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   const autoSpeechOpenPanelIdsRef = useRef<Record<string, true>>({});
   const ttsPlaybackProjectionTargetRef = useRef<TtsPlaybackTarget>({});
   const stopTtsPlaybackDelegateRef = useRef<(
-    options?: { interruptStream?: boolean; reason?: string }
+    options?: TtsStopOptions
   ) => Promise<void>>(async () => {});
   const setPanelAutoSpeechOpen = useCallback((panelIdRaw: string, open: boolean) => {
     const panelId = normalizeRuntimePanelId(panelIdRaw);
@@ -994,6 +995,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     }
   }, []);
   const isChatOpenForAutoSpeech = useCallback((target: TtsPlaybackTarget) => {
+    if (!getVoiceControl(runnerWebSocketManager).allowsSpeech(undefined, undefined, normalizeRuntimePanelId(target.panelId))) return false;
     const panelId = normalizeRuntimePanelId(target.panelId);
     const sessionId = parseOptionalSessionId(target.sessionId);
     if (panelId) {
@@ -1011,6 +1013,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     return !!sessionId && (!visibleSessionId || visibleSessionId === sessionId);
   }, [
     selectedLlmSessionId,
+    runnerWebSocketManager,
   ]);
   const knownCodexThreadIdsRef = useRef<Set<string>>(new Set());
   const sessionRuntimeStatusByIdRef = useRef<Record<string, SessionRuntimeStatus>>({});
@@ -1024,35 +1027,12 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     autoBargeInEnabled,
     autoSpeakerPriorityEnabled,
   });
-  const voiceInputSessionsRef = useRef(new Set<{
-    isArmed: () => boolean;
-    isCapturing: () => boolean;
-    abort: () => Promise<void>;
-  }>());
-  const registerVoiceInputSession = useCallback((controller: {
-    isArmed: () => boolean;
-    isCapturing: () => boolean;
-    abort: () => Promise<void>;
-  }) => {
-    voiceInputSessionsRef.current.add(controller);
-    return () => voiceInputSessionsRef.current.delete(controller);
-  }, []);
-  const isVoiceInputArmed = useCallback(() => (
-    Array.from(voiceInputSessionsRef.current).some((controller) => controller.isArmed())
-  ), []);
-  const isVoiceInputCapturing = useCallback(() => (
-    Array.from(voiceInputSessionsRef.current).some((controller) => controller.isCapturing())
-  ), []);
-  const abortCapturingVoiceInput = useCallback(async () => {
-    await Promise.all(Array.from(voiceInputSessionsRef.current)
-      .filter((controller) => controller.isCapturing())
-      .map((controller) => controller.abort()));
-  }, []);
-  const abortVoiceInput = useCallback(async () => {
-    await Promise.all(Array.from(voiceInputSessionsRef.current)
-      .filter((controller) => controller.isArmed())
-      .map((controller) => controller.abort()));
-  }, []);
+  const voiceControl = getVoiceControl(runnerWebSocketManager);
+  const isVoiceInputArmed = useCallback(() => voiceControl.isArmed(), [voiceControl]);
+  // Audio preparation must also release a native session that is still connecting.
+  const isVoiceInputCapturing = useCallback(() => voiceControl.isSessionOpen(), [voiceControl]);
+  const abortCapturingVoiceInput = useCallback(() => voiceControl.disarmCapturing(), [voiceControl]);
+  const abortVoiceInput = useCallback(() => voiceControl.disarmAll(), [voiceControl]);
   const setAudioModeForPlayback = useCallback(async (options?: AudioModeSwitchOptions) => {
     await Audio.setAudioModeAsync({
       allowsRecordingIOS: options?.allowsRecordingIOS ?? false,
@@ -1320,7 +1300,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   const markTtsChunkPlaybackFinishedDelegateRef = useRef<() => void>(() => {});
   const markTtsPlaybackStoppedDelegateRef = useRef<() => void>(() => {});
   const stopTtsPlayback = useCallback(async (
-    options?: { interruptStream?: boolean; reason?: string; expectedMessageId?: string }
+    options?: TtsStopOptions
   ) => {
     await stopTtsPlaybackDelegateRef.current(options);
   }, []);
@@ -2755,6 +2735,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   });
   const processStreamAudioQueue = useProcessStreamAudioQueueController({
     streamAudioQueueProcessingRef,
+    streamAudioQueueGenerationRef,
     streamAudioQueueRef,
     streamCurrentChunkStartedAtRef,
     streamCurrentChunkEstimatedDurationMsRef,
@@ -5419,6 +5400,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   appendAssistantEventMessageForApprovalRef.current = appendAssistantEventMessageForApproval;
   const hydratePanelFromSessionHistory = useCallback(async (params: {
     panelId: string;
+    signal?: AbortSignal;
     backendId?: string;
     sessionId: string;
     directory: string;
@@ -5455,7 +5437,8 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     }
     const runtimeAtHydrationStart = getConversationRuntimeSnapshot(sessionId);
     const requestStartedAtMsAtHydrationStart = Number(runtimeAtHydrationStart?.request?.startedAtMs) || null;
-    const isCurrentHydration = beginPanelHydration(panelId);
+    const currentHydration = beginPanelHydration(panelId);
+    const isCurrentHydration = () => !params.signal?.aborted && currentHydration();
     logSessionDiag("panel_runtime_hydrate_start", {
       diagnosticCycleId,
       panelId,
@@ -5849,7 +5832,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     setComposerInputFocused,
     onVoiceSpeechBegin,
     voiceInputDuringTtsAllowed,
-    registerVoiceInputSession,
     hasComposerText,
     canStopLlmTurn: replyLoading,
     stopLlmTurn: stopLlmTurnFromComposerContext,
@@ -5985,6 +5967,73 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     showToast: showChatBottomToast,
     log: logSessionDiag,
   });
+  voiceControl.configure({
+    diag: (operationId, stage, reason) => logSessionDiag("voice_control", { operationId, stage, ...(reason ? { reason } : {}) }, { throttleMs: 0 }),
+    releaseSpeech: async (target, panelId) => {
+      await stopTtsPlayback({ interruptStream: true, reason: "voice_handoff", expectedTarget: target.kind === "orchestrator"
+        ? { scope: "voice", orchestratorId: target.orchestratorId }
+        : { scope: "chat", sessionId: target.sessionRef.nativeSessionId || "", panelId } });
+    },
+    preflight: async (target) => {
+      if (target.kind === "orchestrator") {
+        const response = await runnerWebSocketManager.request({ channel: "agent", op: "voice.orchestrators.list" });
+        const items = (response.payload as { orchestrators?: Array<{ id: string }> })?.orchestrators;
+        if (!items?.some((item) => item.id === target.orchestratorId)) return "target_not_found";
+        const opened = await runnerWebSocketManager.request({ channel: "agent", op: "voice.open", payload: { orchestratorId: target.orchestratorId } });
+        const status = (opened.payload as { status?: string })?.status;
+        return status === "accepted" || status === "running" ? "target_busy" : null;
+      }
+      const context = resolveSessionHistoryContext(target.sessionRef.nativeSessionId || "", target.sessionRef.backendId);
+      if (!context || context.directory !== target.cwd) return "target_not_found";
+      if (!composerDraftsLoaded) return "draft_conflict";
+      if (composerDrafts.some((draft) => draft.sessionId === target.sessionRef.nativeSessionId
+        && (draft.backendId || "codex") === target.sessionRef.backendId && draft.text.trim())) return "draft_conflict";
+      const runtime = getConversationRuntimeSnapshot(target.sessionRef.nativeSessionId || "");
+      return runtime?.isResponding || runtime?.request?.lifecycle === "active" || runtime?.request?.lifecycle === "suspended" ? "target_busy" : null;
+    },
+    open: async (target, signal) => {
+      if (signal.aborted) return false;
+      closeDrawer();
+      if (target.kind === "orchestrator") {
+        setPendingVoiceOrchestratorId(target.orchestratorId, signal);
+        return {};
+      }
+      clearPendingVoiceOrchestratorId(pendingVoiceOrchestratorId);
+      const opened = await openSessionHistoryPopup({ backendId: target.sessionRef.backendId, sessionId: target.sessionRef.nativeSessionId || "",
+        source: "all", directory: target.cwd, signal });
+      return opened ? { panelId: DRAWER_SESSION_POPUP_PANEL_ID } : false;
+    },
+    announce: async (target, panelId, signal) => {
+      const title = target.kind === "session"
+        ? resolveSessionHistoryContext(target.sessionRef.nativeSessionId || "", target.sessionRef.backendId)?.sessionTitle || "選んだチャット"
+        : "選んだオーケストレーター";
+      const messageId = `voice-handoff-${Date.now()}`;
+      const cancel = () => { void stopTtsPlayback({ interruptStream: true, expectedMessageId: messageId, reason: "voice_control_cancelled" }); };
+      signal.addEventListener("abort", cancel, { once: true });
+      try {
+        if (signal.aborted) return;
+        await synthesizeSpeechStream(`${title}に切り替えました。合図の後に話してください。`, {
+          panelId, messageId, scope: target.kind === "orchestrator" ? "voice" : "chat",
+          ...(target.kind === "orchestrator" ? { orchestratorId: target.orchestratorId } : {}),
+          ...(target.kind === "session" ? { sessionId: target.sessionRef.nativeSessionId || undefined } : {}),
+        });
+      } finally { signal.removeEventListener("abort", cancel); }
+    },
+    readyCue: async () => {
+      const { sound } = await Audio.Sound.createAsync(UI_SFX_ASSETS.recordStart, { shouldPlay: false, volume: UI_SFX_VOLUMES.recordStart });
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error("ready_cue_timeout")), 2_000);
+          sound.setOnPlaybackStatusUpdate((status) => {
+            if (!status.isLoaded) { if (status.error) { clearTimeout(timer); reject(new Error("ready_cue_failed")); } return; }
+            if (status.didJustFinish) { clearTimeout(timer); resolve(); }
+          });
+          void sound.playAsync().catch((error) => { clearTimeout(timer); reject(error); });
+        });
+      } finally { await sound.unloadAsync(); }
+    },
+  });
+  useEffect(() => voiceControl.start(), [voiceControl]);
   usePendingPushSessionNavigationController({
     settingsLoaded,
     normalizedLlmDirectoryForRequest,

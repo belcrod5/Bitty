@@ -2,6 +2,8 @@ import { CALENDAR_DYNAMIC_TOOLS_CONTRACT } from "./calendar-tool-service.mjs";
 import { randomUUID } from "node:crypto";
 import { isValidUserInputResponse } from "./codex-user-input.mjs";
 
+export const APP_CONTROL_UNAVAILABLE_INSTRUCTION = "No app control context is available for this turn. Never reuse references from earlier turns.";
+
 const CODEX_EFFORT_OPTIONS = ["low", "medium", "high", "xhigh", "max", "ultra"];
 const VALID_EFFORTS = new Set(CODEX_EFFORT_OPTIONS);
 const SUCCESSFUL_TURN_STATUSES = new Set(["", "completed", "complete", "succeeded", "success"]);
@@ -170,6 +172,7 @@ export async function startCodexTurn({
   dynamicTools,
   enableUserInput = false,
   developerInstructions = "",
+  trustedInstructions = "",
 }) {
   const normalizedInput = Array.isArray(input?.blocks)
     ? input.blocks.map((block) => block?.type === "image"
@@ -195,8 +198,8 @@ export async function startCodexTurn({
       excludeTurns: true,
       config: threadConfig,
       ...(normalizedDeveloperInstructions ? { developerInstructions: normalizedDeveloperInstructions } : {}),
-    }, 30000).catch(() => null);
-    activeThreadId = String(resumed?.thread?.id || activeThreadId).trim();
+    }, 30000);
+    if (resumed?.thread?.id !== activeThreadId) throw new Error("Codex resumed thread identity did not match the request");
   } else {
     const started = await client.request("thread/start", {
       cwd: directory || undefined,
@@ -218,6 +221,8 @@ export async function startCodexTurn({
     input: normalizedInput,
     cwd: directory || undefined,
     approvalPolicy,
+    additionalContext: { "bitty.appControl": { kind: "application",
+      value: trustedInstructions || APP_CONTROL_UNAVAILABLE_INSTRUCTION } },
   };
   const normalizedModel = String(model || "").trim();
   if (normalizedModel) params.model = normalizedModel;
@@ -375,7 +380,7 @@ export function createCodexBackend({
     return { ...session, isActive: true };
   });
 
-  async function startTurn({ runId, sessionRef, cwd, input, model, effort, policyProfileId, signal, resolveSession, emit }) {
+  async function startTurn({ runId, sessionRef, cwd, input, model, effort, policyProfileId, signal, resolveSession, emit, trustedInstructions = "" }) {
     if (signal?.aborted) {
       const error = new Error("Codex turn was interrupted before start");
       error.nativeActivity = "not_started";
@@ -614,6 +619,7 @@ export function createCodexBackend({
         dynamicTools,
         enableUserInput: true,
         developerInstructions,
+        trustedInstructions,
         onBeforeTurnStart: () => { state.turnStartRequested = true; },
         onThreadResolved: sessionRef ? undefined : async ({ threadId }) => {
           state.threadId = threadId;

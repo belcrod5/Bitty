@@ -1,5 +1,6 @@
 import { act, renderHook } from "@testing-library/react-native";
 
+import { VoiceControl, type VoiceSurface, type VoiceTarget } from "../../appControl/voiceControl";
 import { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import type { RunnerWsMessage, RunnerWsMessageFilter } from "../../runnerWs/types";
 import { Audio } from "../audio";
@@ -30,6 +31,7 @@ class FakeRunnerWebSocketManager {
   }> = [];
 
   connect = jest.fn(async () => {});
+  request = jest.fn(async () => ({ op: "app.control.register.result", payload: { version: 1, connectionGeneration: "connection-1" } }));
 
   getSnapshot() { return {
     connected: this.connected,
@@ -148,6 +150,43 @@ function createOptions(manager: FakeRunnerWebSocketManager) {
     streamSocketRef,
     streamTtsControlRef,
   };
+}
+
+function createStopOptions(options: ReturnType<typeof createOptions>["options"], projectionTargetRef: { current: TtsPlaybackTarget }, sound: Audio.Sound | null) {
+  return {
+    ttsStopInFlightRef: ref(null),
+    ttsProcessingAbortControllersRef: ref(new Set<AbortController>()),
+    ttsPlaybackTransitionInFlightRef: ref(false),
+    lastTtsStopRequestedAtRef: ref(0),
+    lastTtsStoppedAtRef: ref(0),
+    ttsPlaybackRunIdRef: ref(0),
+    ttsSynthesisRequestIdRef: ref(0),
+    ttsPlayingRef: options.ttsPlayingRef,
+    replyLoadingRef: ref(false),
+    streamSocketRef: options.streamSocketRef,
+    streamAudioQueueRef: options.streamAudioQueueRef,
+    streamAudioQueueProcessingRef: ref(true),
+    streamTtsSuppressedRef: options.streamTtsSuppressedRef,
+    streamTtsControlRef: options.streamTtsControlRef,
+    streamAudioWaveformBarsRef: options.streamAudioWaveformBarsRef,
+    ttsPlaybackMessageIdRef: options.ttsPlaybackMessageIdRef,
+    ttsPlaybackProjectionTargetRef: projectionTargetRef,
+    ttsSoundRef: ref(sound),
+    ttsLoading: true,
+    ttsUiStatus: "playing",
+    setTtsPlaybackWanted: options.setTtsPlaybackWanted,
+    setTtsLoading: options.setTtsLoading,
+    setTtsUiStatus: options.setTtsUiStatus,
+    setTtsQueueProcessing: jest.fn(),
+    logAuto: jest.fn(),
+    elapsedSinceMs: jest.fn(() => null),
+    clearStreamAudioQueue: options.clearStreamAudioQueue,
+    setStreamWaveformPreview: options.setStreamWaveformPreview,
+    markTtsPlaybackStopped: jest.fn(),
+    setAudioModeForPlayback: jest.fn(async () => undefined),
+    clearTtsPlaybackWatchdogTimer: jest.fn(),
+    setTtsSoundWithRef: jest.fn(),
+  } satisfies Parameters<typeof useStopTtsPlaybackController>[0];
 }
 
 beforeEach(() => {
@@ -684,40 +723,7 @@ test("closing a voice stream before its first chunk preserves the chat sound alr
   options.clearStreamAudioQueue.mockImplementation(() => {
     options.streamAudioQueueRef.current = [];
   });
-  const stopOptions: Parameters<typeof useStopTtsPlaybackController>[0] = {
-    ttsStopInFlightRef: ref(null),
-    ttsProcessingAbortControllersRef: ref(new Set<AbortController>()),
-    ttsPlaybackTransitionInFlightRef: ref(false),
-    lastTtsStopRequestedAtRef: ref(0),
-    lastTtsStoppedAtRef: ref(0),
-    ttsPlaybackRunIdRef: ref(0),
-    ttsSynthesisRequestIdRef: ref(0),
-    ttsPlayingRef: options.ttsPlayingRef,
-    replyLoadingRef: ref(false),
-    streamSocketRef: options.streamSocketRef,
-    streamAudioQueueRef: options.streamAudioQueueRef,
-    streamAudioQueueProcessingRef: ref(true),
-    streamTtsSuppressedRef: options.streamTtsSuppressedRef,
-    streamTtsControlRef: options.streamTtsControlRef,
-    streamAudioWaveformBarsRef: options.streamAudioWaveformBarsRef,
-    ttsPlaybackMessageIdRef: options.ttsPlaybackMessageIdRef,
-    ttsPlaybackProjectionTargetRef: projectionTargetRef,
-    ttsSoundRef: ref(chatSound as unknown as Audio.Sound),
-    ttsLoading: true,
-    ttsUiStatus: "playing",
-    setTtsPlaybackWanted: options.setTtsPlaybackWanted,
-    setTtsLoading: options.setTtsLoading,
-    setTtsUiStatus: options.setTtsUiStatus,
-    setTtsQueueProcessing: jest.fn(),
-    logAuto: jest.fn(),
-    elapsedSinceMs: jest.fn(() => null),
-    clearStreamAudioQueue: options.clearStreamAudioQueue,
-    setStreamWaveformPreview: options.setStreamWaveformPreview,
-    markTtsPlaybackStopped: jest.fn(),
-    setAudioModeForPlayback: jest.fn(async () => undefined),
-    clearTtsPlaybackWatchdogTimer: jest.fn(),
-    setTtsSoundWithRef: jest.fn(),
-  };
+  const stopOptions = createStopOptions(options, projectionTargetRef, chatSound as unknown as Audio.Sound);
   const { result } = await renderHook(() => ({
     synthesize: useSynthesizeSpeechStreamController(options),
     stop: useStopTtsPlaybackController(stopOptions).stopTtsPlayback,
@@ -807,4 +813,152 @@ test("segment_queued and audio_chunk events tag upsertStreamSegment with the tar
     "ready",
     expect.any(Object)
   );
+});
+
+
+test.each([
+  ["orchestrator", "handoff"], ["session", "handoff"],
+  ["orchestrator", "self"], ["session", "self"],
+  ["orchestrator", "stop"], ["session", "stop"], ["orchestrator", "manual"],
+  ["orchestrator", "release_failure"], ["orchestrator", "mode_failure"],
+] as const)("%s caller: %s preserves ownership while coordinating its live TTS stream", async (kind, mode) => {
+  const manager = new FakeRunnerWebSocketManager();
+  const { options } = createOptions(manager);
+  const projection = ref<TtsPlaybackTarget>({});
+  let playbackActive = false;
+  options.setTtsLoading.mockImplementation((active: boolean) => { playbackActive = active; });
+  options.setTtsUiStatus.mockImplementation((status: string) => { playbackActive = status !== "idle" && status !== "error"; });
+  options.setTtsPlaybackMessageIdWithRef.mockImplementation((id: string) => { options.ttsPlaybackMessageIdRef.current = id; });
+  options.setTtsPlaybackProjectionTarget.mockImplementation((target: TtsPlaybackTarget) => { projection.current = target; });
+  options.clearStreamAudioQueue.mockImplementation(() => { options.streamAudioQueueRef.current = []; });
+  let finishNativeStop!: () => void;
+  const nativeSound = mode === "release_failure" ? {
+    setOnPlaybackStatusUpdate: jest.fn(), stopAsync: jest.fn(async () => { throw new Error("native stop failed"); }),
+    unloadAsync: jest.fn(async () => { throw new Error("native unload failed"); }),
+  } : mode === "manual" ? {
+    setOnPlaybackStatusUpdate: jest.fn(),
+    stopAsync: jest.fn(() => new Promise<void>((resolve) => { finishNativeStop = resolve; })),
+    unloadAsync: jest.fn(async () => {}),
+  } : null;
+  const stopOptions = createStopOptions(options, projection, nativeSound as unknown as Audio.Sound | null);
+  const audioOrder: string[] = [];
+  stopOptions.setAudioModeForPlayback.mockImplementation(async () => {
+    if (mode === "mode_failure") throw new Error("audio mode failed");
+    audioOrder.push("old_stop_audio_mode");
+  });
+  const { result } = await renderHook(() => ({
+    synthesize: useSynthesizeSpeechStreamController(options),
+    stop: useStopTtsPlaybackController(stopOptions).stopTtsPlayback,
+  }));
+  const control = new VoiceControl(manager as unknown as RunnerWebSocketManager);
+  const sourceTarget: VoiceTarget = kind === "orchestrator" ? { kind, orchestratorId: "caller" }
+    : { kind, sessionRef: { backendId: "codex", nativeSessionId: "caller" }, cwd: "/work" };
+  const destinationTarget: VoiceTarget = kind === "session" ? { kind: "orchestrator", orchestratorId: "destination" }
+    : { kind: "session", sessionRef: { backendId: "codex", nativeSessionId: "destination" }, cwd: "/work" };
+  const surface = (id: string, target: VoiceTarget): VoiceSurface => {
+    let recording = false;
+    return { id, target: () => target, snapshot: () => ({ desired: recording ? "listening" : "stopped", observed: recording ? "recording" : "stopped" }),
+      draft: () => "", busy: () => false, canStart: () => !playbackActive, controlVersion: () => 1,
+      hasPermission: async () => true, disarm: async () => { recording = false; },
+      start: jest.fn(async () => { recording = true; }), announce: async () => {}, readyCue: async () => {}, notice: jest.fn() };
+  };
+  const source = surface("source", sourceTarget), destination = surface("destination", destinationTarget);
+  const releaseSpeech = jest.fn(async (target: VoiceTarget, panelId?: string) => {
+    // The source's eager onJob attachment must already be disabled while native stop awaits.
+    expect(control.allowsSpeech("source", sourceTarget)).toBe(false);
+    await result.current.stop({ interruptStream: true, reason: "voice_handoff", expectedTarget: target.kind === "orchestrator"
+      ? { scope: "voice", orchestratorId: target.orchestratorId }
+      : { scope: "chat", sessionId: target.sessionRef.nativeSessionId || "", panelId } });
+  });
+  control.configure({ preflight: async () => null, open: async () => ({}), announce: async () => {}, readyCue: async () => {}, releaseSpeech });
+  const stopControl = control.start();
+  const unregisterSource = control.register(source), unregisterDestination = control.register(destination);
+  try {
+    await flushPromises();
+    const origin = control.origin(undefined, sourceTarget)!;
+    await act(async () => { await result.current.synthesize("", { scope: kind === "orchestrator" ? "voice" : "chat", ...(sourceTarget.kind === "orchestrator" ? { orchestratorId: sourceTarget.orchestratorId } : { sessionId: sourceTarget.sessionRef.nativeSessionId || "" }), messageId: "caller-operation", jobId: "caller-job" }); });
+    expect(playbackActive).toBe(true);
+    expect(options.streamTtsControlRef.current).not.toBeNull();
+    const sourcePlayback = sourceTarget.kind === "orchestrator" ? { scope: "voice" as const, orchestratorId: sourceTarget.orchestratorId }
+      : { scope: "chat" as const, sessionId: sourceTarget.sessionRef.nativeSessionId! };
+    await result.current.stop({ interruptStream: true, expectedTarget: sourceTarget.kind === "orchestrator"
+      ? { scope: "voice", orchestratorId: "other" } : { scope: "chat", sessionId: "other" } });
+    await result.current.stop({ interruptStream: true, expectedTarget: sourcePlayback, expectedMessageId: "different-message" });
+    if (kind === "session") await result.current.stop({ interruptStream: true, expectedTarget: { scope: "chat", sessionId: "caller", panelId: "other-panel" } });
+    expect(playbackActive).toBe(true);
+    expect(options.streamTtsControlRef.current).not.toBeNull();
+    // Source LLM cannot complete text_done while waiting for this command's ACK.
+    manager.emit({ channel: "control", op: "app.control.execute", operationId: "epoch.handoff", payload: {
+      ...origin, action: mode === "stop" ? "stop" : "handoff", expectedGeneration: origin.ownerGeneration,
+      target: mode === "self" ? sourceTarget : destinationTarget, expiresAt: new Date(Date.now() + 1000).toISOString(),
+    } });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    if (mode === "release_failure" || mode === "mode_failure") {
+      expect(manager.sent).toContainEqual(expect.objectContaining({ op: "app.control.result", payload: expect.objectContaining({ status: "failed", observed: "unknown" }) }));
+      await expect(control.acquire("destination")).rejects.toThrow();
+      expect(destination.start).not.toHaveBeenCalled();
+      return;
+    }
+    if (mode === "manual") {
+      expect(nativeSound!.stopAsync).toHaveBeenCalledTimes(1);
+      const startNewOwner = control.acquire("destination").then(async (acquired) => {
+        if (acquired) { audioOrder.push("new_owner_capture"); await destination.start(); }
+      });
+      await flushPromises();
+      expect(destination.start).not.toHaveBeenCalled();
+      finishNativeStop(); await startNewOwner; await flushPromises();
+      expect(audioOrder).toEqual(["old_stop_audio_mode", "new_owner_capture"]);
+      expect(destination.snapshot().observed).toBe("recording");
+      expect(destination.start).toHaveBeenCalledTimes(1);
+      expect(manager.sent).toContainEqual(expect.objectContaining({ op: "app.control.result", payload: expect.objectContaining({ status: "failed" }) }));
+      return;
+    }
+    if (mode !== "handoff") {
+      expect(releaseSpeech).not.toHaveBeenCalled();
+      expect(playbackActive).toBe(true);
+      expect(options.streamTtsControlRef.current).not.toBeNull();
+      expect(control.allowsSpeech("source", sourceTarget)).toBe(true);
+      expect(destination.start).not.toHaveBeenCalled();
+      if (mode === "self") {
+        expect(manager.sent).toContainEqual(expect.objectContaining({ op: "app.control.result", payload: expect.objectContaining({ status: "pending", reason: "waiting_for_caller_reply" }) }));
+        expect(source.start).not.toHaveBeenCalled();
+        manager.emit({ channel: "tts", op: "done", streamId: "caller-job", seq: 1, payload: { type: "done", eventSeq: 1 } });
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(source.start).toHaveBeenCalledTimes(1);
+      }
+      expect(manager.sent).toContainEqual(expect.objectContaining({ op: "app.control.result", payload: expect.objectContaining({ status: "applied", target: sourceTarget }) }));
+      return;
+    }
+    expect(releaseSpeech).toHaveBeenCalledTimes(1);
+    expect(manager.sent).toContainEqual(expect.objectContaining({ channel: "tts", op: "detach" }));
+    expect(options.streamTtsControlRef.current).toBeNull();
+    expect(destination.start).toHaveBeenCalledTimes(1);
+    expect(manager.sent).toContainEqual(expect.objectContaining({ op: "app.control.result", payload: expect.objectContaining({ status: "applied", target: destinationTarget }) }));
+    manager.emit({ channel: "tts", op: "audio_chunk", streamId: "caller-job", seq: 1, payload: { type: "audio_chunk", seq: 0, text: "late", audioUrl: "https://example.com/late" } });
+    expect(options.enqueueStreamAudio).not.toHaveBeenCalled();
+  } finally { stopControl(); unregisterSource(); unregisterDestination(); }
+});
+
+test.each([false, true])("scoped release joining an older native stop rechecks ownership (new owner: %s)", async (newOwner) => {
+  const manager = new FakeRunnerWebSocketManager();
+  const { options } = createOptions(manager);
+  const projection = ref<TtsPlaybackTarget>({ scope: "chat", sessionId: "old-chat", messageId: "old-message" });
+  options.ttsPlaybackMessageIdRef.current = "old-message";
+  options.setTtsPlaybackMessageIdWithRef.mockImplementation((id: string) => { options.ttsPlaybackMessageIdRef.current = id; });
+  options.setTtsPlaybackProjectionTarget.mockImplementation((target: TtsPlaybackTarget) => { projection.current = target; });
+  let finishOldStop!: () => void;
+  const sound = { setOnPlaybackStatusUpdate: jest.fn(),
+    stopAsync: jest.fn(() => new Promise<void>((resolve) => { finishOldStop = resolve; })), unloadAsync: jest.fn(async () => {}) };
+  const stopOptions = createStopOptions(options, projection, sound as unknown as Audio.Sound);
+  stopOptions.setTtsSoundWithRef.mockImplementation(() => { stopOptions.ttsSoundRef.current = null; });
+  const { result } = await renderHook(() => ({ synthesize: useSynthesizeSpeechStreamController(options), stop: useStopTtsPlaybackController(stopOptions).stopTtsPlayback }));
+  const oldStop = result.current.stop({ interruptStream: true, expectedMessageId: "old-message" });
+  await result.current.synthesize("", { scope: "voice", orchestratorId: "caller", messageId: "caller-operation", jobId: "caller-job" });
+  expect(options.streamTtsControlRef.current).not.toBeNull();
+  const callerStop = result.current.stop({ interruptStream: true, expectedTarget: { scope: "voice", orchestratorId: "caller" } });
+  if (newOwner) await result.current.synthesize("", { scope: "voice", orchestratorId: "new-owner", messageId: "new-operation", jobId: "new-job" });
+  finishOldStop(); await Promise.all([oldStop, callerStop]);
+  if (newOwner) expect(options.streamTtsControlRef.current?.operationId).toBe("new-operation");
+  else expect(options.streamTtsControlRef.current).toBeNull();
+  expect(manager.sent).toContainEqual(expect.objectContaining({ channel: "tts", op: "detach", streamId: "caller-job" }));
 });

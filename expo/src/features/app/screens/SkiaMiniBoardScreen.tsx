@@ -1,3 +1,4 @@
+import { getPendingVoiceControlSignal } from "../utils/pendingVoiceNavigation";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
@@ -699,11 +700,13 @@ export function SkiaMiniBoardScreen({
   const { width: windowWidth } = useWindowDimensions();
   const { activeScreen, openDrawer } = useAppShell();
   const [voiceOpen, setVoiceOpen] = useState(false);
+  const [voiceControlSignal, setVoiceControlSignal] = useState<AbortSignal | undefined>();
   const [voiceTargetId, setVoiceTargetId] = useState("");
   const [voiceOpenSequence, setVoiceOpenSequence] = useState(0);
   const hasVoicePlayback = Boolean(voicePlayback);
   useEffect(() => {
     if (!pendingVoiceOrchestratorId || activeScreen !== "skia_board" || !hasVoicePlayback) return;
+    setVoiceControlSignal(getPendingVoiceControlSignal());
     setVoiceTargetId(pendingVoiceOrchestratorId);
     setVoiceOpenSequence((current) => current + 1);
     setVoiceOpen(true);
@@ -2043,7 +2046,7 @@ export function SkiaMiniBoardScreen({
               <TouchableOpacity
                 testID="skia-board-voice-conversation"
                 style={screenStyles.toolButton}
-                onPress={() => { setVoiceTargetId(""); setVoiceOpenSequence((current) => current + 1); setVoiceOpen(true); }}
+                onPress={() => { setVoiceControlSignal(undefined); setVoiceTargetId(""); setVoiceOpenSequence((current) => current + 1); setVoiceOpen(true); }}
                 accessibilityRole="button"
                 accessibilityLabel="音声会話"
               >
@@ -2077,7 +2080,7 @@ export function SkiaMiniBoardScreen({
         </View>
       </SafeAreaView>
       {voiceOpen && voicePlayback ? (
-        <VoiceConversationScreen key={voiceOpenSequence} {...voicePlayback} initialOrchestratorId={voiceTargetId}
+        <VoiceConversationScreen key={voiceOpenSequence} {...voicePlayback} initialOrchestratorId={voiceTargetId} initialControlSignal={voiceControlSignal}
           onClose={() => setVoiceOpen(false)} />
       ) : null}
       <AppModal visible={boardMenuOpen} transparent animationType="fade" onRequestClose={() => setBoardMenuOpen(false)}>

@@ -13,6 +13,7 @@ function createOptions(queue: StreamAudioQueueItem[]) {
   const streamTtsControlRef = ref<StreamTtsControlState | null>(null);
   const options = {
     streamAudioQueueProcessingRef: ref(false),
+    streamAudioQueueGenerationRef: ref(0),
     streamAudioQueueRef,
     streamCurrentChunkStartedAtRef: ref(0),
     streamCurrentChunkEstimatedDurationMsRef: ref<number | null>(null),
@@ -124,4 +125,54 @@ test("keeps the session active when the final audio chunk finishes before stream
   expect(options.setTtsUiStatus).not.toHaveBeenCalledWith("idle");
   expect(options.setTtsUiStatus).toHaveBeenCalledTimes(1);
   expect(options.setTtsUiStatus).toHaveBeenCalledWith("playing");
+});
+
+
+test.each(["prepare", "play"])("a handoff during pending %s settles the old worker before preparing the destination", async (stage) => {
+  const { options } = createOptions([audioItem()]);
+  let releaseSource!: () => void;
+  const sourcePending = new Promise<void>((resolve) => { releaseSource = resolve; });
+  if (stage === "prepare") options.prepareTtsPlaybackSession.mockImplementationOnce(() => sourcePending);
+  else options.playPreparedStreamAudioAndWait.mockImplementationOnce(async () => { await sourcePending; return false; });
+  let releaseDestination!: () => void;
+  const destinationPending = new Promise<boolean>((resolve) => { releaseDestination = () => resolve(true); });
+  const { result } = await renderHook(() => useProcessStreamAudioQueueController(options));
+  const sourceWork = result.current();
+  await Promise.resolve();
+  // Real clearStreamAudioQueue invalidates the source queue at handoff.
+  options.streamAudioQueueGenerationRef.current += 1;
+  const destination = { ...audioItem(), playbackMessageId: "destination-announcement" };
+  options.streamAudioQueueRef.current = [destination];
+  options.playPreparedStreamAudioAndWait.mockImplementation(() => destinationPending);
+  await result.current();
+  expect(options.playPreparedStreamAudioAndWait).not.toHaveBeenCalledWith(destination);
+  options.upsertStreamSegment.mockClear();
+  releaseSource(); await sourceWork;
+  await Promise.resolve();
+  expect(options.prepareTtsPlaybackSession).toHaveBeenCalledTimes(2);
+  expect(options.playPreparedStreamAudioAndWait).toHaveBeenLastCalledWith(destination);
+  expect(options.streamAudioQueueProcessingRef.current).toBe(true);
+  expect(options.upsertStreamSegment).toHaveBeenCalledTimes(1);
+  expect(options.upsertStreamSegment).toHaveBeenCalledWith("destination-announcement", 0, "", "playing");
+  releaseDestination(); await Promise.resolve(); await Promise.resolve();
+  expect(options.streamAudioQueueProcessingRef.current).toBe(false);
+});
+
+
+test("a failed worker clears its processing state when native cleanup invalidates its own queue", async () => {
+  const { options } = createOptions([audioItem()]);
+  options.playPreparedStreamAudioAndWait.mockRejectedValueOnce(new Error("native playback failed"));
+  options.clearStreamAudioQueue.mockImplementation(() => {
+    options.streamAudioQueueRef.current = [];
+    options.streamAudioQueueGenerationRef.current += 1;
+  });
+  const error = jest.spyOn(console, "error").mockImplementation(() => {});
+  const { result } = await renderHook(() => useProcessStreamAudioQueueController(options));
+  try {
+    await result.current();
+    expect(options.clearStreamAudioQueue).toHaveBeenCalledTimes(1);
+    expect(options.streamAudioQueueProcessingRef.current).toBe(false);
+    expect(options.setTtsQueueProcessing).toHaveBeenLastCalledWith(false);
+    expect(options.setTtsUiStatus).toHaveBeenLastCalledWith("error");
+  } finally { error.mockRestore(); }
 });

@@ -389,6 +389,7 @@ export function createAgentService({
     run.sessionRef = resolved;
     run.sessionKey = key;
     run.sessionResolved = true;
+    run.appControl?.bindResolvedSession(resolved, run.cwd);
     activeRunBySession.set(key, run.runId);
     publish(run, "session.resolved", { sessionRef: resolved });
     notifyActiveSessionsChanged();
@@ -476,6 +477,7 @@ export function createAgentService({
   async function finish(run, outcome, error = null) {
     if (run.terminal) return run.result;
     run.state = "finalizing";
+    run.appControl?.finish();
     for (const request of run.activeActions.values()) {
       publish(run, "action.resolved", {
         requestId: request.payload.requestId,
@@ -654,6 +656,7 @@ export function createAgentService({
         ...request,
         runId: run.runId,
         signal: run.abortController.signal,
+        trustedInstructions: run.appControl?.instruction || "",
         resolveSession: (sessionRef) => bindResolvedSession(run, sessionRef),
         setNativeProcessIdentity: async (identity) => {
           if (!run.sessionRef || !run.lease) {
@@ -872,6 +875,10 @@ export function createAgentService({
         completion,
         resolveCompletion,
       };
+      run.appControl = !isSubagent && !queuedForCompact && typeof context.acceptAppControl === "function"
+        ? context.acceptAppControl({ target: { kind: "session", sessionRef: request.sessionRef
+          || { backendId: request.backendId, nativeSessionId: null }, cwd: canonicalCwd }, callerOperationId: request.clientOperationId, subjectId })
+        : null;
       runs.set(run.runId, run);
       if (run.sessionKey) {
         if (queuedForCompact) {
@@ -903,6 +910,7 @@ export function createAgentService({
     if (run.terminal) return { status: "already_terminal", result: run.result };
     if (!run.cancelRequested) {
       run.cancelRequested = true;
+      run.appControl?.finish();
       run.state = "cancelling";
       run.abortController.abort();
       await registry.get(run.backendId).interrupt?.({ runId: run.runId });
@@ -1810,6 +1818,25 @@ export function createAgentService({
         activeSessions.add(sessionKey(session.sessionRef));
       }
       return { count: activeSessions.size };
+    },
+    async validateAppControlTarget(target, context = {}) {
+      const sessionRef = normalizeAgentSessionRef(target.sessionRef);
+      const backend = registry.get(sessionRef.backendId);
+      if (!backend) throw agentError("backend_unavailable", "Target backend is unavailable");
+      const canonicalCwd = await resolveNativeSessionCwd(sessionRef, backend);
+      await workspaceAdmission.assertAllowed(context.subjectId, canonicalCwd);
+      if (target.cwd !== canonicalCwd) throw agentError("session_cwd_mismatch", "Target workspace does not match");
+      const sameOrigin = context.originTarget?.sessionRef
+        && sessionKey(context.originTarget.sessionRef) === sessionKey(sessionRef);
+      if (!sameOrigin) {
+        const mode = await sessionStore.getMode(sessionRef);
+        const nativeActive = [...(backend.listActiveSessions?.() || []), ...listRawActiveSessions()]
+          .some((entry) => entry.sessionRef && sessionKey(entry.sessionRef) === sessionKey(sessionRef));
+        if (getActiveRun(sessionRef, context) || mode?.lease || nativeActive) {
+          throw agentError("session_busy", "Target has an active turn");
+        }
+      }
+      return target;
     },
     async readHistory(options, context = {}) {
       const sessionRef = normalizeAgentSessionRef(options?.sessionRef);

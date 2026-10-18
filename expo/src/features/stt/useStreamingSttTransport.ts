@@ -7,6 +7,9 @@ import type { StreamingSttSession, StreamingSttTransportCallbacks } from "./stre
 type Subscription = { remove(): void };
 type NativeStreamingStt = {
   captureDiagnosticsVersion?: number;
+  controlVersion?: number;
+  hasPermission?: () => Promise<boolean>;
+  setInputMuted?: (muted: boolean) => Promise<void>;
   continuationVersion?: number;
   commit?: (revision: number) => Promise<boolean>;
   start(url: string, headers: Record<string, string>): Promise<void>;
@@ -97,10 +100,13 @@ export function useStreamingSttTransport() {
     }
     return {
       ...(continuation ? { commit: (revision: number) => active ? native.commit!(revision) : Promise.resolve(false) } : {}),
+      setInputMuted: (muted: boolean) => active && native.setInputMuted ? native.setInputMuted(muted) : Promise.reject(new Error("native_stt_mute_unsupported")),
       stop: () => active ? native.stop() : Promise.resolve(),
       abort,
     };
   }, []);
 
-  return { supported: true, connect };
+  const native = requireOptionalNativeModule<NativeStreamingStt>("BittyStreamingStt");
+  return { supported: true, controlVersion: native?.controlVersion ?? 0,
+    hasPermission: () => native?.hasPermission?.() ?? Promise.resolve(false), connect };
 }

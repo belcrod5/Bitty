@@ -14,11 +14,6 @@ export type ChatComposerContextValue = {
   setComposerInputFocused: (focused: boolean) => void;
   onVoiceSpeechBegin: () => void;
   voiceInputDuringTtsAllowed: boolean;
-  registerVoiceInputSession: (controller: {
-    isArmed: () => boolean;
-    isCapturing: () => boolean;
-    abort: () => Promise<void>;
-  }) => () => void;
   hasComposerText: boolean;
   canStopLlmTurn: boolean;
   stopLlmTurn: () => void;

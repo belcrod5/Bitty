@@ -11,6 +11,7 @@ type TtsUiStatus = "idle" | "queued" | "synthesizing" | "playing" | "error";
 
 type UseProcessStreamAudioQueueControllerOptions = {
   streamAudioQueueProcessingRef: MutableRefObject<boolean>;
+  streamAudioQueueGenerationRef: MutableRefObject<number>;
   streamAudioQueueRef: MutableRefObject<StreamAudioQueueItem[]>;
   streamCurrentChunkStartedAtRef: MutableRefObject<number>;
   streamCurrentChunkEstimatedDurationMsRef: MutableRefObject<number | null>;
@@ -45,6 +46,7 @@ export function useProcessStreamAudioQueueController(
 ) {
   const {
     streamAudioQueueProcessingRef,
+    streamAudioQueueGenerationRef,
     streamAudioQueueRef,
     streamCurrentChunkStartedAtRef,
     streamCurrentChunkEstimatedDurationMsRef,
@@ -68,8 +70,9 @@ export function useProcessStreamAudioQueueController(
     logAuto,
   } = options;
 
-  return useCallback(async () => {
+  return useCallback(async function processQueue() {
     if (streamAudioQueueProcessingRef.current) return;
+    const generation = streamAudioQueueGenerationRef.current;
     streamAudioQueueProcessingRef.current = true;
     setTtsQueueProcessing(true);
     syncTtsPlaybackWantedFromPipeline("stream_queue_process_start");
@@ -78,6 +81,7 @@ export function useProcessStreamAudioQueueController(
     try {
       logAuto("tts_trace", { stage: "queue_prepare_session", queueSize: streamAudioQueueRef.current.length });
       await prepareTtsPlaybackSession();
+      if (generation !== streamAudioQueueGenerationRef.current) return;
       while (streamAudioQueueRef.current.length > 0) {
         const next = streamAudioQueueRef.current.shift();
         setStreamAudioQueueSize(streamAudioQueueRef.current.length);
@@ -98,13 +102,16 @@ export function useProcessStreamAudioQueueController(
         );
         try {
           const played = await playPreparedStreamAudioAndWait(next);
+          if (generation !== streamAudioQueueGenerationRef.current) return;
           if (!played) {
             logAuto("tts_trace", { stage: "queue_chunk_skipped", messageId: playbackMessageId, seq: next.seq });
             continue;
           }
         } finally {
-          streamCurrentChunkStartedAtRef.current = 0;
-          streamCurrentChunkEstimatedDurationMsRef.current = null;
+          if (generation === streamAudioQueueGenerationRef.current) {
+            streamCurrentChunkStartedAtRef.current = 0;
+            streamCurrentChunkEstimatedDurationMsRef.current = null;
+          }
         }
         upsertStreamSegment(playbackMessageId, next.seq, "", "played", {
           chunkChars: Number.isFinite(Number(next.chunkChars)) ? Number(next.chunkChars) : null,
@@ -122,6 +129,7 @@ export function useProcessStreamAudioQueueController(
       }
       completed = true;
     } catch (e) {
+      if (generation !== streamAudioQueueGenerationRef.current) return;
       logAuto("tts_trace", { stage: "queue_error", phase: stage, error: ttsDiagnosticError(e) });
       console.error("[stream-audio] playback error", e);
       if (shouldProjectTtsDebugToActiveSession()) {
@@ -133,17 +141,26 @@ export function useProcessStreamAudioQueueController(
       clearStreamAudioQueue();
     } finally {
       streamAudioQueueProcessingRef.current = false;
-      setTtsQueueProcessing(false);
-      setStreamAudioQueueSize(streamAudioQueueRef.current.length);
-      syncTtsPlaybackWantedFromPipeline("stream_queue_process_finally");
-      if (
-        completed &&
-        !ttsPlayingRef.current &&
-        streamAudioQueueRef.current.length === 0 &&
-        streamSocketRef.current === null &&
-        streamTtsControlRef.current === null
-      ) {
-        setTtsUiStatus((current) => current === "playing" ? "idle" : current);
+      if (generation !== streamAudioQueueGenerationRef.current) {
+        // The old native await has settled. A new queue must prepare its own session.
+        if (streamAudioQueueRef.current.length) void processQueue();
+        else {
+          setTtsQueueProcessing(false);
+          syncTtsPlaybackWantedFromPipeline("stream_queue_replaced");
+        }
+      } else {
+        setTtsQueueProcessing(false);
+        setStreamAudioQueueSize(streamAudioQueueRef.current.length);
+        syncTtsPlaybackWantedFromPipeline("stream_queue_process_finally");
+        if (
+          completed &&
+          !ttsPlayingRef.current &&
+          streamAudioQueueRef.current.length === 0 &&
+          streamSocketRef.current === null &&
+          streamTtsControlRef.current === null
+        ) {
+          setTtsUiStatus((current) => current === "playing" ? "idle" : current);
+        }
       }
     }
   }, [
@@ -160,6 +177,7 @@ export function useProcessStreamAudioQueueController(
     setTtsQueueProcessing,
     setTtsUiStatus,
     streamAudioQueueProcessingRef,
+    streamAudioQueueGenerationRef,
     streamAudioQueueRef,
     streamCurrentChunkEstimatedDurationMsRef,
     streamCurrentChunkStartedAtRef,

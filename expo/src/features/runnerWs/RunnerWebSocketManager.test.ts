@@ -1,6 +1,7 @@
 import { createWebSocketWithOptionalAuth } from "../ws/webSocketAuth";
 import { tokenFingerprint } from "../ws/tokenFingerprint";
 import { RunnerWebSocketManager } from "./RunnerWebSocketManager";
+import { VoiceControl, type VoiceSurface } from "../appControl/voiceControl";
 import type { RunnerWsMessage } from "./types";
 
 jest.mock("../ws/webSocketAuth", () => ({
@@ -1427,4 +1428,35 @@ test("active connection close notifies the owner before reconnecting", async () 
     connectionState: "reconnecting",
     reconnectCount: 1,
   });
+});
+
+
+test("app control registers over the real manager handshake before issuing a trusted origin", async () => {
+  const manager = createManager();
+  const socket = nextSocket();
+  const control = new VoiceControl(manager);
+  let nativeControlVersion = 1;
+  const target = { kind: "session" as const, sessionRef: { backendId: "codex", nativeSessionId: "native-session" }, cwd: "/workspace" };
+  const surface: VoiceSurface = {
+    id: "surface", panelId: "drawer_session_popup", target: () => target,
+    snapshot: () => ({ desired: "stopped", observed: "stopped" }), draft: () => "", busy: () => false, canStart: () => true,
+    controlVersion: () => nativeControlVersion, hasPermission: async () => true,
+    disarm: async () => {}, start: async () => {}, announce: async () => {}, readyCue: async () => {}, notice: () => {},
+  };
+  const unregister = control.register(surface);
+  const stop = control.start();
+  try {
+    expect(control.origin("drawer_session_popup", target)).toBeUndefined();
+    await connectReady(manager, socket);
+    const register = socket.sent.map((raw) => JSON.parse(raw)).find((message) => message.op === "app.control.register");
+    expect(register).toMatchObject({ channel: "control", payload: { version: 1, clientInstanceId: "client-1" } });
+    expect(control.origin("drawer_session_popup", target)).toBeUndefined();
+    socket.message({ channel: "control", op: "app.control.register.result", requestId: register.requestId,
+      payload: { version: 1, connectionGeneration: "registered-generation", epoch: "runner-epoch" } });
+    await Promise.resolve();
+    expect(socket.sent.map((raw) => JSON.parse(raw)).some((message) => message.op === "app.control.update")).toBe(true);
+    expect(control.origin("drawer_session_popup", target)).toMatchObject({ connectionGeneration: "registered-generation", surfaceId: "surface", target });
+    nativeControlVersion = 0;
+    expect(control.origin("drawer_session_popup", target)).toBeUndefined();
+  } finally { unregister(); stop(); manager.disconnect(); }
 });
