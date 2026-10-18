@@ -12,6 +12,8 @@ type AppScreenContentProps = {
     ComponentProps<typeof SkiaMiniBoardScreen>["onStartNewSessionInDirectory"];
   openSessionHistoryPopup: ComponentProps<typeof SkiaMiniBoardScreen>["openSessionHistoryPopup"];
   voicePlayback: VoiceConversationPlayback;
+  pendingVoiceOrchestratorId?: string;
+  onVoiceNavigationHandled?: (id: string) => void;
 };
 
 export function AppScreenContent({
@@ -19,6 +21,8 @@ export function AppScreenContent({
   onStartNewSessionInDirectory,
   openSessionHistoryPopup,
   voicePlayback,
+  pendingVoiceOrchestratorId,
+  onVoiceNavigationHandled,
 }: AppScreenContentProps) {
   const ScreenContainer = activeScreen === "skia_board" ? View : SafeAreaView;
   return (
@@ -32,6 +36,8 @@ export function AppScreenContent({
           onStartNewSessionInDirectory={onStartNewSessionInDirectory}
           openSessionHistoryPopup={openSessionHistoryPopup}
           voicePlayback={voicePlayback}
+          pendingVoiceOrchestratorId={pendingVoiceOrchestratorId}
+          onVoiceNavigationHandled={onVoiceNavigationHandled}
         />
       ) : null}
     </ScreenContainer>

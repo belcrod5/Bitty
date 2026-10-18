@@ -12,7 +12,9 @@ export function getPendingVoiceOrchestratorId(): string {
 }
 
 export function clearPendingVoiceOrchestratorId(id: string): void {
-  if (pendingOrchestratorId === id) pendingOrchestratorId = "";
+  if (!id || pendingOrchestratorId !== id) return;
+  pendingOrchestratorId = "";
+  for (const listener of listeners) listener();
 }
 
 export function subscribePendingVoiceOrchestratorId(listener: () => void): () => void {

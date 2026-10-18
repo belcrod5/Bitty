@@ -82,8 +82,8 @@ import { useRunnerHttpAuthBootstrap } from "./hooks/useRunnerHttpAuthBootstrap";
 import { useSessionStartupRecoveryController } from "./hooks/useSessionStartupRecoveryController";
 import { useReadyDrivenResumeSyncController } from "./hooks/useReadyDrivenResumeSyncController";
 import { usePendingPushSessionNavigationController } from "./hooks/usePendingPushSessionNavigationController";
-import { getPendingVoiceOrchestratorId, setPendingVoiceOrchestratorId,
-  subscribePendingVoiceOrchestratorId } from "./utils/pendingVoiceNavigation";
+import { usePendingVoiceNavigationController } from "./hooks/usePendingVoiceNavigationController";
+import { clearPendingVoiceOrchestratorId, setPendingVoiceOrchestratorId } from "./utils/pendingVoiceNavigation";
 import { useSessionNotificationLifecycleController } from "./hooks/useSessionNotificationLifecycleController";
 import { useSessionSwitchQueuedSendController } from "./hooks/useSessionSwitchQueuedSendController";
 import { useSessionSwitchQuiesceController } from "./hooks/useSessionSwitchQuiesceController";
@@ -5990,20 +5990,21 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     closeDrawer,
     openSessionHistoryPopup,
   });
+  const pendingVoiceOrchestratorId = usePendingVoiceNavigationController({
+    popupMounted: Boolean(drawerSessionPopupPanelId),
+    requestPopupClose: requestDrawerSessionPopupClose,
+    closeDrawer,
+    setActiveScreen,
+  });
   useEffect(() => {
-    const openVoiceBoard = () => {
-      if (getPendingVoiceOrchestratorId()) setActiveScreen("skia_board");
-    };
     const openVoiceLink = (url: string | null) => {
       const id = parseVoiceDeepLink(url);
       if (id) setPendingVoiceOrchestratorId(id);
     };
-    openVoiceBoard();
     void Linking.getInitialURL().then(openVoiceLink);
     const voiceLink = Linking.addEventListener("url", ({ url }) => openVoiceLink(url));
-    const pendingVoice = subscribePendingVoiceOrchestratorId(openVoiceBoard);
-    return () => { voiceLink.remove(); pendingVoice(); };
-  }, [setActiveScreen]);
+    return () => voiceLink.remove();
+  }, []);
   const getDeepLinkSessionMessages = useCallback((sessionId: string) => (
     getConversationRuntimeSnapshot(sessionId)?.conversationMessages || []
   ), [getConversationRuntimeSnapshot]);
@@ -6117,6 +6118,8 @@ function AppContent({ onReady }: { onReady?: () => void }) {
       <View style={styles.safeArea}>
       <AppScreenContent
         activeScreen={activeScreen}
+        pendingVoiceOrchestratorId={pendingVoiceOrchestratorId}
+        onVoiceNavigationHandled={clearPendingVoiceOrchestratorId}
         onStartNewSessionInDirectory={appDrawerProps.onStartNewSessionInDirectory}
         openSessionHistoryPopup={openSessionHistoryPopup}
         voicePlayback={{

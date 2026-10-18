@@ -14,6 +14,8 @@ type AppScreenContentProps = {
     ComponentProps<typeof SkiaMiniBoardScreen>["onStartNewSessionInDirectory"];
   openSessionHistoryPopup: ComponentProps<typeof SkiaMiniBoardScreen>["openSessionHistoryPopup"];
   voicePlayback: VoiceConversationPlayback;
+  pendingVoiceOrchestratorId?: string;
+  onVoiceNavigationHandled?: (id: string) => void;
 };
 
 export function AppScreenContent({
@@ -21,6 +23,8 @@ export function AppScreenContent({
   onStartNewSessionInDirectory,
   openSessionHistoryPopup,
   voicePlayback,
+  pendingVoiceOrchestratorId,
+  onVoiceNavigationHandled,
 }: AppScreenContentProps) {
   const { themeId } = useVisualTheme();
   const styles = stylesByTheme[themeId];
@@ -37,6 +41,8 @@ export function AppScreenContent({
           onStartNewSessionInDirectory={onStartNewSessionInDirectory}
           openSessionHistoryPopup={openSessionHistoryPopup}
           voicePlayback={voicePlayback}
+          pendingVoiceOrchestratorId={pendingVoiceOrchestratorId}
+          onVoiceNavigationHandled={onVoiceNavigationHandled}
         />
       </View>
       {!boardVisible ? (
