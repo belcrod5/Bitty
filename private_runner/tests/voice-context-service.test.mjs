@@ -4131,7 +4131,7 @@ test("pending summary write failure makes the store fail closed", async (t) => {
   } }, () => {}), { code: "voice_store_unavailable" });
 });
 
-test("control reference is injected into accepted dialogue only, not preflight or summary, then invalidated", async (t) => {
+test("control reference reaches only accepted dialogue turn metadata and is cleared on following turn", async (t) => {
   const { service, conversation, codex } = await fixture(t);
   let accepted = 0; let finished = 0;
   await complete(service, conversation, "音声を止めて", randomUUID(), async () => "decline", {
@@ -4139,11 +4139,15 @@ test("control reference is injected into accepted dialogue only, not preflight o
   });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(accepted, 1); assert.equal(finished, 1);
-  const instructionCalls = codex.calls.filter((call) => ["thread/start", "thread/resume"].includes(call.method));
-  assert.equal(instructionCalls.filter((call) => call.params.developerInstructions?.includes("ctx_dialogue_only")).length, 1);
-  assert.equal(instructionCalls.find((call) => call.params.developerInstructions?.includes("ctx_dialogue_only")).params.approvalPolicy, "on-request");
+  const carriesReference = (call) => JSON.stringify(call.params.additionalContext || {}).includes("ctx_dialogue_only");
+  const dialogue = codex.calls.filter((call) => call.method === "turn/start" && carriesReference(call));
+  assert.equal(dialogue.length, 1);
+  assert.equal(dialogue[0].params.approvalPolicy, "on-request");
+  assert.equal(dialogue[0].params.input[0].text, "音声を止めて");
+  assert.equal(codex.calls.some((call) => call.params.developerInstructions?.includes("ctx_dialogue_only")), false);
   assert.equal(JSON.stringify(await service.history()).includes("ctx_dialogue_only"), false);
   await complete(service, conversation, "続きです");
-  assert.equal(codex.calls.filter((call) => ["thread/start", "thread/resume"].includes(call.method)
-    && call.params.developerInstructions?.includes("ctx_dialogue_only")).length, 1);
+  assert.equal(codex.calls.filter((call) => call.method === "turn/start" && carriesReference(call)).length, 1);
+  const next = codex.calls.find((call) => call.method === "turn/start" && call.params.input?.[0]?.text === "続きです");
+  assert.match(next.params.additionalContext["bitty.appControl"].value, /No app control context/);
 });

@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { constants as fsConstants, promises as fs } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
-import { codexTurnEventMatches, extractCodexAgentMessageText, listCodexModelsFromAppServer } from "./codex-turn-execution.mjs";
+import { APP_CONTROL_UNAVAILABLE_INSTRUCTION, codexTurnEventMatches, extractCodexAgentMessageText, listCodexModelsFromAppServer } from "./codex-turn-execution.mjs";
 import { openVoiceMemoryStore } from "./voice-memory-store.mjs";
 import { voiceSubagentTools } from "./voice-subagents.mjs";
 
@@ -1205,7 +1205,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
     forceNewThread = false, onDispatchIntent, onTurnIdentified, onNewParent, onStarted, onNativeRoot,
     onApproval, onUserInput, onText, readOnlyPreflight = false, checklistTurn,
     resumeThreadId = "", previousTurnId: previousTurnOverride = "",
-    onTextError, onContextUsage, signal }) {
+    onTextError, onContextUsage, signal, appControlInstruction = "" }) {
     if (signal?.aborted) throw invalid("turn_interrupted", "Voice turn was cancelled");
     const model = requestedModel || settings().model;
     const effort = requestedEffort || settings().effort;
@@ -1776,6 +1776,8 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
       const turn = await client.request("turn/start", {
         threadId, input: [{ type: "text", text: input }], cwd,
         model, effort, approvalPolicy: onApproval ? "on-request" : "never",
+        ...(onApproval ? { additionalContext: { "bitty.appControl": { kind: "application",
+          value: appControlInstruction || APP_CONTROL_UNAVAILABLE_INSTRUCTION } } } : {}),
         ...(readOnlyPreflight || !onApproval ? { sandboxPolicy: { type: "readOnly", networkAccess: false } } : {}),
       }, 30000);
       const turnId = turn?.turn?.id;
@@ -2104,7 +2106,8 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
       }
       stage = "model_turn";
       let currentTurnContextUsage = null;
-      const result = await modelTurn({ input, items, instructions: [prepared.instructions, hooks.appControl?.instruction].filter(Boolean).join("\n"), onApproval,
+      const result = await modelTurn({ input, items, instructions: prepared.instructions, onApproval,
+        appControlInstruction: hooks.appControl?.instruction || "",
         checklistTurn: taskChecklistPath ? { clientOperationId, turnSeq } : undefined,
         resumeThreadId: preflight?.threadId, previousTurnId: preflight?.turnId,
         forceNewThread: preflight ? false : prepared.switching,

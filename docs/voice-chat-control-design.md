@@ -196,7 +196,9 @@ Runner の `bindResolvedSession` とアプリ側 target の照合が済むまで
 
 1 context が受理できる変更は1件。読取と同じ operation の照会は繰り返せる。
 参照をユーザー本文・通常入力 hash・表示履歴へ混ぜず、共有 `process.env` や backend factory の可変値にも置かない。
-[agent transport](../private_runner/src/agent/agent-transport.mjs) から `startTurn` に trusted run context を渡し、[Codex](../private_runner/src/codex-turn-execution.mjs) の fresh/resume、[Claude](../private_runner/src/claude-backend.mjs) の各 process、音声の対話 `modelTurn` の既存 instruction 組立で短い参照を合成する。
+[agent transport](../private_runner/src/agent/agent-transport.mjs) から `startTurn` に trusted run context を渡す。[Codex](../private_runner/src/codex-turn-execution.mjs) と音声の対話 `modelTurn` は、短い参照を `turn/start.additionalContext` の固定キー `bitty.appControl`（`kind: application`）へ毎回渡す。ロード済み thread の `thread/resume.developerInstructions` は変更が無視されるため、発話単位の参照の配送には使用しない。参照がない発話でも同じキーに「この発話では操作できず、過去の参照を再利用しない」と明記し、前回の状態を引き継がない。resume 失敗は握りつぶさず、発話を開始しない。[Claude](../private_runner/src/claude-backend.mjs) は発話ごとの process の既存 instruction 組立を利用する。
+
+Codex の追加 context はその発話の user message 直前の developer message としてモデルへ届く。過去の developer message は provider 内部履歴に残るため、参照が存在しなくなるとは保証しない。短い参照の分だけ履歴とトークンが増える。現在の参照の明示と Runner 側の失効・世代照合で、古い参照による操作を拒否する。ユーザーの表示履歴や本文には加えず、履歴の書き換えも行わない。
 native subagent は親が明示した同じ参照だけを使い、別セッションへの `send` には引き継がない。
 履歴の古い参照、スケジュール、要約・分類・checklist preflight からは操作できない。
 参照は誤配送防止であり、同じ Bearer を読める同一ユーザーのプロセス間を隔離する認証境界ではない。
@@ -322,7 +324,7 @@ token はスキル未読・初回読込・継続 turn と Codex / Claude / 音�
 
 管理原本の [スキル](../skills/bitty-session-orchestrator/SKILL.md) と CLI は既存の session / board 操作を維持し、stop / handoff とその補助読取だけを追加した。HTTPS または loopback HTTP に限定し、redirect、token の不正権限・形式、不正な対象指定を拒否する。POST の自動再送は行わない。installer は既定で dry-run、未管理の既存内容には照合と保存を要求する。
 
-自動検証は Runner の認証・世代・期限・重複・初回 session 解決・provider 回帰、CLI / installer の一時 fixture、両画面の共有フック・マイク排他・遅い callback・停止後の再開防止・draft・macOS transport を対象とした。独立レビューと、親の結論を渡さないスキルの模擬操作確認も行った。TypeScript は通常・macOS の両設定を確認し、Swift は構文確認を行った。テストは偽 Runner / transport と一時ファイルを利用し、稼働中の Runner や共有 logs、実 LLM、実マイクは操作していない。
+自動検証は Runner の認証・世代・期限・重複・初回 session 解決・provider 回帰、CLI / installer の一時 fixture、両画面の共有フック・マイク排他・遅い callback・停止後の再開防止・draft・macOS transport を対象とした。独立レビューと、親の結論を渡さないスキルの模擬操作確認も行った。TypeScript は通常・macOS の両設定を確認し、Swift は構文確認を行った。テストは偽 Runner / transport と一時ファイルを利用し、実マイク・実 LLM の操作や稼働中 Runner の変更は行っていない。実機で停止できなかった報告を受けた調査では、稼働中 API とアプリ診断ログのメタデータだけを読み取った。追加の回帰検証は実 RunnerWebSocketManager の handshake と、実 Codex app-server を一時領域・ローカルの偽 Responses provider で動かす境界テストを含む。後者はインストール済み Codex 0.160.1 の継続 thread で参照 A → B → 操作不可をモデル要求まで照合し、既存セッションや認証情報、実 LLM に接続しない。古い Codex で同じ追加 context 契約が使えるかは未検証。
 
 残る受入確認は第11節の実機会話、TTS / 合図の回り込み、OS 権限、実際の provider におけるスキル発見・CLI 実行権限、token / 精度 / 応答時間の測定である。Claude の dontAsk profile は既存の `--safe-mode` によりスキル発見が無効で、この構成で操作が使えるとは保証しない。安全モードを外して対応したことにはしない。raw / legacy の呼出には発話元の制御権を発行しない。
 
