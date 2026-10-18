@@ -44,10 +44,12 @@ async function waitForPort(value, child) {
   throw new Error("isolated Codex App Server did not listen");
 }
 
-for (const { withGlobalMcp, cancelSummary = false } of [
+for (const { withGlobalMcp, cancelSummary = false, renameContext = false } of [
   { withGlobalMcp: true }, { withGlobalMcp: false }, { withGlobalMcp: false, cancelSummary: true },
+  { withGlobalMcp: false, renameContext: true },
 ]) test(
-  cancelSummary ? "isolated Codex App Server cancels the summary model stream before disconnecting"
+  renameContext ? "isolated Codex App Server updates current orchestrator name context on resumed turns"
+    : cancelSummary ? "isolated Codex App Server cancels the summary model stream before disconnecting"
     : withGlobalMcp ? "isolated Codex App Server sends voice context with inherited MCP" : "isolated Codex App Server sends selected voice context without global MCP",
   { skip: !enabled }, async (t) => {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), "voice-codex-integration-"));
@@ -78,8 +80,9 @@ for (const { withGlobalMcp, cancelSummary = false } of [
         response.write(": held summary\n\n");
         return;
       }
-      if (modelRequestCount <= 2) {
-        const text = modelRequestCount === 1 ? "CURRENT_ASSISTANT" : summaryText;
+      if (renameContext || modelRequestCount <= 2) {
+        const text = renameContext ? '{"decision":"continue","reason":"same topic"}'
+          : modelRequestCount === 1 ? "CURRENT_ASSISTANT" : summaryText;
         const item = {
           id: `msg_mock_${modelRequestCount}`, type: "message", role: "assistant", status: "completed",
           content: [{ type: "output_text", text }],
@@ -177,6 +180,44 @@ for (const { withGlobalMcp, cancelSummary = false } of [
   probe.notify("initialized", {});
   assert.equal((await probe.request("mcpServerStatus/list", {})).data.some(({ name }) => name === "voice_probe"), withGlobalMcp);
   probe.close();
+  if (renameContext) {
+    let name = "OLD_ORCHESTRATOR_NAME_SENTINEL";
+    const service = createVoiceContextService({ rootDir, createClient, getOrchestratorName: () => name });
+    const { logicalConversationId } = await service.open();
+    for (const [index, current] of [name, "NEW_ORCHESTRATOR_NAME_SENTINEL", "NEW_ORCHESTRATOR_NAME_SENTINEL"].entries()) {
+      name = current;
+      const clientOperationId = randomUUID();
+      const terminal = new Promise((resolve) => {
+        void service.start({ operationId: clientOperationId, payload: {
+          backendId: "codex", logicalConversationId, clientOperationId,
+          input: { blocks: [{ type: "text", text: `NAME_CHECK_${index}` }] },
+        } }, resolve, async () => "decline").catch(resolve);
+      });
+      assert.equal((await within(terminal, 20000, `name turn failed: ${rpcErrors.join("; ")} ${codexError}`)).status, "completed");
+      await within((async () => { while (await service.isBusy()) await delay(25); })(), 20000, "name turn did not settle");
+    }
+    const namedRequests = modelRequests.filter(({ input }) => input.some((item) =>
+      JSON.stringify(item).includes("<bitty_orchestrator>")));
+    assert.equal(namedRequests.length, 3);
+    for (const [index, request] of namedRequests.entries()) {
+      const metadata = request.input.filter((item) => JSON.stringify(item).includes("<bitty_orchestrator>"));
+      assert.equal(metadata.length, index + 1);
+      assert.ok(metadata.every(({ role }) => role === "developer"));
+      assert.ok(metadata.at(-1).content[0].text.includes(JSON.stringify({ name: index === 0
+        ? "OLD_ORCHESTRATOR_NAME_SENTINEL" : "NEW_ORCHESTRATOR_NAME_SENTINEL" })));
+      assert.equal(request.input.at(-1).content[0].text, `NAME_CHECK_${index}`);
+    }
+    const responseStarts = voiceCalls.filter(({ method, params }) => method === "thread/start" && params.approvalPolicy === "on-request");
+    const responseTurns = voiceCalls.filter(({ method, params }) => method === "turn/start" && params.approvalPolicy === "on-request");
+    assert.equal(responseStarts.length, 1);
+    assert.equal(responseTurns.length, 3);
+    assert.ok(responseTurns.every(({ params }) => params.threadId === responseTurns[0].params.threadId));
+    assert.equal(voiceCalls.some(({ method }) => method === "thread/inject_items"), false);
+    assert.ok(voiceCalls.filter(({ method, params }) => method === "turn/start" && params.approvalPolicy === "never")
+      .every(({ params }) => !Object.hasOwn(params, "additionalContext")));
+    assert.deepEqual(rpcErrors, []);
+    return;
+  }
   const initial = createVoiceContextService({ rootDir, createClient });
   const { logicalConversationId } = await initial.open();
   if (!withGlobalMcp) {

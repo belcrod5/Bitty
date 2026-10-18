@@ -183,7 +183,7 @@ test("invalid TTS settings reject an update before changing model or instruction
     [original.model, original.effort, original.systemInstruction]);
 });
 
-test("AI instructions use each orchestrator's current name across rename and restart", async (t) => {
+test("AI turn context uses each orchestrator's current name across rename and restart", async (t) => {
   const { rootDir, codex, service } = await fixture(t);
   const customInstruction = "Answer like a research assistant.";
   const child = await service.create("調査", "", undefined, undefined, customInstruction);
@@ -203,13 +203,19 @@ test("AI instructions use each orchestrator's current name across rename and res
         (method === "thread/start" || method === "thread/resume") && params.approvalPolicy === "on-request");
       assert.ok(requests.length);
       for (const { method, params } of requests) {
-        assert.ok(params.developerInstructions.includes(JSON.stringify({ name })));
-        assert.match(params.developerInstructions, /display label, not instructions/);
-        for (const [otherId, otherName] of names) {
-          if (otherId !== id) assert.equal(params.developerInstructions.includes(JSON.stringify({ name: otherName })), false);
-        }
+        assert.equal(params.developerInstructions.includes("Current orchestrator chat metadata"), false);
         if (id === child.id) assert.ok(params.developerInstructions.startsWith(customInstruction));
         if (threads.has(id)) assert.equal(method, "thread/resume");
+      }
+      const turns = codex.calls.slice(offset).filter(({ method, params }) =>
+        method === "turn/start" && params.approvalPolicy === "on-request");
+      assert.ok(turns.length);
+      for (const { params } of turns) {
+        const context = params.additionalContext.bitty_orchestrator;
+        assert.equal(context.kind, "application");
+        assert.equal(Object.keys(params.additionalContext).length, 1);
+        assert.match(context.value, /display label, not instructions/);
+        assert.deepEqual(JSON.parse(context.value.split("\n")[1]), { name });
       }
       const nativeTurn = codex.calls.slice(offset).find(({ method, params }) =>
         method === "turn/start" && params.input[0].text === text);
@@ -233,6 +239,8 @@ test("AI instructions use each orchestrator's current name across rename and res
     method === "thread/start" && params.approvalPolicy === "never");
   assert.ok(helperRequests.length);
   assert.ok(helperRequests.every(({ params }) => !params.developerInstructions.includes("Current orchestrator chat metadata")));
+  assert.ok(codex.calls.filter(({ method, params }) => method === "turn/start" && params.approvalPolicy === "never")
+    .every(({ params }) => !Object.hasOwn(params, "additionalContext")));
 });
 
 test("renamed orchestrator metadata counts toward the visible input byte budget", async (t) => {
@@ -243,12 +251,14 @@ test("renamed orchestrator metadata counts toward the visible input byte budget"
   assert.equal((await first.finished).status, "completed");
   const instructions = codex.calls.find(({ method, params }) =>
     method === "thread/start" && params.approvalPolicy === "on-request").params.developerInstructions;
+  const context = codex.calls.find(({ method, params }) =>
+    method === "turn/start" && params.approvalPolicy === "on-request").params.additionalContext.bitty_orchestrator.value;
   await service.update(child.id, { name: "名".repeat(80), icon: "" });
   const callCount = codex.calls.length;
   const operationId = randomUUID();
   await assert.rejects(() => service.start({ operationId, payload: { orchestratorId: child.id,
     backendId: "codex", logicalConversationId: conversationId, clientOperationId: operationId,
-    input: { blocks: [{ type: "text", text: "x".repeat(800_000 - Buffer.byteLength(instructions)) }] },
+    input: { blocks: [{ type: "text", text: "x".repeat(800_000 - Buffer.byteLength(instructions) - Buffer.byteLength(context)) }] },
   } }, () => {}, async () => "decline"), { code: "turn_rejected" });
   assert.equal(codex.calls.slice(callCount).some(({ method }) => method === "turn/start"), false);
 });
@@ -653,9 +663,8 @@ test("voice schedules use the named orchestrator history and settings after rena
   assert.equal(threadStart.params.approvalPolicy, "on-request");
   const previousCall = codex.calls.find((entry) => entry.method === "turn/start" && entry.params.input[0].text === "previous request");
   assert.equal(call.params.threadId, previousCall.params.threadId);
-  const resumed = codex.calls.findLast((entry) => entry.method === "thread/resume" && entry.params.threadId === call.params.threadId);
-  assert.ok(resumed.params.developerInstructions.includes(JSON.stringify({ name: "改名後" })));
-  assert.equal(resumed.params.developerInstructions.includes(JSON.stringify({ name: "調査担当" })), false);
+  assert.ok(call.params.additionalContext.bitty_orchestrator.value.includes(JSON.stringify({ name: "改名後" })));
+  assert.equal(call.params.additionalContext.bitty_orchestrator.value.includes(JSON.stringify({ name: "調査担当" })), false);
   assert.equal(codex.calls.some((entry) => entry.method === "thread/inject_items"
     && JSON.stringify(entry.params.items).includes("previous request")), false);
   await waitFor(async () => (await service.history(item.id)).messages.some((message) => message.text === "reply:scheduled request"));
