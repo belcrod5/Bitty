@@ -20,6 +20,7 @@ export function useControlledStreamingStt(options: Options) {
     acquire: () => control.isOwner(id) ? Promise.resolve(true) : control.acquire(id),
     isOwner: () => control.isOwner(id),
   } });
+  const waitReason = useRef<string | null>(null);
   const latest = useRef({ options, stt });
   latest.current = { options, stt };
   useEffect(() => {
@@ -29,7 +30,15 @@ export function useControlledStreamingStt(options: Options) {
       snapshot: () => latest.current.stt.getSnapshot(),
       draft: () => latest.current.stt.getDraft(),
       busy: () => latest.current.options.busy,
-      canStart: () => latest.current.options.canStart !== false && !latest.current.options.ttsPlaybackActive,
+      canStart: () => {
+        const current = latest.current.options;
+        const reason = current.ttsPlaybackActive ? "tts" : current.canStart === false ? "screen" : null;
+        if (reason !== waitReason.current) {
+          waitReason.current = reason;
+          if (reason) current.onDiagnostic?.("voice_control_start_wait", { reason });
+        }
+        return reason === null;
+      },
       controlVersion: () => latest.current.stt.controlVersion ?? 0,
       hasPermission: () => latest.current.stt.hasPermission?.() ?? Promise.resolve(false),
       disarm: () => latest.current.stt.disarm(),

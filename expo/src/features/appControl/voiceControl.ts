@@ -29,6 +29,8 @@ type Navigation = {
   open: (target: VoiceTarget, signal: AbortSignal) => Promise<false | { panelId?: string }>;
   announce: (target: VoiceTarget, panelId: string | undefined, signal: AbortSignal) => Promise<void>;
   readyCue: () => Promise<void>;
+  releaseSpeech?: (target: VoiceTarget, panelId: string | undefined) => Promise<void>;
+  diag?: (operationId: string, stage: string, reason?: string) => void;
 };
 export function sameVoiceTarget(a: VoiceTarget, b: VoiceTarget) {
   return a.kind === b.kind && (a.kind === "orchestrator" ? a.orchestratorId === (b as typeof a).orchestratorId
@@ -245,6 +247,7 @@ export class VoiceControl {
     this.intent += 1;
   }
   private report(id: string, connection: string, result: Result) {
+    this.navigation?.diag?.(id, "result", result.reason || result.status);
     this.results.set(id, result);
     if (this.results.size > 256) this.results.delete(this.results.keys().next().value!);
     if (connection !== this.connection) return;
@@ -262,7 +265,8 @@ export class VoiceControl {
     try { return await Promise.race([pending, cancelled]); }
     finally { op.controller.signal.removeEventListener("abort", cancel); }
   }
-  private async until(op: Execution, read: () => boolean) {
+  private async until(op: Execution, reason: string, read: () => boolean) {
+    if (!read()) this.navigation?.diag?.(op.id, "waiting", reason);
     while (this.valid(op)) {
       if (read()) return;
       await new Promise((resolve) => setTimeout(resolve, 25));
@@ -293,6 +297,7 @@ export class VoiceControl {
     const op: Execution = { id, sourceId: entry.surface.id, connection: this.connection, expires, cancelled: false, transferred: false, controller: new AbortController(), target: p.target,
       timer: setTimeout(() => this.cancel(op), Math.max(0, expires - Date.now())) };
     this.active.set(id, op);
+    this.navigation?.diag?.(id, "accepted", p.action);
     let destination = entry;
     try {
       if (p.action === "stop") {
@@ -320,20 +325,31 @@ export class VoiceControl {
       if (!this.valid(op) || entry.generation !== p.expectedGeneration) throw new Error("operation_cancelled");
       entry.generation = ++this.generation;
       op.ownedGeneration = entry.generation;
+      this.navigation?.diag?.(id, "release_input");
       await this.wait(op, this.release(entry.surface));
       if (!this.valid(op)) throw new Error("operation_cancelled");
       if (entry.surface.draft().trim()) return this.report(id, op.connection, result("draft_conflict"));
       if (self && (entry.surface.busy() || !entry.surface.canStart())) {
         this.report(id, op.connection, result("pending", "waiting_for_caller_reply"));
-        await this.until(op, () => !entry.surface.busy() && entry.surface.canStart());
+        await this.until(op, "caller_reply", () => !entry.surface.busy() && entry.surface.canStart());
       }
       if (!self) {
-        op.transferred = true;
         this.interaction = { id: "handoff", target };
         this.owner = null;
+        // Disable late source attachments before awaiting its exact playback release.
+        this.navigation?.diag?.(id, "release_speech");
+        const speechRelease = (this.navigation!.releaseSpeech?.(entry.target, entry.surface.panelId) ?? Promise.resolve())
+          .catch((error) => { this.releaseFailed = true; throw error; });
+        // Native stop may still change audio mode after cancellation. New owners wait for it too.
+        this.releaseBarrier = Promise.all([this.releaseBarrier, speechRelease]).then(() => undefined);
+        void this.releaseBarrier.catch(() => undefined);
+        await this.wait(op, speechRelease);
+        if (!this.valid(op)) throw new Error("operation_cancelled");
+        op.transferred = true;
+        this.navigation?.diag?.(id, "open_target");
         const opened = await this.wait(op, this.navigation!.open(target, op.controller.signal));
         if (!opened) throw new Error("target_restore_failed");
-        await this.until(op, () => {
+        await this.until(op, "target_surface", () => {
           const matches = Array.from(this.entries.values()).filter((e) => sameVoiceTarget(e.surface.target(), target) && e.surface.panelId === opened.panelId);
           if (matches.length !== 1) return false;
           destination = matches[0];
@@ -342,15 +358,17 @@ export class VoiceControl {
         if (destination.surface.draft().trim()) return this.report(id, op.connection, { ...destination.surface.snapshot(), status: "draft_conflict", target });
         if (destination.surface.busy()) return this.report(id, op.connection, { ...destination.surface.snapshot(), status: "target_busy", target });
       }
-      await this.until(op, () => destination.surface.canStart());
+      await this.until(op, "target_ready", () => destination.surface.canStart());
       if (!await this.acquire(destination.surface.id, op)) throw new Error("owner_changed");
       op.ownedGeneration = destination.generation;
+      this.navigation?.diag?.(id, "announce_target");
       await this.wait(op, destination.surface.announce(op.controller.signal));
       await new Promise((resolve) => setTimeout(resolve, 25));
-      await this.until(op, () => destination.surface.canStart());
+      await this.until(op, "target_ready", () => destination.surface.canStart());
       if (!this.valid(op)) throw new Error("operation_cancelled");
+      this.navigation?.diag?.(id, "start_input");
       await this.wait(op, destination.surface.start());
-      await this.until(op, () => destination.surface.snapshot().observed === "recording");
+      await this.until(op, "native_recording", () => destination.surface.snapshot().observed === "recording");
       await this.wait(op, destination.surface.readyCue());
       if (!this.valid(op) || !this.isOwner(destination.surface.id)) throw new Error("operation_cancelled");
       this.report(id, op.connection, { status: "applied", generation: destination.generation, target,

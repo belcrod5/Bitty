@@ -28,13 +28,13 @@ jest.mock("../stt/useStreamingSttTransport", () => ({
 jest.mock("../stt/sttSettingsClient", () => ({ correctSttTranscript: async (_u: string, _t: string, text: string) => ({ text, changed: false }) }));
 const a: VoiceTarget = { kind: "session", sessionRef: { backendId: "codex", nativeSessionId: "chat-a" }, cwd: "/work" };
 const b: VoiceTarget = { kind: "orchestrator", orchestratorId: "main" };
-function useSurface(target: VoiceTarget, send: jest.Mock, busy = false) {
+function useSurface(target: VoiceTarget, send: jest.Mock, busy = false, ttsPlaybackActive = false, onDiagnostic?: (event: string, payload: Record<string, unknown>) => void) {
   const [transcript, setTranscript] = useState("");
   return useControlledStreamingStt({ target, panelId: target.kind === "session" ? "popup" : undefined, busy,
     runnerUrl: "http://runner.invalid", runnerToken: "test-token", transcript, setTranscript, autoReplyAfterStt: true,
     correctionContext: [], correctionIdentity: JSON.stringify(target), sendTranscript: async (text, accepted) => { send(text); accepted(); },
     onError: jest.fn(), onUsage: jest.fn(), onSample: jest.fn(), onSpeechBegin: jest.fn(),
-    replyLoading: busy, ttsPlaybackActive: false, voiceInputDuringTtsAllowed: false, canStart: !busy,
+    replyLoading: busy, ttsPlaybackActive, onDiagnostic, voiceInputDuringTtsAllowed: false, canStart: !busy,
   });
 }
 const emit = async (index: number, payload: Record<string, unknown>) => {
@@ -96,5 +96,32 @@ test("manual B start uses the same lease; reply/TTS completion on A cannot resta
   expect(source.result.current.isArmed()).toBe(false);
   expect(destination.result.current.getSnapshot().observed).toBe("recording");
   expect(source.result.current.allowsSpeech()).toBe(false);
+  await source.unmount(); await destination.unmount(); stopRoot();
+});
+
+
+test("a control wait diagnoses TTS versus screen readiness once per reason change", async () => {
+  const control = getVoiceControl(mockManager as unknown as RunnerWebSocketManager);
+  control.configure({ preflight: async () => null, open: async () => ({}), announce: async () => {}, readyCue: async () => {} });
+  const stopRoot = control.start(); await advance();
+  const source = await renderHook(() => useSurface(a, jest.fn()));
+  const diagnostic = jest.fn();
+  const destination = await renderHook(({ busy, tts }: { busy: boolean; tts: boolean }) => useSurface(b, jest.fn(), busy, tts, diagnostic),
+    { initialProps: { busy: false, tts: true } });
+  const origin = control.origin("popup", a)!;
+  await act(async () => { mockReceive({ channel: "control", op: "app.control.execute", operationId: "epoch.wait", payload: {
+    ...origin, action: "handoff", expectedGeneration: origin.ownerGeneration, target: b,
+    expiresAt: new Date(Date.now() + 2_000).toISOString(),
+  } }); });
+  await advance(200);
+  expect(diagnostic.mock.calls.filter(([event]) => event === "voice_control_start_wait")).toEqual([["voice_control_start_wait", { reason: "tts" }]]);
+  await destination.rerender({ busy: true, tts: false }); await advance(200);
+  expect(diagnostic.mock.calls.filter(([event]) => event === "voice_control_start_wait")).toEqual([
+    ["voice_control_start_wait", { reason: "tts" }], ["voice_control_start_wait", { reason: "screen" }],
+  ]);
+  expect(mockSessions).toHaveLength(0);
+  await destination.rerender({ busy: false, tts: false }); await advance(100);
+  expect(mockSessions).toHaveLength(1);
+  await emit(0, { type: "ready" }); await advance(50);
   await source.unmount(); await destination.unmount(); stopRoot();
 });

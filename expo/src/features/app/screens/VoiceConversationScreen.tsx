@@ -213,14 +213,14 @@ function VoiceConversationSession({
     setSynthesisRequestSettled(false);
     voicePlaybackMessageIdRef.current = operationId;
     try {
-      await synthesizeSpeechStream(text, { scope: "voice", messageId: operationId, ...(jobId ? { jobId } : {}),
+      await synthesizeSpeechStream(text, { scope: "voice", orchestratorId: orchestrator.id, messageId: operationId, ...(jobId ? { jobId } : {}),
         ttsProvider: orchestrator.ttsProvider || DEFAULT_TTS_PROVIDER, voiceId: orchestrator.voiceId || "" });
     } catch {
       if (mountedRef.current) setSynthesisStarting(false);
     } finally {
       if (mountedRef.current) setSynthesisRequestSettled(true);
     }
-  }, [paused, synthesizeSpeechStream, orchestrator.ttsProvider, orchestrator.voiceId]);
+  }, [paused, synthesizeSpeechStream, orchestrator.id, orchestrator.ttsProvider, orchestrator.voiceId]);
   const voice = useVoiceConversation(
     playSpeech,
     (jobId, operationId) => { void playSpeech("", operationId, jobId); },

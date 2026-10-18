@@ -349,7 +349,7 @@ test("orchestrator voice controls generated and manual playback", async () => {
   expect(mockTurnTts).toEqual({ speedScale: 1.4 });
   await act(async () => { mockOnCompleted?.("返答", "voice-operation"); });
   expect(mockSynthesizeSpeechStream).toHaveBeenCalledWith("返答", {
-    scope: "voice", messageId: "voice-operation", ttsProvider: "google", voiceId: "ja-JP-Neural2-B",
+    scope: "voice", orchestratorId: "main", messageId: "voice-operation", ttsProvider: "google", voiceId: "ja-JP-Neural2-B",
   });
   await screen.unmount();
 });
@@ -367,7 +367,7 @@ test("announces the orchestrator once with its voice before starting STT after p
   await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
   expect(mockSynthesizeSpeechStream).toHaveBeenCalledTimes(1);
   expect(mockSynthesizeSpeechStream).toHaveBeenCalledWith("メインで音声入力を準備します", {
-    scope: "voice", messageId: expect.stringMatching(/^voice-start-/u), ttsProvider: "google", voiceId: "ja-JP-Neural2-B",
+    scope: "voice", orchestratorId: "main", messageId: expect.stringMatching(/^voice-start-/u), ttsProvider: "google", voiceId: "ja-JP-Neural2-B",
   });
   expect(mockStt.start).not.toHaveBeenCalled();
   expect(mockLastSttOptions?.ttsPlaybackActive).toBe(true);
@@ -1246,7 +1246,7 @@ test("plays completed replies automatically and keeps STT paused while TTS is qu
   expect(screen.queryByTestId("voice-conversation-replay")).toBeNull();
 
   await act(async () => { mockOnCompleted?.("返答", "operation-1"); });
-  expect(mockSynthesizeSpeechStream).toHaveBeenCalledWith("返答", { scope: "voice", messageId: "operation-1",
+  expect(mockSynthesizeSpeechStream).toHaveBeenCalledWith("返答", { scope: "voice", orchestratorId: "main", messageId: "operation-1",
     ttsProvider: "aivisspeech", voiceId: "" });
   await screen.rerender(<VoiceConversationScreen {...playback} ttsUiStatus="queued" onClose={mockOnClose} />);
   expect(mockLastSttOptions?.ttsPlaybackActive).toBe(true);
@@ -1265,7 +1265,7 @@ test("attaches voice playback before completion and shows speaking during genera
     finishSynthesis = resolve;
   }));
   await act(async () => { mockOnJob?.("voice-job", "operation-1"); });
-  expect(mockSynthesizeSpeechStream).toHaveBeenCalledWith("", { scope: "voice", messageId: "operation-1", jobId: "voice-job",
+  expect(mockSynthesizeSpeechStream).toHaveBeenCalledWith("", { scope: "voice", orchestratorId: "main", messageId: "operation-1", jobId: "voice-job",
     ttsProvider: "aivisspeech", voiceId: "" });
   expect(mockLastSttOptions?.ttsPlaybackActive).toBe(true);
   mockVoice.turnStatus = "running";
@@ -1342,7 +1342,7 @@ test("switching keeps history open and stops the old recording before selecting 
   await act(async () => { oldReply?.("late old reply", "old-operation"); });
   expect(mockSynthesizeSpeechStream).toHaveBeenCalledTimes(2);
   expect(mockSynthesizeSpeechStream).toHaveBeenLastCalledWith("調査で音声入力を準備します", {
-    scope: "voice", messageId: expect.stringMatching(/^voice-start-/u), ttsProvider: "aivisspeech", voiceId: "",
+    scope: "voice", orchestratorId: "other", messageId: expect.stringMatching(/^voice-start-/u), ttsProvider: "aivisspeech", voiceId: "",
   });
   await screen.unmount();
 });

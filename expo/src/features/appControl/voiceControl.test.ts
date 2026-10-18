@@ -19,7 +19,7 @@ function fixture() {
   const control = new VoiceControl(manager);
   const navigation = { preflight: jest.fn(async (_target: VoiceTarget): Promise<string | null> => null),
     open: jest.fn(async (_target: VoiceTarget): Promise<false | { panelId?: string }> => ({ panelId: "popup" })),
-    announce: jest.fn(async () => {}), readyCue: jest.fn(async () => {}) };
+    announce: jest.fn(async () => {}), readyCue: jest.fn(async () => {}), releaseSpeech: jest.fn(async (_target: VoiceTarget, _panelId?: string) => {}), diag: jest.fn((_operationId: string, _stage: string, _reason?: string) => {}) };
   control.configure(navigation);
   const stop = control.start();
   const surface = (id: string, target: VoiceTarget, panelId?: string) => {
@@ -67,6 +67,7 @@ test("stop disarms a reply wait immediately and ACKs only after native release; 
   release(); await settle();
   expect(f.result(id)).toMatchObject({ status: "applied", desired: "stopped", observed: "stopped", target: a });
   expect(f.control.allowsSpeech("source", a)).toBe(true);
+  expect(f.navigation.releaseSpeech).not.toHaveBeenCalled();
   const calls = (f.source.value.disarm as jest.Mock).mock.calls.length;
   f.command("stop", {}, id); await settle();
   expect(f.source.value.disarm).toHaveBeenCalledTimes(calls);
@@ -142,6 +143,7 @@ test("same-target handoff reports waiting promptly, finishes after the caller re
   f.source.state.busy = true; f.source.state.canStart = false;
   const id = f.command("handoff", { target: a }); await settle();
   expect(f.result(id)).toMatchObject({ status: "pending", reason: "waiting_for_caller_reply" });
+  expect(f.navigation.releaseSpeech).not.toHaveBeenCalled();
   expect(f.source.value.start).toHaveBeenCalledTimes(1);
   f.source.state.busy = false; await settle(100);
   expect(f.result(id)?.status).toBe("pending");
@@ -276,5 +278,40 @@ test.each(["pending", "failed"])("typed stop cannot confirm stopped while unmoun
   expect(f.result(id)).toMatchObject({ status: "failed", observed: "unknown" });
   expect(destination.state.snapshot.desired).toBe("stopped");
   if (release) { release(); await settle(); }
+  f.stop();
+});
+
+
+test.each(["unmount", "manual_owner", "target_change"])("%s during native speech release cannot complete an old handoff", async (event) => {
+  const f = fixture(); await f.begin();
+  const destination = f.surface("destination", b, "popup");
+  let finishSpeech!: () => void;
+  f.navigation.releaseSpeech.mockImplementation(() => new Promise<void>((resolve) => { finishSpeech = resolve; }));
+  const id = f.command("handoff"); await settle();
+  expect(f.control.allowsSpeech("source", a)).toBe(false);
+  expect(f.navigation.open).not.toHaveBeenCalled();
+  if (event === "unmount") f.source.unregister();
+  if (event === "target_change") { f.source.state.target = b; await settle(60); }
+  const manualStart = event === "manual_owner" ? f.control.acquire("destination").then(async (acquired) => {
+    if (acquired) await destination.value.start();
+  }) : Promise.resolve();
+  await settle();
+  expect(destination.value.start).not.toHaveBeenCalled();
+  finishSpeech(); await manualStart; await settle(100);
+  expect(f.result(id)?.status).toBe("failed");
+  expect(f.navigation.open).not.toHaveBeenCalled();
+  expect(destination.value.start).toHaveBeenCalledTimes(event === "manual_owner" ? 1 : 0);
+  if (event === "manual_owner") expect(destination.state.snapshot.observed).toBe("recording");
+  f.stop();
+});
+
+test("handoff diagnostics expose finite stages and operation correlation without target identifiers", async () => {
+  const f = fixture(); await f.begin();
+  f.surface("destination", b, "popup");
+  const id = f.command("handoff"); await settle(100);
+  expect(f.navigation.diag.mock.calls.map((call) => call.slice(1))).toEqual([
+    ["accepted", "handoff"], ["release_input"], ["release_speech"], ["open_target"], ["announce_target"], ["start_input"], ["result", "applied"],
+  ]);
+  expect(f.navigation.diag.mock.calls.every((call) => call[0] === id)).toBe(true);
   f.stop();
 });

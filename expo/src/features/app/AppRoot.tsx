@@ -111,7 +111,7 @@ import { useSlashCommandResultAppender } from "./hooks/useSlashCommandResultAppe
 import { useSlashStatusCommandController } from "./hooks/useSlashStatusCommandController";
 import { useSendReplyRequestController } from "./hooks/useSendReplyRequestController";
 import { useSynthesizeSpeechStreamController } from "./hooks/useSynthesizeSpeechStreamController";
-import { useStopTtsPlaybackController } from "./hooks/useStopTtsPlaybackController";
+import { useStopTtsPlaybackController, type TtsStopOptions } from "./hooks/useStopTtsPlaybackController";
 import { useEnqueueStreamAudioController } from "./hooks/useEnqueueStreamAudioController";
 import { useProcessStreamAudioQueueController } from "./hooks/useProcessStreamAudioQueueController";
 import { usePrepareTtsPlaybackSessionController } from "./hooks/usePrepareTtsPlaybackSessionController";
@@ -963,7 +963,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   const autoSpeechOpenPanelIdsRef = useRef<Record<string, true>>({});
   const ttsPlaybackProjectionTargetRef = useRef<TtsPlaybackTarget>({});
   const stopTtsPlaybackDelegateRef = useRef<(
-    options?: { interruptStream?: boolean; reason?: string }
+    options?: TtsStopOptions
   ) => Promise<void>>(async () => {});
   const setPanelAutoSpeechOpen = useCallback((panelIdRaw: string, open: boolean) => {
     const panelId = normalizeRuntimePanelId(panelIdRaw);
@@ -1300,7 +1300,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   const markTtsChunkPlaybackFinishedDelegateRef = useRef<() => void>(() => {});
   const markTtsPlaybackStoppedDelegateRef = useRef<() => void>(() => {});
   const stopTtsPlayback = useCallback(async (
-    options?: { interruptStream?: boolean; reason?: string; expectedMessageId?: string }
+    options?: TtsStopOptions
   ) => {
     await stopTtsPlaybackDelegateRef.current(options);
   }, []);
@@ -2735,6 +2735,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   });
   const processStreamAudioQueue = useProcessStreamAudioQueueController({
     streamAudioQueueProcessingRef,
+    streamAudioQueueGenerationRef,
     streamAudioQueueRef,
     streamCurrentChunkStartedAtRef,
     streamCurrentChunkEstimatedDurationMsRef,
@@ -5967,6 +5968,12 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     log: logSessionDiag,
   });
   voiceControl.configure({
+    diag: (operationId, stage, reason) => logSessionDiag("voice_control", { operationId, stage, ...(reason ? { reason } : {}) }, { throttleMs: 0 }),
+    releaseSpeech: async (target, panelId) => {
+      await stopTtsPlayback({ interruptStream: true, reason: "voice_handoff", expectedTarget: target.kind === "orchestrator"
+        ? { scope: "voice", orchestratorId: target.orchestratorId }
+        : { scope: "chat", sessionId: target.sessionRef.nativeSessionId || "", panelId } });
+    },
     preflight: async (target) => {
       if (target.kind === "orchestrator") {
         const response = await runnerWebSocketManager.request({ channel: "agent", op: "voice.orchestrators.list" });
@@ -6007,6 +6014,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
         if (signal.aborted) return;
         await synthesizeSpeechStream(`${title}に切り替えました。合図の後に話してください。`, {
           panelId, messageId, scope: target.kind === "orchestrator" ? "voice" : "chat",
+          ...(target.kind === "orchestrator" ? { orchestratorId: target.orchestratorId } : {}),
           ...(target.kind === "session" ? { sessionId: target.sessionRef.nativeSessionId || undefined } : {}),
         });
       } finally { signal.removeEventListener("abort", cancel); }

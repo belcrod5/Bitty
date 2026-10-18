@@ -215,6 +215,8 @@ raw に context を偽造せず、制御不能を明示し、新しい raw 専�
 owner generation は明示的な開始/停止意図・所有先の変更で進める。hook の sessionVersion と分け、通常の segment 確定・補正・返信後再録音では進めない。
 
 `handoff` は第3節の順序に従い、元 native 終了前に先を開始しない。
+別対象へ移る場合は、元 surface の新規読み上げ権限を失効させてから、元 target と message に一致する TTS stream・再生だけを解放する。呼出元 LLM の完了を待つ TTS と、CLI の完了を待つ LLM の循環待ちをここで除去する。native 音声の解放は共通の所有権取得 barrier に含め、取消後の手動録音も解放確認前に開始しない。`stop` と同対象への `handoff` は元の返答 TTS を維持する。
+診断は `voice_control` の operationId・有限の stage / reason と、開始待機の TTS / 画面条件だけを記録する。会話本文・認証情報・controlContext は追加しない。
 停止 await 後にも元 draft を再確認し、新たな本文があれば unmount せず停止済みの部分結果を返す。
 オーケストレーション draft は画面 local state なので、保持用 store を新設せず、元に draft があれば遷移前に拒否する。
 移動先 draft が restore 後に判明した場合は、元停止・画面移動までの部分結果とし、移動先を録音しない。

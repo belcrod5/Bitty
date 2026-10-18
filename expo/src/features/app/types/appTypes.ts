@@ -131,6 +131,7 @@ export type ToolAutoApprovalMap = Record<string, true>;
 export type TtsUiStatus = "idle" | "queued" | "synthesizing" | "playing" | "error";
 export type TtsPlaybackTarget = {
   scope?: "chat" | "voice";
+  orchestratorId?: string;
   messageId?: string;
   panelId?: string;
   sessionId?: string;

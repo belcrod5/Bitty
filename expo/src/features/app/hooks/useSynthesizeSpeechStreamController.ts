@@ -152,6 +152,7 @@ export function useSynthesizeSpeechStreamController(
     };
     setTtsPlaybackProjectionTarget({
       scope: streamOptions?.scope ?? "chat",
+      orchestratorId: streamOptions?.orchestratorId,
       panelId: streamOptions?.panelId,
       sessionId: streamOptions?.sessionId,
       messageId: targetMessageId,
