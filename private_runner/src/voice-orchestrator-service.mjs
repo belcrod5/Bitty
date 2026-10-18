@@ -286,14 +286,15 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
           ? { ...item, name, icon, ...validateTtsVoice(changes.ttsProvider ?? item.ttsProvider ?? defaultTtsProvider,
             changes.voiceId ?? (changes.ttsProvider && changes.ttsProvider !== item.ttsProvider ? "" : item.voiceId ?? "")) } : item);
         const service = await loadedContext(id);
-        if (changes.model !== undefined || changes.effort !== undefined || changes.systemInstruction !== undefined
+        const nameChanged = name !== registry.orchestrators.find((item) => item.id === id).name;
+        if (nameChanged || changes.model !== undefined || changes.effort !== undefined || changes.systemInstruction !== undefined
           || changes.topicModel !== undefined || changes.topicEffort !== undefined
           || changes.overviewModel !== undefined || changes.overviewEffort !== undefined) {
           const current = await service.getSettings();
           await service.configure(changes.model ?? current.model, changes.effort ?? current.effort,
             changes.systemInstruction ?? current.systemInstruction,
             changes.topicModel ?? current.topicModel, changes.topicEffort ?? current.topicEffort,
-            changes.overviewModel, changes.overviewEffort);
+            changes.overviewModel, changes.overviewEffort, nameChanged);
         }
         await saveRegistry({ ...registry, orchestrators });
         return { ...orchestrators.find((item) => item.id === id), ...await publicList() };

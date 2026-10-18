@@ -48,7 +48,7 @@ for (const { withGlobalMcp, cancelSummary = false, renameContext = false } of [
   { withGlobalMcp: true }, { withGlobalMcp: false }, { withGlobalMcp: false, cancelSummary: true },
   { withGlobalMcp: false, renameContext: true },
 ]) test(
-  renameContext ? "isolated Codex App Server updates current orchestrator name context on resumed turns"
+  renameContext ? "isolated Codex App Server switches settings parent for a renamed orchestrator"
     : cancelSummary ? "isolated Codex App Server cancels the summary model stream before disconnecting"
     : withGlobalMcp ? "isolated Codex App Server sends voice context with inherited MCP" : "isolated Codex App Server sends selected voice context without global MCP",
   { skip: !enabled }, async (t) => {
@@ -185,6 +185,11 @@ for (const { withGlobalMcp, cancelSummary = false, renameContext = false } of [
     const service = createVoiceContextService({ rootDir, createClient, getOrchestratorName: () => name });
     const { logicalConversationId } = await service.open();
     for (const [index, current] of [name, "NEW_ORCHESTRATOR_NAME_SENTINEL", "NEW_ORCHESTRATOR_NAME_SENTINEL"].entries()) {
+      if (index === 1) {
+        const settings = await service.getSettings();
+        await service.configure(settings.model, settings.effort, settings.systemInstruction,
+          settings.topicModel, settings.topicEffort, undefined, undefined, true);
+      }
       name = current;
       const clientOperationId = randomUUID();
       const terminal = new Promise((resolve) => {
@@ -197,23 +202,25 @@ for (const { withGlobalMcp, cancelSummary = false, renameContext = false } of [
       await within((async () => { while (await service.isBusy()) await delay(25); })(), 20000, "name turn did not settle");
     }
     const namedRequests = modelRequests.filter(({ input }) => input.some((item) =>
-      JSON.stringify(item).includes("<bitty_orchestrator>")));
+      JSON.stringify(item).includes("Current orchestrator chat metadata")));
     assert.equal(namedRequests.length, 3);
     for (const [index, request] of namedRequests.entries()) {
-      const metadata = request.input.filter((item) => JSON.stringify(item).includes("<bitty_orchestrator>"));
-      assert.equal(metadata.length, index + 1);
+      const metadata = request.input.filter((item) => JSON.stringify(item).includes("Current orchestrator chat metadata"));
+      assert.equal(metadata.length, 1);
       assert.ok(metadata.every(({ role }) => role === "developer"));
-      assert.ok(metadata.at(-1).content[0].text.includes(JSON.stringify({ name: index === 0
+      assert.ok(metadata[0].content[0].text.includes(JSON.stringify({ name: index === 0
         ? "OLD_ORCHESTRATOR_NAME_SENTINEL" : "NEW_ORCHESTRATOR_NAME_SENTINEL" })));
       assert.equal(request.input.at(-1).content[0].text, `NAME_CHECK_${index}`);
     }
     const responseStarts = voiceCalls.filter(({ method, params }) => method === "thread/start" && params.approvalPolicy === "on-request");
     const responseTurns = voiceCalls.filter(({ method, params }) => method === "turn/start" && params.approvalPolicy === "on-request");
-    assert.equal(responseStarts.length, 1);
+    assert.equal(responseStarts.length, 2);
     assert.equal(responseTurns.length, 3);
-    assert.ok(responseTurns.every(({ params }) => params.threadId === responseTurns[0].params.threadId));
-    assert.equal(voiceCalls.some(({ method }) => method === "thread/inject_items"), false);
-    assert.ok(voiceCalls.filter(({ method, params }) => method === "turn/start" && params.approvalPolicy === "never")
+    assert.notEqual(responseTurns[0].params.threadId, responseTurns[1].params.threadId);
+    assert.equal(responseTurns[1].params.threadId, responseTurns[2].params.threadId);
+    assert.ok(voiceCalls.some(({ method, params }) => method === "thread/inject_items"
+      && params.threadId === responseTurns[1].params.threadId && JSON.stringify(params.items).includes("NAME_CHECK_0")));
+    assert.ok(voiceCalls.filter(({ method }) => method === "turn/start")
       .every(({ params }) => !Object.hasOwn(params, "additionalContext")));
     assert.deepEqual(rpcErrors, []);
     return;
