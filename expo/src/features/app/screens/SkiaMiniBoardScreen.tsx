@@ -89,8 +89,6 @@ import {
 import type { WorkspaceFileTarget } from "../utils/workspaceFiles";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { VoiceConversationScreen, type VoiceConversationPlayback } from "./VoiceConversationScreen";
-import { clearPendingVoiceOrchestratorId, getPendingVoiceOrchestratorId,
-  subscribePendingVoiceOrchestratorId } from "../utils/pendingVoiceNavigation";
 import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 import {
   SKIA_BOARD_MAX_TEXT_SCALE,
@@ -685,12 +683,16 @@ type SkiaMiniBoardScreenProps = {
     origin?: SessionPopupOrigin;
   }) => void;
   voicePlayback?: VoiceConversationPlayback;
+  pendingVoiceOrchestratorId?: string;
+  onVoiceNavigationHandled?: (id: string) => void;
 };
 
 export function SkiaMiniBoardScreen({
   onStartNewSessionInDirectory,
   openSessionHistoryPopup,
   voicePlayback,
+  pendingVoiceOrchestratorId = "",
+  onVoiceNavigationHandled,
 }: SkiaMiniBoardScreenProps) {
   const { theme, themeId } = useVisualTheme();
   const screenStyles = screenStylesByTheme[themeId];
@@ -701,17 +703,12 @@ export function SkiaMiniBoardScreen({
   const [voiceOpenSequence, setVoiceOpenSequence] = useState(0);
   const hasVoicePlayback = Boolean(voicePlayback);
   useEffect(() => {
-    const openPendingVoice = () => {
-      const id = getPendingVoiceOrchestratorId();
-      if (!id || activeScreen !== "skia_board" || !hasVoicePlayback) return;
-      setVoiceTargetId(id);
-      setVoiceOpenSequence((current) => current + 1);
-      setVoiceOpen(true);
-      clearPendingVoiceOrchestratorId(id);
-    };
-    openPendingVoice();
-    return subscribePendingVoiceOrchestratorId(openPendingVoice);
-  }, [activeScreen, hasVoicePlayback]);
+    if (!pendingVoiceOrchestratorId || activeScreen !== "skia_board" || !hasVoicePlayback) return;
+    setVoiceTargetId(pendingVoiceOrchestratorId);
+    setVoiceOpenSequence((current) => current + 1);
+    setVoiceOpen(true);
+    onVoiceNavigationHandled?.(pendingVoiceOrchestratorId);
+  }, [activeScreen, hasVoicePlayback, onVoiceNavigationHandled, pendingVoiceOrchestratorId]);
   useEffect(() => {
     if (activeScreen !== "skia_board") setVoiceOpen(false);
   }, [activeScreen]);

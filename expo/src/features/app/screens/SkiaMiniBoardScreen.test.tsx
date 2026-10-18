@@ -5,7 +5,9 @@ import { fitTailTextLines, placeOrchestratorActivities, SkiaMiniBoardScreen } fr
 import { gridFromSectionRect } from "../utils/skiaBoardSectionGeometry";
 import { VisualThemeProvider } from "../theme/VisualThemeContext";
 import { VISUAL_THEMES } from "../theme/visualThemes";
-import { setPendingVoiceOrchestratorId } from "../utils/pendingVoiceNavigation";
+import { clearPendingVoiceOrchestratorId, getPendingVoiceOrchestratorId,
+  setPendingVoiceOrchestratorId } from "../utils/pendingVoiceNavigation";
+import { usePendingVoiceNavigationController } from "../hooks/usePendingVoiceNavigationController";
 
 let mockRunningSessionCount: number | null = 0;
 jest.mock("../hooks/useReduceMotionEnabled", () => ({ useReduceMotionEnabled: () => true }));
@@ -581,17 +583,28 @@ test("card images update, fall back after decode failure, and release old images
   await screen.unmount();
 });
 
-test("mic badge uses latest canonical voice counts and a Push opens its orchestrator", async () => {
+test("shared voice navigation waits for popup cleanup on an already open board", async () => {
   let resolveOld!: (value: unknown) => void;
   mockBoardVoiceRequest.mockImplementationOnce(() => new Promise((resolve) => {
     resolveOld = resolve as (value: unknown) => void;
   }));
-  const screen = await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()}
-    openSessionHistoryPopup={jest.fn()} voicePlayback={{
-      synthesizeSpeechStream: jest.fn(async () => undefined),
-      stopTtsPlayback: jest.fn(async () => undefined),
-      isTtsPlaybackActive: false, ttsUiStatus: "idle",
-    }} />);
+  const requestPopupClose = jest.fn();
+  const setActiveScreen = jest.fn();
+  const closeDrawer = jest.fn();
+  function BoardWithNavigation({ popupMounted }: { popupMounted: boolean }) {
+    const pendingId = usePendingVoiceNavigationController({
+      popupMounted, requestPopupClose, closeDrawer, setActiveScreen,
+    });
+    return <SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()}
+      openSessionHistoryPopup={jest.fn()}
+      pendingVoiceOrchestratorId={pendingId}
+      onVoiceNavigationHandled={clearPendingVoiceOrchestratorId} voicePlayback={{
+        synthesizeSpeechStream: jest.fn(async () => undefined),
+        stopTtsPlayback: jest.fn(async () => undefined),
+        isTtsPlaybackActive: false, ttsUiStatus: "idle",
+      }} />;
+  }
+  const screen = await render(<BoardWithNavigation popupMounted />);
   await act(async () => mockBoardVoiceHandlers.get("voice.unread.changed")?.({ payload: {
     orchestrators: [{ id: "main", unreadCount: 1 }, { id: "other", unreadCount: 2 }],
     selectedId: "main",
@@ -608,7 +621,12 @@ test("mic badge uses latest canonical voice counts and a Push opens its orchestr
   } }));
   expect(screen.getByText("1")).toBeTruthy();
   await act(async () => setPendingVoiceOrchestratorId("other"));
+  expect(requestPopupClose).toHaveBeenCalledTimes(1);
+  expect(screen.queryByTestId("voice-conversation-screen")).toBeNull();
+  expect(getPendingVoiceOrchestratorId()).toBe("other");
+  await screen.rerender(<BoardWithNavigation popupMounted={false} />);
   expect(screen.getByTestId("voice-conversation-screen").props.accessibilityLabel).toBe("other");
+  expect(getPendingVoiceOrchestratorId()).toBe("");
   expect(screen.queryByTestId("skia-board-voice-unread")).toBeNull();
 });
 
