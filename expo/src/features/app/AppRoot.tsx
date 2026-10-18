@@ -1,4 +1,4 @@
-import { OrchestratorStatusProvider } from "./contexts/OrchestratorStatusContext";
+import { WidgetSnapshotPublisher } from "./components/WidgetSnapshotPublisher";
 import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import {
   GestureHandlerRootView,
@@ -6105,7 +6105,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
         chatVisual={chatVisualContextValue}
         chatScreen={chatScreenContextValue}
       >
-      <OrchestratorStatusProvider>
       <KeyboardProvider>
         <AppDrawerLayout
         open={drawerOpen}
@@ -6177,9 +6176,9 @@ function AppContent({ onReady }: { onReady?: () => void }) {
             onDismiss={dismissLlmCompletionNotification}
           />
         </SafeAreaView>
+        <WidgetSnapshotPublisher ready={settingsLoaded} />
         <PushNotificationRegistrar onUnreadCountSnapshot={sessionNotificationLifecycle.applyUnreadCountSnapshot} />
       </KeyboardProvider>
-      </OrchestratorStatusProvider>
       </AppProviders>
       </RunnerWebSocketProvider>
       <ThemeSplash ready={settingsLoaded} onReady={onReady} />

@@ -86,13 +86,15 @@ export function formatCodexUsageStatus(rateLimits = {}, usageLimitReached = fals
       reset = new Intl.DateTimeFormat("en-US", { hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
       if (includeDate) reset += ` on ${new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short" }).format(date)}`;
     }
-    return [{ label, value, reset }];
+    return [{ label, value, reset, remainingPercent: left }];
   });
   return {
     statusText: [...lines.flatMap(({ label, value, reset }) => [`${label}: ${value}`, `(resets ${reset})`]),
       ...(usageLimitReached ? ["Codex の利用上限に達しました。"] : [])].join("\n"),
     limitLines: lines.map(({ label, value, reset }) => ({ section: "default", label, value: `${value} (resets ${reset})` })),
     usageLimitReached,
+    fiveHourRemaining: lines.find((line) => line.label === "5h limit")?.remainingPercent ?? null,
+    weeklyRemaining: lines.find((line) => line.label === "Weekly limit")?.remainingPercent ?? null,
   };
 }
 

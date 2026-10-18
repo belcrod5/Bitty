@@ -139,8 +139,8 @@ struct BittyWidgetView: View {
         Spacer(minLength: 0)
         HStack(alignment: .firstTextBaseline, spacing: 5) {
           Image(systemName: "person.2.fill").font(.system(size: 11)).foregroundStyle(mint)
-          Text(stale ? "--" : snapshot.runningCount.map(String.init) ?? "--")
-            .font(.system(size: 22, weight: .semibold, design: .rounded)).foregroundStyle(.white)
+          Text(snapshot.connected ? snapshot.runningCount.map(String.init) ?? "--" : "--")
+            .font(.system(size: 22, weight: .semibold, design: .rounded)).foregroundStyle(stale ? muted : .white)
           Text("全体で実行中").font(.system(size: 9)).foregroundStyle(muted)
         }
         HStack(spacing: 10) {
@@ -177,9 +177,9 @@ struct BittyWidgetView: View {
         HStack(spacing: 16) {
           HStack(spacing: 5) {
             Image(systemName: "person.2.fill").foregroundStyle(mint)
-            Text(stale ? "--" : snapshot.runningCount.map(String.init) ?? "--").fontWeight(.semibold).foregroundStyle(.white)
+            Text(snapshot.connected ? snapshot.runningCount.map(String.init) ?? "--" : "--").fontWeight(.semibold).foregroundStyle(.white)
             Text("実行中").foregroundStyle(muted)
-          }.font(.system(size: 11)).accessibilityLabel("全体の実行中エージェント \(stale ? "不明" : snapshot.runningCount.map(String.init) ?? "不明")")
+          }.font(.system(size: 11)).accessibilityLabel("\(stale ? "最終同期時の" : "全体の")実行中エージェント \(snapshot.connected ? snapshot.runningCount.map(String.init) ?? "不明" : "不明")")
           Spacer(minLength: 0)
           limit(label: "5h", value: snapshot.fiveHourRemaining)
           limit(label: "週", value: snapshot.weeklyRemaining)
@@ -229,13 +229,15 @@ struct BittyWidgetView: View {
   }
 
   private func limit(label: String, value: Int?) -> some View {
-    let known = !stale && snapshot.usageFetchedAt > 0 && entry.date.timeIntervalSince1970 * 1000 - snapshot.usageFetchedAt < 15 * 60_000
+    let known = snapshot.connected && snapshot.usageFetchedAt > 0
+    let usageStale = entry.date.timeIntervalSince1970 * 1000 - snapshot.usageFetchedAt >= 15 * 60_000
     let percent = known ? value : nil
     let color = percent == 0 || (known && snapshot.usageLimitReached) ? Color(red: 1, green: 0.48, blue: 0.45)
       : percent.map { $0 <= 10 } == true ? Color.orange : mint
     return VStack(alignment: .leading, spacing: 3) {
       HStack(spacing: 4) {
         Text(label).foregroundStyle(muted)
+        if known && usageStale { Image(systemName: "clock").font(.system(size: 7)).foregroundStyle(muted) }
         Text(percent.map { "\($0)%" } ?? (known && snapshot.usageLimitReached ? "上限" : "--%"))
           .fontWeight(.semibold).foregroundStyle(color).monospacedDigit()
       }
@@ -244,7 +246,7 @@ struct BittyWidgetView: View {
           Capsule().fill(color).frame(width: (small ? 42 : 48) * CGFloat(percent ?? 0) / 100, height: 2)
         }
     }.font(.system(size: small ? 10 : 11))
-      .accessibilityLabel("\(label == "5h" ? "5時間" : "週間")の残り \(percent.map { "\($0)パーセント" } ?? "不明")")
+      .accessibilityLabel("\(label == "5h" ? "5時間" : "週間")の残り \(percent.map { "\($0)パーセント" } ?? "不明")\(usageStale ? "。最終取得時の値、更新待ち" : "")")
   }
 
   private var freshness: some View {
@@ -252,7 +254,10 @@ struct BittyWidgetView: View {
       Circle().fill(stale ? muted : mint).frame(width: 4, height: 4)
       let fetchedAt = small ? snapshot.updatedAt : snapshot.overviewFetchedAt
       if fetchedAt == 0 { Text("未同期") }
-      else if stale || entry.date.timeIntervalSince1970 * 1000 - fetchedAt >= 15 * 60_000 { Text("アプリで更新") }
+      else if stale || entry.date.timeIntervalSince1970 * 1000 - fetchedAt >= 15 * 60_000 {
+        Text("更新待ち")
+        Text(Date(timeIntervalSince1970: fetchedAt / 1000), style: .time)
+      }
       else { Text(Date(timeIntervalSince1970: fetchedAt / 1000), style: .time) }
     }.font(.system(size: 8, design: .monospaced)).foregroundStyle(muted)
   }
@@ -265,7 +270,7 @@ struct ConfigurableBittyWidget: Widget {
       BittyWidgetView(entry: $0)
     }
     .configurationDisplayName("Bitty オーケストレーター")
-    .description("相手を選んで音声会話。全体の To Do・実行中エージェント・利用上限を確認。情報はアプリ使用時に同期します。")
+    .description("相手を選んで音声会話。全体の To Do・実行数・利用上限を確認。通知設定済みの場合はバックグラウンドでも同期します。")
     .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
   }
 }

@@ -15,6 +15,7 @@ const mockManager = {
   },
 };
 
+jest.mock("../contexts/AppShellContext", () => ({ useAppShell: () => ({ activeScreen: "skia_board" }) }));
 jest.mock("../contexts/ConversationContext", () => ({ useConversation: () => ({ registeredDirectories: mockDirectories }) }));
 jest.mock("../../runnerWs/RunnerWebSocketContext", () => ({
   useRunnerWebSocketSnapshot: () => ({ connected: mockConnected, generation: mockGeneration, appState: mockAppState }),

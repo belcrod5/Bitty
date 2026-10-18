@@ -85,29 +85,9 @@ final class PushApprovalResponder {
   }
 
   private func buildRequest(approvalId: String, approved: Bool) -> URLRequest? {
-    let runnerUrl = PushApprovalConfigStore.readRunnerUrl()
-    let token = PushApprovalConfigStore.readSecureStoreValue(PushApprovalConfigStore.runnerTokenKey)
-    guard !runnerUrl.isEmpty, !token.isEmpty else {
-      return nil
-    }
-    let base = runnerUrl.hasSuffix("/") ? String(runnerUrl.dropLast()) : runnerUrl
     guard let encodedId = approvalId.addingPercentEncoding(withAllowedCharacters: .alphanumerics),
-      let url = URL(string: "\(base)/push/approvals/\(encodedId)/respond") else {
-      return nil
-    }
-    var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
-    request.httpMethod = "POST"
+      var request = BittyRunnerConnection.load()?.request(path: "/push/approvals/\(encodedId)/respond", method: "POST") else { return nil }
     request.setValue("application/json", forHTTPHeaderField: "content-type")
-    request.setValue("Bearer \(token)", forHTTPHeaderField: "authorization")
-    let cfClientId = PushApprovalConfigStore.readSecureStoreValue(PushApprovalConfigStore.cloudflareAccessClientIdKey)
-    let cfClientSecret = PushApprovalConfigStore.readSecureStoreValue(PushApprovalConfigStore.cloudflareAccessClientSecretKey)
-    let pairedLocal = BittyRunnerTLS.shared().handlesURL(url)
-    if let cloudflareOrigin = URL(string: PushApprovalConfigStore.readCloudflareRunnerUrl()),
-        !pairedLocal && PushApprovalConfigStore.sameOrigin(url, cloudflareOrigin) &&
-        !cfClientId.isEmpty && !cfClientSecret.isEmpty {
-      request.setValue(cfClientId, forHTTPHeaderField: "CF-Access-Client-Id")
-      request.setValue(cfClientSecret, forHTTPHeaderField: "CF-Access-Client-Secret")
-    }
     request.httpBody = try? JSONSerialization.data(withJSONObject: ["approved": approved])
     return request
   }

@@ -1,1 +1,1 @@
-{"platforms":["ios"],"apple":{"modules":["BittyWidgetsModule"]}}
+{"platforms":["ios"],"apple":{"modules":["BittyWidgetsModule"],"appDelegateSubscribers":["BittyWidgetsAppDelegateSubscriber"]}}

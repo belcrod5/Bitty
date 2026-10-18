@@ -1,4 +1,5 @@
 import EXNotifications
+import BittyRunnerTLS
 import UIKit
 import UserNotifications
 
@@ -39,7 +40,7 @@ public final class PushApprovalNotificationDelegate: NSObject, NotificationDeleg
     guard let approvalId = content.userInfo["approvalId"] as? String, !approvalId.isEmpty else {
       return false
     }
-    if approved && PushApprovalConfigStore.readFaceIdRequiredForApproval() {
+    if approved && (BittyRunnerConnection.readSettingsField("faceIdRequiredForApproval") as? Bool ?? false) {
       // Approve must never be sent without authentication in this mode; the JS layer handles
       // it after the (foreground-opening) action launches the app. One gap: if the pressed
       // notification's category was registered while Face ID was still OFF, its approve

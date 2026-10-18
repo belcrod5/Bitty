@@ -1,6 +1,6 @@
 import Foundation
+import CryptoKit
 import Security
-import BittyRunnerTLS
 
 // Reads the configuration the native responder needs without any JS involvement:
 //
@@ -17,13 +17,13 @@ import BittyRunnerTLS
 //   kSecAttrAccount, and the value stored as utf8 data. The suffix-less "app" service is the
 //   legacy location older expo-secure-store versions wrote to; it is checked second, mirroring
 //   SecureStoreModule.get's fallback order.
-enum PushApprovalConfigStore {
+public enum BittyRunnerConnection {
   static let settingsFileName = "bitty-settings.json"
   static let runnerTokenKey = "bitty.runnerToken"
   static let cloudflareAccessClientIdKey = "bitty.cloudflareAccessClientId"
   static let cloudflareAccessClientSecretKey = "bitty.cloudflareAccessClientSecret"
 
-  static func readSettingsField(_ field: String) -> Any? {
+  public static func readSettingsField(_ field: String) -> Any? {
     guard let documentsUrl = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
       return nil
     }
@@ -33,6 +33,54 @@ enum PushApprovalConfigStore {
       return nil
     }
     return parsed[field]
+  }
+
+  public struct Configuration: Equatable {
+    fileprivate let runnerUrl: String
+    fileprivate let configuredRunnerUrl: String
+    fileprivate let token: String
+    fileprivate let cloudflareUrl: String
+    fileprivate let clientId: String
+    fileprivate let clientSecret: String
+
+    public var identity: String { BittyRunnerConnection.identity(runnerUrl: configuredRunnerUrl, runnerToken: token) }
+
+    public func matches(runnerUrl: String, runnerToken: String) -> Bool {
+      configuredRunnerUrl == runnerUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        && token == runnerToken.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    public func request(path: String, method: String = "GET", timeout: TimeInterval = 20) -> URLRequest? {
+      guard path.hasPrefix("/"), !path.hasPrefix("//"),
+        let url = URL(string: runnerUrl.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + path),
+        let origin = URL(string: runnerUrl), BittyRunnerConnection.sameOrigin(url, origin) else { return nil }
+      var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
+      request.httpMethod = method
+      request.setValue("Bearer \(token)", forHTTPHeaderField: "authorization")
+      if let cloudflareOrigin = URL(string: cloudflareUrl),
+        !BittyRunnerTLS.shared().handlesURL(url), BittyRunnerConnection.sameOrigin(url, cloudflareOrigin),
+        !clientId.isEmpty && !clientSecret.isEmpty {
+        request.setValue(clientId, forHTTPHeaderField: "CF-Access-Client-Id")
+        request.setValue(clientSecret, forHTTPHeaderField: "CF-Access-Client-Secret")
+      }
+      return request
+    }
+  }
+
+  public static func identity(runnerUrl: String, runnerToken: String) -> String {
+    let text = runnerUrl.trimmingCharacters(in: .whitespacesAndNewlines) + "\0" + runnerToken.trimmingCharacters(in: .whitespacesAndNewlines)
+    return SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
+  }
+
+  public static func load() -> Configuration? {
+    let runnerUrl = readRunnerUrl()
+    let token = readSecureStoreValue(runnerTokenKey)
+    guard !runnerUrl.isEmpty, !token.isEmpty else { return nil }
+    return Configuration(runnerUrl: runnerUrl,
+      configuredRunnerUrl: (readSettingsField("runnerUrl") as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+      token: token, cloudflareUrl: readCloudflareRunnerUrl(),
+      clientId: readSecureStoreValue(cloudflareAccessClientIdKey),
+      clientSecret: readSecureStoreValue(cloudflareAccessClientSecretKey))
   }
 
   static func readRunnerUrl() -> String {
@@ -71,10 +119,6 @@ enum PushApprovalConfigStore {
       url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
       url.path.isEmpty || url.path == "/" else { return "" }
     return value
-  }
-
-  static func readFaceIdRequiredForApproval() -> Bool {
-    return (readSettingsField("faceIdRequiredForApproval") as? Bool) ?? false
   }
 
   // Credentials migrated to AFTER_FIRST_UNLOCK accessibility live under "<key>.v2"

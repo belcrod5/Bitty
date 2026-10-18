@@ -115,7 +115,7 @@ export function PushNotificationRegistrar({
         const apnsToken = String(pushToken?.data || "").trim();
         if (!apnsToken || cancelled) return;
 
-        const registrationKey = `${deviceId}:${apnsToken}:${directoriesKey}`;
+        const registrationKey = JSON.stringify([runnerUrl, runnerToken, deviceId, apnsToken, directoriesKey]);
         if (lastRegisteredKeyRef.current === registrationKey) return;
 
         await registerPushDevice({ runnerUrl, runnerToken, deviceId, apnsToken, directories });

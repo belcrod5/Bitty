@@ -11,6 +11,7 @@ Pod::Spec.new do |s|
   s.static_framework = true
   s.swift_version = '5.9'
   s.dependency 'ExpoModulesCore'
+  s.dependency 'BittyRunnerTLS'
   s.frameworks = 'WidgetKit', 'UIKit'
   s.source_files = '**/*.swift'
 end
