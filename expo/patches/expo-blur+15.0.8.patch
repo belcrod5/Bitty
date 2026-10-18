@@ -1,0 +1,12 @@
+diff --git a/node_modules/expo-blur/ios/BlurEffectView.swift b/node_modules/expo-blur/ios/BlurEffectView.swift
+--- a/node_modules/expo-blur/ios/BlurEffectView.swift
++++ b/node_modules/expo-blur/ios/BlurEffectView.swift
+@@ -37,6 +37,8 @@ final class BlurEffectView: UIVisualEffectView {
+ 
+   init() {
+     super.init(effect: nil)
++    // Initialize the effect after an initially empty view receives its layout.
++    contentMode = .redraw
+   }
+ 
+   required init?(coder aDecoder: NSCoder) { nil }

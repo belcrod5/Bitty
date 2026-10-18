@@ -2005,7 +2005,7 @@ export function SkiaMiniBoardScreen({
             accessibilityRole="button"
             accessibilityLabel="ボードメニューを開く"
           >
-            <Ionicons name="ellipsis-horizontal" size={22} color={theme.colors.iconSecondary} />
+            <Ionicons name="ellipsis-horizontal" size={22} color={theme.colors.floatingControlText} />
           </TouchableOpacity>
         </View>
       </SafeAreaView>
