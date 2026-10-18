@@ -476,29 +476,27 @@ export function useVoiceConversation(
         || manager.getSnapshot().generation !== startedGeneration) return;
       const messages = payload.messages as VoiceHistoryMessage[];
       setHistory(messages);
-      if (orchestratorId === "main") {
-        const raw = payload.taskChecklist;
-        const value = raw && typeof raw === "object" && !Array.isArray(raw)
-          ? raw as Record<string, unknown> : null;
-        setTaskChecklist(value
-          && (value.status === "missing" || value.status === "unavailable"
-            || value.status === "present" && typeof value.markdown === "string")
-          ? value as VoiceTaskChecklist : { status: "unavailable" });
-        const overview = payload.taskChecklistOverview;
-        const display = overview && typeof overview === "object" && !Array.isArray(overview)
-          ? overview as Record<string, unknown> : null;
-        setTaskChecklistOverview(overview === undefined ? null : value?.status === "present" && display
-          && (display.status === "pending" || display.status === "unavailable"
-            || display.status === "present" && typeof display.markdown === "string")
-          ? display as VoiceTaskChecklistOverview : { status: "unavailable" });
-        const completion = payload.taskChecklistCompletion;
-        const offer = completion && typeof completion === "object" && !Array.isArray(completion)
-          ? completion as Record<string, unknown> : null;
-        setTaskChecklistCompletion(offer && typeof offer.sourceHash === "string"
-          && typeof offer.version === "string" && /^[0-9a-f]{64}$/.test(offer.sourceHash)
-          && /^[0-9a-f]{64}$/.test(offer.version)
-          ? { sourceHash: offer.sourceHash, version: offer.version } : null);
-      }
+      const raw = payload.taskChecklist;
+      const value = raw && typeof raw === "object" && !Array.isArray(raw)
+        ? raw as Record<string, unknown> : null;
+      setTaskChecklist(value
+        && (value.status === "missing" || value.status === "unavailable"
+          || value.status === "present" && typeof value.markdown === "string")
+        ? value as VoiceTaskChecklist : { status: "unavailable" });
+      const overview = payload.taskChecklistOverview;
+      const display = overview && typeof overview === "object" && !Array.isArray(overview)
+        ? overview as Record<string, unknown> : null;
+      setTaskChecklistOverview(overview === undefined ? null : value?.status === "present" && display
+        && (display.status === "pending" || display.status === "unavailable"
+          || display.status === "present" && typeof display.markdown === "string")
+        ? display as VoiceTaskChecklistOverview : { status: "unavailable" });
+      const completion = payload.taskChecklistCompletion;
+      const offer = completion && typeof completion === "object" && !Array.isArray(completion)
+        ? completion as Record<string, unknown> : null;
+      setTaskChecklistCompletion(offer && typeof offer.sourceHash === "string"
+        && typeof offer.version === "string" && /^[0-9a-f]{64}$/.test(offer.sourceHash)
+        && /^[0-9a-f]{64}$/.test(offer.version)
+        ? { sourceHash: offer.sourceHash, version: offer.version } : null);
       setLocalHistory((current) => current.filter((local) => !messages.some((message) =>
         message.role === local.role && message.clientOperationId === local.clientOperationId)));
       setHistoryError("");
@@ -506,9 +504,9 @@ export function useVoiceConversation(
       if (aliveRef.current && historyRequestRef.current === requestNumber && conversationIdRef.current === conversationId
         && manager.getSnapshot().generation === startedGeneration) {
         setHistoryError(cause instanceof Error ? cause.message : "音声会話の履歴を読み込めません。");
-        if (orchestratorId === "main") setTaskChecklist({ status: "unavailable" });
-        if (orchestratorId === "main") setTaskChecklistOverview(null);
-        if (orchestratorId === "main") setTaskChecklistCompletion(null);
+        setTaskChecklist({ status: "unavailable" });
+        setTaskChecklistOverview(null);
+        setTaskChecklistCompletion(null);
       }
     }
   }, [manager, orchestratorId]);
@@ -524,10 +522,9 @@ export function useVoiceConversation(
   }, [manager, orchestratorId, refreshHistory]);
 
   useEffect(() => {
-    if (orchestratorId !== "main") return;
     return manager.subscribe({ channel: "agent", op: "voice.task-checklist.changed" }, (message) => {
       const payload = payloadOf(message);
-      if (payload.orchestratorId === "main" && payload.logicalConversationId === conversationIdRef.current) {
+      if (payload.orchestratorId === orchestratorId && payload.logicalConversationId === conversationIdRef.current) {
         void refreshHistory();
       }
     });

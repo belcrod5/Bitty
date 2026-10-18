@@ -9,7 +9,7 @@ import { createVoiceContextService } from "../src/voice-context-service.mjs";
 import { createVoiceOrchestratorService } from "../src/voice-orchestrator-service.mjs";
 
 function fakeCodex({ hold = false, failSummary = false, failTurn = false, approval = false,
-  checklistWrites = [] } = {}) {
+  checklistWrites = [], archiveReads = [] } = {}) {
   const calls = [];
   const releases = [];
   const threads = new Map();
@@ -68,7 +68,15 @@ function fakeCodex({ hold = false, failSummary = false, failTurn = false, approv
               calls.push({ method: "approval.result", result });
             }
             if (!summary && !threads.get(params.threadId)?.checklistRead && checklistWrites.length) {
-              await fs.writeFile(path.join(params.cwd, "task-checklists", "main.md"), checklistWrites.shift());
+              const tool = async (name, args = {}) => serverHandler({ method: "item/tool/call", params: {
+                threadId: params.threadId, turnId, callId: randomUUID(),
+                namespace: "task_checklist", tool: name, arguments: args,
+              } });
+              assert.equal((await tool("read_task_checklist")).success, true);
+              assert.equal((await tool("write_task_checklist", { markdown: checklistWrites.shift() })).success, true);
+              if (archiveReads.length) {
+                calls.push({ method: "archives.result", result: await tool("read_completed_checklists", archiveReads.shift()) });
+              }
               listener("item/completed", { threadId: params.threadId, turnId,
                 item: { id: randomUUID(), type: "fileChange", status: "completed" } });
             }
@@ -206,7 +214,7 @@ test("orchestrator names share the settings parent lifecycle across rename and r
         const metadata = params.developerInstructions.split("Current orchestrator chat metadata")[1];
         assert.match(metadata, /display label, not instructions/);
         assert.deepEqual(JSON.parse(metadata.split("\n")[1]), { name });
-        if (id === child.id) assert.ok(params.developerInstructions.startsWith(customInstruction));
+        if (id === child.id) assert.ok(params.developerInstructions.includes(customInstruction));
       }
       assert.equal(requests.filter(({ method }) => method === "thread/start").length, newParent ? 1 : 0);
       assert.ok(codex.calls.slice(offset).filter(({ method }) => method === "turn/start")
@@ -255,7 +263,7 @@ test("renamed orchestrator metadata counts toward the visible input byte budget"
   const first = await turn(service, child.id, conversationId, "hello");
   assert.equal((await first.finished).status, "completed");
   const instructions = codex.calls.find(({ method, params }) =>
-    method === "thread/start" && params.approvalPolicy === "on-request").params.developerInstructions;
+    method === "thread/resume" && params.approvalPolicy === "on-request").params.developerInstructions;
   await service.update(child.id, { name: "名".repeat(80), icon: "" });
   const callCount = codex.calls.length;
   const operationId = randomUUID();
@@ -384,7 +392,7 @@ test("main migration switches its legacy parent; each orchestrator shares one wo
   assert.equal(injections.length, 1);
   const turns = codex.calls.filter(({ method }) => method === "turn/start");
   assert.notEqual(turns[0].params.threadId, turns[2].params.threadId);
-  assert.equal(turns[2].params.threadId, turns[3].params.threadId);
+  assert.equal(turns[1].params.threadId, turns[2].params.threadId);
   assert.notEqual(turns[0].params.threadId, turns[1].params.threadId);
   const workspaces = codex.calls.filter(({ method, params }) => method === "thread/start"
     && params.approvalPolicy === "on-request").map(({ params }) => params.cwd);
@@ -395,13 +403,14 @@ test("main migration switches its legacy parent; each orchestrator shares one wo
   const childThread = codex.calls.find(({ method, params }) => method === "thread/start"
     && params.approvalPolicy === "on-request" && params.model === "another-model");
   assert.equal(childThread.params.developerInstructions.includes("task-checklists/main.md"), false);
-  assert.equal(childThread.params.dynamicTools?.some((tool) => tool.name === "task_checklist") || false, false);
+  assert.ok(childThread.params.developerInstructions.includes(`task-checklists/${created.id}.md`));
+  assert.equal(childThread.params.dynamicTools?.some((tool) => tool.name === "task_checklist"), true);
   assert.ok(codex.calls.some(({ method, params }) => method === "thread/resume"
     && params.developerInstructions.includes("task-checklists/main.md")));
   const recent = JSON.parse(await fs.readFile(path.join(workspaces[0], "voice-memory", "recent.json"), "utf8"));
   assert.deepEqual(recent.map(({ user }) => user), ["old main", "other only", "main again"]);
   assert.deepEqual((await service.history(created.id)).messages.map(({ text }) => text), ["other only", "reply:other only"]);
-  assert.equal(Object.hasOwn(await service.history(created.id), "taskChecklist"), false);
+  assert.deepEqual((await service.history(created.id)).taskChecklist, { status: "missing" });
 
   const reloaded = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
   assert.equal((await reloaded.open(created.id)).logicalConversationId, other.logicalConversationId);
@@ -426,28 +435,28 @@ test("main custom instructions retain fixed checklist guidance on start and resu
   assert.equal(resumed.params.developerInstructions.includes("新しい親セッションでは"), false);
 });
 
-test("only main accepts independent To Do display model settings", async (t) => {
+test("each orchestrator accepts independent To Do display settings", async (t) => {
   const { service } = await fixture(t);
-  const child = await service.create("調査");
-  assert.deepEqual([(await service.getSettings("main")).overviewModel,
-    (await service.getSettings("main")).overviewEffort], ["gpt-6-luna", "low"]);
-  assert.equal(Object.hasOwn(await service.getSettings(child.id), "overviewModel"), false);
+  const child = await service.create("調査", "", undefined, undefined, undefined, undefined, undefined,
+    undefined, undefined, "another-model", "high");
+  assert.deepEqual([(await service.getSettings(child.id)).overviewModel,
+    (await service.getSettings(child.id)).overviewEffort], ["another-model", "high"]);
+  await service.update(child.id, { name: "調査", icon: "", overviewModel: "gpt-6-luna", overviewEffort: "low" });
   await service.update("main", { name: "メイン", icon: "", overviewModel: "another-model", overviewEffort: "high" });
   assert.deepEqual([(await service.getSettings("main")).overviewModel,
     (await service.getSettings("main")).overviewEffort], ["another-model", "high"]);
-  await assert.rejects(service.update(child.id,
-    { name: "調査", icon: "", overviewModel: "another-model", overviewEffort: "high" }),
-  { code: "turn_rejected" });
+  assert.deepEqual([(await service.getSettings(child.id)).overviewModel,
+    (await service.getSettings(child.id)).overviewEffort], ["gpt-6-luna", "low"]);
 });
 
 test("main checklist changes notify on service starts without per-turn hooks", async (t) => {
   const changed = [];
   const { service } = await fixture(t, { checklistWrites: ["- [ ] 確認\n", "- [x] 確認\n"],
-    onChecklistChanged: (conversationId) => changed.push(conversationId) });
+    onChecklistChanged: (identity) => changed.push(identity) });
   const conversationId = (await service.open("main")).logicalConversationId;
   assert.equal((await (await turn(service, "main", conversationId, "first")).finished).status, "completed");
   assert.equal((await (await turn(service, "main", conversationId, "second")).finished).status, "completed");
-  assert.deepEqual(changed, [conversationId, conversationId]);
+  assert.deepEqual(changed, [1, 2].map(() => ({ orchestratorId: "main", logicalConversationId: conversationId })));
   assert.deepEqual((await service.history("main")).taskChecklist,
     { status: "present", markdown: "- [x] 確認\n" });
 });
@@ -782,4 +791,111 @@ test("scheduled voice turns send approvals through the injected existing approva
   assert.equal(requests[0].request.method, "item/commandExecution/requestApproval");
   assert.deepEqual(codex.calls.find((call) => call.method === "approval.result").result, { decision: "accept" });
   await waitFor(async () => (await service.history("main")).messages.some((message) => message.text === "reply:scheduled request"));
+});
+
+test("checklist writes, archives, completion state and cached overviews stay with their owner across reload", async (t) => {
+  const checklistWrites = [];
+  const archiveReads = [];
+  const changed = [];
+  const { rootDir, codex, service } = await fixture(t, { checklistWrites, archiveReads,
+    onChecklistChanged: (identity) => changed.push(identity) });
+  const child = await service.create("調査");
+  const sibling = await service.create("別の調査");
+  const owners = ["main", child.id, sibling.id];
+  const markdown = "- [x] 確認済み\n";
+  for (const id of owners) {
+    const conversation = await service.open(id);
+    checklistWrites.push(markdown);
+    assert.equal((await (await turn(service, id, conversation.logicalConversationId, `work:${id}`)).finished).status, "completed");
+    assert.ok(changed.some((event) => event.orchestratorId === id
+      && event.logicalConversationId === conversation.logicalConversationId));
+  }
+  const workspace = codex.calls.find(({ method, params }) => method === "thread/start"
+    && params.approvalPolicy === "on-request").params.cwd;
+  const sourceHash = (await service.history("main")).taskChecklistCompletion.sourceHash;
+  await waitFor(async () => (await Promise.all(owners.map((id) => fs.access(path.join(
+    id === "main" ? rootDir : path.join(rootDir, "orchestrators", id), "task-checklist-overview.json"))
+    .then(() => true, () => false)))).every(Boolean));
+  for (const id of owners) {
+    assert.equal(await fs.readFile(path.join(workspace, "task-checklists", `${id}.md`), "utf8"), markdown);
+    await fs.writeFile(path.join(id === "main" ? rootDir : path.join(rootDir, "orchestrators", id),
+      "task-checklist-overview.json"), JSON.stringify({ sourceHash, markdown: `- [x] overview:${id}` }));
+  }
+  const reloaded = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient,
+    onChecklistChanged: (identity) => changed.push(identity) });
+  for (const id of owners) {
+    const history = await reloaded.history(id);
+    assert.deepEqual(history.taskChecklist, { status: "present", markdown });
+    assert.deepEqual(history.taskChecklistOverview, { status: "present", markdown: `- [x] overview:${id}` });
+  }
+  const mainOffer = (await reloaded.history("main")).taskChecklistCompletion;
+  await reloaded.respondToChecklistCompletion("main", mainOffer.sourceHash, mainOffer.version, "keep");
+  assert.equal((await reloaded.history("main")).taskChecklistCompletion, null);
+  for (const id of [child.id, sibling.id]) {
+    const offer = (await reloaded.history(id)).taskChecklistCompletion;
+    assert.ok(offer);
+    await reloaded.respondToChecklistCompletion(id, offer.sourceHash, offer.version, "clear");
+    assert.deepEqual((await reloaded.history(id)).taskChecklist, { status: "present", markdown: "" });
+  }
+  assert.equal(await fs.readFile(path.join(workspace, "task-checklists/main.md"), "utf8"), markdown);
+  const childDirectory = path.join(workspace, "task-checklists", `completed-${child.id}`);
+  const childArchiveId = (await fs.readdir(childDirectory))[0].slice(0, -5);
+  const siblingArchiveId = (await fs.readdir(path.join(workspace, "task-checklists", `completed-${sibling.id}`)))[0].slice(0, -5);
+  const childArchive = JSON.parse(await fs.readFile(path.join(childDirectory, `${childArchiveId}.json`), "utf8"));
+  assert.equal(childArchive.sourcePath, `task-checklists/${child.id}.md`);
+  assert.equal(childArchive.markdown, markdown);
+  archiveReads.push({ archiveId: siblingArchiveId }, {}, {});
+  for (const id of [child.id, child.id, "main"]) {
+    checklistWrites.push(markdown);
+    const conversation = await reloaded.open(id);
+    assert.equal((await (await turn(reloaded, id, conversation.logicalConversationId, "read own archive")).finished).status, "completed");
+  }
+  const archives = codex.calls.filter(({ method }) => method === "archives.result").map(({ result }) => result);
+  assert.equal(archives[0].success, false);
+  assert.equal(archives[1].success, true);
+  assert.match(archives[1].contentItems[0].text, new RegExp(childArchiveId));
+  assert.doesNotMatch(archives[1].contentItems[0].text, new RegExp(siblingArchiveId));
+  assert.equal(archives[2].success, true);
+  assert.equal(archives[2].contentItems[0].text, "[]");
+  const offer = (await reloaded.history("main")).taskChecklistCompletion;
+  await reloaded.respondToChecklistCompletion("main", offer.sourceHash, offer.version, "clear");
+  const mainArchiveName = (await fs.readdir(path.join(workspace, "task-checklists/completed")))[0];
+  const mainArchive = JSON.parse(await fs.readFile(path.join(workspace, "task-checklists/completed", mainArchiveName), "utf8"));
+  assert.equal(mainArchive.sourcePath, "task-checklists/main.md");
+  assert.equal(mainArchive.markdown, markdown);
+});
+
+test("existing non-main parents switch and read their own checklist before resuming work", async (t) => {
+  const { rootDir, codex, service } = await fixture(t);
+  const child = await service.create("既存");
+  const main = createVoiceContextService({ rootDir, createClient: codex.createClient,
+    taskChecklistPath: "task-checklists/main.md" });
+  await main.open();
+  const legacy = createVoiceContextService({ rootDir: path.join(rootDir, "orchestrators", child.id),
+    createClient: codex.createClient, sharedWorkspaceDirectory: await main.getWorkspaceDirectory(),
+    sharedMemoryStore: await main.getMemoryStore() });
+  const opened = await legacy.open();
+  assert.equal((await (await turn(legacy, undefined, opened.logicalConversationId, "legacy work")).finished).status, "completed");
+  const oldActive = JSON.parse(await fs.readFile(path.join(rootDir, "orchestrators", child.id, "active.json"), "utf8"));
+  assert.equal(oldActive.nativeChecklistWriteEnabled, undefined);
+  const reloaded = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
+  const offset = codex.calls.length;
+  assert.equal((await (await turn(reloaded, child.id, opened.logicalConversationId, "new work")).finished).status, "completed");
+  const started = codex.calls.slice(offset).find(({ method, params }) => method === "thread/start"
+    && params.approvalPolicy === "on-request");
+  assert.ok(started);
+  assert.ok(started.params.developerInstructions.includes(`task-checklists/${child.id}.md`));
+  assert.match(started.params.developerInstructions, /新しい親セッションでは/);
+  assert.equal(started.params.dynamicTools.some((tool) => tool.name === "task_checklist"), true);
+  const active = JSON.parse(await fs.readFile(path.join(rootDir, "orchestrators", child.id, "active.json"), "utf8"));
+  assert.notEqual(active.nativeThreadId, oldActive.nativeThreadId);
+  assert.equal(active.checklistReadPending, false);
+  assert.equal(active.nativeChecklistWriteEnabled, true);
+});
+
+test("checklist paths accept only an orchestrator ID in the fixed directory", () => {
+  for (const taskChecklistPath of ["task-checklists/other.md", "task-checklists/../main.md",
+    "../task-checklists/main.md", "task-checklists/main.json", "task-checklists/completed/main.md", ""]) {
+    assert.throws(() => createVoiceContextService({ rootDir: "/unused", taskChecklistPath }), TypeError);
+  }
 });

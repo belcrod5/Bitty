@@ -558,7 +558,7 @@ test("older Runner without an overview field still shows its original checklist"
       borderColor: VISUAL_THEMES[DEFAULT_VISUAL_THEME_ID].colors.borderStrong });
 });
 
-test("task checklist states are distinct and other orchestrators have no panel", async () => {
+test("task checklist states are distinct and every orchestrator has its own panel", async () => {
   const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
   await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
   mockVoice.taskChecklist = { status: "missing" };
@@ -569,8 +569,8 @@ test("task checklist states are distinct and other orchestrators have no panel",
   expect(screen.getByText("To Doを読み込めませんでした")).toBeTruthy();
   await fireEvent.press(screen.getByTestId("voice-orchestrator-other"));
   await waitFor(() => expect(mockHookOrchestratorIds.at(-1)).toBe("other"));
-  expect(screen.queryByTestId("voice-task-checklist-panel")).toBeNull();
-  expect(screen.queryByTestId("voice-task-checklist-expand")).toBeNull();
+  expect(screen.getByTestId("voice-task-checklist-panel")).toBeTruthy();
+  expect(screen.getByText("To Doを読み込めませんでした")).toBeTruthy();
 });
 
 test("notification target wins an in-flight list, opens history, and stays selected after reconnect", async () => {

@@ -557,7 +557,7 @@ function VoiceConversationSession({
                     );
                   })}
                 </ScrollView>
-                {orchestrator.id === "main" ? taskChecklistOpen ? (
+                {taskChecklistOpen ? (
                   <View testID="voice-task-checklist-panel" style={{ position: "absolute", right: 0, top: 0,
                     maxWidth: Math.min(260, Math.max(0, screenWidth - 64)), maxHeight: "65%",
                     backgroundColor: "transparent", borderTopLeftRadius: 14,
@@ -660,7 +660,7 @@ function VoiceConversationSession({
                     <Ionicons name="chevron-back" size={20} color={theme.colors.accentStrong} />
                     <Text style={{ color: theme.colors.textPrimary, fontSize: 11 }}>To Do</Text>
                   </Pressable>
-                ) : null}
+                )}
                 </View>
               </Reanimated.View>
             ) : null}

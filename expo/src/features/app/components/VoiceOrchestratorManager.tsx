@@ -89,7 +89,7 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
           voiceId: detailId === "new" ? "" : String(value.voiceId || ""),
           model: value.model, effort: value.effort, systemInstruction: value.systemInstruction,
           topicModel: value.topicModel, topicEffort: value.topicEffort,
-          ...(detailId === "main" && typeof value.overviewModel === "string"
+          ...(typeof value.overviewModel === "string"
             && isReasoningEffort(value.overviewEffort)
             ? { overviewModel: value.overviewModel, overviewEffort: value.overviewEffort } : {}),
           models, storedMessageCount: Number(value.storedMessageCount || 0),
@@ -141,7 +141,7 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
         ttsProvider: detail.ttsProvider, voiceId: detail.voiceId,
         effort: detail.effort, systemInstruction: detail.systemInstruction,
         topicModel: detail.topicModel, topicEffort: detail.topicEffort,
-        ...(detailId === "main" && detail.overviewModel && detail.overviewEffort
+        ...(detail.overviewModel && detail.overviewEffort
           ? { overviewModel: detail.overviewModel, overviewEffort: detail.overviewEffort } : {}),
       });
       applyList(result);
@@ -290,7 +290,7 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
                   options={topicEfforts.map((effort) => ({ value: effort, label: EFFORT_LABELS[effort] }))}
                   selectedValue={detail.topicEffort}
                   onSelect={(topicEffort) => setDetail({ ...detail, topicEffort: topicEffort as ReasoningEffort })} />
-                {detailId === "main" && detail.overviewModel && detail.overviewEffort ? <>
+                {detail.overviewModel && detail.overviewEffort ? <>
                   <SettingsSelect icon="list-outline" label="To Do表示モデル"
                     options={detail.models.map((model) => ({ value: model.modelId, label: model.label }))}
                     selectedValue={detail.overviewModel} onSelect={(overviewModel) => {

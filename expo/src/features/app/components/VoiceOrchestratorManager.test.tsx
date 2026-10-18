@@ -16,7 +16,7 @@ const mockRequest = jest.fn(async (message: { op: string; payload?: Record<strin
     icon: "", model: "gpt-6-luna", effort: "low", systemInstruction: "Be helpful.",
     ttsProvider: "aivisspeech", voiceId: "",
     topicModel: "gpt-6-luna", topicEffort: "low",
-    ...(payload?.orchestratorId === "main" && !mockLegacySettings
+    ...(!mockLegacySettings
       ? { overviewModel: "gpt-6-luna", overviewEffort: "low" } : {}),
     models: [
       { modelId: "gpt-6-luna", label: "Luna", effortOptions: ["low"] },
@@ -140,7 +140,7 @@ test("list opens detail; name, uploaded icon, model, effort, and instructions sa
     payload: { orchestratorId: "other", name: "新しい名前", icon, model: "another-model",
       ttsProvider: "aivisspeech", voiceId: "",
       effort: "high", systemInstruction: "Research carefully.",
-      topicModel: "another-model", topicEffort: "high" } }));
+      topicModel: "another-model", topicEffort: "high", overviewModel: "gpt-6-luna", overviewEffort: "low" } }));
   expect(onListChanged).toHaveBeenCalled();
   await screen.unmount();
 });
@@ -185,25 +185,26 @@ test("new detail creates with full settings and main has no delete control", asy
   await fireEvent.press(screen.getByLabelText("戻る"));
   await fireEvent.press(screen.getByTestId("orchestrator-add"));
   await waitFor(() => screen.getByTestId("orchestrator-name"));
-  expect(screen.queryByTestId("select-To Do表示モデル")).toBeNull();
+  expect(screen.getByTestId("select-To Do表示モデル")).toBeTruthy();
   await fireEvent.changeText(screen.getByTestId("orchestrator-name"), "新規");
   await fireEvent.press(screen.getByTestId("orchestrator-save"));
   await waitFor(() => expect(mockRequest).toHaveBeenCalledWith({ channel: "agent", op: "voice.orchestrators.create",
     payload: { name: "新規", icon: "", model: "gpt-6-luna", effort: "low",
       ttsProvider: "aivisspeech", voiceId: "",
-      systemInstruction: "Be helpful.", topicModel: "gpt-6-luna", topicEffort: "low" } }));
+      systemInstruction: "Be helpful.", topicModel: "gpt-6-luna", topicEffort: "low",
+      overviewModel: "gpt-6-luna", overviewEffort: "low" } }));
   await screen.unmount();
 });
 
-test("main saves independent To Do display model and effort", async () => {
+test.each(["main", "other"])("%s saves independent To Do display model and effort", async (id) => {
   const screen = await render(<VoiceOrchestratorManager {...props} />);
-  await fireEvent.press(screen.getByTestId("orchestrator-row-main"));
+  await fireEvent.press(screen.getByTestId(`orchestrator-row-${id}`));
   await waitFor(() => screen.getByTestId("select-To Do表示モデル"));
   await fireEvent.press(screen.getByTestId("select-To Do表示モデル"));
   await fireEvent.press(screen.getByTestId("select-To Do表示エフォート"));
   await fireEvent.press(screen.getByTestId("orchestrator-save"));
   await waitFor(() => expect(mockRequest).toHaveBeenCalledWith({ channel: "agent", op: "voice.orchestrators.update",
-    payload: expect.objectContaining({ orchestratorId: "main", overviewModel: "another-model",
+    payload: expect.objectContaining({ orchestratorId: id, overviewModel: "another-model",
       overviewEffort: "high" }) }));
   await screen.unmount();
 });
