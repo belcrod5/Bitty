@@ -11,9 +11,12 @@ Add multiple widgets to keep different voice recipients nearby.
   and that recipient is ready. Recording is not performed inside the widget extension.
 - Foreground and background use the same authenticated `/app/status-snapshot` read model. With existing
   Push/APNs configured and notification permission granted, changes to tasks, orchestrators, execution
-  or usage send a silent refresh hint. The native host fetches and saves data without opening the app UI.
-  Hints coalesce to at most one per 20 minutes; iOS may delay or drop them (including after force-quit).
-  No continuous polling or exact update interval is promised. A registered installed widget is required.
+  or usage send a silent refresh hint. Ordinary completion, voice completion, approval, usage-limit and
+  schedule-failure notifications also request a refresh through `content-available`, in foreground or
+  background. The native host fetches and saves data through the same path without opening the app UI.
+  Only dedicated silent hints coalesce to at most one per 20 minutes; ordinary notifications do not wait
+  for that timer. iOS may delay or omit the app callback even when an alert appears, particularly after
+  force-quit. No continuous polling or exact update interval is promised. An installed widget is required.
 - Last-known values remain visible with “更新待ち” and usage clock indicators when stale. Missing values
   show `--`; timestamps remain tied to the actual field fetch. A Runner change clears its previous snapshot.
   The extension still receives only display data, never credentials or a Runner connection.
