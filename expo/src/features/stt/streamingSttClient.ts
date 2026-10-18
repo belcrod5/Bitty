@@ -12,7 +12,9 @@ export type StreamingSttUsage = {
 export type StreamingSttServerMessage =
   | { type: "ready" }
   | { type: "transcript"; text: string; isFinal: boolean; stability?: number }
-  | { type: "speech_activity_begin" | "speech_activity_end" }
+  | { type: "speech_activity_begin" | "speech_activity_end" | "segment_start" }
+  | { type: "candidate" | "candidate_invalidated"; revision: number }
+  | { type: "committed"; revision: number; accepted: boolean }
   | ({ type: "usage" } & StreamingSttUsage)
   | {
       type: "done";
@@ -29,11 +31,11 @@ function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[])
   return Object.keys(value).every((key) => allowedSet.has(key));
 }
 
-export function streamSttUrl(runnerUrl: string) {
+export function streamSttUrl(runnerUrl: string, continuation = false) {
   const url = new URL(String(runnerUrl || "").trim());
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.pathname = "/stream-stt";
-  url.search = "";
+  url.search = continuation ? "?continuation=1" : "";
   url.hash = "";
   return url.toString();
 }
@@ -53,9 +55,17 @@ export function parseStreamingSttMessage(raw: unknown): StreamingSttServerMessag
   try {
     const value = JSON.parse(raw) as Record<string, unknown>;
     const type = String(value.type || "");
-    if (type === "ready" || type === "speech_activity_begin" || type === "speech_activity_end") {
+    if (type === "ready" || type === "speech_activity_begin" || type === "speech_activity_end" || type === "segment_start") {
       if (!hasOnlyKeys(value, ["type"])) return null;
       return { type } as StreamingSttServerMessage;
+    }
+    if (type === "candidate" || type === "candidate_invalidated" || type === "committed") {
+      if (!hasOnlyKeys(value, type === "committed" ? ["type", "revision", "accepted"] : ["type", "revision"])
+        || !Number.isSafeInteger(value.revision) || (value.revision as number) < 1
+        || (type === "committed" && typeof value.accepted !== "boolean")) return null;
+      return type === "committed"
+        ? { type, revision: value.revision as number, accepted: value.accepted as boolean }
+        : { type, revision: value.revision as number };
     }
     if (type === "transcript") {
       if (

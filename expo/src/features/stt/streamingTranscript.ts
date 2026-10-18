@@ -18,8 +18,8 @@ export function applyStreamingTranscript(
   isFinal: boolean
 ): StreamingTranscript {
   const next = String(text || "");
+  if (!next.trim()) return state;
   if (!isFinal) return { ...state, interimText: next };
-  if (!next) return { ...state, interimText: "" };
   return {
     ...state,
     finalText: state.finalText + next,

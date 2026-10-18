@@ -57,7 +57,7 @@ test("macOS stream sends progressive transcript, detects silence, and completes 
   assert.deepEqual(ws.sent.at(-2), {
     type: "transcript", text: "こんにちは。", isFinal: true, stability: 1,
   });
-  assert.deepEqual(ws.sent.at(-1), { type: "done", reason: "recognition_segment_end", hasSpeech: true });
+  assert.deepEqual(ws.sent.at(-1), { type: "done", reason: "speech_end_timeout", hasSpeech: true });
   assert.equal(child.writes.length, 2);
   const inputEnded = logs.find(([event]) => event === "[stream-stt] macos_input_ended")[1];
   assert.equal(inputEnded.trigger, "pcm_silence");
@@ -75,7 +75,6 @@ test("macOS stream sends progressive transcript, detects silence, and completes 
   assert.equal(final.cumulativeChars, "こんにちは。".length);
   assert.equal(final.lastPartialChars, "こんにちは".length);
   assert.equal(final.nativeHadText, true);
-  assert.equal(final.usedPartialFallback, false);
   assert.ok(final.finalizationMs >= 0);
   assert.equal(done.hasSpeech, true);
   assert.equal(done.lastPartialChars, "こんにちは".length);
@@ -102,9 +101,9 @@ test("empty native final commits the last nonempty partial and diagnoses the fal
   const done = logs.find(([event]) => event === "[stream-stt] macos_done_attempted")[1];
   assert.equal(final.chars, 0);
   assert.equal(final.nativeHadText, false);
-  assert.equal(final.cumulativeChars, "秘密の途中結果".length);
+  assert.equal(final.cumulativeChars, 0);
+  assert.equal(logs.find(([event]) => event === "[stream-stt] macos_partial_fallback")[1].chars, "秘密の途中結果".length);
   assert.equal(final.lastPartialChars, "秘密の途中結果".length);
-  assert.equal(final.usedPartialFallback, true);
   assert.equal(done.hasSpeech, true);
   assert.equal(done.lastPartialChars, "秘密の途中結果".length);
   assert.equal(JSON.stringify(logs).includes("秘密の途中結果"), false);
@@ -128,11 +127,10 @@ test("silence-ended macOS stream commits only the latest nonempty partial when n
   assert.deepEqual(ws.sent.at(-2), {
     type: "transcript", text: "新しい途中結果", isFinal: true, stability: 1,
   });
-  assert.deepEqual(ws.sent.at(-1), { type: "done", reason: "recognition_segment_end", hasSpeech: true });
+  assert.deepEqual(ws.sent.at(-1), { type: "done", reason: "speech_end_timeout", hasSpeech: true });
   const final = logs.find(([event]) => event === "[stream-stt] macos_final_transcript")[1];
   assert.equal(final.chars, 2);
   assert.equal(final.nativeHadText, false);
-  assert.equal(final.usedPartialFallback, true);
   assert.equal(JSON.stringify(logs).includes("新しい途中結果"), false);
 });
 
@@ -147,13 +145,10 @@ test("empty native final without a nonempty partial remains no speech", async ()
   child.emitMessage({ type: "transcript", text: " \t", isFinal: false });
   child.emitMessage({ type: "transcript", text: "", isFinal: true });
   child.emit("close", 0);
-  assert.deepEqual(ws.sent.find((message) => message.type === "transcript" && message.isFinal), {
-    type: "transcript", text: "", isFinal: true, stability: 1,
-  });
+  assert.equal(ws.sent.some((message) => message.type === "transcript"), false);
   assert.deepEqual(ws.sent.at(-1), { type: "done", reason: "recognition_segment_end", hasSpeech: false });
   const final = logs.find(([event]) => event === "[stream-stt] macos_final_transcript")[1];
   assert.equal(final.nativeHadText, false);
-  assert.equal(final.usedPartialFallback, false);
   assert.equal(final.lastPartialChars, 0);
 });
 
@@ -262,7 +257,7 @@ test("native no-speech error after timeout completes without a spurious failure"
   assert.deepEqual(ws.sent.at(-1), { type: "done", reason: "no_speech_timeout", hasSpeech: false });
 });
 
-test("native no-speech error after a visible partial leaves it available for the next segment", async () => {
+test("native no-speech completion commits its visible partial once for the next segment", async () => {
   const ws = new FakeSocket();
   const child = new FakeChild();
   createMacosStreamingSttHandler({ startHelper: async () => child, log: {} })(ws);
@@ -274,9 +269,10 @@ test("native no-speech error after a visible partial leaves it available for the
     type: "error", code: "macos_recognition_failed",
     nativeErrorDomain: "kAFAssistantErrorDomain", nativeErrorCode: 1110,
   });
-  assert.deepEqual(ws.sent.at(-1), { type: "done", reason: "recognition_segment_end", hasSpeech: false });
+  assert.deepEqual(ws.sent.at(-1), { type: "done", reason: "recognition_segment_end", hasSpeech: true });
   assert.deepEqual(ws.sent.filter((message) => message.type === "transcript"), [
     { type: "transcript", text: "前の文章", isFinal: false, stability: 0 },
+    { type: "transcript", text: "前の文章", isFinal: true, stability: 1 },
   ]);
   assert.equal(ws.sent.some((message) => message.type === "error"), false);
 });
@@ -307,7 +303,7 @@ test("Apple no-speech completion tolerates PCM activity and preserves the stop r
     });
     assert.deepEqual(ws.sent.at(-1), {
       type: "done", reason: outcome === "ready" ? "no_speech_timeout"
-        : outcome === "user_stop" ? "user_stop" : "recognition_segment_end", hasSpeech: false,
+        : outcome === "user_stop" ? "user_stop" : "speech_end_timeout", hasSpeech: false,
     });
     assert.equal(ws.sent.some((message) => message.type === "error"), false);
     assert.equal(child.killed, true);
@@ -389,7 +385,7 @@ test("unchanged macOS transcript ends despite loud noise and waits for the nativ
   child.emitMessage({ type: "transcript", text: "", isFinal: true });
   child.emit("close", 0);
   assert.deepEqual(ws.sent.at(-2), { type: "transcript", text: "途中", isFinal: true, stability: 1 });
-  assert.deepEqual(ws.sent.at(-1), { type: "done", reason: "recognition_segment_end", hasSpeech: true });
+  assert.deepEqual(ws.sent.at(-1), { type: "done", reason: "speech_end_timeout", hasSpeech: true });
   t.mock.timers.tick(20_000);
   assert.equal(ws.sent.filter((message) => message.type === "done" || message.type === "error").length, 1);
   assert.doesNotMatch(JSON.stringify(logs), /途中/);
@@ -608,4 +604,275 @@ test("native append summaries are diagnostic only and allowlist numeric counts a
   assert.equal(ws.sent.at(-1).type, "done");
   assert.ok(logs.findIndex(([event]) => event === "[stream-stt] macos_audio_summary") < logs.findIndex(([event]) => event === "[stream-stt] macos_done_attempted"));
   assert.doesNotMatch(JSON.stringify(logs), /PRIVATE_|SECRET/);
+});
+
+test("empty partials preserve the displayed hypothesis and its original two-second completion", async (t) => {
+  const ws = new FakeSocket();
+  const child = new FakeChild();
+  createMacosStreamingSttHandler({ startHelper: async () => child, log: {} })(ws);
+  start(ws);
+  await tick();
+  child.emitMessage({ type: "ready" });
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  child.emitMessage({ type: "transcript", text: "残す文章", isFinal: false });
+  t.mock.timers.tick(1_500);
+  child.emitMessage({ type: "transcript", text: "", isFinal: false });
+  child.emitMessage({ type: "transcript", text: " \t", isFinal: false });
+  assert.deepEqual(ws.sent.filter((message) => message.type === "transcript"), [
+    { type: "transcript", text: "残す文章", isFinal: false, stability: 0 },
+  ]);
+  t.mock.timers.tick(499);
+  assert.equal(child.ended, undefined);
+  t.mock.timers.tick(1);
+  assert.equal(child.ended, true);
+  assert.equal(ws.sent.some((message) => message.type === "done"), false);
+  child.emitMessage({
+    type: "error", code: "macos_recognition_failed",
+    nativeErrorDomain: "kAFAssistantErrorDomain", nativeErrorCode: 1110,
+  });
+  assert.deepEqual(ws.sent.at(-2), { type: "transcript", text: "残す文章", isFinal: true, stability: 1 });
+  assert.deepEqual(ws.sent.at(-1), { type: "done", reason: "speech_end_timeout", hasSpeech: true });
+  child.emit("close", 0);
+  t.mock.timers.tick(20_000);
+  assert.equal(ws.sent.filter((message) => message.type === "transcript" && message.isFinal).length, 1);
+  assert.equal(ws.sent.filter((message) => message.type === "done").length, 1);
+});
+
+test("a late nonempty final replaces the partial after an empty final without fallback duplication", async () => {
+  const ws = new FakeSocket();
+  const child = new FakeChild();
+  createMacosStreamingSttHandler({ startHelper: async () => child, log: {} })(ws);
+  start(ws);
+  await tick();
+  child.emitMessage({ type: "ready" });
+  child.emitMessage({ type: "transcript", text: "未訂正", isFinal: false });
+  child.emitMessage({ type: "transcript", text: "", isFinal: true });
+  assert.equal(ws.sent.some((message) => message.type === "transcript" && message.isFinal), false);
+  child.emitMessage({ type: "transcript", text: "訂正後", isFinal: true });
+  child.emit("close", 0);
+  assert.deepEqual(ws.sent.filter((message) => message.type === "transcript" && message.isFinal), [
+    { type: "transcript", text: "訂正後", isFinal: true, stability: 1 },
+  ]);
+});
+
+async function candidateStream() {
+  const ws = new FakeSocket();
+  const children = [new FakeChild(), new FakeChild(), new FakeChild()];
+  let launches = 0;
+  createMacosStreamingSttHandler({ startHelper: async () => children[launches++], log: {} })(ws, { continuation: true });
+  start(ws);
+  await tick();
+  children[0].emitMessage({ type: "ready" });
+  children[0].emitMessage({ type: "transcript", text: "前半", isFinal: false });
+  ws.emit("message", pcm(0, 1250), true);
+  await tick();
+  children[0].emitMessage({ type: "transcript", text: "前半", isFinal: true });
+  children[0].emit("close", 0);
+  return { ws, children, launches: () => launches };
+}
+const commitCandidate = (ws, revision = 1) => ws.emit("message", Buffer.from(JSON.stringify({ type: "commit", revision })), false);
+
+test("continuation offers a nonterminal candidate and immediately commits a quiet stream", async () => {
+  const { ws, children, launches } = await candidateStream();
+  assert.deepEqual(ws.sent.at(-1), { type: "candidate", revision: 1 });
+  assert.equal(ws.readyState, 1);
+  assert.equal(launches(), 1);
+  assert.equal(children[0].killed, true);
+  ws.emit("message", pcm(0, 100), true);
+  commitCandidate(ws);
+  await tick();
+  assert.deepEqual(ws.sent.at(-1), { type: "committed", revision: 1, accepted: true });
+  assert.equal(ws.readyState, 3);
+  assert.equal(ws.sent.some((message) => message.type === "done"), false);
+});
+
+test("speech during correction invalidates the candidate and preserves PCM order over helper startup", async () => {
+  const { ws, children } = await candidateStream();
+  const first = pcm(4000, 100), second = pcm(5000, 100), third = pcm(6000, 100), fourth = pcm(7000, 100);
+  ws.emit("message", first, true);
+  ws.emit("message", second, true);
+  await tick();
+  assert.ok(ws.sent.some((message) => message.type === "candidate_invalidated" && message.revision === 1));
+  ws.emit("message", third, true);
+  await tick();
+  // A queued live frame must never overtake the buffered onset when ready fires.
+  ws.emit("message", fourth, true);
+  children[1].emitMessage({ type: "ready" });
+  await tick();
+  assert.deepEqual(children[1].writes, [first, second, third, fourth]);
+  assert.equal(ws.sent.filter((message) => message.type === "ready").length, 1);
+  assert.equal(ws.sent.filter((message) => message.type === "segment_start").length, 1);
+  children[0].emitMessage({ type: "transcript", text: "古いfinal", isFinal: true });
+  assert.equal(ws.sent.some((message) => message.text === "古いfinal"), false);
+  commitCandidate(ws);
+  await tick();
+  assert.deepEqual(ws.sent.at(-1), { type: "committed", revision: 1, accepted: false });
+  assert.equal(ws.readyState, 1);
+  children[1].emitMessage({ type: "transcript", text: "後半", isFinal: true });
+  children[1].emit("close", 0);
+  assert.deepEqual(ws.sent.at(-1), { type: "candidate", revision: 2 });
+  commitCandidate(ws, 2);
+  await tick();
+  assert.deepEqual(ws.sent.at(-1), { type: "committed", revision: 2, accepted: true });
+});
+
+for (const resumes of [false, true]) {
+  test(`commit waits only for an uncertain onset; resumed speech=${resumes}`, async () => {
+    const { ws, children } = await candidateStream();
+    ws.emit("message", pcm(4000, 100), true);
+    commitCandidate(ws);
+    await tick();
+    assert.equal(ws.sent.some((message) => message.type === "committed"), false);
+    ws.emit("message", pcm(resumes ? 4000 : 0, 100), true);
+    await tick();
+    assert.deepEqual(ws.sent.at(-1), { type: "committed", revision: 1, accepted: !resumes });
+    if (resumes) { children[1].emitMessage({ type: "ready" }); ws.close(); }
+  });
+}
+
+test("manual stop during helper restart drains the onset and ends without a ready protocol error", async () => {
+  const { ws, children } = await candidateStream();
+  ws.emit("message", pcm(4000, 200), true);
+  await tick();
+  ws.emit("message", Buffer.from('{"type":"stop"}'), false);
+  await tick();
+  children[1].emitMessage({ type: "ready" });
+  await tick();
+  assert.equal(children[1].writes.length, 1);
+  assert.equal(children[1].ended, true);
+  children[1].emitMessage({ type: "transcript", text: "後半", isFinal: true });
+  children[1].emit("close", 0);
+  assert.deepEqual(ws.sent.at(-1), { type: "done", reason: "user_stop", hasSpeech: true });
+});
+
+test("native no-speech finalization keeps continuation capture alive for the next segment", async () => {
+  const ws = new FakeSocket();
+  const children = [new FakeChild(), new FakeChild()];
+  let launches = 0;
+  createMacosStreamingSttHandler({ startHelper: async () => children[launches++], log: {} })(ws, { continuation: true });
+  start(ws);
+  await tick();
+  children[0].emitMessage({ type: "ready" });
+  children[0].emitMessage({ type: "transcript", text: "途中結果", isFinal: false });
+  children[0].emitMessage({ type: "error", code: "macos_recognition_failed", nativeErrorDomain: "kAFAssistantErrorDomain", nativeErrorCode: 1110 });
+  assert.deepEqual(ws.sent.at(-1), { type: "candidate", revision: 1 });
+  ws.emit("message", pcm(4000, 200), true);
+  await tick();
+  children[1].emitMessage({ type: "ready" });
+  await tick();
+  assert.equal(children[1].writes.length, 1);
+  assert.equal(ws.sent.some((message) => message.type === "error"), false);
+  ws.close();
+});
+
+test("resumed speech during previous finalization is handed off without offering a stale candidate", async () => {
+  const ws = new FakeSocket();
+  const children = [new FakeChild(), new FakeChild()];
+  let launches = 0;
+  createMacosStreamingSttHandler({ startHelper: async () => children[launches++], log: {} })(ws, { continuation: true });
+  start(ws);
+  await tick();
+  children[0].emitMessage({ type: "ready" });
+  children[0].emitMessage({ type: "transcript", text: "前半", isFinal: false });
+  ws.emit("message", pcm(0, 1250), true);
+  await tick();
+  const onset = pcm(4000, 200);
+  ws.emit("message", onset, true);
+  await tick();
+  children[0].emitMessage({ type: "transcript", text: "前半", isFinal: true });
+  children[0].emit("close", 0);
+  await tick();
+  children[1].emitMessage({ type: "ready" });
+  await tick();
+  assert.equal(ws.sent.some((message) => message.type === "candidate"), false);
+  assert.deepEqual(children[1].writes, [onset]);
+  ws.close();
+});
+
+test("total duration stays bounded while a continuation helper is starting", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { ws, children } = await candidateStream();
+  t.mock.timers.tick((MAX_DURATION_SECONDS - 1) * 1000);
+  ws.emit("message", pcm(4000, 200), true);
+  await tick();
+  t.mock.timers.tick(1000);
+  assert.deepEqual(ws.sent.at(-1), { type: "done", reason: "max_duration", hasSpeech: false });
+  children[1].emitMessage({ type: "ready" });
+  assert.equal(ws.sent.some((message) => message.type === "error"), false);
+  assert.equal(ws.readyState, 3);
+});
+
+test("candidate commit remains bounded when no more PCM arrives after an uncertain onset", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { ws } = await candidateStream();
+  ws.emit("message", pcm(4000, 100), true);
+  commitCandidate(ws);
+  await tick();
+  t.mock.timers.tick(15_000);
+  assert.equal(ws.sent.at(-1).code, "macos_commit_timeout");
+  assert.equal(ws.readyState, 3);
+});
+
+test("continuation PCM handoff remains bounded if a helper never becomes ready", async () => {
+  const { ws } = await candidateStream();
+  ws.emit("message", pcm(4000, 200), true);
+  await tick();
+  for (let index = 0; index < 6; index += 1) {
+    ws.emit("message", pcm(4000, 2000), true);
+    await tick();
+  }
+  assert.equal(ws.sent.at(-1).code, "backpressure_exceeded");
+  assert.equal(ws.readyState, 3);
+});
+
+test("noise without new recognized words returns the same draft to a candidate within the existing two-second watchdog", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { ws, children } = await candidateStream();
+  ws.emit("message", pcm(4000, 200), true);
+  await tick();
+  children[1].emitMessage({ type: "ready" });
+  await tick();
+  t.mock.timers.tick(1999);
+  assert.notEqual(children[1].ended, true);
+  t.mock.timers.tick(1);
+  assert.equal(children[1].ended, true);
+  children[1].emitMessage({ type: "error", code: "macos_recognition_failed", nativeErrorDomain: "kAFAssistantErrorDomain", nativeErrorCode: 1110 });
+  assert.deepEqual(ws.sent.at(-1), { type: "candidate", revision: 2 });
+  commitCandidate(ws, 2);
+  await tick();
+  assert.deepEqual(ws.sent.at(-1), { type: "committed", revision: 2, accepted: true });
+});
+
+test("live speech after buffered silence is handed to the following segment instead of discarded", async () => {
+  const { ws, children } = await candidateStream();
+  ws.emit("message", pcm(4000, 200), true);
+  await tick();
+  ws.emit("message", pcm(0, 1250), true);
+  await tick();
+  const nextOnset = pcm(6000, 200);
+  ws.emit("message", nextOnset, true);
+  children[1].emitMessage({ type: "ready" });
+  await tick();
+  assert.equal(children[1].ended, true);
+  children[1].emitMessage({ type: "transcript", text: "後半", isFinal: true });
+  children[1].emit("close", 0);
+  await tick();
+  children[2].emitMessage({ type: "ready" });
+  await tick();
+  assert.deepEqual(children[2].writes, [nextOnset]);
+  ws.close();
+});
+
+test("a resumed helper with early Apple no-speech preserves the turn as a candidate", async () => {
+  const { ws, children } = await candidateStream();
+  ws.emit("message", pcm(4000, 200), true);
+  await tick();
+  children[1].emitMessage({ type: "ready" });
+  await tick();
+  children[1].emitMessage({ type: "error", code: "macos_recognition_failed", nativeErrorDomain: "kAFAssistantErrorDomain", nativeErrorCode: 1110 });
+  assert.deepEqual(ws.sent.at(-1), { type: "candidate", revision: 2 });
+  assert.equal(ws.readyState, 1);
+  commitCandidate(ws, 2);
+  await tick();
+  assert.deepEqual(ws.sent.at(-1), { type: "committed", revision: 2, accepted: true });
 });

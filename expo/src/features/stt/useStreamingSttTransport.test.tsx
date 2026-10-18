@@ -211,3 +211,30 @@ test("diagnostic consumer failures do not interrupt ordinary native events", asy
   await session.stop();
   await session.abort();
 });
+
+test("continuation is enabled only for an opted-in client with a compatible native capture barrier", async () => {
+  const native = mockNative as typeof mockNative & { continuationVersion?: number; commit?: jest.Mock };
+  const callbacks = { continueDuringCorrection: true, onMessage: jest.fn(), onSample: jest.fn(), onError: jest.fn(), onClose: jest.fn() };
+  const { result } = await renderHook(() => useStreamingSttTransport());
+  try {
+    const legacy = result.current.connect("http://runner.test", "token", callbacks);
+    expect(legacy.commit).toBeUndefined();
+    expect(mockNative.start).toHaveBeenLastCalledWith("ws://runner.test/stream-stt", expect.any(Object));
+    await legacy.abort();
+    native.continuationVersion = 1;
+    native.commit = jest.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    const current = result.current.connect("http://runner.test", "token", callbacks);
+    expect(mockNative.start).toHaveBeenLastCalledWith("ws://runner.test/stream-stt?continuation=1", expect.any(Object));
+    await expect(current.commit!(1)).resolves.toBe(false);
+    await expect(current.commit!(2)).resolves.toBe(true);
+    expect(mockNative.abort).toHaveBeenCalledTimes(1);
+    await current.abort();
+    const disabled = result.current.connect("http://runner.test", "token", { ...callbacks, continueDuringCorrection: false });
+    expect(disabled.commit).toBeUndefined();
+    expect(mockNative.start).toHaveBeenLastCalledWith("ws://runner.test/stream-stt", expect.any(Object));
+    await disabled.abort();
+  } finally {
+    delete native.continuationVersion;
+    delete native.commit;
+  }
+});

@@ -6,7 +6,7 @@ export function createStreamingSttHandler({ sttSettings, googleCloudService, usa
     google: googleHandler || createGoogleStreamingSttHandler({ googleCloudService, usageLedger }),
     macos: macosHandler || createMacosStreamingSttHandler(),
   };
-  return (ws) => {
+  return (ws, req) => {
     let connecting = false;
     const onFirstMessage = async (raw, isBinary) => {
       if (connecting) {
@@ -26,7 +26,9 @@ export function createStreamingSttHandler({ sttSettings, googleCloudService, usa
         const provider = providers[sttProvider];
         if (!provider) throw new Error("Unknown speech provider");
         ws.off("message", onFirstMessage);
-        provider(ws);
+        const continuation = sttProvider === "macos"
+          && new URL(req?.url || "/stream-stt", "http://runner.local").searchParams.get("continuation") === "1";
+        provider(ws, { continuation });
         ws.emit("message", raw, isBinary);
       } catch {
         if (ws.readyState === 1) {

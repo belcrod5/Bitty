@@ -32,3 +32,17 @@ test("computes normalized RMS from the PCM sent to the runner", () => {
   expect(pcmRms(pcm)).toBeGreaterThan(0.8);
   expect(pcmRms(new Uint8Array())).toBe(0);
 });
+
+test("continuation protocol validates revision and acknowledgment fields", () => {
+  expect(streamSttUrl("https://runner.test/base?old=1", true)).toBe("wss://runner.test/stream-stt?continuation=1");
+  for (const type of ["candidate", "candidate_invalidated", "committed"]) {
+    const message = { type, revision: 1, ...(type === "committed" ? { accepted: false } : {}) };
+    expect(parseStreamingSttMessage(JSON.stringify(message))).toEqual(message);
+    for (const revision of [0, -1, 1.5, "1", null]) {
+      expect(parseStreamingSttMessage(JSON.stringify({ ...message, revision }))).toBeNull();
+    }
+    expect(parseStreamingSttMessage(JSON.stringify({ ...message, extra: true }))).toBeNull();
+  }
+  expect(parseStreamingSttMessage('{"type":"committed","revision":1,"accepted":"true"}')).toBeNull();
+  expect(parseStreamingSttMessage('{"type":"segment_start"}')).toEqual({ type: "segment_start" });
+});

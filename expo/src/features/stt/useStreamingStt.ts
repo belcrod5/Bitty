@@ -55,7 +55,7 @@ export function useStreamingStt(options: Options) {
   const draftAtStartRef = useRef("");
   const dictationReadyElapsedRef = useRef(0);
   const dictationReadySinceRef = useRef<number | null>(null);
-  const dictationSegmentSeenRef = useRef(false);
+  const recognitionSegmentSeenRef = useRef(false);
   const dictationIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastPartialCharsRef = useRef(0);
   const terminalRef = useRef(false);
@@ -70,7 +70,14 @@ export function useStreamingStt(options: Options) {
   const sawTtsPlaybackRef = useRef(false);
   const replyCycleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ttsStartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const correctionAbortRef = useRef<AbortController | null>(null);
+  const candidateRef = useRef<{ revision: number; sending: boolean } | null>(null);
+  const correctionRequestRef = useRef<{
+    draft: string;
+    contextKey: string;
+    previewDeadlineMs?: number;
+    controller: AbortController;
+    promise: ReturnType<typeof correctSttTranscript>;
+  } | null>(null);
   const previewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const previewRef = useRef<(SttCorrectionPreview & { originalText: string; version: number; sent: boolean }) | null>(null);
   const autoSendingRef = useRef<number | null>(null);
@@ -107,9 +114,11 @@ export function useStreamingStt(options: Options) {
     clearTimer(ttsStartTimerRef);
   }, []);
 
-  const clearCorrection = useCallback(() => {
-    correctionAbortRef.current?.abort();
-    correctionAbortRef.current = null;
+  const clearCorrection = useCallback((cancelRequest = true) => {
+    if (cancelRequest) {
+      correctionRequestRef.current?.controller.abort();
+      correctionRequestRef.current = null;
+    }
     clearTimer(previewTimerRef);
     previewRef.current = null;
     setCorrectionPreview(null);
@@ -169,6 +178,9 @@ export function useStreamingStt(options: Options) {
   const abortSession = useCallback(() => {
     const session = sessionRef.current;
     sessionRef.current = null;
+    candidateRef.current = null;
+    correctionRequestRef.current?.controller.abort();
+    correctionRequestRef.current = null;
     if (session) {
       const queuedAt = Date.now();
       const version = sessionVersionRef.current;
@@ -203,6 +215,34 @@ export function useStreamingStt(options: Options) {
 
   const sendAutoTranscript = useCallback(async (text: string, version: number) => {
     if (version !== sessionVersionRef.current) return;
+    const candidate = candidateRef.current;
+    if (candidate) {
+      if (candidate.sending) return;
+      const session = sessionRef.current;
+      if (!session?.commit) return;
+      candidate.sending = true;
+      const commitStartedAt = Date.now();
+      try {
+        const accepted = await session.commit(candidate.revision);
+        latestRef.current.onDiagnostic?.("stt_candidate_commit", {
+          version, revision: candidate.revision, accepted, durationMs: Date.now() - commitStartedAt,
+        });
+        if (version !== sessionVersionRef.current || candidateRef.current !== candidate) return;
+        if (!accepted) {
+          finishFailure("音声入力を確定できませんでした。内容を確認して手動で送信してください。", text);
+          return;
+        }
+        terminalRef.current = true;
+        autoSendingRef.current = version;
+        await abortSession();
+        if (version !== sessionVersionRef.current) return;
+      } catch {
+        if (version === sessionVersionRef.current && candidateRef.current === candidate) {
+          finishFailure("音声入力を確定できませんでした。内容を確認して手動で送信してください。", text);
+        }
+        return;
+      }
+    }
     autoSendingRef.current = version;
     latestRef.current.onDiagnostic?.("stt_auto_send_dispatch", { version, chars: text.length,
       listening: listeningRef.current });
@@ -218,9 +258,10 @@ export function useStreamingStt(options: Options) {
         draftAtStartRef.current = "";
         dictationReadyElapsedRef.current = 0;
         dictationReadySinceRef.current = null;
-        dictationSegmentSeenRef.current = false;
+        recognitionSegmentSeenRef.current = false;
         clearTimer(dictationIdleTimerRef);
         clearTimer(replyCycleTimeoutRef);
+        correctionRequestRef.current = null;
       });
       if (version === sessionVersionRef.current && awaitingReplyCycleRef.current) {
         sawReplyLoadingRef.current = true;
@@ -234,7 +275,7 @@ export function useStreamingStt(options: Options) {
     } finally {
       if (autoSendingRef.current === version) autoSendingRef.current = null;
     }
-  }, [awaitReplyCycle, finishFailure, updateReplyCycle]);
+  }, [abortSession, awaitReplyCycle, finishFailure, updateReplyCycle]);
 
   const sendCorrectionPreview = useCallback(() => {
     const preview = previewRef.current;
@@ -244,7 +285,7 @@ export function useStreamingStt(options: Options) {
     previewRef.current = null;
     clearTimer(previewTimerRef);
     setCorrectionPreview(null);
-    setPhase("idle");
+    if (!candidateRef.current) setPhase("idle");
     void sendAutoTranscript(preview.text, preview.version);
   }, [sendAutoTranscript]);
 
@@ -252,11 +293,16 @@ export function useStreamingStt(options: Options) {
     const preview = previewRef.current;
     if (!preview || preview.sent || preview.version !== sessionVersionRef.current || preview.editing) return;
     clearTimer(previewTimerRef);
+    // Once the user edits, preserve that draft and leave automatic capture.
+    if (candidateRef.current) {
+      terminalRef.current = true;
+      void abortSession();
+    }
     preview.editing = true;
     preview.deadlineMs = null;
     setCorrectionPreview((current) => current && previewRef.current === preview
       ? { ...current, editing: true, deadlineMs: null } : current);
-  }, []);
+  }, [abortSession]);
 
   const setCorrectionText = useCallback((text: string) => {
     const preview = previewRef.current;
@@ -267,6 +313,17 @@ export function useStreamingStt(options: Options) {
   }, []);
 
   const cancelCorrection = useCallback((restoreDraft = true, manualSubmit = false) => {
+    if (candidateRef.current?.sending) {
+      if (manualSubmit) return false;
+      sessionVersionRef.current += 1;
+      listeningRef.current = false;
+      terminalRef.current = true;
+      clearCorrection();
+      clearReplyCycleWait();
+      void abortSession();
+      setPhase("idle");
+      return false;
+    }
     if (autoSendingRef.current === sessionVersionRef.current) {
       if (manualSubmit) return false;
       sessionVersionRef.current += 1;
@@ -275,16 +332,18 @@ export function useStreamingStt(options: Options) {
       setPhase("idle");
       return false;
     }
-    if (!correctionAbortRef.current && !previewRef.current) return true;
+    if (!correctionRequestRef.current && !previewRef.current) return true;
     const preview = previewRef.current;
     sessionVersionRef.current += 1;
     listeningRef.current = false;
     clearCorrection();
     clearReplyCycleWait();
+    terminalRef.current = true;
+    void abortSession();
     if (preview && restoreDraft) latestRef.current.setTranscript(preview.text);
     setPhase("idle");
     return true;
-  }, [clearCorrection, clearReplyCycleWait]);
+  }, [abortSession, clearCorrection, clearReplyCycleWait]);
 
   const discardCorrection = useCallback(() => {
     const preview = previewRef.current;
@@ -309,12 +368,12 @@ export function useStreamingStt(options: Options) {
   function scheduleDictationIdle() {
     clearTimer(dictationIdleTimerRef);
     const readySince = dictationReadySinceRef.current;
-    if (!latestRef.current.continuousDictation || !dictationSegmentSeenRef.current
+    if (!latestRef.current.continuousDictation || !recognitionSegmentSeenRef.current
       || !listeningRef.current || !appActiveRef.current || readySince === null
       || displayStreamingTranscript(transcriptStateRef.current).trim() === draftAtStartRef.current.trim()) return;
     dictationIdleTimerRef.current = setTimeout(() => {
       dictationIdleTimerRef.current = null;
-      if (!listeningRef.current || !appActiveRef.current || !dictationSegmentSeenRef.current
+      if (!listeningRef.current || !appActiveRef.current || !recognitionSegmentSeenRef.current
         || dictationReadySinceRef.current === null) return;
       const draft = displayStreamingTranscript(transcriptStateRef.current);
       if (draft.trim() === draftAtStartRef.current.trim()) return;
@@ -362,6 +421,9 @@ export function useStreamingStt(options: Options) {
     if (preview.deadlineMs === null) {
       const deadlineMs = Date.now() + 3000;
       preview.deadlineMs = deadlineMs;
+      if (correctionRequestRef.current?.draft === preview.originalText) {
+        correctionRequestRef.current.previewDeadlineMs = deadlineMs;
+      }
       setCorrectionPreview({ ...correctionPreview, deadlineMs });
       return;
     }
@@ -402,6 +464,7 @@ export function useStreamingStt(options: Options) {
       let session: StreamingSttSession;
       try {
         session = transport.connect(latestRef.current.runnerUrl, latestRef.current.runnerToken, {
+          continueDuringCorrection: latestRef.current.autoReplyAfterStt,
           onMessage: (raw) => {
             if (sessionRef.current === session) handleMessage(raw, session);
           },
@@ -441,9 +504,40 @@ export function useStreamingStt(options: Options) {
       fail("Private Runnerから不正な音声認識応答を受信しました。");
       return;
     }
+    if (message.type === "candidate_invalidated") {
+      if (candidateRef.current?.revision === message.revision) {
+        candidateRef.current = null;
+        latestRef.current.onDiagnostic?.("stt_candidate_invalidated", {
+          version: sessionVersionRef.current, revision: message.revision,
+        });
+        clearCorrection(false);
+        setPhase("recording");
+      }
+      return;
+    }
+    if (message.type === "segment_start") {
+      recognitionSegmentSeenRef.current = true;
+      transcriptStateRef.current = startStreamingTranscript(displayStreamingTranscript(transcriptStateRef.current));
+      lastPartialCharsRef.current = 0;
+      setPhase("recording");
+      return;
+    }
+    if (message.type === "candidate") {
+      if (!session.commit || !latestRef.current.autoReplyAfterStt) {
+        fail("Private Runnerから予期しない音声確定候補を受信しました。");
+        return;
+      }
+      clearCorrection(false);
+      candidateRef.current = { revision: message.revision, sending: false };
+      latestRef.current.onDiagnostic?.("stt_candidate_received", {
+        version: sessionVersionRef.current, revision: message.revision,
+      });
+      void correctTranscript(displayStreamingTranscript(transcriptStateRef.current), sessionVersionRef.current);
+      return;
+    }
     if (message.type === "ready") {
       setPhase("recording");
-      if (latestRef.current.continuousDictation && dictationSegmentSeenRef.current) {
+      if (latestRef.current.continuousDictation && recognitionSegmentSeenRef.current) {
         dictationReadySinceRef.current ??= Date.now();
         scheduleDictationIdle();
       }
@@ -465,6 +559,7 @@ export function useStreamingStt(options: Options) {
       );
       transcriptStateRef.current = next;
       const draft = displayStreamingTranscript(next);
+      if (correctionRequestRef.current && correctionRequestRef.current.draft !== draft) clearCorrection();
       if (latestRef.current.continuousDictation && message.text.trim() && draft.trim() !== previousDraft.trim()) {
         dictationReadyElapsedRef.current = 0;
         if (dictationReadySinceRef.current !== null) {
@@ -536,7 +631,62 @@ export function useStreamingStt(options: Options) {
     finishRecognition(message);
   }
 
+  async function correctTranscript(draft: string, version: number) {
+    setPhase("correcting");
+    const candidate = candidateRef.current;
+    let request = correctionRequestRef.current;
+    const context = latestRef.current.correctionContext.slice(-12);
+    const contextKey = JSON.stringify(context);
+    if (!request || request.draft !== draft || request.contextKey !== contextKey || request.controller.signal.aborted) {
+      request?.controller.abort();
+      const controller = new AbortController();
+      request = {
+        draft, contextKey, controller,
+        promise: correctSttTranscript(latestRef.current.runnerUrl, latestRef.current.runnerToken,
+          draft, context, controller.signal),
+      };
+      correctionRequestRef.current = request;
+    }
+    const { controller } = request;
+    latestRef.current.onDiagnostic?.("stt_correction_started", {
+      version, chars: draft.length, contextMessages: Math.min(12, latestRef.current.correctionContext.length),
+    });
+    try {
+      const result = await request.promise;
+      if (version !== sessionVersionRef.current || controller.signal.aborted || candidateRef.current !== candidate) return;
+      if (!result.changed) {
+        latestRef.current.onDiagnostic?.("stt_correction_result", { version, changed: false });
+        if (!candidateRef.current) setPhase("idle");
+        await sendAutoTranscript(draft, version);
+      } else {
+        const parts = diffSttTranscript(draft, result.text);
+        latestRef.current.onDiagnostic?.("stt_correction_result", {
+          version, changed: true,
+          deletedChars: parts.filter((part) => part.kind === "delete")
+            .reduce((count, part) => count + part.text.length, 0),
+          insertedChars: parts.filter((part) => part.kind === "insert")
+            .reduce((count, part) => count + part.text.length, 0),
+        });
+        const preview = { text: result.text, parts, deadlineMs: request.previewDeadlineMs ?? null, editing: false };
+        previewRef.current = { ...preview, originalText: draft, version, sent: false };
+        setCorrectionPreview(preview);
+        setPhase("preview");
+      }
+    } catch (error) {
+      if (version === sessionVersionRef.current && !controller.signal.aborted && candidateRef.current === candidate) {
+        latestRef.current.onDiagnostic?.("stt_correction_failed", {
+          version, errorName: error instanceof Error ? error.name : "unknown",
+          ...(error instanceof Error && "status" in error && typeof error.status === "number"
+            && Number.isInteger(error.status) && error.status >= 100 && error.status <= 599
+            ? { httpStatus: error.status } : {}),
+        });
+        finishFailure("文字起こしの補正に失敗しました。内容を確認して手動で送信してください。");
+      }
+    }
+  }
+
   function finishRecognition(message: DoneMessage) {
+    clearCorrection();
     terminalRef.current = true;
     clearTimer(retryTimerRef);
     pauseDictationIdle();
@@ -548,66 +698,27 @@ export function useStreamingStt(options: Options) {
         latestRef.current.onDiagnostic?.("stt_done_superseded", { version });
         return;
       }
-      const finalText = finalStreamingTranscript(transcriptStateRef.current);
+      const draft = displayStreamingTranscript(transcriptStateRef.current);
+      const acceptedText = finalStreamingTranscript(transcriptStateRef.current);
       const hasFinalSpeech = transcriptStateRef.current.finalText.trim().length > 0;
       if (message.reason === "limit_reached") listeningRef.current = false;
       if (message.reason === "recognition_segment_end" && latestRef.current.continuousDictation
         && listeningRef.current) {
-        const draft = displayStreamingTranscript(transcriptStateRef.current);
         transcriptStateRef.current = startStreamingTranscript(draft);
         latestRef.current.setTranscript(draft);
-        dictationSegmentSeenRef.current = true;
+        recognitionSegmentSeenRef.current = true;
         setPhase("connecting");
         scheduleStart();
         return;
       }
-      const completedDictation = latestRef.current.continuousDictation
-        && message.reason === "no_speech_timeout"
-        && finalText.trim() !== draftAtStartRef.current.trim();
-      if ((message.hasSpeech && hasFinalSpeech) || completedDictation) {
-        latestRef.current.setTranscript(finalText);
+      const completedSegments = (recognitionSegmentSeenRef.current || latestRef.current.continuousDictation)
+        && ["no_speech_timeout", "max_duration"].includes(message.reason)
+        && acceptedText.trim() !== draftAtStartRef.current.trim();
+      if ((message.hasSpeech && hasFinalSpeech) || completedSegments) {
+        latestRef.current.setTranscript(draft);
         setPhase("idle");
-        if (latestRef.current.autoReplyAfterStt && finalText.trim()) {
-          setPhase("correcting");
-          const controller = new AbortController();
-          correctionAbortRef.current = controller;
-          latestRef.current.onDiagnostic?.("stt_correction_started", {
-            version, chars: finalText.length, contextMessages: Math.min(12, latestRef.current.correctionContext.length),
-          });
-          try {
-            const result = await correctSttTranscript(latestRef.current.runnerUrl, latestRef.current.runnerToken,
-              finalText, latestRef.current.correctionContext.slice(-12), controller.signal);
-            if (version !== sessionVersionRef.current || controller.signal.aborted) return;
-            correctionAbortRef.current = null;
-            if (!result.changed) {
-              latestRef.current.onDiagnostic?.("stt_correction_result", { version, changed: false });
-              setPhase("idle");
-              await sendAutoTranscript(finalText, version);
-            } else {
-              const parts = diffSttTranscript(finalText, result.text);
-              latestRef.current.onDiagnostic?.("stt_correction_result", {
-                version, changed: true,
-                deletedChars: parts.filter((part) => part.kind === "delete")
-                  .reduce((count, part) => count + part.text.length, 0),
-                insertedChars: parts.filter((part) => part.kind === "insert")
-                  .reduce((count, part) => count + part.text.length, 0),
-              });
-              const preview = { text: result.text, parts, deadlineMs: null, editing: false };
-              previewRef.current = { ...preview, originalText: finalText, version, sent: false };
-              setCorrectionPreview(preview);
-              setPhase("preview");
-            }
-          } catch (error) {
-            if (version === sessionVersionRef.current && !controller.signal.aborted) {
-              latestRef.current.onDiagnostic?.("stt_correction_failed", {
-                version, errorName: error instanceof Error ? error.name : "unknown",
-                ...(error instanceof Error && "status" in error && typeof error.status === "number"
-                  && Number.isInteger(error.status) && error.status >= 100 && error.status <= 599
-                  ? { httpStatus: error.status } : {}),
-              });
-              finishFailure("文字起こしの補正に失敗しました。内容を確認して手動で送信してください。");
-            }
-          }
+        if (latestRef.current.autoReplyAfterStt && draft.trim()) {
+          await correctTranscript(draft, version);
         } else {
           latestRef.current.onDiagnostic?.("stt_auto_send_skipped", {
             version,
@@ -624,7 +735,6 @@ export function useStreamingStt(options: Options) {
         finalChars: transcriptStateRef.current.finalText.length,
         interimChars: transcriptStateRef.current.interimText.length,
       });
-      const draft = displayStreamingTranscript(transcriptStateRef.current);
       latestRef.current.setTranscript(draft);
       if (!listeningRef.current || message.reason === "limit_reached") {
         listeningRef.current = false;
@@ -651,7 +761,7 @@ export function useStreamingStt(options: Options) {
     draftAtStartRef.current = transcriptStateRef.current.baseText;
     dictationReadyElapsedRef.current = 0;
     dictationReadySinceRef.current = null;
-    dictationSegmentSeenRef.current = false;
+    recognitionSegmentSeenRef.current = false;
     clearTimer(dictationIdleTimerRef);
     errorRetriesRef.current = 0;
     listeningRef.current = true;
@@ -659,7 +769,7 @@ export function useStreamingStt(options: Options) {
   }, [onError, options.canStart, phase, startSession, transcript, transport.supported]);
 
   const stop = useCallback(() => {
-    if (correctionAbortRef.current || previewRef.current) { cancelCorrection(); return; }
+    if (correctionRequestRef.current || previewRef.current || candidateRef.current?.sending) { cancelCorrection(); return; }
     if (phase === "idle" || !listeningRef.current) return;
     latestRef.current.onDiagnostic?.("stt_stopped", { version: sessionVersionRef.current, phase });
     listeningRef.current = false;
@@ -684,7 +794,7 @@ export function useStreamingStt(options: Options) {
         draftAtStartRef.current = "";
         dictationReadyElapsedRef.current = 0;
         dictationReadySinceRef.current = null;
-        dictationSegmentSeenRef.current = false;
+        recognitionSegmentSeenRef.current = false;
         clearTimer(dictationIdleTimerRef);
         awaitReplyCycle();
       });

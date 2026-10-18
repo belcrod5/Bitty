@@ -10,6 +10,7 @@ public class BittyStreamingSttModule: Module {
   public func definition() -> ModuleDefinition {
     Name("BittyStreamingStt")
     Constant("captureDiagnosticsVersion") { 1 }
+    Constant("continuationVersion") { 1 }
     Events("BittyStreamingSttMessage", "BittyStreamingSttSample", "BittyStreamingSttError", "BittyStreamingSttClose", "BittyStreamingSttDiagnostic")
 
     AsyncFunction("start") { (urlString: String, headers: [String: String], promise: Promise) in
@@ -44,6 +45,16 @@ public class BittyStreamingSttModule: Module {
           return
         }
         current.stop(promise: promise)
+      }
+    }
+
+    AsyncFunction("commit") { (revision: Int, promise: Promise) in
+      self.queue.async {
+        guard let current = self.current, !current.terminal else {
+          promise.resolve(false)
+          return
+        }
+        current.commit(revision: revision, promise: promise)
       }
     }
 
@@ -99,6 +110,9 @@ private final class StreamingSession: NSObject, URLSessionWebSocketDelegate {
   private var ready = false
   private var stopping = false
   private var stopPromise: Promise?
+  private var commitPromise: Promise?
+  private var commitRevision: Int?
+  private var commitTimeout: DispatchWorkItem?
   private var lastSampleTime = CFAbsoluteTimeGetCurrent()
   private(set) var terminal = false
 
@@ -221,6 +235,22 @@ private final class StreamingSession: NSObject, URLSessionWebSocketDelegate {
             self.diagnose("ready_received")
             self.emit("BittyStreamingSttMessage", ["data": text])
             self.beginCapture()
+          } else if type == "committed" {
+            guard let revision = json["revision"] as? Int, revision == self.commitRevision,
+                  let accepted = json["accepted"] as? Bool else {
+              self.fail("Private Runnerから不正な音声確定応答を受信しました。")
+              return
+            }
+            self.commitTimeout?.cancel()
+            self.commitTimeout = nil
+            self.commitRevision = nil
+            let promise = self.commitPromise
+            self.commitPromise = nil
+            if accepted {
+              self.terminal = true
+              self.cleanup()
+            }
+            promise?.resolve(accepted)
           } else if type == "done" || type == "error" {
             self.diagnose(type == "done" ? "runner_done" : "runner_error")
             self.terminal = true
@@ -425,6 +455,33 @@ private final class StreamingSession: NSObject, URLSessionWebSocketDelegate {
     }
   }
 
+  func commit(revision: Int, promise: Promise) {
+    guard ready, !stopping, revision > 0, commitPromise == nil else {
+      promise.reject("invalid_commit", "音声入力を確定できません。")
+      return
+    }
+    commitPromise = promise
+    commitRevision = revision
+    let timeout = DispatchWorkItem { [weak self] in
+      guard let self, self.commitRevision == revision else { return }
+      self.fail("音声入力の確定応答がありません。")
+    }
+    commitTimeout = timeout
+    queue.asyncAfter(deadline: .now() + .seconds(15), execute: timeout)
+    // Keep capture running on a rejected commit. Drain captured taps and partial PCM
+    // ahead of the control message on the same ordered WebSocket send queue.
+    tapGroup.notify(queue: queue) { [weak self] in
+      guard let self, !self.terminal, self.commitRevision == revision else { return }
+      if !self.partialPcm.isEmpty {
+        self.enqueueAudio(self.partialPcm)
+        self.partialPcm.removeAll()
+      }
+      guard !self.terminal else { return }
+      self.pending.append(.string("{\"type\":\"commit\",\"revision\":\(revision)}"))
+      self.sendNext()
+    }
+  }
+
   func stop(promise: Promise) {
     guard ready, !stopping else {
       promise.reject("not_recording", "マイクは録音中ではありません。")
@@ -470,6 +527,11 @@ private final class StreamingSession: NSObject, URLSessionWebSocketDelegate {
   }
 
   private func cleanup() {
+    commitTimeout?.cancel()
+    commitTimeout = nil
+    commitRevision = nil
+    commitPromise?.resolve(false)
+    commitPromise = nil
     stopCapture()
     converter = nil
     outputFormat = nil
