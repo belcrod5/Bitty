@@ -59,9 +59,21 @@ export function createMacosStreamingSttHandler({
   startupTimeoutMs = 120_000,
   noSpeechTimeoutMs = 55_000,
 } = {}) {
-  return (ws) => {
+  return (ws, { continuation = false } = {}) => {
     let phase = "awaiting_start";
     let child;
+    let helperGeneration = 0;
+    let readySent = false;
+    let turnHasSpeech = false;
+    let lastRecognizedText = "";
+    let revision = 0;
+    let candidate = null;
+    let pendingCommit = null;
+    let commitTimer;
+    let restartRequested = false;
+    let stopRequested = false;
+    let handoff = [];
+    let handoffBytes = 0;
     let terminal = false;
     let inputEnded = false;
     let endReason = "";
@@ -104,10 +116,11 @@ export function createMacosStreamingSttHandler({
     let noSpeechTimer;
     let maxDurationTimer;
     let finalizationTimer;
-    const transcriptInactivity = createTranscriptInactivityTimer(() => {
+    const inactivityExpired = () => {
       send({ type: "speech_activity_end" });
       endInput("speech_end_timeout", "transcript_inactivity");
-    });
+    };
+    let transcriptInactivity = createTranscriptInactivityTimer(inactivityExpired);
 
     const clearTimers = () => {
       transcriptInactivity.stop();
@@ -115,13 +128,17 @@ export function createMacosStreamingSttHandler({
       clearTimeout(noSpeechTimer);
       clearTimeout(maxDurationTimer);
       clearTimeout(finalizationTimer);
+      clearTimeout(commitTimer);
     };
     const send = (message) => {
       if (!terminal && ws.readyState === 1) ws.send(JSON.stringify(message));
     };
     const closeChild = () => {
-      child?.stdin.destroy();
-      child?.kill();
+      const previous = child;
+      child = undefined;
+      helperGeneration += 1;
+      previous?.stdin.destroy();
+      previous?.kill();
     };
     const finishError = (code, message, retryable = false, nativeDetails = {}) => {
       if (terminal) return;
@@ -139,6 +156,24 @@ export function createMacosStreamingSttHandler({
         finalChars = lastPartialText.length;
         diagnose("macos_partial_fallback", { chars: finalChars });
         send({ type: "transcript", text: lastPartialText, isFinal: true, stability: 1 });
+      }
+      turnHasSpeech ||= finalHadText;
+      if (continuation && ["speech_end_timeout", "recognition_segment_end", "no_speech_timeout"].includes(endReason)
+        && turnHasSpeech) {
+        inputEnded = true;
+        transcriptInactivity.stop();
+        clearTimeout(finalizationTimer);
+        clearTimeout(noSpeechTimer);
+        closeChild();
+        if (restartRequested) {
+          void startSegment();
+        } else {
+          phase = "candidate";
+          candidate = ++revision;
+          diagnose("macos_candidate", { revision: candidate });
+          send({ type: "candidate", revision: candidate });
+        }
+        return;
       }
       diagnose("macos_done_attempted", {
         reason: endReason || (speechBegan ? "speech_end_timeout" : "no_speech_timeout"),
@@ -167,8 +202,8 @@ export function createMacosStreamingSttHandler({
         vadEndMs: VAD_END_MS,
       });
       clearTimeout(noSpeechTimer);
-      clearTimeout(maxDurationTimer);
-      child.stdin.end();
+      if (!continuation) clearTimeout(maxDurationTimer);
+      child?.stdin.end();
       finalizationTimer = setTimeout(() => {
         if (reason === "no_speech_timeout" && !speechBegan) finishDone();
         else finishError("macos_finalization_timeout", "Macの音声認識が終了しませんでした。", true);
@@ -200,17 +235,33 @@ export function createMacosStreamingSttHandler({
         phase = "ready";
         readyAt = performance.now();
         diagnose("macos_ready");
-        send({ type: "ready" });
+        send({ type: readySent ? "segment_start" : "ready" });
+        readySent = true;
+        if (continuation && turnHasSpeech) transcriptInactivity.update(lastRecognizedText);
         noSpeechTimer = setTimeout(() => endInput("no_speech_timeout"), noSpeechTimeoutMs);
         noSpeechTimer.unref?.();
-        maxDurationTimer = setTimeout(() => endInput("max_duration"), MAX_DURATION_SECONDS * 1000);
+        maxDurationTimer ??= setTimeout(() => {
+          if (continuation && (inputEnded || phase === "starting")) {
+            endReason = "max_duration";
+            finishDone();
+          } else endInput("max_duration");
+        }, MAX_DURATION_SECONDS * 1000);
         maxDurationTimer.unref?.();
+        if (continuation) {
+          work = work.then(async () => {
+            await drainHandoff();
+            if (stopRequested) endInput("user_stop");
+          }).catch(() => finishError("macos_audio_write_failed", "Macの音声認識へ音声を送れませんでした。", true));
+        }
         return;
       }
       if (message.type === "transcript" && (phase === "ready" || phase === "finalizing")
         && typeof message.text === "string" && typeof message.isFinal === "boolean") {
         const nativeHadText = !!message.text.trim();
-        if (nativeHadText) beginSpeech();
+        if (nativeHadText) {
+          lastRecognizedText = message.text;
+          beginSpeech();
+        }
         if (!message.isFinal && nativeHadText) lastPartialText = message.text;
         transcriptInactivity.update(message.text);
         if (message.isFinal) {
@@ -260,53 +311,72 @@ export function createMacosStreamingSttHandler({
       }
       finishError("macos_helper_protocol", "Macの音声認識から不正な応答を受信しました。", true);
     };
-    const start = async (payload) => {
-      if (!validStart(payload)) {
-        finishError("invalid_start", "Expected start with sampleRate 16000");
-        return;
-      }
+    const startSegment = async () => {
+      inputEnded = false;
+      endReason = "";
+      speechBegan = false;
+      finalHadText = false;
+      finalChars = 0;
+      lastPartialText = "";
+      loudMs = 0;
+      silentMs = 0;
+      output = "";
+      restartRequested = false;
+      transcriptInactivity = createTranscriptInactivityTimer(inactivityExpired);
+      const generation = ++helperGeneration;
       phase = "starting";
       diagnose("macos_starting");
       startupTimer = setTimeout(() => finishError("macos_start_timeout", "Macの音声認識を開始できませんでした。", true), startupTimeoutMs);
       startupTimer.unref?.();
       try {
-        child = await startHelper();
-        if (terminal) { closeChild(); return; }
-        child.stdout.on("data", (chunk) => {
+        const helper = await startHelper();
+        if (terminal || generation !== helperGeneration) { helper.stdin.destroy(); helper.kill(); return; }
+        child = helper;
+        helper.stdout.on("data", (chunk) => {
+          if (terminal || generation !== helperGeneration) return;
           output += chunk.toString("utf8");
           if (output.length > 1024 * 1024) {
             finishError("macos_helper_protocol", "Macの音声認識から大きすぎる応答を受信しました。", true);
             return;
           }
           let newline;
-          while ((newline = output.indexOf("\n")) !== -1 && !terminal) {
+          while (generation === helperGeneration && (newline = output.indexOf("\n")) !== -1 && !terminal) {
             const line = output.slice(0, newline);
             output = output.slice(newline + 1);
             try { onHelperMessage(JSON.parse(line)); }
             catch { finishError("macos_helper_protocol", "Macの音声認識から不正な応答を受信しました。", true); }
           }
         });
-        child.once("error", () => finishError("macos_helper_failed", "Macの音声認識を起動できませんでした。", true));
-        child.once("close", (code) => {
-          if (terminal) return;
+        helper.once("error", () => {
+          if (generation === helperGeneration) finishError("macos_helper_failed", "Macの音声認識を起動できませんでした。", true);
+        });
+        helper.once("close", (code) => {
+          if (terminal || generation !== helperGeneration) return;
           if (code === 0 && phase === "finalizing") finishDone();
           else finishError("macos_helper_failed", "Macの音声認識が予期せず終了しました。", true);
         });
       } catch (error) {
+        if (terminal || generation !== helperGeneration) return;
         finishError("macos_helper_unavailable", error?.message === "unsupported_platform"
           ? "macOS標準の音声認識にはMac上のPrivate Runnerが必要です。"
           : "Runner Macで音声認識の準備に失敗しました。Xcodeを確認してください。", false);
       }
     };
-    const processAudio = async (buffer) => {
+    const drainHandoff = async () => {
+      const buffered = handoff;
+      handoff = [];
+      handoffBytes = 0;
+      for (const audio of buffered) await processQueuedAudio(audio, false);
+    };
+    const processAudio = async (buffer, countBytes = true) => {
       if (terminal || inputEnded) return;
-      const audio = buffer.subarray(0, MAX_AUDIO_BYTES - sentBytes);
+      const audio = countBytes ? buffer.subarray(0, MAX_AUDIO_BYTES - sentBytes) : buffer;
       if (!audio.length) {
         endInput("max_duration");
         return;
       }
       await new Promise((resolve, reject) => child.stdin.write(audio, (error) => error ? reject(error) : resolve()));
-      sentBytes += audio.length;
+      if (countBytes) sentBytes += audio.length;
       const now = performance.now();
       firstAudioAt ??= now;
       lastAudioAt = now;
@@ -333,34 +403,114 @@ export function createMacosStreamingSttHandler({
       if (sentBytes >= MAX_AUDIO_BYTES) endInput("max_duration");
     };
 
-    ws.on("message", (raw, isBinary) => {
-      if (terminal || inputEnded) return;
-      if (isBinary) {
-        if (phase !== "ready") {
-          finishError("protocol_order", "Audio is only accepted after ready");
+    const commit = () => {
+      if (!pendingCommit || terminal) return;
+      if (candidate === pendingCommit && loudMs > 0 && loudMs < VAD_START_MS) return;
+      const requested = pendingCommit;
+      pendingCommit = null;
+      clearTimeout(commitTimer);
+      const accepted = candidate === requested && !restartRequested && phase === "candidate";
+      diagnose("macos_candidate_commit", { revision: requested, accepted });
+      send({ type: "committed", revision: requested, accepted });
+      if (accepted) {
+        terminal = true;
+        clearTimers();
+        closeChild();
+        handoff = [];
+        handoffBytes = 0;
+        if (ws.readyState === 1) ws.close(1000);
+      }
+    };
+    const processQueuedAudio = async (buffer, countBytes = true) => {
+      if (phase === "ready" && handoff.length) await drainHandoff();
+      if (terminal) return;
+      if (continuation && readySent && (inputEnded || phase === "starting")) {
+        if (countBytes) {
+          if (sentBytes + buffer.length >= MAX_AUDIO_BYTES) { endReason = "max_duration"; finishDone(); return; }
+          sentBytes += buffer.length;
+        }
+        if (phase === "starting") {
+          handoff.push(buffer);
+          handoffBytes += buffer.length;
           return;
         }
+        const rms = audioLevel(buffer);
+        loudMs = rms >= VAD_THRESHOLD ? loudMs + buffer.length / BYTES_PER_SECOND * 1000 : 0;
+        if (loudMs > 0 || restartRequested) {
+          handoff.push(buffer);
+          handoffBytes += buffer.length;
+          if (pendingBytes + handoffBytes - buffer.length > MAX_PENDING_BYTES) {
+            finishError("backpressure_exceeded", "Speech audio could not be processed quickly enough", true);
+            return;
+          }
+        } else { handoff = []; handoffBytes = 0; }
+        if (loudMs >= VAD_START_MS && !restartRequested) {
+          restartRequested = true;
+          const invalidated = candidate;
+          candidate = null;
+          if (invalidated !== null) {
+            diagnose("macos_candidate_invalidated", { revision: invalidated });
+            send({ type: "candidate_invalidated", revision: invalidated });
+          }
+          if (phase === "candidate") void startSegment();
+        }
+        commit();
+        return;
+      }
+      if (phase !== "ready") {
+        finishError("protocol_order", "Audio is only accepted after ready");
+        return;
+      }
+      await processAudio(buffer, countBytes);
+    };
+    const enqueueAudio = (buffer, countBytes = true) => {
+      pendingBytes += buffer.length;
+      if (pendingBytes + handoffBytes > MAX_PENDING_BYTES) {
+        finishError("backpressure_exceeded", "Speech audio could not be processed quickly enough", true);
+        return;
+      }
+      work = work.then(() => processQueuedAudio(buffer, countBytes)).catch(() => finishError("macos_audio_write_failed", "Macの音声認識へ音声を送れませんでした。", true))
+        .finally(() => { pendingBytes -= buffer.length; });
+    };
+    ws.on("message", (raw, isBinary) => {
+      if (terminal || (inputEnded && !continuation)) return;
+      if (isBinary) {
         const buffer = Buffer.from(raw);
         if (!validAudioFrame(buffer)) {
           finishError("invalid_audio_frame", "PCM audio frames must be even-sized and no larger than 65536 bytes");
           return;
         }
-        pendingBytes += buffer.length;
-        if (pendingBytes > MAX_PENDING_BYTES) {
-          finishError("backpressure_exceeded", "Speech audio could not be processed quickly enough", true);
-          return;
-        }
-        work = work.then(() => processAudio(buffer))
-          .catch(() => finishError("macos_audio_write_failed", "Macの音声認識へ音声を送れませんでした。", true))
-          .finally(() => { pendingBytes -= buffer.length; });
+        enqueueAudio(buffer);
         return;
       }
       let payload;
       try { payload = JSON.parse(String(raw || "")); }
       catch { finishError("invalid_json", "Control messages must be valid JSON"); return; }
-      if (phase === "awaiting_start") { void start(payload); return; }
-      if (phase === "ready" && validStop(payload)) {
-        work = work.then(() => endInput("user_stop"));
+      if (phase === "awaiting_start") {
+        if (!validStart(payload)) { finishError("invalid_start", "Expected start with sampleRate 16000"); return; }
+        void startSegment();
+        return;
+      }
+      if (continuation && payload?.type === "commit" && Object.keys(payload).length === 2
+        && Number.isSafeInteger(payload.revision) && payload.revision > 0) {
+        work = work.then(() => {
+          if (terminal) return;
+          if (pendingCommit) { finishError("protocol_order", "A commit is already pending"); return; }
+          pendingCommit = payload.revision;
+          commitTimer = setTimeout(() => finishError("macos_commit_timeout", "音声入力の確定に失敗しました。", true), finalizationTimeoutMs);
+          commitTimer.unref?.();
+          commit();
+        });
+        return;
+      }
+      if (validStop(payload) && (phase === "ready" || continuation)) {
+        work = work.then(() => {
+          if (terminal) return;
+          stopRequested = true;
+          if (phase === "starting") return;
+          if (inputEnded) { endReason = "user_stop"; finishDone(); }
+          else endInput("user_stop");
+        });
         return;
       }
       finishError("protocol_order", "Unexpected speech stream control message");

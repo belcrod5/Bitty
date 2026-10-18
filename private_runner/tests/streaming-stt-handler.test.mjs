@@ -41,3 +41,25 @@ test("does not drop a second control message while provider selection is pending
   assert.equal(sent[0].code, "protocol_order");
   assert.equal(ws.readyState, 3);
 });
+
+test("continuation requires an explicit request and a macOS provider; legacy and Google sessions stay unchanged", async () => {
+  for (const [provider, url, expected] of [
+    ["macos", undefined, false],
+    ["macos", "/stream-stt", false],
+    ["macos", "/stream-stt?continuation=1", true],
+    ["google", "/stream-stt?continuation=1", false],
+  ]) {
+    const received = [];
+    const handler = createStreamingSttHandler({
+      sttSettings: { get: async () => provider },
+      googleHandler: (_ws, options) => received.push(options),
+      macosHandler: (_ws, options) => received.push(options),
+    });
+    const ws = new EventEmitter();
+    ws.readyState = 1;
+    handler(ws, url ? { url } : undefined);
+    ws.emit("message", Buffer.from("start"), false);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(received, [{ continuation: expected }]);
+  }
+});

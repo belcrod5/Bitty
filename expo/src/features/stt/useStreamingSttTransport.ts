@@ -7,6 +7,8 @@ import type { StreamingSttSession, StreamingSttTransportCallbacks } from "./stre
 type Subscription = { remove(): void };
 type NativeStreamingStt = {
   captureDiagnosticsVersion?: number;
+  continuationVersion?: number;
+  commit?: (revision: number) => Promise<boolean>;
   start(url: string, headers: Record<string, string>): Promise<void>;
   stop(): Promise<void>;
   abort(): Promise<void>;
@@ -30,7 +32,9 @@ export function useStreamingSttTransport() {
     if (!token) throw new Error("runner_token_required");
     const native = requireOptionalNativeModule<NativeStreamingStt>("BittyStreamingStt");
     if (!native) throw new Error("native_stt_unavailable");
-    const url = streamSttUrl(runnerUrl);
+    const continuation = callbacks.continueDuringCorrection === true
+      && native.continuationVersion === 1 && typeof native.commit === "function";
+    const url = streamSttUrl(runnerUrl, continuation);
     const headers = {
       ...getCloudflareAccessHeadersForUrl(url),
       Authorization: `Bearer ${token}`,
@@ -92,6 +96,7 @@ export function useStreamingSttTransport() {
       throw error;
     }
     return {
+      ...(continuation ? { commit: (revision: number) => active ? native.commit!(revision) : Promise.resolve(false) } : {}),
       stop: () => active ? native.stop() : Promise.resolve(),
       abort,
     };

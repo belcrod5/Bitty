@@ -1,4 +1,5 @@
 export type StreamingSttTransportCallbacks = {
+  continueDuringCorrection?: boolean;
   onMessage: (raw: unknown) => void;
   onSample: (rms: number) => void;
   onError: (message: string) => void;
@@ -7,6 +8,7 @@ export type StreamingSttTransportCallbacks = {
 };
 
 export type StreamingSttSession = {
+  commit?: (revision: number) => Promise<boolean>;
   stop: () => Promise<void>;
   abort: () => Promise<void>;
 };

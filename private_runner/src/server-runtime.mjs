@@ -7124,7 +7124,7 @@ streamSttWsServer.on("connection", (ws, req) => {
     route: "stream-stt",
     endpoint: "/stream-stt",
   });
-  handleStreamingStt(ws);
+  handleStreamingStt(ws, req);
 });
 
 runnerWsServer.on("connection", (ws, req) => {
