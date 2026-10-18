@@ -217,8 +217,15 @@ test("orchestrator names share the settings parent lifecycle across rename and r
         if (id === child.id) assert.ok(params.developerInstructions.includes(customInstruction));
       }
       assert.equal(requests.filter(({ method }) => method === "thread/start").length, newParent ? 1 : 0);
-      assert.ok(codex.calls.slice(offset).filter(({ method }) => method === "turn/start")
-        .every(({ params }) => !Object.hasOwn(params, "additionalContext")));
+      for (const { params } of codex.calls.slice(offset).filter(({ method }) => method === "turn/start")) {
+        if (params.approvalPolicy === "on-request") {
+          assert.deepEqual(Object.keys(params.additionalContext), ["bitty.appControl"]);
+          assert.equal(params.additionalContext["bitty.appControl"].kind, "application");
+          assert.match(params.additionalContext["bitty.appControl"].value, /^No app control context/);
+        } else {
+          assert.equal(Object.hasOwn(params, "additionalContext"), false);
+        }
+      }
       const nativeTurn = codex.calls.slice(offset).find(({ method, params }) =>
         method === "turn/start" && params.input[0].text === text);
       if (threads.has(id)) assert.equal(nativeTurn.params.threadId === threads.get(id), !newParent);
@@ -687,7 +694,9 @@ test("voice schedules use the named orchestrator history and settings after rena
     && entry.params.developerInstructions.includes(JSON.stringify({ name: "改名後" })));
   assert.ok(renamedStart);
   assert.equal(renamedStart.params.developerInstructions.includes(JSON.stringify({ name: "調査担当" })), false);
-  assert.equal(Object.hasOwn(call.params, "additionalContext"), false);
+  assert.deepEqual(Object.keys(call.params.additionalContext), ["bitty.appControl"]);
+  assert.equal(call.params.additionalContext["bitty.appControl"].kind, "application");
+  assert.match(call.params.additionalContext["bitty.appControl"].value, /^No app control context/);
   assert.ok(codex.calls.some((entry) => entry.method === "thread/inject_items"
     && entry.params.threadId === call.params.threadId && JSON.stringify(entry.params.items).includes("previous request")));
   await waitFor(async () => (await service.history(item.id)).messages.some((message) => message.text === "reply:scheduled request"));
