@@ -1780,3 +1780,39 @@ test("repeated noise retains the existing preview deadline instead of restarting
   expect(options.sendTranscript).toHaveBeenCalledTimes(1);
   expect(correctSttTranscript).toHaveBeenCalledTimes(1);
 });
+
+test.each(["no_speech_timeout", "max_duration"])("voice conversation completes recognized segments on %s without a new final", async (reason) => {
+  jest.mocked(correctSttTranscript).mockImplementationOnce(() => new Promise(() => {}));
+  const options = { ...createOptions(), transcript: "入力済み" };
+  const { result } = await renderHook(() => useStreamingStt(options));
+  const session = await openReady(result);
+  Object.assign(session, { commit: jest.fn(async () => true) });
+  await emit(session, { type: "transcript", text: "前半", isFinal: true });
+  await emit(session, { type: "candidate", revision: 1 });
+  await emit(session, { type: "candidate_invalidated", revision: 1 });
+  await emit(session, { type: "segment_start" });
+  await emit(session, { type: "done", reason, hasSpeech: false });
+  expect(options.sendTranscript).toHaveBeenCalledTimes(1);
+  expect(options.sendTranscript).toHaveBeenCalledWith("入力済み 前半", expect.any(Function));
+});
+
+test.each(["no_speech_timeout", "max_duration"])("an initial typed draft is never automatically sent on %s", async (reason) => {
+  const options = { ...createOptions(), transcript: "手入力" };
+  const { result } = await renderHook(() => useStreamingStt(options));
+  await emit(await openReady(result), { type: "done", reason, hasSpeech: false });
+  expect(options.sendTranscript).not.toHaveBeenCalled();
+});
+
+test("partial-only recognition followed by a legacy retry and no speech does not become an accepted segment", async () => {
+  const options = { ...createOptions(), transcript: "手入力" };
+  const { result } = await renderHook(() => useStreamingStt(options));
+  const session = await openReady(result);
+  await emit(session, { type: "transcript", text: "途中だけ", isFinal: false });
+  await emit(session, { type: "error", code: "macos_recognition_failed", message: "retry", retryable: true });
+  await advanceTimers(250);
+  const retried = mockSessions.at(-1)!;
+  await emit(retried, { type: "ready" });
+  await emit(retried, { type: "done", reason: "no_speech_timeout", hasSpeech: false });
+  expect(options.setTranscript).toHaveBeenLastCalledWith("手入力 途中だけ");
+  expect(options.sendTranscript).not.toHaveBeenCalled();
+});

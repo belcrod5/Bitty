@@ -55,7 +55,7 @@ export function useStreamingStt(options: Options) {
   const draftAtStartRef = useRef("");
   const dictationReadyElapsedRef = useRef(0);
   const dictationReadySinceRef = useRef<number | null>(null);
-  const dictationSegmentSeenRef = useRef(false);
+  const recognitionSegmentSeenRef = useRef(false);
   const dictationIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastPartialCharsRef = useRef(0);
   const terminalRef = useRef(false);
@@ -258,7 +258,7 @@ export function useStreamingStt(options: Options) {
         draftAtStartRef.current = "";
         dictationReadyElapsedRef.current = 0;
         dictationReadySinceRef.current = null;
-        dictationSegmentSeenRef.current = false;
+        recognitionSegmentSeenRef.current = false;
         clearTimer(dictationIdleTimerRef);
         clearTimer(replyCycleTimeoutRef);
         correctionRequestRef.current = null;
@@ -368,12 +368,12 @@ export function useStreamingStt(options: Options) {
   function scheduleDictationIdle() {
     clearTimer(dictationIdleTimerRef);
     const readySince = dictationReadySinceRef.current;
-    if (!latestRef.current.continuousDictation || !dictationSegmentSeenRef.current
+    if (!latestRef.current.continuousDictation || !recognitionSegmentSeenRef.current
       || !listeningRef.current || !appActiveRef.current || readySince === null
       || displayStreamingTranscript(transcriptStateRef.current).trim() === draftAtStartRef.current.trim()) return;
     dictationIdleTimerRef.current = setTimeout(() => {
       dictationIdleTimerRef.current = null;
-      if (!listeningRef.current || !appActiveRef.current || !dictationSegmentSeenRef.current
+      if (!listeningRef.current || !appActiveRef.current || !recognitionSegmentSeenRef.current
         || dictationReadySinceRef.current === null) return;
       const draft = displayStreamingTranscript(transcriptStateRef.current);
       if (draft.trim() === draftAtStartRef.current.trim()) return;
@@ -464,7 +464,7 @@ export function useStreamingStt(options: Options) {
       let session: StreamingSttSession;
       try {
         session = transport.connect(latestRef.current.runnerUrl, latestRef.current.runnerToken, {
-          continueDuringCorrection: latestRef.current.continuousDictation && latestRef.current.autoReplyAfterStt,
+          continueDuringCorrection: latestRef.current.autoReplyAfterStt,
           onMessage: (raw) => {
             if (sessionRef.current === session) handleMessage(raw, session);
           },
@@ -516,6 +516,7 @@ export function useStreamingStt(options: Options) {
       return;
     }
     if (message.type === "segment_start") {
+      recognitionSegmentSeenRef.current = true;
       transcriptStateRef.current = startStreamingTranscript(displayStreamingTranscript(transcriptStateRef.current));
       lastPartialCharsRef.current = 0;
       setPhase("recording");
@@ -536,7 +537,7 @@ export function useStreamingStt(options: Options) {
     }
     if (message.type === "ready") {
       setPhase("recording");
-      if (latestRef.current.continuousDictation && dictationSegmentSeenRef.current) {
+      if (latestRef.current.continuousDictation && recognitionSegmentSeenRef.current) {
         dictationReadySinceRef.current ??= Date.now();
         scheduleDictationIdle();
       }
@@ -705,15 +706,15 @@ export function useStreamingStt(options: Options) {
         && listeningRef.current) {
         transcriptStateRef.current = startStreamingTranscript(draft);
         latestRef.current.setTranscript(draft);
-        dictationSegmentSeenRef.current = true;
+        recognitionSegmentSeenRef.current = true;
         setPhase("connecting");
         scheduleStart();
         return;
       }
-      const completedDictation = latestRef.current.continuousDictation
+      const completedSegments = (recognitionSegmentSeenRef.current || latestRef.current.continuousDictation)
         && ["no_speech_timeout", "max_duration"].includes(message.reason)
         && acceptedText.trim() !== draftAtStartRef.current.trim();
-      if ((message.hasSpeech && hasFinalSpeech) || completedDictation) {
+      if ((message.hasSpeech && hasFinalSpeech) || completedSegments) {
         latestRef.current.setTranscript(draft);
         setPhase("idle");
         if (latestRef.current.autoReplyAfterStt && draft.trim()) {
@@ -760,7 +761,7 @@ export function useStreamingStt(options: Options) {
     draftAtStartRef.current = transcriptStateRef.current.baseText;
     dictationReadyElapsedRef.current = 0;
     dictationReadySinceRef.current = null;
-    dictationSegmentSeenRef.current = false;
+    recognitionSegmentSeenRef.current = false;
     clearTimer(dictationIdleTimerRef);
     errorRetriesRef.current = 0;
     listeningRef.current = true;
@@ -793,7 +794,7 @@ export function useStreamingStt(options: Options) {
         draftAtStartRef.current = "";
         dictationReadyElapsedRef.current = 0;
         dictationReadySinceRef.current = null;
-        dictationSegmentSeenRef.current = false;
+        recognitionSegmentSeenRef.current = false;
         clearTimer(dictationIdleTimerRef);
         awaitReplyCycle();
       });

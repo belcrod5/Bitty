@@ -862,3 +862,17 @@ test("live speech after buffered silence is handed to the following segment inst
   assert.deepEqual(children[2].writes, [nextOnset]);
   ws.close();
 });
+
+test("a resumed helper with early Apple no-speech preserves the turn as a candidate", async () => {
+  const { ws, children } = await candidateStream();
+  ws.emit("message", pcm(4000, 200), true);
+  await tick();
+  children[1].emitMessage({ type: "ready" });
+  await tick();
+  children[1].emitMessage({ type: "error", code: "macos_recognition_failed", nativeErrorDomain: "kAFAssistantErrorDomain", nativeErrorCode: 1110 });
+  assert.deepEqual(ws.sent.at(-1), { type: "candidate", revision: 2 });
+  assert.equal(ws.readyState, 1);
+  commitCandidate(ws, 2);
+  await tick();
+  assert.deepEqual(ws.sent.at(-1), { type: "committed", revision: 2, accepted: true });
+});

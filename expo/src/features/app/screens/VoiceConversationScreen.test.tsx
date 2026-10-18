@@ -65,7 +65,7 @@ const mockVoice = {
     _decision: "clear" | "keep") => undefined),
   refreshHistory: jest.fn(async () => undefined),
   setError: jest.fn(),
-  sendTranscript: jest.fn(async () => undefined),
+  sendTranscript: jest.fn(async (_text?: string, _onAccepted?: () => void) => undefined),
   interrupt: jest.fn(),
 };
 const mockStt = {
@@ -85,6 +85,19 @@ const mockStt = {
 };
 let mockOnCompleted: ((text: string, operationId: string) => void) | null = null;
 let mockOnJob: ((jobId: string, operationId: string) => void) | null = null;
+let mockUseActualStreamingStt = false;
+const mockNativeSttListeners = new Map<string, (event: any) => void>();
+const mockNativeStt = {
+  continuationVersion: 1,
+  start: jest.fn(async (_url: string, _headers: Record<string, string>) => undefined),
+  commit: jest.fn(async (_revision: number) => true),
+  stop: jest.fn(async () => undefined),
+  abort: jest.fn(async () => undefined),
+  addListener: jest.fn((name: string, listener: (event: any) => void) => {
+    mockNativeSttListeners.set(name, listener);
+    return { remove: () => mockNativeSttListeners.delete(name) };
+  }),
+};
 let mockLastSttOptions: { ttsPlaybackActive: boolean; onDiagnostic: (event: string, payload: Record<string, unknown>) => void } | null = null;
 type MockFooterProps = {
   voiceContextStats?: unknown;
@@ -147,8 +160,12 @@ jest.mock("../components/VoiceOrchestratorManager", () => ({
 }));
 jest.mock("../../stt/useStreamingStt", () => ({ useStreamingStt: (options: { ttsPlaybackActive: boolean; onDiagnostic: (event: string, payload: Record<string, unknown>) => void }) => {
   mockLastSttOptions = options;
+  if (mockUseActualStreamingStt) return jest.requireActual("../../stt/useStreamingStt").useStreamingStt(options);
   return mockStt;
 } }));
+jest.mock("../../stt/sttSettingsClient", () => ({
+  correctSttTranscript: jest.fn(async (_url: string, _token: string, text: string) => ({ changed: false, text })),
+}));
 jest.mock("../hooks/useReduceMotionEnabled", () => ({ useReduceMotionEnabled: () => mockReduceMotion }));
 jest.mock("../components/StreamingSttFooter", () => ({
   StreamingSttFooter: (props: MockFooterProps) => {
@@ -251,6 +268,8 @@ beforeEach(() => {
   AppState.currentState = "active";
   jest.clearAllMocks();
   mockLastSttOptions = null;
+  mockUseActualStreamingStt = false;
+  mockNativeSttListeners.clear();
   mockFooterProps = null;
   mockFooterRenders.length = 0;
   mockOnCompleted = null;
@@ -1386,5 +1405,38 @@ test("records gate changes only while connecting and without repeating unchanged
   mockVoice.turnStatus = "completed";
   await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
   expect(gateCalls()).toHaveLength(2);
+  await screen.unmount();
+});
+
+test("voice conversation uses the shared continuation transport and merges resumed speech before one send", async () => {
+  mockUseActualStreamingStt = true;
+  jest.spyOn(require("expo-modules-core"), "requireOptionalNativeModule").mockReturnValue(mockNativeStt);
+  mockVoice.sendTranscript.mockImplementationOnce(async (_text, onAccepted) => { onAccepted?.(); });
+  const { correctSttTranscript } = jest.requireMock("../../stt/sttSettingsClient") as {
+    correctSttTranscript: jest.Mock;
+  };
+  let finishFirstCorrection!: (result: { changed: boolean; text: string }) => void;
+  correctSttTranscript.mockImplementationOnce(() => new Promise((resolve) => { finishFirstCorrection = resolve; }));
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await waitFor(() => expect(mockNativeStt.start).toHaveBeenCalledWith(
+    "ws://runner.test/stream-stt?continuation=1", expect.any(Object)));
+  const message = async (value: Record<string, unknown>) => {
+    await act(async () => { mockNativeSttListeners.get("BittyStreamingSttMessage")?.({ data: JSON.stringify(value) }); });
+  };
+  await message({ type: "ready" });
+  await message({ type: "transcript", text: "前半", isFinal: true });
+  await message({ type: "candidate", revision: 1 });
+  expect(mockNativeStt.abort).not.toHaveBeenCalled();
+  await message({ type: "candidate_invalidated", revision: 1 });
+  await message({ type: "segment_start" });
+  await message({ type: "transcript", text: "後半", isFinal: true });
+  await act(async () => { finishFirstCorrection({ changed: false, text: "古い結果" }); });
+  expect(mockVoice.sendTranscript).not.toHaveBeenCalled();
+  await message({ type: "candidate", revision: 2 });
+  expect(mockNativeStt.commit).toHaveBeenCalledTimes(1);
+  expect(mockNativeStt.commit).toHaveBeenCalledWith(2);
+  expect(mockVoice.sendTranscript).toHaveBeenCalledTimes(1);
+  expect(mockVoice.sendTranscript).toHaveBeenCalledWith("前半 後半", expect.any(Function));
+  expect(mockNativeStt.start).toHaveBeenCalledTimes(1);
   await screen.unmount();
 });

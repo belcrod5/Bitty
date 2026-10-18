@@ -302,6 +302,7 @@ export function createMacosStreamingSttHandler({
           && !finalHadText) {
           diagnose("macos_no_speech_error", nativeDetails);
           if (lastPartialText) endReason ||= "recognition_segment_end";
+          else if (continuation && turnHasSpeech) endReason ||= "no_speech_timeout";
           finishDone();
           return;
         }
