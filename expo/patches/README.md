@@ -104,3 +104,12 @@ the patch only after the same fix ships upstream and that scenario passes.
 The install version guard keeps Skia at the investigated 2.11.1 version.
 When intentionally upgrading Skia, update the guard only after checking for an
 upstream fix and scheduling the same real-device scenario for revalidation.
+
+`expo-blur+15.0.8.patch` redraws the iOS blur effect when its bounds change.
+Expo creates the intensity animator in `draw`, so an initially empty view can
+consume its display request before layout and stay transparent after resizing.
+Using UIKit's redraw content mode initializes the effect at its first visible
+size without remounts or delayed updates. Run
+`./scripts/ios/test-blur-lifecycle.sh <booted-simulator-udid>` to exercise the
+installed Swift implementation in a standalone simulator app. Remove this patch
+once Expo handles the same zero-size-to-visible lifecycle upstream.
