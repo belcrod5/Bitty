@@ -173,7 +173,7 @@ test("main distinguishes missing and unavailable task checklists", async () => {
   expect(result.current.taskChecklist).toEqual({ status: "unavailable" });
 });
 
-test("completion consent uses the offered source hash and refreshes the server decision", async () => {
+test.each(["main", "other"])("%s completion consent uses its offered source hash and refreshes the decision", async (orchestratorId) => {
   const request = mockManager.request.getMockImplementation();
   let offered = true;
   mockManager.request.mockImplementation((message: { op: string }) => {
@@ -187,18 +187,18 @@ test("completion consent uses the offered source hash and refreshes the server d
     }
     return request?.(message);
   });
-  const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
+  const { result } = await renderHook(() => useVoiceConversation(jest.fn(), undefined, undefined, orchestratorId));
   await waitFor(() => expect(result.current.ready).toBe(true));
   await act(async () => { await result.current.refreshHistory(); });
   expect(result.current.taskChecklistCompletion).toEqual({ sourceHash: "a".repeat(64), version: "b".repeat(64) });
   await act(async () => { await result.current.respondToChecklistCompletion("a".repeat(64), "b".repeat(64), "keep"); });
   expect(mockManager.request).toHaveBeenCalledWith({ channel: "agent",
-    op: "voice.task-checklist.complete.respond", payload: { orchestratorId: "main",
+    op: "voice.task-checklist.complete.respond", payload: { orchestratorId,
       sourceHash: "a".repeat(64), version: "b".repeat(64), decision: "keep" } });
   expect(result.current.taskChecklistCompletion).toBeNull();
 });
 
-test("a checklist change notice reloads the disk-backed history for the matching main conversation", async () => {
+test.each(["main", "other"])("a checklist notice reloads only the matching %s conversation", async (orchestratorId) => {
   const request = mockManager.request.getMockImplementation();
   let markdown: string | null = "- [ ] 確認";
   let overview: { status: "pending" | "unavailable" } | { status: "present"; markdown: string } = { status: "pending" };
@@ -206,7 +206,7 @@ test("a checklist change notice reloads the disk-backed history for the matching
     ? Promise.resolve({ op: "voice.history.result", payload: { logicalConversationId: conversationId,
       messages: [], taskChecklist: markdown === null ? { status: "unavailable" }
         : { status: "present", markdown }, taskChecklistOverview: overview } }) : request?.(message));
-  const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
+  const { result } = await renderHook(() => useVoiceConversation(jest.fn(), undefined, undefined, orchestratorId));
   await waitFor(() => expect(result.current.ready).toBe(true));
   await act(async () => { await result.current.refreshHistory(); });
   expect(result.current.taskChecklist).toEqual({ status: "present", markdown: "- [ ] 確認" });
@@ -214,18 +214,22 @@ test("a checklist change notice reloads the disk-backed history for the matching
   markdown = "- [x] 確認";
   overview = { status: "present", markdown: "- [x] 確認済み" };
   await act(async () => { handlers.get("voice.task-checklist.changed")?.({ payload: {
-    orchestratorId: "main", logicalConversationId: "another-conversation",
+    orchestratorId: orchestratorId === "main" ? "other" : "main", logicalConversationId: conversationId,
   } }); });
   expect(result.current.taskChecklist).toEqual({ status: "present", markdown: "- [ ] 確認" });
   await act(async () => { handlers.get("voice.task-checklist.changed")?.({ payload: {
-    orchestratorId: "main", logicalConversationId: conversationId,
+    orchestratorId, logicalConversationId: "another-conversation",
+  } }); });
+  expect(result.current.taskChecklist).toEqual({ status: "present", markdown: "- [ ] 確認" });
+  await act(async () => { handlers.get("voice.task-checklist.changed")?.({ payload: {
+    orchestratorId, logicalConversationId: conversationId,
   } }); });
   await waitFor(() => expect(result.current.taskChecklist).toEqual({ status: "present", markdown: "- [x] 確認" }));
   expect(result.current.taskChecklistOverview).toEqual({ status: "present", markdown: "- [x] 確認済み" });
   markdown = null;
   overview = { status: "unavailable" };
   await act(async () => { handlers.get("voice.task-checklist.changed")?.({ payload: {
-    orchestratorId: "main", logicalConversationId: conversationId,
+    orchestratorId, logicalConversationId: conversationId,
   } }); });
   await waitFor(() => expect(result.current.taskChecklist).toEqual({ status: "unavailable" }));
   expect(result.current.taskChecklistOverview).toEqual({ status: "unavailable" });

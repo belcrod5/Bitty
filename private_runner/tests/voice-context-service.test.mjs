@@ -3160,7 +3160,8 @@ test("saved custom instructions keep the fixed checklist read and maintenance ru
     ["thread/start", "thread/resume"].includes(method) && params.approvalPolicy === "on-request");
   assert.ok(threads.some(({ params }) => params.developerInstructions.includes("Speak briefly.")));
   assert.ok(threads.some(({ params }) => params.developerInstructions.includes("Use short sentences.")));
-  assert.ok(threads.every(({ params }) => params.developerInstructions.includes("maintain task-checklists/main.md yourself for active work")));
+  assert.ok(threads.every(({ params }) => params.developerInstructions.includes("Your fixed task checklist path in this workspace is task-checklists/main.md.")
+    && params.developerInstructions.includes("Maintain your own task checklist for active work.")));
   assert.ok(threads.every(({ params }) => params.developerInstructions.includes("- [ ] pending task or - [x] confirmed completion")));
   assert.ok(threads.every(({ params }) => params.developerInstructions.includes("immediately whenever progress changes")));
   assert.ok(threads.every(({ params }) => params.developerInstructions.includes("task_checklist.offer_completion_clear")));

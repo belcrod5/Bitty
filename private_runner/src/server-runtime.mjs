@@ -5034,11 +5034,11 @@ function createCodexRpcClient({
   }
 }
 
-function broadcastVoiceChecklistChanged(logicalConversationId) {
-  widgetRefreshNotifier.changed();
+function broadcastVoiceChecklistChanged({ orchestratorId, logicalConversationId }) {
+  if (orchestratorId === "main") widgetRefreshNotifier.changed();
   for (const client of runnerWsActiveClients) {
     sendRunnerWsEnvelope(client, { channel: "agent", op: "voice.task-checklist.changed",
-      payload: { orchestratorId: "main", logicalConversationId } });
+      payload: { orchestratorId, logicalConversationId } });
   }
 }
 
@@ -7234,7 +7234,8 @@ runnerWsServer.on("connection", (ws, req) => {
             ? voiceContextService.create(message.payload?.name, message.payload?.icon,
               message.payload?.model, message.payload?.effort, message.payload?.systemInstruction,
               message.payload?.topicModel, message.payload?.topicEffort,
-              message.payload?.ttsProvider, message.payload?.voiceId)
+              message.payload?.ttsProvider, message.payload?.voiceId,
+              message.payload?.overviewModel, message.payload?.overviewEffort)
             : message.op === "voice.orchestrators.update"
               ? voiceContextService.update(orchestratorId, message.payload)
               : voiceContextService.remove(orchestratorId);

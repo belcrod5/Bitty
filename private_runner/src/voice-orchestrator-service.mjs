@@ -188,7 +188,7 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
     main = createVoiceContextService({ rootDir: root, createClient,
       getOrchestratorName: () => registry.orchestrators.find((item) => item.id === "main")?.name,
       taskChecklistPath: "task-checklists/main.md",
-      onChecklistChanged,
+      onChecklistChanged: (conversationId) => onChecklistChanged?.({ orchestratorId: "main", logicalConversationId: conversationId }),
       memoryConversationId: registry.memoryConversationId || undefined,
       memoryEventPairs: allEventPairs, pairExclusive, managedSessions: managedSessions("main"),
       hasOutstandingActivity: hasOutstandingActivity("main") });
@@ -214,6 +214,8 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
     if (contexts.has(id)) return contexts.get(id);
     const service = createVoiceContextService({ rootDir: path.join(orchestratorRoot, id), createClient,
       getOrchestratorName: () => registry.orchestrators.find((item) => item.id === id)?.name,
+      taskChecklistPath: `task-checklists/${id}.md`,
+      onChecklistChanged: (conversationId) => onChecklistChanged?.({ orchestratorId: id, logicalConversationId: conversationId }),
       sharedWorkspaceDirectory: workspaceDirectory, sharedMemoryStore: memoryStore, pairExclusive,
       managedSessions: managedSessions(id), hasOutstandingActivity: hasOutstandingActivity(id) });
     contexts.set(id, service);
@@ -253,7 +255,7 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
       });
     },
     async create(name, icon = "", model, effort, systemInstruction, topicModel, topicEffort,
-      ttsProvider = defaultTtsProvider, voiceId = "") {
+      ttsProvider = defaultTtsProvider, voiceId = "", overviewModel, overviewEffort) {
       const item = { id: randomUUID(), name: validateName(name), icon: validateIcon(icon),
         ...validateTtsVoice(ttsProvider, voiceId) };
       return exclusive(async () => {
@@ -261,15 +263,18 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
         await fs.mkdir(orchestratorRoot, { recursive: true, mode: 0o700 });
         const service = createVoiceContextService({ rootDir: path.join(orchestratorRoot, item.id), createClient,
           getOrchestratorName: () => registry.orchestrators.find((entry) => entry.id === item.id)?.name,
+          taskChecklistPath: `task-checklists/${item.id}.md`,
+          onChecklistChanged: (conversationId) => onChecklistChanged?.({ orchestratorId: item.id, logicalConversationId: conversationId }),
           sharedWorkspaceDirectory: workspaceDirectory, sharedMemoryStore: memoryStore, pairExclusive,
           managedSessions: managedSessions(item.id), hasOutstandingActivity: hasOutstandingActivity(item.id) });
         await service.open();
         if (model !== undefined || effort !== undefined || systemInstruction !== undefined
-          || topicModel !== undefined || topicEffort !== undefined) {
+          || topicModel !== undefined || topicEffort !== undefined
+          || overviewModel !== undefined || overviewEffort !== undefined) {
           const defaults = await service.getSettings();
           await service.configure(model ?? defaults.model, effort ?? defaults.effort,
             systemInstruction ?? defaults.systemInstruction,
-            topicModel ?? defaults.topicModel, topicEffort ?? defaults.topicEffort);
+            topicModel ?? defaults.topicModel, topicEffort ?? defaults.topicEffort, overviewModel, overviewEffort);
         }
         await saveRegistry({ ...registry, orchestrators: [...registry.orchestrators, item] });
         contexts.set(item.id, service);
@@ -348,8 +353,7 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
     async taskOverview() { return (await context("main")).taskOverview(); },
     async history(id) { return (await context(idOf(id))).history(); },
     async respondToChecklistCompletion(id, sourceHash, version, decision) {
-      if (id !== "main") throw failure("Task checklist is unavailable", "not_found");
-      return main.respondToChecklistCompletion(sourceHash, version, decision);
+      return (await context(idOf(id))).respondToChecklistCompletion(sourceHash, version, decision);
     },
     async open(id) { return withCounts(id, await (await context(idOf(id))).open()); },
     async status(id, conversationId, operationId) {
