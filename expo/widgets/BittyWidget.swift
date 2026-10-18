@@ -2,6 +2,9 @@ import AppIntents
 import SwiftUI
 import WidgetKit
 import UIKit
+import OSLog
+
+private let refreshLogger = Logger(subsystem: "app.bitty.widgets", category: "refresh")
 
 struct WidgetOrchestrator: Codable, Identifiable {
   let id: String
@@ -28,9 +31,18 @@ struct WidgetSnapshot: Decodable {
 
   static func load() -> WidgetSnapshot {
     guard let group = Bundle.main.object(forInfoDictionaryKey: "BittyWidgetAppGroup") as? String,
-      let directory = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group),
-      let data = try? Data(contentsOf: directory.appendingPathComponent("widget-snapshot.json")),
-      data.count <= 8_000_000, let snapshot = try? JSONDecoder().decode(Self.self, from: data) else { return .empty }
+      let directory = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group) else {
+      refreshLogger.notice("[widget-refresh] event=load outcome=container_unavailable")
+      return .empty
+    }
+    guard let data = try? Data(contentsOf: directory.appendingPathComponent("widget-snapshot.json")) else {
+      refreshLogger.notice("[widget-refresh] event=load outcome=read_failed")
+      return .empty
+    }
+    guard data.count <= 8_000_000, let snapshot = try? JSONDecoder().decode(Self.self, from: data) else {
+      refreshLogger.notice("[widget-refresh] event=load outcome=schema_invalid")
+      return .empty
+    }
     return snapshot
   }
 }
@@ -76,10 +88,13 @@ struct BittyEntry: TimelineEntry {
 struct BittyProvider: AppIntentTimelineProvider {
   func placeholder(in context: Context) -> BittyEntry { BittyEntry(date: .now, snapshot: .empty, orchestratorId: nil) }
   func snapshot(for configuration: OrchestratorConfiguration, in context: Context) async -> BittyEntry {
-    BittyEntry(date: .now, snapshot: .load(), orchestratorId: configuration.orchestrator?.id)
+    let entry = BittyEntry(date: .now, snapshot: .load(), orchestratorId: configuration.orchestrator?.id)
+    refreshLogger.notice("[widget-refresh] event=preview count=\(entry.snapshot.runningCount ?? -1) updated_at_ms=\(Int64(entry.snapshot.updatedAt))")
+    return entry
   }
   func timeline(for configuration: OrchestratorConfiguration, in context: Context) async -> Timeline<BittyEntry> {
     let entry = BittyEntry(date: .now, snapshot: .load(), orchestratorId: configuration.orchestrator?.id)
+    refreshLogger.notice("[widget-refresh] event=timeline count=\(entry.snapshot.runningCount ?? -1) updated_at_ms=\(Int64(entry.snapshot.updatedAt))")
     // This only re-reads app snapshots. The extension never holds credentials or starts a Runner connection.
     let timestamps: Set<Double> = [entry.snapshot.updatedAt, entry.snapshot.usageFetchedAt, entry.snapshot.overviewFetchedAt]
     let expirations: [Date] = timestamps.filter { $0 > 0 }.map { Date(timeIntervalSince1970: $0 / 1000 + 900) }

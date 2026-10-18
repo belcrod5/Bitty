@@ -2,6 +2,7 @@ import Foundation
 import BittyRunnerTLS
 import UIKit
 import WidgetKit
+import OSLog
 
 // Codable is also the allowlist: response fields outside this presentation contract are never persisted.
 struct IncomingWidgetSnapshot: Codable {
@@ -41,12 +42,14 @@ final class BittyWidgetSnapshotStore: NSObject, URLSessionTaskDelegate {
   private var revision = 0
   private var activeRequest: URLSessionDataTask?
   private let sourceKey = "bitty.widgetSnapshotSource"
+  private let logger = Logger(subsystem: "app.bitty.widgets", category: "refresh")
   private lazy var session = BittyRunnerTLS.shared().session(withDelegate: self, queue: nil)
 
   func activate(runnerUrl: String, runnerToken: String) {
     queue.async {
       let identity = BittyRunnerConnection.identity(runnerUrl: runnerUrl, runnerToken: runnerToken)
       guard UserDefaults.standard.string(forKey: self.sourceKey) != identity else { return }
+      self.logger.notice("[widget-refresh] event=source outcome=changed")
       self.revision += 1
       self.activeRequest?.cancel()
       self.invalidateSnapshot()
@@ -56,15 +59,22 @@ final class BittyWidgetSnapshotStore: NSObject, URLSessionTaskDelegate {
   }
 
   func refresh(expectedRunnerUrl: String? = nil, expectedRunnerToken: String? = nil,
+    diagnosticID: String = UUID().uuidString,
     completion: @escaping (UIBackgroundFetchResult) -> Void) {
     queue.async {
-      guard let connection = BittyRunnerConnection.load() else { completion(.noData); return }
+      let startedAt = ProcessInfo.processInfo.systemUptime
+      self.logger.notice("[widget-refresh] event=refresh id=\(diagnosticID, privacy: .public) app_initiated=\(expectedRunnerUrl != nil)")
+      guard let connection = BittyRunnerConnection.load() else {
+        self.logger.notice("[widget-refresh] event=refresh id=\(diagnosticID, privacy: .public) outcome=connection_unavailable")
+        completion(.noData); return
+      }
       // Invalidate the old Runner's display as soon as the foreground announces a source change.
       if let expectedRunnerUrl, let expectedRunnerToken,
         !connection.matches(runnerUrl: expectedRunnerUrl, runnerToken: expectedRunnerToken) {
         self.revision += 1
         self.activeRequest?.cancel()
         self.invalidateSnapshot()
+        self.logger.notice("[widget-refresh] event=refresh id=\(diagnosticID, privacy: .public) outcome=source_mismatch")
         completion(.noData)
         return
       }
@@ -72,26 +82,50 @@ final class BittyWidgetSnapshotStore: NSObject, URLSessionTaskDelegate {
         self.revision += 1
         self.activeRequest?.cancel()
         self.invalidateSnapshot()
+        self.logger.notice("[widget-refresh] event=refresh id=\(diagnosticID, privacy: .public) outcome=source_inactive")
         completion(.noData); return
       }
       self.revision += 1
       let startedRevision = self.revision
       self.activeRequest?.cancel()
-      guard let request = connection.request(path: "/app/status-snapshot") else {
+      guard var request = connection.request(path: "/app/status-snapshot") else {
+        self.logger.notice("[widget-refresh] event=refresh id=\(diagnosticID, privacy: .public) outcome=request_unavailable")
         completion(.noData); return
       }
+      request.setValue(diagnosticID, forHTTPHeaderField: "X-Bitty-Widget-Refresh-ID")
       let task = self.session.dataTask(with: request) { data, response, error in
         self.queue.async {
-          guard startedRevision == self.revision, BittyRunnerConnection.load() == connection,
+          let elapsedMs = Int((ProcessInfo.processInfo.systemUptime - startedAt) * 1000)
+          let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+          self.logger.notice("[widget-refresh] event=http id=\(diagnosticID, privacy: .public) status=\(status) duration_ms=\(elapsedMs)")
+          guard startedRevision == self.revision else {
+            self.logger.notice("[widget-refresh] event=refresh id=\(diagnosticID, privacy: .public) outcome=superseded")
+            completion(.noData); return
+          }
+          guard BittyRunnerConnection.load() == connection,
             UserDefaults.standard.string(forKey: self.sourceKey) == connection.identity else {
+            self.logger.notice("[widget-refresh] event=refresh id=\(diagnosticID, privacy: .public) outcome=source_changed")
             completion(.noData); return
           }
           self.activeRequest = nil
-          guard error == nil, let response = response as? HTTPURLResponse, response.statusCode == 200,
-            let data, data.count <= 16_000_000,
-            var snapshot = try? JSONDecoder().decode(IncomingWidgetSnapshot.self, from: data), snapshot.valid else {
+          guard error == nil else {
+            let code = (error as? URLError)?.code.rawValue ?? 0
+            self.logger.notice("[widget-refresh] event=refresh id=\(diagnosticID, privacy: .public) outcome=transport_failed code=\(code)")
             completion(.failed); return
           }
+          guard status == 200 else {
+            self.logger.notice("[widget-refresh] event=refresh id=\(diagnosticID, privacy: .public) outcome=http_failed")
+            completion(.failed); return
+          }
+          guard let data, data.count <= 16_000_000 else {
+            self.logger.notice("[widget-refresh] event=refresh id=\(diagnosticID, privacy: .public) outcome=body_invalid")
+            completion(.failed); return
+          }
+          guard var snapshot = try? JSONDecoder().decode(IncomingWidgetSnapshot.self, from: data), snapshot.valid else {
+            self.logger.notice("[widget-refresh] event=refresh id=\(diagnosticID, privacy: .public) outcome=schema_invalid")
+            completion(.failed); return
+          }
+          self.logger.notice("[widget-refresh] event=decoded id=\(diagnosticID, privacy: .public) count=\(snapshot.runningCount ?? -1)")
           // Keep bounded images at actual pixel size. The extension never fetches image URLs.
           snapshot.orchestrators = snapshot.orchestrators.map { record in
             var result = record
@@ -106,21 +140,32 @@ final class BittyWidgetSnapshotStore: NSObject, URLSessionTaskDelegate {
             }
             return result
           }
-          guard let file = self.snapshotFile() else { completion(.failed); return }
+          guard let file = self.snapshotFile() else {
+            self.logger.notice("[widget-refresh] event=save id=\(diagnosticID, privacy: .public) outcome=container_unavailable")
+            completion(.failed); return
+          }
           snapshot.updatedAt = Date().timeIntervalSince1970 * 1000
           do {
             let output = try JSONEncoder().encode(snapshot)
             try output.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            self.logger.notice("[widget-refresh] event=save id=\(diagnosticID, privacy: .public) outcome=saved count=\(snapshot.runningCount ?? -1) updated_at_ms=\(Int64(snapshot.updatedAt ?? 0))")
             WidgetCenter.shared.reloadTimelines(ofKind: "BittyOrchestrator")
+            self.logger.notice("[widget-refresh] event=reload id=\(diagnosticID, privacy: .public) outcome=requested")
             completion(.newData)
-          } catch { completion(.failed) }
+          } catch {
+            self.logger.notice("[widget-refresh] event=save id=\(diagnosticID, privacy: .public) outcome=write_failed")
+            completion(.failed)
+          }
         }
       }
       self.activeRequest = task
       task.resume()
       // URLRequest.timeoutInterval is an inactivity timeout; enforce an overall background deadline too.
       self.queue.asyncAfter(deadline: .now() + 22) {
-        if self.revision == startedRevision && self.activeRequest?.taskIdentifier == task.taskIdentifier { task.cancel() }
+        if self.revision == startedRevision && self.activeRequest?.taskIdentifier == task.taskIdentifier {
+          self.logger.notice("[widget-refresh] event=refresh id=\(diagnosticID, privacy: .public) outcome=deadline")
+          task.cancel()
+        }
       }
     }
   }
@@ -134,6 +179,7 @@ final class BittyWidgetSnapshotStore: NSObject, URLSessionTaskDelegate {
   private func invalidateSnapshot() {
     if let file = snapshotFile() { try? FileManager.default.removeItem(at: file) }
     WidgetCenter.shared.reloadTimelines(ofKind: "BittyOrchestrator")
+    logger.notice("[widget-refresh] event=cache outcome=invalidated")
   }
 
   func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,

@@ -5941,6 +5941,12 @@ const handleRunnerRequest = async (req, res) => {
   }
 
   if (req.method === "GET" && pathname === "/app/status-snapshot") {
+    const diagnosticHeader = req.headers["x-bitty-widget-refresh-id"];
+    const diagnosticId = typeof diagnosticHeader === "string"
+      && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(diagnosticHeader) ? diagnosticHeader : "none";
+    const startedAt = performance.now();
+    let responseCount = -1;
+    res.once("finish", () => console.log(`[widget-refresh] event=response at=${new Date().toISOString()} id=${diagnosticId} status=${res.statusCode} count=${responseCount} duration_ms=${Math.round(performance.now() - startedAt)}`));
     if (!RUNNER_TOKEN || parseAuthToken(req) !== RUNNER_TOKEN) return json(res, 401, { error: "unauthorized" });
     const snapshot = createAppStatusSnapshot({
       listOrchestrators: () => voiceContextService.list(),
@@ -5948,7 +5954,11 @@ const handleRunnerRequest = async (req, res) => {
       taskOverview: () => voiceContextService.taskOverview(),
       currentUsage: () => withCodexAuthLease(async () => codexUsageService.snapshot(await captureCodexUsageAccount())),
     });
-    try { return json(res, 200, await snapshot()); }
+    try {
+      const result = await snapshot();
+      responseCount = Number.isSafeInteger(result.runningCount) ? result.runningCount : -1;
+      return json(res, 200, result);
+    }
     catch { return json(res, 503, { error: "app_status_unavailable" }); }
   }
 

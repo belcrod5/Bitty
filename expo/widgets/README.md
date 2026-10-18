@@ -31,6 +31,42 @@ paired TLS trust and same-origin Cloudflare headers; App Group credentials and K
 Responses must pass the display schema, source identity and ordering checks before an atomic write. App Groups must be available in the development
 team's automatic signing profiles for both targets; no profiles or credentials belong in this directory.
 
+## Diagnosing a missed refresh
+
+The host and widget extension both emit `[widget-refresh]` at OSLog **notice** level with subsystem
+`app.bitty.widgets` and category `refresh`. Notice logs can be retained by iOS; retention is limited, so
+start a filtered capture **before reproducing**. Do not collect a whole-device log archive. With the
+iPhone connected to the Mac and trusted, the existing `idevicesyslog` tool can capture just these lines:
+
+```sh
+idevicesyslog --no-colors --match '[widget-refresh]' --output /private/tmp/bitty-widget-refresh.log
+```
+
+Stop with Ctrl-C after two normal chats have finished and the widget has been observed. Alternatively,
+select the connected iPhone in macOS Console and filter by subsystem `app.bitty.widgets`; include both
+the Bitty host process and widget extension. Do not launch the app to collect logs, since foreground
+refresh would obscure the background result. Read only the filtered capture and Runner lines beginning
+`[widget-refresh]` in `private_runner/logs/run-local.log`.
+
+Every notification receipt gets a random `id`, passed to the native refresh and HTTP request. Runner
+`event=response` logs the same validated UUID, HTTP status, returned count and duration after the response
+finishes. App-initiated refreshes have their own ID and `app_initiated=true`; notification-triggered refreshes
+have `app_initiated=false` even if the app is active. `event=received` records UIKit state (`0` active, `1` inactive, `2` background),
+and `silent` distinguishes the dedicated hint from an ordinary notification. No receipt line means the
+host callback was not observed during capture; displaying a notification through the service extension
+does not prove that this callback ran.
+
+Follow the ID through `event=http`, `event=decoded`, and `event=save`. A successful save records `count`
+and `updated_at_ms`; the widget's `event=timeline` records those same fields when it reads that snapshot.
+`event=preview` is a gallery/system snapshot request, not a timeline reload. `count=-1` means unknown.
+Failures use fixed outcome codes for unavailable configuration/connection, source changes, superseded
+requests, transport/HTTP/schema failures, the 22-second deadline, and writes. A `reload outcome=requested`
+line confirms the call to WidgetKit, not that iOS rendered the widget immediately. Matching saved and
+timeline timestamps with different visible UI points to WidgetKit presentation, while a newer save with
+no subsequent timeline read separates scheduling from fetching/saving. Log timestamps identify the
+reproduction window; IDs are unrelated to chat/session/account identity. Logs contain no notification
+body, task overview, recipient names/icons, URLs, credentials, session IDs or raw error messages.
+
 Checks:
 
 ```sh
