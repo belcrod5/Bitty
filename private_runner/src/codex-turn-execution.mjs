@@ -375,7 +375,7 @@ export function createCodexBackend({
     return { ...session, isActive: true };
   });
 
-  async function startTurn({ runId, sessionRef, cwd, input, model, effort, policyProfileId, signal, resolveSession, emit }) {
+  async function startTurn({ runId, sessionRef, cwd, input, model, effort, policyProfileId, signal, resolveSession, emit, trustedInstructions = "" }) {
     if (signal?.aborted) {
       const error = new Error("Codex turn was interrupted before start");
       error.nativeActivity = "not_started";
@@ -613,7 +613,7 @@ export function createCodexBackend({
         approvalPolicy: policyProfileId === "codex-never" ? "never" : "on-request",
         dynamicTools,
         enableUserInput: true,
-        developerInstructions,
+        developerInstructions: [developerInstructions, trustedInstructions].filter(Boolean).join("\n"),
         onBeforeTurnStart: () => { state.turnStartRequested = true; },
         onThreadResolved: sessionRef ? undefined : async ({ threadId }) => {
           state.threadId = threadId;

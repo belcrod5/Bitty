@@ -1,3 +1,4 @@
+import { getVoiceControl } from "../../appControl/voiceControl";
 import { useCallback, useEffect, useRef, type MutableRefObject } from "react";
 import { Alert } from "react-native";
 import {
@@ -421,6 +422,10 @@ export function useCodexReplyRequest<
     const requestDirectory = String(
       requestSnapshot?.directory || current.normalizedLlmDirectoryForRequest() || ""
     ).trim();
+    const appControlOrigin = current.runnerWebSocketManager
+      ? getVoiceControl(current.runnerWebSocketManager).origin(requestPanelId, {
+        kind: "session", sessionRef: { backendId: requestBackendId, nativeSessionId: requestThreadId || null }, cwd: requestDirectory,
+      }) : undefined;
     const requestSnapshotSource = String(requestSnapshot?.source || "").trim();
     let requestThreadKey = requestThreadId || requestUiSessionId;
     const requestSessionAdoptionSourceId = requestThreadKey || requestUiSessionId;
@@ -1065,6 +1070,7 @@ export function useCodexReplyRequest<
         wsToken: current.runnerToken.trim(),
         runnerWebSocketManager: current.runnerWebSocketManager,
         preferNeutralAgent: true,
+        appControlOrigin,
         backendId: requestBackendId,
         rawFallbackBackendId: "codex",
         confirmWorkspaceAdmission: ({ canonicalRoot, warning }) => new Promise((resolve) => {

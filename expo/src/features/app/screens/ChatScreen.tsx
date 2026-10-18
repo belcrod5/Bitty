@@ -65,7 +65,7 @@ import {
   StreamingSttFooter,
   type StreamingSttFooterHandle,
 } from "../components/StreamingSttFooter";
-import { useStreamingStt } from "../../stt/useStreamingStt";
+import { useControlledStreamingStt } from "../../appControl/useControlledStreamingStt";
 import { useWorkspaceFileMutations } from "../hooks/useWorkspaceFileMutations";
 import { useComposerDraftSync } from "../hooks/useComposerPersistence";
 import { RunnerWsConnectionStatus, type RunnerWsDataSyncStatus } from "../../runnerWs/RunnerWsConnectionStatus";
@@ -239,7 +239,6 @@ export function ChatScreen({
     setComposerInputFocused,
     onVoiceSpeechBegin,
     voiceInputDuringTtsAllowed,
-    registerVoiceInputSession,
     canStopLlmTurn,
     stopLlmTurn,
     setSlashCommandSelectOpen,
@@ -1173,7 +1172,11 @@ export function ChatScreen({
   const reportStreamingSttError = useCallback((message: string) => {
     showChatBottomToast("assistant", message);
   }, [showChatBottomToast]);
-  const streamingStt = useStreamingStt({
+  const streamingStt = useControlledStreamingStt({
+    target: { kind: "session", sessionRef: { backendId: backendIdForView, nativeSessionId: selectedSessionMaterializedForView ? selectedSessionIdForView || null : null }, cwd: selectedDirectoryPathForView },
+    panelId,
+    busy: replyLoadingForView,
+    canStart: !llmSessionRestoreLoadingForView && !replyLoadingForView,
     runnerUrl,
     runnerToken,
     transcript: transcriptForView,
@@ -1204,11 +1207,6 @@ export function ChatScreen({
     const timeout = setTimeout(() => setVoiceGlowVisible(false), VOICE_PANEL_FADE_MS);
     return () => clearTimeout(timeout);
   }, [streamingStt.active, voiceGlowVisible]);
-  useEffect(() => registerVoiceInputSession({
-    isArmed: streamingStt.isArmed,
-    isCapturing: streamingStt.isCapturing,
-    abort: streamingStt.abort,
-  }), [registerVoiceInputSession, streamingStt.abort, streamingStt.isArmed, streamingStt.isCapturing]);
   const openComposerFullscreenForView = useCallback(() => {
     setComposerInputFocused(false);
     setPopupComposerFullscreenOpen(true);

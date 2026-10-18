@@ -30,6 +30,7 @@ type Options = {
   onError: (message: string) => void;
   onDiagnostic?: (event: string, payload: Record<string, unknown>) => void;
   canStart?: boolean;
+  ownership?: { acquire: () => Promise<boolean>; isOwner: () => boolean };
   onSpeechBegin: () => void;
   replyLoading: boolean;
   ttsPlaybackActive: boolean;
@@ -46,8 +47,18 @@ export const CONTINUOUS_DICTATION_IDLE_MS = 2_000;
 type DoneMessage = Extract<StreamingSttServerMessage, { type: "done" }>;
 
 export function useStreamingStt(options: Options) {
-  const { transcript, setTranscript, onError } = options;
+  const { setTranscript, onError } = options;
   const [phase, setPhase] = useState<StreamingSttPhase>("idle");
+  const recordingRef = useRef(false);
+  const releaseFailedRef = useRef(false);
+  const releasePendingRef = useRef(false);
+  const preservedDraftRef = useRef<string | null>(null);
+  const externalDraftRef = useRef(options.transcript);
+  if (externalDraftRef.current !== options.transcript) {
+    externalDraftRef.current = options.transcript;
+    preservedDraftRef.current = null;
+  }
+  const startIntentRef = useRef(0);
   const sessionRef = useRef<StreamingSttSession | null>(null);
   const pendingAbortRef = useRef<Promise<void>>(Promise.resolve());
   const sessionVersionRef = useRef(0);
@@ -131,6 +142,7 @@ export function useStreamingStt(options: Options) {
   }, [clearReplyCycleWait]);
 
   const awaitReplyCycle = useCallback(() => {
+    if (latestRef.current.ownership && !latestRef.current.ownership.isOwner()) return;
     listeningRef.current = true;
     awaitingReplyCycleRef.current = true;
     sawReplyLoadingRef.current = latestRef.current.replyLoading;
@@ -178,23 +190,28 @@ export function useStreamingStt(options: Options) {
   const abortSession = useCallback(() => {
     const session = sessionRef.current;
     sessionRef.current = null;
+    recordingRef.current = false;
     candidateRef.current = null;
     correctionRequestRef.current?.controller.abort();
     correctionRequestRef.current = null;
     if (session) {
+      releasePendingRef.current = true;
       const queuedAt = Date.now();
       const version = sessionVersionRef.current;
       latestRef.current.onDiagnostic?.("stt_abort_queued", { version });
-      pendingAbortRef.current = pendingAbortRef.current.then(async () => {
+      pendingAbortRef.current = pendingAbortRef.current.catch(() => undefined).then(async () => {
         const startedAt = Date.now();
         latestRef.current.onDiagnostic?.("stt_abort_started", {
           version, queuedMs: startedAt - queuedAt,
         });
-        try { await session.abort(); }
-        finally { latestRef.current.onDiagnostic?.("stt_abort_completed", {
+        try { await session.abort(); releaseFailedRef.current = false; }
+        catch (error) { releaseFailedRef.current = true; throw error; }
+        finally { releasePendingRef.current = false; latestRef.current.onDiagnostic?.("stt_abort_completed", {
           version, durationMs: Date.now() - startedAt,
         }); }
-      }).catch(() => undefined);
+      });
+      // Background cleanup is handled here; callers can still await the failure.
+      void pendingAbortRef.current.catch(() => undefined);
     }
     return pendingAbortRef.current;
   }, []);
@@ -207,7 +224,7 @@ export function useStreamingStt(options: Options) {
     clearCorrection();
     clearTimer(retryTimerRef);
     pauseDictationIdle();
-    void abortSession();
+    void abortSession().catch(() => latestRef.current.onError("マイクの停止を確認できませんでした。"));
     setTranscript(draft ?? displayStreamingTranscript(transcriptStateRef.current));
     setPhase("idle");
     onError(message);
@@ -296,7 +313,7 @@ export function useStreamingStt(options: Options) {
     // Once the user edits, preserve that draft and leave automatic capture.
     if (candidateRef.current) {
       terminalRef.current = true;
-      void abortSession();
+      void abortSession().catch(() => latestRef.current.onError("マイクの停止を確認できませんでした。"));
     }
     preview.editing = true;
     preview.deadlineMs = null;
@@ -320,7 +337,7 @@ export function useStreamingStt(options: Options) {
       terminalRef.current = true;
       clearCorrection();
       clearReplyCycleWait();
-      void abortSession();
+      void abortSession().catch(() => latestRef.current.onError("マイクの停止を確認できませんでした。"));
       setPhase("idle");
       return false;
     }
@@ -339,7 +356,7 @@ export function useStreamingStt(options: Options) {
     clearCorrection();
     clearReplyCycleWait();
     terminalRef.current = true;
-    void abortSession();
+    void abortSession().catch(() => latestRef.current.onError("マイクの停止を確認できませんでした。"));
     if (preview && restoreDraft) latestRef.current.setTranscript(preview.text);
     setPhase("idle");
     return true;
@@ -409,7 +426,7 @@ export function useStreamingStt(options: Options) {
       const draft = displayStreamingTranscript(transcriptStateRef.current);
       transcriptStateRef.current = startStreamingTranscript(draft);
       latestRef.current.setTranscript(draft);
-      void abortSession();
+      void abortSession().catch(() => latestRef.current.onError("マイクの停止を確認できませんでした。"));
       setPhase("connecting");
     });
     return () => listener.remove();
@@ -444,7 +461,7 @@ export function useStreamingStt(options: Options) {
   }, []);
 
   const startSession = useCallback(() => {
-    if (!listeningRef.current) return;
+    if (!listeningRef.current || (latestRef.current.ownership && !latestRef.current.ownership.isOwner())) return;
     pauseDictationIdle();
     if (!appActiveRef.current || latestRef.current.canStart === false) {
       reportStartWait(appActiveRef.current ? "can_start_false" : "app_inactive");
@@ -492,7 +509,7 @@ export function useStreamingStt(options: Options) {
         return;
       }
       sessionRef.current = session;
-    });
+    }).catch(() => fail("マイクの終了を確認できませんでした。音声入力を開始できません。"));
   }, [fail, transport.connect]);
   startSessionRef.current = startSession;
 
@@ -536,6 +553,7 @@ export function useStreamingStt(options: Options) {
       return;
     }
     if (message.type === "ready") {
+      recordingRef.current = true;
       setPhase("recording");
       if (latestRef.current.continuousDictation && recognitionSegmentSeenRef.current) {
         dictationReadySinceRef.current ??= Date.now();
@@ -611,7 +629,7 @@ export function useStreamingStt(options: Options) {
         void abortSession().then(() => {
           if (version !== sessionVersionRef.current || !listeningRef.current) return;
           scheduleStart(RETRY_DELAY_MS * 2 ** (attempt - 1));
-        });
+        }).catch(() => finishFailure("マイクの停止を確認できませんでした。"));
         return;
       }
       fail(message.message || "音声認識に失敗しました。");
@@ -744,20 +762,17 @@ export function useStreamingStt(options: Options) {
       transcriptStateRef.current = startStreamingTranscript(draft);
       setPhase("connecting");
       scheduleStart();
-    });
+    }).catch(() => finishFailure("マイクの停止を確認できませんでした。"));
   }
 
-  const start = useCallback(() => {
-    if (!transport.supported) {
-      onError("この端末ではストリーミング音声入力を利用できません。");
-      return;
-    }
-    if (options.canStart === false) {
-      onError("現在は音声入力を開始できません。");
-      return;
-    }
-    if (phase !== "idle" || listeningRef.current) return;
-    transcriptStateRef.current = startStreamingTranscript(transcript);
+  const start = useCallback(async () => {
+    const intent = ++startIntentRef.current;
+    if (!transport.supported) throw new Error("この端末ではストリーミング音声入力を利用できません。");
+    if (latestRef.current.canStart === false) throw new Error("現在は音声入力を開始できません。");
+    if (listeningRef.current) return;
+    if (latestRef.current.ownership && !await latestRef.current.ownership.acquire()) return;
+    if (intent !== startIntentRef.current || (!appActiveRef.current && latestRef.current.ownership)) return;
+    transcriptStateRef.current = startStreamingTranscript(latestRef.current.transcript);
     draftAtStartRef.current = transcriptStateRef.current.baseText;
     dictationReadyElapsedRef.current = 0;
     dictationReadySinceRef.current = null;
@@ -766,22 +781,32 @@ export function useStreamingStt(options: Options) {
     errorRetriesRef.current = 0;
     listeningRef.current = true;
     startSession();
-  }, [onError, options.canStart, phase, startSession, transcript, transport.supported]);
+  }, [startSession, transport.supported]);
 
-  const stop = useCallback(() => {
-    if (correctionRequestRef.current || previewRef.current || candidateRef.current?.sending) { cancelCorrection(); return; }
-    if (phase === "idle" || !listeningRef.current) return;
-    latestRef.current.onDiagnostic?.("stt_stopped", { version: sessionVersionRef.current, phase });
+  // Disarm synchronously, including reply/correction waits, before releasing native audio.
+  const disarm = useCallback(async () => {
+    startIntentRef.current += 1;
+    const alreadyStopped = !listeningRef.current && !sessionRef.current && !previewRef.current && !correctionRequestRef.current;
+    const draft = previewRef.current?.text
+      ?? (listeningRef.current || sessionRef.current ? displayStreamingTranscript(transcriptStateRef.current) : preservedDraftRef.current ?? latestRef.current.transcript);
     listeningRef.current = false;
     terminalRef.current = true;
     sessionVersionRef.current += 1;
     clearReplyCycleWait();
+    clearCorrection();
     clearTimer(retryTimerRef);
     pauseDictationIdle();
-    void abortSession();
-    setTranscript(displayStreamingTranscript(transcriptStateRef.current));
+    if (!alreadyStopped) {
+      preservedDraftRef.current = draft;
+      latestRef.current.setTranscript(draft);
+    }
     setPhase("idle");
-  }, [abortSession, cancelCorrection, clearReplyCycleWait, phase, setTranscript]);
+    await abortSession();
+  }, [abortSession, clearCorrection, clearReplyCycleWait]);
+
+  const stop = useCallback(() => {
+    void disarm().catch(() => latestRef.current.onError("マイクの停止を確認できませんでした。"));
+  }, [disarm]);
 
   const sendManualTranscript = useCallback(async (text: string, onAccepted: () => boolean) => {
     if (!text.trim()) return;
@@ -812,29 +837,20 @@ export function useStreamingStt(options: Options) {
     }
   }, [awaitReplyCycle, cancelCorrection, clearReplyCycleWait, updateReplyCycle]);
 
-  const abort = useCallback(async () => {
-    clearCorrection();
-    latestRef.current.onDiagnostic?.("stt_aborted", {
-      version: sessionVersionRef.current,
-      sessionOpen: sessionRef.current !== null,
-    });
-    listeningRef.current = false;
-    terminalRef.current = true;
-    sessionVersionRef.current += 1;
-    clearReplyCycleWait();
-    clearTimer(retryTimerRef);
-    pauseDictationIdle();
-    await abortSession();
-    setTranscript(finalStreamingTranscript(transcriptStateRef.current));
-    setPhase("idle");
-  }, [abortSession, clearCorrection, clearReplyCycleWait, setTranscript]);
+  const abort = disarm;
 
   useEffect(() => {
     if (!listeningRef.current) reportStartWait(null, "cancelled");
   }, [phase, reportStartWait]);
 
   const isArmed = useCallback(() => listeningRef.current || sessionRef.current !== null, []);
-  const isCapturing = useCallback(() => sessionRef.current !== null, []);
+  const isCapturing = useCallback(() => recordingRef.current, []);
+  const isSessionOpen = useCallback(() => sessionRef.current !== null, []);
+  const getSnapshot = useCallback(() => ({
+    desired: listeningRef.current ? "listening" as const : "stopped" as const,
+    observed: releaseFailedRef.current || releasePendingRef.current ? "unknown" as const : recordingRef.current ? "recording" as const : sessionRef.current ? "starting" as const
+      : listeningRef.current ? "waiting" as const : "stopped" as const,
+  }), []);
 
   useEffect(() => () => {
     if (listeningRef.current || sessionRef.current) latestRef.current.onDiagnostic?.("stt_unmounted", {
@@ -850,7 +866,7 @@ export function useStreamingStt(options: Options) {
     clearCorrection();
     clearTimer(retryTimerRef);
     pauseDictationIdle();
-    void abortSession();
+    void abortSession().catch(() => latestRef.current.onError("マイクの停止を確認できませんでした。"));
   }, [abortSession, clearCorrection, clearReplyCycleWait]);
 
   useEffect(() => updateReplyCycle(), [options.replyLoading, options.ttsPlaybackActive,
@@ -858,6 +874,13 @@ export function useStreamingStt(options: Options) {
 
   return {
     active: phase !== "idle",
+    controlVersion: transport.controlVersion,
+    hasPermission: transport.hasPermission,
+    setInputMuted: async (muted: boolean) => {
+      const session = sessionRef.current;
+      if (!session?.setInputMuted) throw new Error("native_stt_mute_unsupported");
+      await session.setInputMuted(muted);
+    },
     phase,
     correctionPreview,
     sendCorrectionPreview,
@@ -869,6 +892,11 @@ export function useStreamingStt(options: Options) {
     stop,
     sendManualTranscript,
     abort,
+    disarm,
+    getSnapshot,
+    getDraft: () => previewRef.current?.text ?? (sessionRef.current
+      ? displayStreamingTranscript(transcriptStateRef.current) : preservedDraftRef.current ?? latestRef.current.transcript),
+    isSessionOpen,
     isArmed,
     isCapturing,
   };

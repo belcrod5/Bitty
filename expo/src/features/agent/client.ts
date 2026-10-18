@@ -620,6 +620,7 @@ export function startAgentTurnWithRawFallback(
         operationId: clientOperationId,
         payload: {
           backendId,
+          ...(options.appControlOrigin ? { appControlOrigin: options.appControlOrigin } : {}),
           ...(requestedSessionId ? { sessionRef: { backendId, nativeSessionId: requestedSessionId } } : { cwd: options.cwd }),
           input: { blocks: [{ type: "text", text: options.inputText }] },
           ...(capabilities.model?.select && options.model ? { model: options.model } : {}),

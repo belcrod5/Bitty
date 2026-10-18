@@ -355,6 +355,7 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
     async respondToChecklistCompletion(id, sourceHash, version, decision) {
       return (await context(idOf(id))).respondToChecklistCompletion(sourceHash, version, decision);
     },
+    async isBusy(id) { return (await context(idOf(id))).isBusy(); },
     async open(id) { return withCounts(id, await (await context(idOf(id))).open()); },
     async status(id, conversationId, operationId) {
       return withCounts(id, await (await context(idOf(id))).status(conversationId, operationId));

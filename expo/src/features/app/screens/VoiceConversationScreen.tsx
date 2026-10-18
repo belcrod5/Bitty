@@ -4,7 +4,8 @@ import { randomUUID } from "expo-crypto";
 import { AppState, Platform, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Reanimated, { FadeIn, FadeOut, runOnJS, useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
-import { useStreamingStt } from "../../stt/useStreamingStt";
+import { useControlledStreamingStt } from "../../appControl/useControlledStreamingStt";
+import { getVoiceControl } from "../../appControl/voiceControl";
 import { StreamingSttFooter, type StreamingSttFooterHandle } from "../components/StreamingSttFooter";
 import { VoiceHistoryBackdrop, getMacVoiceBlurView } from "../components/VoiceHistoryBackdrop";
 import { ContextUsageIndicator } from "../components/ContextUsageIndicator";
@@ -41,7 +42,7 @@ export type VoiceConversationPlayback = {
   runnerToken?: string;
 };
 
-export function VoiceConversationScreen(props: VoiceConversationPlayback & { onClose: () => void; initialOrchestratorId?: string }) {
+export function VoiceConversationScreen(props: VoiceConversationPlayback & { onClose: () => void; initialOrchestratorId?: string; initialControlSignal?: AbortSignal }) {
   const manager = useRunnerWebSocketManager();
   const { connected, generation } = useRunnerWebSocketSnapshot();
   const [list, setList] = useState<{ orchestrators: VoiceOrchestrator[]; selectedId: string } | null>(null);
@@ -143,6 +144,7 @@ export function VoiceConversationScreen(props: VoiceConversationPlayback & { onC
 }
 
 function VoiceConversationSession({
+  initialControlSignal,
   synthesizeSpeechStream,
   stopTtsPlayback,
   isTtsPlaybackActive,
@@ -159,6 +161,7 @@ function VoiceConversationSession({
   setHistoryExpanded,
 }: VoiceConversationPlayback & { onClose: () => void; orchestrator: VoiceOrchestrator;
   orchestrators: VoiceOrchestrator[]; onSelect: (id: string) => Promise<void>; onManage: () => void;
+  initialControlSignal?: AbortSignal;
   paused: boolean; historyExpanded: boolean; setHistoryExpanded: (value: boolean | ((current: boolean) => boolean)) => void }) {
   const { runnerUrl, runnerToken } = useChatScreen();
   const { logSessionDiag } = useConversation();
@@ -178,7 +181,7 @@ function VoiceConversationSession({
   const historyHeight = useSharedValue(historyExpanded ? screenHeight : 0);
   const historyDragActive = useSharedValue(false);
   const historyStyle = useAnimatedStyle(() => ({ height: historyHeight.value }));
-  const [initialStartPending, setInitialStartPending] = useState(true);
+  const [initialStartPending, setInitialStartPending] = useState(!initialControlSignal);
   const [synthesisStarting, setSynthesisStarting] = useState(false);
   const [synthesisRequestSettled, setSynthesisRequestSettled] = useState(false);
   const [transitioning, setTransitioning] = useState(false);
@@ -188,9 +191,11 @@ function VoiceConversationSession({
   const historyScrollRef = useRef<ScrollView>(null);
   const historyAtBottomRef = useRef(true);
   const mountedRef = useRef(true);
+  const voiceSurfaceIdRef = useRef("");
+  const manager = useRunnerWebSocketManager();
   const transitioningRef = useRef(false);
   const wasPausedRef = useRef(paused);
-  const startAnnouncedRef = useRef(false);
+  const startAnnouncedRef = useRef(Boolean(initialControlSignal));
   const voicePlaybackMessageIdRef = useRef("");
 
   useEffect(() => {
@@ -202,7 +207,8 @@ function VoiceConversationSession({
   }, [historyExpanded, historyHeight, reduceMotion, screenHeight]);
 
   const playSpeech = useCallback(async (text: string, operationId: string, jobId?: string) => {
-    if (!mountedRef.current || paused || transitioningRef.current) return;
+    if (!mountedRef.current || paused || transitioningRef.current
+      || (voiceSurfaceIdRef.current && !getVoiceControl(manager).allowsSpeech(voiceSurfaceIdRef.current, { kind: "orchestrator", orchestratorId: orchestrator.id }))) return;
     setSynthesisStarting(true);
     setSynthesisRequestSettled(false);
     voicePlaybackMessageIdRef.current = operationId;
@@ -241,7 +247,6 @@ function VoiceConversationSession({
       }
     });
   }, [isOverviewMode, voice.taskChecklist, voice.taskChecklistOverview]);
-  const manager = useRunnerWebSocketManager();
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => setAppActive(state === "active"));
     return () => subscription.remove();
@@ -276,7 +281,16 @@ function VoiceConversationSession({
   const replyLoading = voice.turnStatus === "accepted" || voice.turnStatus === "running";
   const playbackActive = synthesisStarting || isTtsPlaybackActive;
   const canStart = appActive && !paused && !transitioning && voice.ready && !replyLoading && voice.turnStatus !== "sending" && !playbackActive;
-  const streamingStt = useStreamingStt({
+  const streamingStt = useControlledStreamingStt({
+    target: { kind: "orchestrator", orchestratorId: orchestrator.id },
+    busy: replyLoading || voice.turnStatus === "sending",
+    announce: async (signal) => {
+      const messageId = `voice-start-${randomUUID()}`;
+      const cancel = () => { void stopTtsPlayback({ interruptStream: true, expectedMessageId: messageId, reason: "voice_control_cancelled" }); };
+      signal.addEventListener("abort", cancel, { once: true });
+      try { if (!signal.aborted) await playSpeech(`${orchestrator.name}に切り替えました。合図の後に話してください。`, messageId); }
+      finally { signal.removeEventListener("abort", cancel); }
+    },
     runnerUrl,
     runnerToken,
     transcript,
@@ -304,6 +318,7 @@ function VoiceConversationSession({
     ttsPlaybackActive: playbackActive,
     voiceInputDuringTtsAllowed: false,
   });
+  voiceSurfaceIdRef.current = streamingStt.surfaceId;
   useEffect(() => {
     if (streamingStt.phase !== "connecting" || canStart) return;
     logSessionDiag("stt_start_gate_changed", {
@@ -385,15 +400,18 @@ function VoiceConversationSession({
   }, [paused]);
 
   useEffect(() => {
-    if (!initialStartPending || !canStart) return;
+    if (streamingStt.active) { setInitialStartPending(false); return; }
+    if (!initialStartPending || !canStart || streamingStt.remotePending()) return;
     if (!startAnnouncedRef.current) {
       startAnnouncedRef.current = true;
-      void playSpeech(`${orchestrator.name}で開始しました`, `voice-start-${randomUUID()}`);
+      void streamingStt.claim().then((claimed) => {
+        if (claimed) return playSpeech(`${orchestrator.name}で音声入力を準備します`, `voice-start-${randomUUID()}`);
+      }).catch(() => voice.setError("音声入力を準備できませんでした。"));
       return;
     }
     setInitialStartPending(false);
     streamingStt.start();
-  }, [canStart, initialStartPending, orchestrator.name, playSpeech, streamingStt.start]);
+  }, [canStart, initialStartPending, orchestrator.name, playSpeech, streamingStt.start, synthesisRequestSettled, initialControlSignal]);
 
   useEffect(() => {
     if (synthesisStarting && (isTtsPlaybackActive || ttsUiStatus === "error"
@@ -447,7 +465,7 @@ function VoiceConversationSession({
   const statusText = voice.error || (transcript || editingTranscript ? undefined
     : voice.reply && ttsUiStatus === "error" ? "音声再生に失敗しました。"
       : voiceStatus ? animatedStatus
-          : initialStartPending || !streamingStt.active ? "録音を準備しています…" : "");
+          : initialStartPending ? "録音を準備しています…" : !streamingStt.active ? "音声入力は停止しています。再開するには画面を開き直してください。" : "");
   const historyMessages = useMemo(() => {
     if (!voice.ready) return [];
     const reply = voice.reply;

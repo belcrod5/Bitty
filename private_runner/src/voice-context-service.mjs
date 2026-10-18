@@ -2104,7 +2104,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
       }
       stage = "model_turn";
       let currentTurnContextUsage = null;
-      const result = await modelTurn({ input, items, instructions: prepared.instructions, onApproval,
+      const result = await modelTurn({ input, items, instructions: [prepared.instructions, hooks.appControl?.instruction].filter(Boolean).join("\n"), onApproval,
         checklistTurn: taskChecklistPath ? { clientOperationId, turnSeq } : undefined,
         resumeThreadId: preflight?.threadId, previousTurnId: preflight?.turnId,
         forceNewThread: preflight ? false : prepared.switching,
@@ -2229,6 +2229,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
       inFlightId = "";
       inFlightController = null;
       inFlightTask = null;
+      hooks.appControl?.finish();
       try { hooks.onSettled?.(); } catch {}
       if (!sharedMemoryStore) void exclusive(startSummary).catch(() => {});
     }
@@ -2618,6 +2619,8 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
         inFlightPartialText = "";
         inFlightController = new AbortController();
         const signal = inFlightController.signal;
+        hooks.appControl = hooks.acceptAppControl?.();
+        if (hooks.appControl) signal.addEventListener("abort", () => hooks.appControl.finish(), { once: true });
         try { hooks.onAccepted?.(); } catch {}
         inFlightTask = new Promise((resolve) => queueMicrotask(() => {
           void runTurn(id, text, turnSeq, notify, onApproval, hooks, signal).finally(resolve);

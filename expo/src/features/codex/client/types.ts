@@ -54,6 +54,7 @@ export type CodexAppServerTurnOptions = {
   backendId?: string;
   preferNeutralAgent?: boolean;
   rawFallbackBackendId?: string;
+  appControlOrigin?: import("../../appControl/voiceControl").AppControlOrigin;
   confirmWorkspaceAdmission?: (request: { canonicalRoot: string; warning: string }) => Promise<boolean>;
   wsUrl: string;
   wsToken?: string;
@@ -107,6 +108,7 @@ export type CodexAppServerRelayObserverOptions = {
   backendId?: string;
   preferNeutralAgent?: boolean;
   rawFallbackBackendId?: string;
+  appControlOrigin?: import("../../appControl/voiceControl").AppControlOrigin;
   threadId: string;
   resumeFromSeq?: number;
   // resumeFromSeqの由来relay(watermark)のrelayId。seqはrelayインスタンススコープの

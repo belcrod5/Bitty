@@ -211,6 +211,7 @@ function deferred<T>() {
 }
 
 async function createLiveTurn(options: {
+  appControlOrigin?: import("../appControl/voiceControl").AppControlOrigin;
   onApprovalRequest: (request: any) => Promise<any>;
   onApprovalRequestResolved?: (request: any) => void;
   onUserInputRequest?: import("../codex/client/types").CodexAppServerTurnOptions["onUserInputRequest"];
@@ -282,6 +283,7 @@ async function createLiveTurn(options: {
     runnerWebSocketManager: manager,
     wsUrl: "ws://runner.test",
     traceId: "trace-live",
+    appControlOrigin: options.appControlOrigin,
     inputText: "hello",
     cwd: "/workspace",
     onApprovalRequest: options.onApprovalRequest,
@@ -1271,4 +1273,15 @@ test("a restored neutral terminal preserves failed outcome", async () => {
     error: { message: "backend failed" },
     outcome: "failed",
   });
+});
+
+test("neutral turn carries the trusted app origin separately from user text", async () => {
+  const origin = { clientInstanceId: "device", connectionGeneration: "generation", surfaceId: "surface", ownerGeneration: 4,
+    target: { kind: "session" as const, sessionRef: { backendId: "codex", nativeSessionId: null }, cwd: "/workspace" } };
+  const live = await createLiveTurn({ onApprovalRequest: async () => "decline", appControlOrigin: origin });
+  const start = live.request.mock.calls.find(([message]) => message.op === "turn.start")![0] as { payload: Record<string, unknown> };
+  expect(start.payload.appControlOrigin).toEqual(origin);
+  expect(start.payload.input).toEqual({ blocks: [{ type: "text", text: "hello" }] });
+  live.emit("turn.completed", {});
+  await live.session.promise;
 });

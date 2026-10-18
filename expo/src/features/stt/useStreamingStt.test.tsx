@@ -1816,3 +1816,69 @@ test("partial-only recognition followed by a legacy retry and no speech does not
   expect(options.setTranscript).toHaveBeenLastCalledWith("手入力 途中だけ");
   expect(options.sendTranscript).not.toHaveBeenCalled();
 });
+
+test("disarm distinguishes connecting native session from recording and awaits shutdown", async () => {
+  const options = createOptions();
+  const { result } = await renderHook(() => useStreamingStt(options));
+  await act(async () => { await result.current.start(); });
+  expect(result.current.getSnapshot()).toEqual({ desired: "listening", observed: "starting" });
+  expect(result.current.isCapturing()).toBe(false);
+  expect(result.current.isSessionOpen()).toBe(true);
+  const session = mockSessions[0];
+  let release!: () => void;
+  session.abort.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+  let stopped = false;
+  await act(async () => { void result.current.disarm().then(() => { stopped = true; }); await Promise.resolve(); });
+  expect(result.current.isArmed()).toBe(false);
+  expect(stopped).toBe(false);
+  await emit(session, { type: "ready" });
+  expect(result.current.isCapturing()).toBe(false);
+  await act(async () => { release(); await Promise.resolve(); });
+  expect(stopped).toBe(true);
+});
+
+test("failed native release propagates and reports unknown instead of stopped", async () => {
+  const { result } = await renderHook(() => useStreamingStt(createOptions()));
+  const session = await openReady(result);
+  session.abort.mockRejectedValue(new Error("native_release_failed"));
+  await act(async () => { await expect(result.current.disarm()).rejects.toThrow("native_release_failed"); });
+  expect(result.current.getSnapshot()).toEqual({ desired: "stopped", observed: "unknown" });
+  await act(async () => { await expect(result.current.disarm()).rejects.toThrow("native_release_failed"); });
+  expect(session.abort).toHaveBeenCalledTimes(1);
+});
+
+test("disarm preserves an edited correction draft synchronously for handoff preflight", async () => {
+  jest.mocked(correctSttTranscript).mockResolvedValue({ changed: true, text: "corrected speech" });
+  const options = createOptions();
+  const { result } = await renderHook(() => useStreamingStt(options));
+  const session = await openReady(result);
+  await finishSpeech(session, "spoken text");
+  await act(async () => { result.current.beginCorrectionEdit(); result.current.setCorrectionText("my edited text"); });
+  await act(async () => { await result.current.disarm(); });
+  expect(result.current.getDraft()).toBe("my edited text");
+  expect(options.setTranscript).toHaveBeenLastCalledWith("my edited text");
+  await advanceTimers(30_000);
+  expect(options.sendTranscript).not.toHaveBeenCalled();
+});
+
+test("stop while idle invalidates delayed manual acceptance and never rearms after its reply", async () => {
+  const options = createOptions();
+  let accept!: () => void;
+  let finish!: () => void;
+  options.sendTranscript.mockImplementationOnce((_text, onAccepted) => {
+    accept = onAccepted;
+    return new Promise((resolve) => { finish = resolve; });
+  });
+  const hook = await renderHook((props: Options) => useStreamingStt(props), { initialProps: options });
+  let sending!: Promise<void>;
+  await act(async () => { sending = hook.result.current.sendManualTranscript("typed edit", () => true); });
+  expect(hook.result.current.phase).toBe("idle");
+  await act(async () => { await hook.result.current.disarm(); });
+  await act(async () => { accept(); finish(); await sending; });
+  await hook.rerender({ ...options, replyLoading: true });
+  await hook.rerender({ ...options, replyLoading: false });
+  await advanceTimers(REPLY_CYCLE_START_TIMEOUT_MS + TTS_START_GRACE_MS);
+  expect(mockSessions).toHaveLength(0);
+  expect(hook.result.current.isArmed()).toBe(false);
+  expect(hook.result.current.phase).toBe("idle");
+});

@@ -1,3 +1,4 @@
+import { createAppControlService, createAppControlHttpHandler } from "./app-control-service.mjs";
 import { createAppStatusSnapshot } from "./app-status-snapshot.mjs";
 import { createWidgetRefreshNotifier } from "./widget-refresh-notifier.mjs";
 import { createClientAppLogWriter } from "./client-app-log-writer.mjs";
@@ -1594,6 +1595,28 @@ const agentRuntime = createPrivateRunnerAgentRuntime({
 });
 ({ service: agentService } = agentRuntime);
 const { httpHandler: agentHttpHandler, ownerSubjectId: agentOwnerSubjectId } = agentRuntime;
+const appControlService = createAppControlService({
+  sendEnvelope: sendRunnerWsEnvelope,
+  validateTarget: async (target, context) => {
+    if (target.kind === "session") {
+      try { return await agentService.validateAppControlTarget(target, context); }
+      catch (error) {
+        if (error?.code === "session_busy") throw Object.assign(new Error("Target is busy"), { code: "target_busy" });
+        throw Object.assign(new Error("Target was not found or approved"), { code: "target_not_found" });
+      }
+    }
+    const { orchestrators } = await voiceContextService.list();
+    if (!orchestrators.some((entry) => entry.id === target.orchestratorId)) {
+      throw Object.assign(new Error("Target was not found"), { code: "target_not_found" });
+    }
+    if (context.originTarget?.orchestratorId !== target.orchestratorId
+      && await voiceContextService.isBusy(target.orchestratorId)) {
+      throw Object.assign(new Error("Target is busy"), { code: "target_busy" });
+    }
+  },
+});
+const appControlHttpHandler = createAppControlHttpHandler({ service: appControlService,
+  runnerToken: RUNNER_TOKEN, parseAuthToken, json, readJsonBody, subjectId: agentOwnerSubjectId });
 const codexRawSessionOwnership = createCodexRawSessionOwnership({
   bindSession: bindAgentSession,
   getSessionBinding: getAgentSessionBinding,
@@ -6436,6 +6459,7 @@ const handleRunnerRequest = async (req, res) => {
     }
   }
 
+  if (await appControlHttpHandler(req, res, reqUrl, pathname)) return;
   if (await agentHttpHandler(req, res, reqUrl, pathname)) return;
 
   if (req.method === "GET" && pathname === "/directories") {
@@ -7189,6 +7213,7 @@ runnerWsServer.on("connection", (ws, req) => {
     ws,
     sendEnvelope: sendRunnerWsEnvelope,
     displayCaller: String(req?.headers?.["x-bitty-display-caller"] || "").trim(),
+    appControl: appControlService,
   });
 
   function sendVoiceError(message, error) {
@@ -7327,7 +7352,7 @@ runnerWsServer.on("connection", (ws, req) => {
     }
     if (message.op !== "turn.start" || !Object.hasOwn(message.payload || {}, "logicalConversationId")) return false;
     const operationId = message.operationId;
-    const { tts: voiceTts, ...voicePayload } = message.payload || {};
+    const { tts: voiceTts, appControlOrigin, ...voicePayload } = message.payload || {};
     const onApproval = async (request, signal) => {
       const orchestratorId = voicePayload.orchestratorId || "main";
       const { orchestrators } = await voiceContextService.list();
@@ -7347,6 +7372,10 @@ runnerWsServer.on("connection", (ws, req) => {
       llmJobEmit(voiceJob, { type: "error", error: "stream_tts_failed", message: detail, detail });
     };
     const hooks = {
+      acceptAppControl: () => appControlService.acceptTurn(ws, appControlOrigin, {
+        target: { kind: "orchestrator", orchestratorId: voicePayload.orchestratorId || "main" },
+        callerOperationId: operationId, subjectId: agentOwnerSubjectId,
+      }),
       onUserInput: (request, signal) => voiceRequests.request(operationId, request,
         voicePayload.orchestratorId || "main", "", signal),
       onAccepted: (orchestratorTts) => {
@@ -7697,6 +7726,7 @@ runnerWsServer.on("connection", (ws, req) => {
     }
 
     const message = parsed.message;
+    if (appControlService.handleMessage(ws, message)) return;
     if (message.channel === "control" && message.op === "orchestrator_activity_snapshot") {
       sendRunnerWsEnvelope(ws, { channel: "control", op: "orchestrator_activity_snapshot",
         requestId: message.requestId || "", payload: orchestratorActivity.snapshot() });
@@ -8117,6 +8147,7 @@ runnerWsServer.on("connection", (ws, req) => {
 
   ws.on("close", () => {
     voiceRequests.close();
+    appControlService.disconnect(ws);
     agentConnection.detach();
     detachRunnerWsTtsJobs();
     runnerWsActiveClients.delete(ws);

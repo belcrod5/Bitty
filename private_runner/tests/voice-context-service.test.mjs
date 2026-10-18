@@ -4130,3 +4130,20 @@ test("pending summary write failure makes the store fail closed", async (t) => {
     input: { blocks: [{ type: "text", text: "no dispatch" }] },
   } }, () => {}), { code: "voice_store_unavailable" });
 });
+
+test("control reference is injected into accepted dialogue only, not preflight or summary, then invalidated", async (t) => {
+  const { service, conversation, codex } = await fixture(t);
+  let accepted = 0; let finished = 0;
+  await complete(service, conversation, "音声を止めて", randomUUID(), async () => "decline", {
+    acceptAppControl: () => { accepted++; return { instruction: "Bitty app controlContext: ctx_dialogue_only.", finish: () => { finished++; } }; },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(accepted, 1); assert.equal(finished, 1);
+  const instructionCalls = codex.calls.filter((call) => ["thread/start", "thread/resume"].includes(call.method));
+  assert.equal(instructionCalls.filter((call) => call.params.developerInstructions?.includes("ctx_dialogue_only")).length, 1);
+  assert.equal(instructionCalls.find((call) => call.params.developerInstructions?.includes("ctx_dialogue_only")).params.approvalPolicy, "on-request");
+  assert.equal(JSON.stringify(await service.history()).includes("ctx_dialogue_only"), false);
+  await complete(service, conversation, "続きです");
+  assert.equal(codex.calls.filter((call) => ["thread/start", "thread/resume"].includes(call.method)
+    && call.params.developerInstructions?.includes("ctx_dialogue_only")).length, 1);
+});

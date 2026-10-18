@@ -1405,6 +1405,7 @@ test("Claude Backend sets MCP timeout env vars only for the interactive profile"
   ], { backendOverrides: { environment: {
     PATH: "/test/bin",
     BITTY_RUNNER_URL: "http://127.0.0.1:8788",
+    BITTY_REPO_ROOT: "/test/bitty-repository",
     BITTY_RUNNER_TOKEN_FILE: "/test/bitty-token",
     RUNNER_TOKEN_FILE: "/test/runner-token",
     UNSAFE_SECRET: "not-forwarded",
@@ -1421,6 +1422,7 @@ test("Claude Backend sets MCP timeout env vars only for the interactive profile"
   assert.equal(interactiveRun.calls[0].options.env.MCP_TIMEOUT, "86400000");
   assert.equal(interactiveRun.calls[0].options.env.BITTY_RUNNER_TOKEN_FILE, "/test/bitty-token");
   assert.equal(interactiveRun.calls[0].options.env.RUNNER_TOKEN_FILE, "/test/runner-token");
+  assert.equal(interactiveRun.calls[0].options.env.BITTY_REPO_ROOT === "/test/bitty-repository", true);
   assert.equal("UNSAFE_SECRET" in interactiveRun.calls[0].options.env, false);
 
   const dontAskRun = backendWith([
@@ -1852,4 +1854,22 @@ test("Claude Backend interactive permission: interrupting the run denies pending
   assert.equal(result.outcome, "interrupted");
   assert.equal((await socketReply).decision, "deny");
   await assert.rejects(fs.access(bridgeEnv.BITTY_PERMISSION_SOCKET));
+});
+
+test("Claude control reference is invocation scoped in system prompt and never mutates environment", async () => {
+  const environmentBefore = { ...process.env };
+  for (const trustedInstructions of ["Bitty app controlContext: ctx_first.", "Bitty app controlContext: ctx_second.", ""]) {
+    const { backend, calls, child } = backendWith([
+      { type: "system", subtype: "init", session_id: SESSION_ID },
+      { type: "result", subtype: "success", result: "ok", session_id: SESSION_ID },
+    ], { backendOverrides: { developerInstructions: "base history instruction" } });
+    let stdin = ""; child.stdin.on("data", (chunk) => { stdin += chunk; });
+    await backend.startTurn({ runId: "run-control", cwd: "/work/project", trustedInstructions,
+      input: { blocks: [{ type: "text", text: "stop voice input" }] }, resolveSession: async () => {}, emit: () => {} });
+    const promptIndex = calls[0].args.indexOf("--append-system-prompt");
+    assert.equal(calls[0].args[promptIndex + 1], ["base history instruction", trustedInstructions].filter(Boolean).join("\n"));
+    assert.equal(stdin.includes("ctx_"), false);
+    assert.equal(JSON.stringify(calls[0].options.env).includes("ctx_"), false);
+  }
+  assert.equal(JSON.stringify({ ...process.env }) === JSON.stringify(environmentBefore), true, "process environment must be unchanged");
 });

@@ -6,6 +6,7 @@ import { parseLlmDirectory } from "../utils/settingsParsers";
 
 export type OpenSessionHistoryPopupParams = {
   backendId?: string;
+  signal?: AbortSignal;
   sessionId: string;
   source: LlmSessionSource;
   directory?: string;
@@ -18,6 +19,7 @@ export function useOpenSessionHistoryPopup(options: {
   resolveContext: (sessionId: string, backendId?: string) => SessionHistoryContext | null;
   hydrate: (params: {
     panelId: string;
+    signal?: AbortSignal;
     backendId: string;
     sessionId: string;
     directory: string;
@@ -55,6 +57,7 @@ export function useOpenSessionHistoryPopup(options: {
     log,
   } = options;
   return useCallback(async (params: OpenSessionHistoryPopupParams) => {
+    if (params.signal?.aborted) return false;
     const sessionId = parseOptionalSessionId(params.sessionId);
     if (!sessionId) {
       showToast("assistant", "セッションIDが不明なため開けませんでした。");
@@ -81,6 +84,7 @@ export function useOpenSessionHistoryPopup(options: {
     try {
       const result = await hydrate({
         panelId,
+        signal: params.signal,
         backendId,
         sessionId,
         directory,
@@ -93,7 +97,7 @@ export function useOpenSessionHistoryPopup(options: {
         reasoningEffort: context?.reasoningEffort,
         contextUsedPct: context?.contextUsedPct,
       });
-      if (result === "superseded") return false;
+      if (params.signal?.aborted || result === "superseded") return false;
       if (result === "failed") {
         showToast("assistant", "セッションをポップアップに読み込めませんでした。");
         requestClose({ clearHighlight: true });

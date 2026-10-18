@@ -1,15 +1,17 @@
 import { useCallback, useRef } from "react";
+import { NativeModules } from "react-native";
 import { LIVE_PCM_FORMAT, useLivePcmCapture } from "./useLivePcmCapture.macos";
 import { openStreamingSttSocket, parseStreamingSttMessage, pcmRms, sendPcm } from "./streamingSttClient";
 import type { StreamingSttSession, StreamingSttTransportCallbacks } from "./streamingSttTransport";
 
 export function useStreamingSttTransport() {
-  const currentRef = useRef<{ socket: WebSocket; callbacks: StreamingSttTransportCallbacks; stopping: boolean } | null>(null);
+  const currentRef = useRef<{ socket: WebSocket; callbacks: StreamingSttTransportCallbacks; stopping: boolean; muted: boolean } | null>(null);
   const pendingCaptureStartRef = useRef<Promise<void> | null>(null);
   const captureActiveRef = useRef(false);
+  const captureRequestedRef = useRef(false);
   const capture = useLivePcmCapture((pcm) => {
     const current = currentRef.current;
-    if (!current || current.stopping || !captureActiveRef.current || current.socket.readyState !== WebSocket.OPEN) return;
+    if (!current || current.stopping || current.muted || !captureActiveRef.current || current.socket.readyState !== WebSocket.OPEN) return;
     try {
       sendPcm(current.socket, pcm);
       current.callbacks.onSample(pcmRms(pcm));
@@ -24,14 +26,15 @@ export function useStreamingSttTransport() {
 
   const stopCapture = useCallback(async () => {
     if (pendingCaptureStartRef.current) await pendingCaptureStartRef.current.catch(() => undefined);
-    if (!captureActiveRef.current) return;
+    if (!captureRequestedRef.current) return;
     captureActiveRef.current = false;
-    await captureStop().catch(() => undefined);
+    await captureStop();
+    captureRequestedRef.current = false;
   }, [captureStop]);
 
   const connect = useCallback((runnerUrl: string, runnerToken: string, callbacks: StreamingSttTransportCallbacks): StreamingSttSession => {
     const socket = openStreamingSttSocket(runnerUrl, runnerToken);
-    const current = { socket, callbacks, stopping: false };
+    const current = { socket, callbacks, stopping: false, muted: false };
     currentRef.current = current;
     socket.onopen = () => {
       if (currentRef.current !== current) return;
@@ -48,11 +51,10 @@ export function useStreamingSttTransport() {
       const pending = (async () => {
         if (pendingCaptureStartRef.current) await pendingCaptureStartRef.current.catch(() => undefined);
         if (currentRef.current !== current || current.stopping) return;
+        captureRequestedRef.current = true;
         await captureStart();
-        if (currentRef.current !== current || current.stopping) {
-          await captureStop().catch(() => undefined);
-          return;
-        }
+        // Abort owns release and awaits this startup before stopping native capture.
+        if (currentRef.current !== current || current.stopping) return;
         captureActiveRef.current = true;
         callbacks.onMessage(event.data);
       })();
@@ -81,6 +83,7 @@ export function useStreamingSttTransport() {
       await stopCapture();
     };
     return {
+      setInputMuted: async (muted: boolean) => { current.muted = muted; },
       stop: async () => {
         if (currentRef.current !== current) return;
         current.stopping = true;
@@ -93,5 +96,6 @@ export function useStreamingSttTransport() {
     };
   }, [captureStart, captureStop, stopCapture]);
 
-  return { supported: true, connect };
+  return { supported: true, controlVersion: NativeModules.BittyMicrophone?.hasPermission ? 1 : 0,
+    hasPermission: () => NativeModules.BittyMicrophone?.hasPermission?.() ?? Promise.resolve(false), connect };
 }

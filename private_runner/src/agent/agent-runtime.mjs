@@ -265,8 +265,8 @@ export function createPrivateRunnerAgentRuntime({
     workspaceAdmission,
     httpHandler,
     close: async () => Promise.allSettled([codexBackend.close(), claudeBackend.close()]),
-    createWsConnection: ({ ws, sendEnvelope, displayCaller }) => createAgentWsConnection({
-      service, workspaceAdmission, ws, sendEnvelope, subjectId, activity, displayCaller,
+    createWsConnection: ({ ws, sendEnvelope, displayCaller, appControl }) => createAgentWsConnection({
+      service, workspaceAdmission, ws, sendEnvelope, subjectId, activity, displayCaller, appControl,
     }),
   };
 }

@@ -11,7 +11,12 @@ public class BittyStreamingSttModule: Module {
     Name("BittyStreamingStt")
     Constant("captureDiagnosticsVersion") { 1 }
     Constant("continuationVersion") { 1 }
+    Constant("controlVersion") { 1 }
     Events("BittyStreamingSttMessage", "BittyStreamingSttSample", "BittyStreamingSttError", "BittyStreamingSttClose", "BittyStreamingSttDiagnostic")
+
+    AsyncFunction("hasPermission") {
+      AVAudioSession.sharedInstance().recordPermission == .granted
+    }
 
     AsyncFunction("start") { (urlString: String, headers: [String: String], promise: Promise) in
       self.queue.async {
@@ -55,6 +60,13 @@ public class BittyStreamingSttModule: Module {
           return
         }
         current.commit(revision: revision, promise: promise)
+      }
+    }
+
+    AsyncFunction("setInputMuted") { (muted: Bool, promise: Promise) in
+      self.queue.async {
+        self.current?.setInputMuted(muted)
+        promise.resolve(nil)
       }
     }
 
@@ -109,6 +121,7 @@ private final class StreamingSession: NSObject, URLSessionWebSocketDelegate {
   private var sending = false
   private var ready = false
   private var stopping = false
+  private var inputMuted = false
   private var stopPromise: Promise?
   private var commitPromise: Promise?
   private var commitRevision: Int?
@@ -233,7 +246,6 @@ private final class StreamingSession: NSObject, URLSessionWebSocketDelegate {
             }
             self.ready = true
             self.diagnose("ready_received")
-            self.emit("BittyStreamingSttMessage", ["data": text])
             self.beginCapture()
           } else if type == "committed" {
             guard let revision = json["revision"] as? Int, revision == self.commitRevision,
@@ -322,6 +334,7 @@ private final class StreamingSession: NSObject, URLSessionWebSocketDelegate {
           self.diagnose("engine_starting", ["inputSampleRate": inputFormat.sampleRate, "inputChannels": inputFormat.channelCount])
           try engine.start()
           self.diagnose("engine_started")
+          self.emit("BittyStreamingSttMessage", ["data": "{\"type\":\"ready\"}"])
         } catch {
           self.fail("マイクを開始できませんでした。")
         }
@@ -367,8 +380,13 @@ private final class StreamingSession: NSObject, URLSessionWebSocketDelegate {
     }
   }
 
+  func setInputMuted(_ muted: Bool) {
+    inputMuted = muted
+    partialPcm.removeAll()
+  }
+
   private func convert(_ input: AVAudioPCMBuffer) {
-    guard !terminal, let converter, let outputFormat else { return }
+    guard !terminal, !inputMuted, let converter, let outputFormat else { return }
     let capacity = AVAudioFrameCount(ceil(Double(input.frameLength) * 16_000 / input.format.sampleRate)) + 64
     guard let converted = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else {
       fail("マイクの音声データを読み取れませんでした。")

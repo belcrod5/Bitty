@@ -989,3 +989,22 @@ test("usage quota failures preserve their precise code through execution and age
     return true;
   });
 });
+
+test("per-invocation control instruction replaces prior reference on Codex fresh and resumed requests without input injection", async () => {
+  for (const sessionRef of [null, { backendId: "codex", nativeSessionId: "thread-existing" }]) {
+    const clients = [];
+    const backend = createCodexBackend({ createClient: () => { const client = fakeClient(); client.close = () => {}; clients.push(client); return client; },
+      resolveSessionCwd: async () => "/work/project", listSessions: async () => ({ sessions: [] }), readHistory: async () => ({ items: [] }),
+      developerInstructions: "base history instruction" });
+    const input = { blocks: [{ type: "text", text: "stop voice input" }] };
+    for (const trustedInstructions of ["Bitty app controlContext: ctx_first.", "Bitty app controlContext: ctx_second.", ""]) {
+      await backend.startTurn({ runId: `run-${clients.length}`, sessionRef, cwd: "/work/project", input,
+        trustedInstructions, resolveSession: async () => {}, emit: () => {} });
+      const method = sessionRef ? "thread/resume" : "thread/start";
+      const instruction = clients.at(-1).calls.find((call) => call.method === method).params.developerInstructions;
+      assert.equal(instruction, ["base history instruction", trustedInstructions].filter(Boolean).join("\n"));
+      const turnInput = clients.at(-1).calls.find((call) => call.method === "turn/start").params.input;
+      assert.equal(JSON.stringify(turnInput).includes("ctx_"), false);
+    }
+  }
+});

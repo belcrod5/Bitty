@@ -176,7 +176,7 @@ export function createAgentHttpHandler({
   };
 }
 
-export function createAgentWsConnection({ service, ws, sendEnvelope, subjectId, workspaceAdmission, activity, displayCaller = "" }) {
+export function createAgentWsConnection({ service, ws, sendEnvelope, subjectId, workspaceAdmission, activity, displayCaller = "", appControl }) {
   const subscriptions = new Map();
 
   function sendError(message, error) {
@@ -264,7 +264,8 @@ export function createAgentWsConnection({ service, ws, sendEnvelope, subjectId, 
       void service.startTurn({
         ...payload,
         clientOperationId: payload.clientOperationId || message.operationId,
-      }, { subjectId, regularChat: true }).then((run) => {
+      }, { subjectId, regularChat: true, acceptAppControl: appControl
+        ? (options) => appControl.acceptTurn(ws, payload.appControlOrigin, options) : undefined }).then((run) => {
         try { activity?.observeRun({ runId: run.runId, caller: displayCaller, sessionRef: payload.sessionRef,
           service, subjectId, result: run.result, pendingId }); } catch {}
         if (run.result) {

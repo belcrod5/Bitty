@@ -124,3 +124,37 @@ test("reports PCM backpressure and capture error through the session", async () 
   expect(handlers.onError).toHaveBeenCalledWith("マイクの音声データを読み取れませんでした。");
   await act(async () => { await session.abort(); });
 });
+
+test("Mac capture shutdown failures are returned to the caller", async () => {
+  const { result } = await renderHook(() => useStreamingSttTransport());
+  const session = result.current.connect("http://runner.test", "token", callbacks());
+  await act(async () => { mockSockets[0].emit({ type: "ready" }); await Promise.resolve(); });
+  mockCaptureStop.mockRejectedValue(new Error("capture_stop_failed"));
+  await expect(session.abort()).rejects.toThrow("capture_stop_failed");
+});
+
+test("ready cue mute drops PCM while native capture remains active", async () => {
+  const { result } = await renderHook(() => useStreamingSttTransport());
+  const session = result.current.connect("http://runner.test", "token", callbacks());
+  await act(async () => { mockSockets[0].emit({ type: "ready" }); await Promise.resolve(); });
+  await session.setInputMuted!(true);
+  mockPcmHandler(new Uint8Array([0, 0]));
+  expect(mockSendPcm).not.toHaveBeenCalled();
+  await session.setInputMuted!(false);
+  mockPcmHandler(new Uint8Array([0, 0]));
+  expect(mockSendPcm).toHaveBeenCalledTimes(1);
+  await session.abort();
+});
+
+test("canceled Mac startup still propagates a failed native stop", async () => {
+  let finishStart!: () => void;
+  mockCaptureStart.mockImplementationOnce(() => new Promise((resolve) => { finishStart = resolve; }));
+  const { result } = await renderHook(() => useStreamingSttTransport());
+  const session = result.current.connect("http://runner.test", "token", callbacks());
+  await act(async () => { mockSockets[0].emit({ type: "ready" }); await Promise.resolve(); });
+  mockCaptureStop.mockRejectedValueOnce(new Error("late_capture_stop_failed"));
+  const stopped = session.abort();
+  finishStart();
+  await expect(stopped).rejects.toThrow("late_capture_stop_failed");
+  expect(mockCaptureStop).toHaveBeenCalledTimes(1);
+});

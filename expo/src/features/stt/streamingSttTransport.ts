@@ -9,6 +9,7 @@ export type StreamingSttTransportCallbacks = {
 
 export type StreamingSttSession = {
   commit?: (revision: number) => Promise<boolean>;
+  setInputMuted?: (muted: boolean) => Promise<void>;
   stop: () => Promise<void>;
   abort: () => Promise<void>;
 };

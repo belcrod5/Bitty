@@ -71,7 +71,7 @@ const mockVoice = {
 const mockStt = {
   active: false,
   phase: "idle",
-  start: jest.fn(),
+  start: jest.fn(async () => undefined),
   stop: jest.fn(),
   cancelCorrection: jest.fn(),
   sendCorrectionPreview: jest.fn(),
@@ -82,6 +82,12 @@ const mockStt = {
     parts: { kind: "same"; text: string }[] } | null,
   sendManualTranscript: jest.fn(async (_text: string, onAccepted: () => boolean) => { onAccepted(); }),
   abort: mockAbort,
+  disarm: () => mockAbort(),
+  getSnapshot: () => ({ desired: mockStt.active ? "listening" : "stopped", observed: mockStt.phase === "recording" ? "recording" : "stopped" }),
+  getDraft: () => "",
+  controlVersion: 0,
+  hasPermission: async () => true,
+  setInputMuted: async () => undefined,
 };
 let mockOnCompleted: ((text: string, operationId: string) => void) | null = null;
 let mockOnJob: ((jobId: string, operationId: string) => void) | null = null;
@@ -360,7 +366,7 @@ test("announces the orchestrator once with its voice before starting STT after p
   mockVoice.ready = true;
   await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
   expect(mockSynthesizeSpeechStream).toHaveBeenCalledTimes(1);
-  expect(mockSynthesizeSpeechStream).toHaveBeenCalledWith("メインで開始しました", {
+  expect(mockSynthesizeSpeechStream).toHaveBeenCalledWith("メインで音声入力を準備します", {
     scope: "voice", messageId: expect.stringMatching(/^voice-start-/u), ttsProvider: "google", voiceId: "ja-JP-Neural2-B",
   });
   expect(mockStt.start).not.toHaveBeenCalled();
@@ -401,7 +407,7 @@ test("waits for existing chat playback before announcing and starting the microp
   expect(mockStopTtsPlayback).not.toHaveBeenCalled();
   await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
   expect(mockSynthesizeSpeechStream).toHaveBeenCalledTimes(1);
-  expect(mockSynthesizeSpeechStream).toHaveBeenCalledWith("メインで開始しました", expect.any(Object));
+  expect(mockSynthesizeSpeechStream).toHaveBeenCalledWith("メインで音声入力を準備します", expect.any(Object));
   expect(mockStt.start).toHaveBeenCalledTimes(1);
   expect(mockStopTtsPlayback).not.toHaveBeenCalled();
   await screen.unmount();
@@ -1022,7 +1028,7 @@ test("stopping before voice.open is ready closes the footer and prevents recordi
   const screen = await render(<ClosableVoiceScreen />);
   await fireEvent.press(screen.getByTestId("streaming-stt-stop"));
 
-  expect(mockStt.stop).toHaveBeenCalledTimes(1);
+  expect(mockAbort).toHaveBeenCalled();
   expect(mockOnClose).toHaveBeenCalledTimes(1);
   expect(screen.queryByTestId("streaming-stt-footer")).toBeNull();
   expect(screen.queryByTestId("voice-conversation-transition")).toBeNull();
@@ -1040,7 +1046,7 @@ test("stopping active recording closes the footer immediately", async () => {
   const screen = await render(<ClosableVoiceScreen />);
   await fireEvent.press(screen.getByTestId("streaming-stt-stop"));
 
-  expect(mockStt.stop).toHaveBeenCalledTimes(1);
+  expect(mockAbort).toHaveBeenCalled();
   expect(mockVoice.interrupt).toHaveBeenCalledTimes(1);
   expect(screen.queryByTestId("streaming-stt-footer")).toBeNull();
   expect(mockAbort).toHaveBeenCalled();
@@ -1050,7 +1056,7 @@ test("editing before voice is ready prevents late auto-start and sends only the 
   mockVoice.ready = false;
   const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
   await act(async () => { mockFooterProps?.onFocus?.(); });
-  expect(mockStt.stop).toHaveBeenCalledTimes(1);
+  expect(mockAbort).toHaveBeenCalled();
   await act(async () => { mockFooterProps?.onChangeText?.("typed draft"); });
   expect(mockFooterProps?.draftTranscript).toBe("typed draft");
   mockVoice.ready = true;
@@ -1335,7 +1341,7 @@ test("switching keeps history open and stops the old recording before selecting 
   expect(screen.getByTestId("voice-orchestrator-strip")).toBeTruthy();
   await act(async () => { oldReply?.("late old reply", "old-operation"); });
   expect(mockSynthesizeSpeechStream).toHaveBeenCalledTimes(2);
-  expect(mockSynthesizeSpeechStream).toHaveBeenLastCalledWith("調査で開始しました", {
+  expect(mockSynthesizeSpeechStream).toHaveBeenLastCalledWith("調査で音声入力を準備します", {
     scope: "voice", messageId: expect.stringMatching(/^voice-start-/u), ttsProvider: "aivisspeech", voiceId: "",
   });
   await screen.unmount();
@@ -1454,9 +1460,25 @@ test("a widget voice target waits for foreground before announcing and recording
   expect(mockSynthesizeSpeechStream).not.toHaveBeenCalled();
   expect(mockStt.start).not.toHaveBeenCalled();
   await act(async () => { changeState?.("active"); });
-  expect(mockSynthesizeSpeechStream).toHaveBeenCalledWith("調査で開始しました", expect.any(Object));
+  expect(mockSynthesizeSpeechStream).toHaveBeenCalledWith("調査で音声入力を準備します", expect.any(Object));
   expect(mockStt.start).toHaveBeenCalledTimes(1);
   await act(async () => { changeState?.("active"); });
   expect(mockStt.start).toHaveBeenCalledTimes(1);
   screen.unmount();
+});
+
+test("a remote handoff destination never auto-starts after a rejected operation becomes ready", async () => {
+  const controller = new AbortController();
+  mockVoice.ready = false;
+  mockVoice.turnStatus = "running";
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose}
+    initialOrchestratorId="other" initialControlSignal={controller.signal} />);
+  expect(mockStt.start).not.toHaveBeenCalled();
+  mockVoice.ready = true;
+  mockVoice.turnStatus = "completed";
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose}
+    initialOrchestratorId="other" initialControlSignal={controller.signal} />);
+  expect(mockStt.start).not.toHaveBeenCalled();
+  expect(mockSynthesizeSpeechStream).not.toHaveBeenCalled();
+  await screen.unmount();
 });

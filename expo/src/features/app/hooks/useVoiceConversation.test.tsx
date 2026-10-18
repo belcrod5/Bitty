@@ -1,3 +1,5 @@
+import { getVoiceControl } from "../../appControl/voiceControl";
+import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react-native";
 import { Alert } from "react-native";
 import { randomUUID } from "expo-crypto";
@@ -1156,4 +1158,24 @@ test.each(["response", "rejection"])("a completed turn during reopen status %s s
   expect(result.current.contextStats?.memoryCharacterCount).toBe(30);
   expect(result.current.error).toBe("");
   expect(onCompleted).not.toHaveBeenCalled();
+});
+
+test("orchestrator input captures its own trusted origin outside the transcript", async () => {
+  const origin = { clientInstanceId: "device", connectionGeneration: "generation", surfaceId: "voice-screen", ownerGeneration: 4,
+    target: { kind: "orchestrator" as const, orchestratorId: "main" } };
+  const capture = jest.spyOn(getVoiceControl(mockManager as unknown as RunnerWebSocketManager), "origin").mockReturnValue(origin);
+  try {
+    const hook = await renderHook(() => useVoiceConversation(jest.fn()));
+    await waitFor(() => expect(hook.result.current.ready).toBe(true));
+    let sending!: Promise<void>;
+    await act(async () => { sending = hook.result.current.sendTranscript("相談", jest.fn()); });
+    const request = mockManager.request.mock.calls.find(([message]) => message.op === "turn.start")![0] as unknown as { payload: Record<string, unknown> };
+    expect(request.payload.appControlOrigin).toEqual(origin);
+    expect(request.payload.input).toEqual({ blocks: [{ type: "text", text: "相談" }] });
+    expect(capture).toHaveBeenCalledWith(undefined, origin.target);
+    await act(async () => { handlers.get("voice.turn.completed")?.({ payload: {
+      logicalConversationId: conversationId, clientOperationId: operationId, text: "reply", ...initialStats,
+    } }); await sending; });
+    await hook.unmount();
+  } finally { capture.mockRestore(); }
 });

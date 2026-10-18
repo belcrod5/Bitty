@@ -9,7 +9,7 @@ import { VISUAL_THEMES } from "../theme/visualThemes";
 import type { ConversationMessage } from "../types/appTypes";
 
 let mockImageResolver: ((url: string) => any) | undefined;
-const mockStartStreamingStt = jest.fn();
+const mockStartStreamingStt = jest.fn(async () => undefined);
 const mockStopStreamingStt = jest.fn();
 const mockCancelCorrection = jest.fn(() => true);
 const mockBeginCorrectionEdit = jest.fn();
@@ -118,6 +118,10 @@ jest.mock("../components/StreamingSttFooter", () => {
     }),
   };
 });
+const mockVoiceManager = {};
+jest.mock("../../runnerWs/RunnerWebSocketContext", () => ({
+  useRunnerWebSocketManager: () => mockVoiceManager,
+}));
 jest.mock("../../stt/useStreamingStt", () => ({
   useStreamingStt: (options: Record<string, any>) => {
     if (mockUseActualStreamingStt) {
@@ -136,6 +140,11 @@ jest.mock("../../stt/useStreamingStt", () => ({
       setCorrectionText: mockSetCorrectionText,
       correctionPreview: null,
       abort: jest.fn(async () => {}),
+      disarm: async () => { mockStopStreamingStt(); },
+      getSnapshot: () => ({ desired: "stopped", observed: "stopped" }),
+      getDraft: () => "",
+      controlVersion: 0,
+      hasPermission: async () => true,
       isArmed: () => false,
       isCapturing: () => false,
     };
