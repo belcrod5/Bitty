@@ -1,3 +1,4 @@
+import { WidgetSnapshotPublisher } from "./components/WidgetSnapshotPublisher";
 import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import {
   GestureHandlerRootView,
@@ -6175,6 +6176,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
             onDismiss={dismissLlmCompletionNotification}
           />
         </SafeAreaView>
+        <WidgetSnapshotPublisher ready={settingsLoaded} />
         <PushNotificationRegistrar onUnreadCountSnapshot={sessionNotificationLifecycle.applyUnreadCountSnapshot} />
       </KeyboardProvider>
       </AppProviders>

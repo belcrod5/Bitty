@@ -2,7 +2,7 @@ import { act, renderHook, waitFor } from "@testing-library/react-native";
 import { useRegisteredDirectoryActiveSessionCount } from "./useRegisteredDirectoryActiveSessionCount";
 
 let mockDirectories = [{ path: "/one" }, { path: "/two" }];
-let mockActiveScreen = "skia_board";
+let mockAppState = "active";
 let mockConnected = true;
 let mockGeneration = 1;
 const mockHandlers = new Map<string, (message: { payload?: unknown }) => void>();
@@ -15,10 +15,10 @@ const mockManager = {
   },
 };
 
-jest.mock("../contexts/AppShellContext", () => ({ useAppShell: () => ({ activeScreen: mockActiveScreen }) }));
+jest.mock("../contexts/AppShellContext", () => ({ useAppShell: () => ({ activeScreen: "skia_board" }) }));
 jest.mock("../contexts/ConversationContext", () => ({ useConversation: () => ({ registeredDirectories: mockDirectories }) }));
 jest.mock("../../runnerWs/RunnerWebSocketContext", () => ({
-  useRunnerWebSocketSnapshot: () => ({ connected: mockConnected, generation: mockGeneration }),
+  useRunnerWebSocketSnapshot: () => ({ connected: mockConnected, generation: mockGeneration, appState: mockAppState }),
   useRunnerWebSocketManager: () => mockManager,
 }));
 
@@ -26,7 +26,7 @@ const result = (count: unknown) => ({ op: "sessions.active-count.result", payloa
 
 beforeEach(() => {
   mockDirectories = [{ path: "/one" }, { path: "/two" }];
-  mockActiveScreen = "skia_board";
+  mockAppState = "active";
   mockConnected = true;
   mockGeneration = 1;
   mockHandlers.clear();
@@ -89,5 +89,23 @@ test("ignores old-directory responses and displays unknown on failure", async ()
   mockRequest.mockResolvedValueOnce(result(0));
   await hook.rerender({ version: 2 });
   await waitFor(() => expect(hook.result.current).toBe(0));
+  hook.unmount();
+});
+
+
+test("refreshes on foreground and reports unknown while backgrounded", async () => {
+  const hook = await renderHook(({ version }: { version: number }) => {
+    void version;
+    return useRegisteredDirectoryActiveSessionCount();
+  }, { initialProps: { version: 0 } });
+  await waitFor(() => expect(hook.result.current).toBe(2));
+  mockAppState = "background";
+  await hook.rerender({ version: 1 });
+  expect(hook.result.current).toBeNull();
+  expect(mockHandlers.has("sessions_active_changed")).toBe(false);
+  mockAppState = "active";
+  mockRequest.mockResolvedValue(result(4));
+  await hook.rerender({ version: 2 });
+  await waitFor(() => expect(hook.result.current).toBe(4));
   hook.unmount();
 });

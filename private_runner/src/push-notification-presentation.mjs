@@ -10,5 +10,6 @@ export function pushNotificationPresentation(category) {
     category,
     sound: `bitty-${category.toLowerCase().replaceAll("_", "-")}.wav`,
     "mutable-content": 1,
+    "content-available": 1,
   };
 }

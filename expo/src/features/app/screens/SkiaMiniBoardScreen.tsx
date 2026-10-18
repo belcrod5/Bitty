@@ -51,8 +51,8 @@ import {
   type SkiaMiniBoardItem,
   type SkiaMiniChatSession,
 } from "../hooks/useSkiaMiniChatSessions";
-import { useRegisteredDirectoryActiveSessionCount } from "../hooks/useRegisteredDirectoryActiveSessionCount";
 import { useOrchestratorActivities, type OrchestratorActivity } from "../hooks/useOrchestratorActivities";
+import { useRegisteredDirectoryActiveSessionCount } from "../hooks/useRegisteredDirectoryActiveSessionCount";
 import type { VoiceOrchestrator } from "../components/VoiceOrchestratorIcon";
 import { SkiaBoardActivityFrame, activityStatusText } from "../components/SkiaBoardActivityFrame";
 import { DIRECTORY_MARKER_COLORS } from "../theme/directoryMarkerColors";
@@ -714,10 +714,10 @@ export function SkiaMiniBoardScreen({
   }, [activeScreen]);
   const { runnerUrl, runnerToken, sanitizeTextForTts, handleAssistantAudioButtonPress } = useChatScreen();
   const { activities, orchestrators, selectedId } = useOrchestratorActivities(runnerUrl, runnerToken, true);
+  const runningSessionCount = useRegisteredDirectoryActiveSessionCount();
   const voiceUnreadCount = hasVoicePlayback && !voiceOpen
     ? orchestrators.reduce((sum, item) => sum + (item.id === selectedId ? 0 : item.unreadCount || 0), 0) : 0;
   const { registeredDirectories } = useConversation();
-  const runningSessionCount = useRegisteredDirectoryActiveSessionCount();
   const {
     items,
     sections,

@@ -345,6 +345,7 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
       const result = await (await loadedContext(idOf(id))).clearMessages();
       return result;
     }); },
+    async taskOverview() { return (await context("main")).taskOverview(); },
     async history(id) { return (await context(idOf(id))).history(); },
     async respondToChecklistCompletion(id, sourceHash, version, decision) {
       if (id !== "main") throw failure("Task checklist is unavailable", "not_found");

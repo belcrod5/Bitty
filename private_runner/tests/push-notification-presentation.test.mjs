@@ -11,6 +11,7 @@ test("every remote purpose has a bundled iOS image and a valid custom notificati
     const presentation = pushNotificationPresentation(category);
     assert.equal(presentation.category, category);
     assert.equal(presentation["mutable-content"], 1);
+    assert.equal(presentation["content-available"], 1);
     sounds.add(presentation.sound);
     assert.ok(soundPaths.includes(`./notifications/assets/sounds/${presentation.sound}`));
     const audio = fs.readFileSync(new URL(`../../expo/notifications/assets/sounds/${presentation.sound}`, import.meta.url));

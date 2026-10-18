@@ -65,6 +65,7 @@ test("voice completion pushes a logical orchestrator target with combined badge"
   assert.equal(harness.sends[0].payload.aps.category, "VOICE_COMPLETED");
   assert.equal(harness.sends[0].payload.aps.sound, "bitty-voice-completed.wav");
   assert.equal(harness.sends[0].payload.aps["mutable-content"], 1);
+  assert.equal(harness.sends[0].payload.aps["content-available"], 1);
   assert.equal(harness.sends[0].payload.aps.badge, 5);
   assert.equal(harness.sends[0].payload.orchestratorId, "main");
   assert.equal(harness.sends[0].payload.sessionId, undefined);
@@ -169,6 +170,7 @@ test("broadcasts and sends one TURN_COMPLETED push with the existing payload sha
       sound: "bitty-turn-completed.wav",
       category: "TURN_COMPLETED",
       "mutable-content": 1,
+      "content-available": 1,
       "thread-id": "session-1",
     },
     sessionId: "session-1",
@@ -522,6 +524,7 @@ test("schedule failure pushes do not require a session, unread state or LLM summ
   assert.equal(payload.aps.category, "SCHEDULE_FAILED");
   assert.equal(payload.aps.sound, "bitty-schedule-failed.wav");
   assert.equal(payload.aps["mutable-content"], 1);
+  assert.equal(payload.aps["content-available"], 1);
   assert.match(payload.aps.alert.body, /Parking check.*model value is not supported/);
   assert.equal(payload.scheduleId, "schedule-1");
   assert.equal(payload.sessionId, undefined);
@@ -561,7 +564,7 @@ test("account usage alerts keep account grouping and episode without adding a se
   assert.deepEqual(harness.sends[0].payload, {
     aps: {
       alert: { title: "Codex 利用上限", body: "Codex の利用上限に達しました。アプリで利用状況を確認してください。" },
-      category: "CODEX_USAGE_LIMIT", sound: "bitty-codex-usage-limit.wav", "mutable-content": 1,
+      category: "CODEX_USAGE_LIMIT", sound: "bitty-codex-usage-limit.wav", "mutable-content": 1, "content-available": 1,
       "thread-id": "codex-usage:account-one",
     },
     usageLimitReached: true, episode: "episode-one",

@@ -213,6 +213,17 @@ describe("PushNotificationRegistrar", () => {
     expect(mockRegisterPushDevice).toHaveBeenCalledTimes(1);
   });
 
+  it.each(["url", "token"])("re-registers unchanged APNs credentials when Runner %s changes", async (changed) => {
+    const { rerender } = await render(<PushNotificationRegistrar />);
+    await waitFor(() => expect(mockRegisterPushDevice).toHaveBeenCalledTimes(1));
+    const runnerUrl = changed === "url" ? "https://other.example.com" : "https://runner.example.com";
+    const runnerToken = changed === "token" ? "new-runner-token" : "runner-token";
+    mockUseAppSettings.mockReturnValue({ runnerUrl, runnerToken, faceIdRequiredForApproval: false });
+    await rerender(<PushNotificationRegistrar />);
+    await waitFor(() => expect(mockRegisterPushDevice).toHaveBeenCalledTimes(2));
+    expect(mockRegisterPushDevice).toHaveBeenLastCalledWith(expect.objectContaining({ runnerUrl, runnerToken }));
+  });
+
   it("re-registers when the registered directory subscription changes", async () => {
     const { rerender } = await render(<PushNotificationRegistrar />);
     await waitFor(() => {

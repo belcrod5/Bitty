@@ -2873,6 +2873,13 @@ test("restart recovery waits for an active child before clearing an approved che
   await recovered.open();
   assert.equal(await fs.readFile(source, "utf8"), markdown);
   busy = false;
+  const before = await fs.readFile(activeFile, "utf8");
+  const snapshot = await recovered.taskOverview();
+  assert.ok(["present", "pending", "unavailable"].includes(snapshot.status));
+  assert.equal(await fs.readFile(source, "utf8"), markdown, "background overview read cannot clear an approved source");
+  assert.equal(await fs.readFile(activeFile, "utf8"), before, "background overview read cannot mutate completion state");
+  assert.equal(snapshot.messages, undefined);
+  assert.equal(snapshot.taskChecklist, undefined);
   await recovered.history();
   assert.equal(await fs.readFile(source, "utf8"), "");
 });

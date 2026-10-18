@@ -7,14 +7,14 @@ export function useRegisteredDirectoryActiveSessionCount() {
   const { activeScreen } = useAppShell();
   const { registeredDirectories } = useConversation();
   const manager = useRunnerWebSocketManager();
-  const { connected, generation } = useRunnerWebSocketSnapshot();
+  const { connected, generation, appState } = useRunnerWebSocketSnapshot();
   const directoryKey = useMemo(() => Array.from(new Set(
     registeredDirectories.map(({ path }) => path.trim()).filter(Boolean)
   )).sort().join("\u0000"), [registeredDirectories]);
   const [count, setCount] = useState<number | null>(null);
 
   useEffect(() => {
-    if (!connected || activeScreen !== "skia_board") {
+    if (!connected || appState === "background" || activeScreen !== "skia_board") {
       setCount(null);
       return;
     }
@@ -53,7 +53,7 @@ export function useRegisteredDirectoryActiveSessionCount() {
       current = false;
       unsubscribeChanged();
     };
-  }, [activeScreen, connected, directoryKey, generation, manager]);
+  }, [activeScreen, appState, connected, directoryKey, generation, manager]);
 
   return count;
 }

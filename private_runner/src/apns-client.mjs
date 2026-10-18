@@ -117,6 +117,7 @@ export function createApnsClient(config = {}, deps = {}) {
         "apns-topic": topic,
         "apns-push-type": opts.pushType || "alert",
         "apns-priority": String(opts.priority || 10),
+        ...(opts.collapseId ? { "apns-collapse-id": opts.collapseId } : {}),
       });
 
       let status = 0;

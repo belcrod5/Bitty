@@ -322,6 +322,14 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
     return directory;
   }
 
+  function checklistOverview(sourceHash) {
+    return sourceHash && overviewCache?.sourceHash === sourceHash && validOverview(overviewCache.markdown)
+      ? { status: "present", markdown: overviewCache.markdown }
+      : sourceHash && (overviewAwaitingTurnHash === sourceHash
+        || overviewTarget?.sourceHash === sourceHash && (overviewTimer || overviewTask))
+        ? { status: "pending" } : { status: "unavailable" };
+  }
+
   async function readTaskChecklist() {
     const workspace = path.join(workspaceRoot, active.workspaceConversationId || active.logicalConversationId);
     const target = path.join(workspace, taskChecklistPath);
@@ -2367,6 +2375,14 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
         return { logicalConversationId, ...usage() };
       });
     },
+    async taskOverview() {
+      return exclusive(async () => {
+        await load();
+        if (!taskChecklistPath) return { status: "unavailable" };
+        const source = await readTaskChecklist();
+        return checklistOverview(source.status === "present" ? checklistHash(source.markdown) : "");
+      });
+    },
     async history() {
       return exclusive(async () => {
         await load();
@@ -2393,12 +2409,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
           delete next.checklistCompletion;
           await saveActive(next, "Checklist completion state could not be synced");
         }
-        const taskChecklistOverview = sourceHash && overviewCache?.sourceHash === sourceHash
-          && validOverview(overviewCache.markdown)
-          ? { status: "present", markdown: overviewCache.markdown }
-          : sourceHash && (overviewAwaitingTurnHash === sourceHash
-            || overviewTarget?.sourceHash === sourceHash && (overviewTimer || overviewTask))
-            ? { status: "pending" } : { status: "unavailable" };
+        const taskChecklistOverview = checklistOverview(sourceHash);
         const taskChecklistCompletion = checklistAllComplete(taskChecklist)
           && (active.checklistCompletion?.version !== taskChecklist.version
             || active.checklistCompletion.decision === "offered")

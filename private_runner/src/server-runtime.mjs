@@ -1,3 +1,5 @@
+import { createAppStatusSnapshot } from "./app-status-snapshot.mjs";
+import { createWidgetRefreshNotifier } from "./widget-refresh-notifier.mjs";
 import { createClientAppLogWriter } from "./client-app-log-writer.mjs";
 import { withLlmSessionRollout } from "./llm-session-rollout-file.mjs";
 import http from "node:http";
@@ -1310,6 +1312,7 @@ const apnsClient = PUSH_ENABLED
     env: APNS_ENV,
   })
   : null;
+const widgetRefreshNotifier = createWidgetRefreshNotifier({ enabled: PUSH_ENABLED, apnsClient, deviceStore: pushDeviceStore });
 const pushSummarizer = PUSH_ENABLED
   ? createPushSummarizer({
     runCodex,
@@ -1341,6 +1344,7 @@ const codexUsageService = createCodexUsageService({
     const authId = await codexAuthService.activeAuthId();
     if (codexAuthRuntime.activePayload()?.chatgptAccountId && accountId !== codexAuthRuntime.activePayload().chatgptAccountId) return;
     codexCliStatusCache = { authId, fetchedAtMs: Date.now(), snapshot };
+    widgetRefreshNotifier.changed();
     for (const client of runnerWsActiveClients) {
       sendRunnerWsEnvelope(client, { channel: "control", op: "codex_usage_updated", payload: snapshot });
     }
@@ -5031,6 +5035,7 @@ function createCodexRpcClient({
 }
 
 function broadcastVoiceChecklistChanged(logicalConversationId) {
+  widgetRefreshNotifier.changed();
   for (const client of runnerWsActiveClients) {
     sendRunnerWsEnvelope(client, { channel: "agent", op: "voice.task-checklist.changed",
       payload: { orchestratorId: "main", logicalConversationId } });
@@ -5935,6 +5940,28 @@ const handleRunnerRequest = async (req, res) => {
     });
   }
 
+  if (req.method === "GET" && pathname === "/app/status-snapshot") {
+    const diagnosticHeader = req.headers["x-bitty-widget-refresh-id"];
+    const diagnosticId = typeof diagnosticHeader === "string"
+      && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(diagnosticHeader) ? diagnosticHeader : "none";
+    const startedAt = performance.now();
+    let responseCount = -1;
+    res.once("finish", () => console.log(`[widget-refresh] event=response at=${new Date().toISOString()} id=${diagnosticId} status=${res.statusCode} count=${responseCount} duration_ms=${Math.round(performance.now() - startedAt)}`));
+    if (!RUNNER_TOKEN || parseAuthToken(req) !== RUNNER_TOKEN) return json(res, 401, { error: "unauthorized" });
+    const snapshot = createAppStatusSnapshot({
+      listOrchestrators: () => voiceContextService.list(),
+      countActiveSessions: () => agentService.countActiveSessions({}, { subjectId: agentOwnerSubjectId }),
+      taskOverview: () => voiceContextService.taskOverview(),
+      currentUsage: () => withCodexAuthLease(async () => codexUsageService.snapshot(await captureCodexUsageAccount())),
+    });
+    try {
+      const result = await snapshot();
+      responseCount = Number.isSafeInteger(result.runningCount) ? result.runningCount : -1;
+      return json(res, 200, result);
+    }
+    catch { return json(res, 503, { error: "app_status_unavailable" }); }
+  }
+
   if (req.method === "GET" && pathname === "/codex-cli/status") {
     if (!RUNNER_TOKEN) {
       return json(res, 500, {
@@ -6171,6 +6198,7 @@ const handleRunnerRequest = async (req, res) => {
       const body = await readJsonBody(req);
       const authId = String(body?.authId ?? "");
       await codexAuthRuntime.switchAccount(authId);
+      widgetRefreshNotifier.changed();
       const snapshot = await codexAuthService.snapshot();
       json(res, 200, {
         ok: true,
@@ -7215,6 +7243,7 @@ runnerWsServer.on("connection", (ws, req) => {
           requestId: message.requestId || "", payload });
         if (["voice.orchestrators.select", "voice.orchestrators.create",
           "voice.orchestrators.update", "voice.orchestrators.delete"].includes(message.op)) {
+          widgetRefreshNotifier.changed();
           void broadcastVoiceUnreadState();
         }
       }).catch((error) => sendVoiceError(message, error));
@@ -9202,6 +9231,7 @@ function broadcastSkiaBoardUpdated(payload) {
 }
 
 function broadcastActiveSessionsChanged() {
+  widgetRefreshNotifier.changed();
   if (typeof runnerWsActiveClients === "undefined") return;
   for (const client of Array.from(runnerWsActiveClients)) {
     try { sendRunnerWsEnvelope(client, { channel: "control", op: "sessions_active_changed" }); }
