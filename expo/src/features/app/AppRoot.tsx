@@ -355,7 +355,7 @@ const PIXEL_STATUS_ANIMATIONS: Record<PixelStatusIconKey, ImageSourcePropType> =
 };
 const UI_SFX_ASSETS: Record<UiSfxKey, number> = {
   send: require("../../../assets/sfx/retro-send.wav"),
-  reply: require("../../../assets/sfx/retro-reply.wav"),
+  reply: require("../../../notifications/assets/sounds/bitty-turn-completed.wav"),
   toolStart: require("../../../assets/sfx/retro-tool-start.wav"),
   toolDone: require("../../../assets/sfx/retro-tool-done.wav"),
   youtubePlay: require("../../../assets/sfx/retro-youtube-play.wav"),
