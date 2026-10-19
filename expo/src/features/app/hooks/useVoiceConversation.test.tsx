@@ -1,7 +1,7 @@
 import { getVoiceControl } from "../../appControl/voiceControl";
 import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react-native";
-import { Alert } from "react-native";
+import { Alert, AppState, type AppStateStatus } from "react-native";
 import { randomUUID } from "expo-crypto";
 import { useVoiceConversation } from "./useVoiceConversation";
 import type { VoiceContextStats } from "../types/appTypes";
@@ -43,6 +43,9 @@ beforeEach(() => {
       channel: "agent", op: "voice.open.result",
       payload: { logicalConversationId: conversationId, contextMode: "self_context_array", ...initialStats },
     };
+    if (op === "voice.history") return { op: "voice.history.result", payload: {
+      logicalConversationId: conversationId, messages: [],
+    } };
     if (op === "turn.start") return {
       channel: "agent", op: "turn.accepted", operationId,
       payload: { logicalConversationId: conversationId, clientOperationId: operationId, status: "accepted",
@@ -71,6 +74,9 @@ test("new input keeps the last measurement through acknowledgement and replaces 
     if (op === "voice.open") return { op: "voice.open.result", payload: {
       logicalConversationId: conversationId, contextMode: "self_context_array",
       ...initialStats, contextUsagePercent: 42,
+    } };
+    if (op === "voice.history") return { op: "voice.history.result", payload: {
+      logicalConversationId: conversationId, messages: [],
     } };
     return new Promise((resolve) => { acknowledge = resolve; });
   });
@@ -138,6 +144,9 @@ test("an older history response cannot replace a newer one", async () => {
     ? new Promise((resolve) => pending.push(resolve)) : request?.(message));
   const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
   await waitFor(() => expect(result.current.ready).toBe(true));
+  await act(async () => { pending.shift()?.({ op: "voice.history.result", payload: {
+    logicalConversationId: conversationId, messages: [],
+  } }); });
   let first!: Promise<void>;
   let second!: Promise<void>;
   await act(async () => {
@@ -297,9 +306,11 @@ test("a history snapshot taken before sending cannot erase a completed local tur
   const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
   await waitFor(() => expect(result.current.ready).toBe(true));
   let history!: Promise<void>;
+  let resolveSnapshot!: (message: unknown) => void;
   let sent!: Promise<void>;
   await act(async () => {
     history = result.current.refreshHistory();
+    resolveSnapshot = resolveHistory;
     sent = result.current.sendTranscript("質問", jest.fn());
   });
   await act(async () => {
@@ -307,7 +318,7 @@ test("a history snapshot taken before sending cannot erase a completed local tur
       clientOperationId: operationId, text: "返答", outputTokens: 12, completedOrdinal: 1,
     } });
     await sent;
-    resolveHistory({ op: "voice.history.result", payload: { logicalConversationId: conversationId, messages: [] } });
+    resolveSnapshot({ op: "voice.history.result", payload: { logicalConversationId: conversationId, messages: [] } });
     await history;
   });
   expect(result.current.history.map(({ role, text }) => ({ role, text }))).toEqual([
@@ -720,6 +731,27 @@ test("drops the prior reply and local history when message clear rotates the con
   expect(result.current.history).toEqual([]);
 });
 
+test.each(["turn_failed", "マイクエラー"])("message clear resets the previous conversation's %s", async (message) => {
+  const nextConversationId = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
+  mockManager.request.mockImplementation(async ({ op }: { op: string }) => {
+    const logicalConversationId = mockSnapshot.generation === 1 ? conversationId : nextConversationId;
+    if (op === "voice.history") return { op: "voice.history.result", payload: { logicalConversationId, messages: [] } };
+    return { op: "voice.open.result", payload: {
+      logicalConversationId, contextMode: "self_context_array", ...initialStats,
+      ...(mockSnapshot.generation === 1 ? { clientOperationId: operationId, status: "failed", code: "turn_failed" } : {}),
+    } };
+  });
+  const { result, rerender } = await renderHook(() => useVoiceConversation(jest.fn()));
+  expect(result.current.turnStatus).toBe("failed");
+  await act(async () => { result.current.setError(message); });
+  mockSnapshot = { connected: true, generation: 2 };
+  await rerender(undefined);
+  expect(result.current.logicalConversationId).toBe(nextConversationId);
+  expect(result.current.ready).toBe(true);
+  expect(result.current.turnStatus).toBe("idle");
+  expect(result.current.error).toBe("");
+});
+
 test("checks status and resends the same operation only after not_found", async () => {
   let starts = 0;
   mockManager.request.mockImplementation(async ({ op }: { op: string }) => {
@@ -879,6 +911,9 @@ test("a persisted failure arriving before turn.accepted still acknowledges STT",
       channel: "agent", op: "voice.open.result",
       payload: { logicalConversationId: conversationId, contextMode: "self_context_array" },
     });
+    if (op === "voice.history") return Promise.resolve({ op: "voice.history.result", payload: {
+      logicalConversationId: conversationId, messages: [],
+    } });
     return new Promise((resolve) => { resolveStart = resolve; });
   });
   const onAccepted = jest.fn();
@@ -947,14 +982,14 @@ test("refreshes a pending summary and keeps checking for a conversation reset", 
     const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
     await act(async () => { await Promise.resolve(); });
     expect(result.current.contextStats?.unsummarizedMessageCount).toBe(22);
-    expect(mockManager.request).toHaveBeenCalledTimes(1);
+    expect(mockManager.request.mock.calls.filter(([message]) => message.op === "voice.open")).toHaveLength(1);
 
     unsummarizedMessageCount = 20;
     await act(async () => { await jest.advanceTimersByTimeAsync(15000); });
     expect(result.current.contextStats?.unsummarizedMessageCount).toBe(20);
-    expect(mockManager.request).toHaveBeenCalledTimes(2);
+    expect(mockManager.request.mock.calls.filter(([message]) => message.op === "voice.open")).toHaveLength(2);
     await act(async () => { await jest.advanceTimersByTimeAsync(30000); });
-    expect(mockManager.request).toHaveBeenCalledTimes(4);
+    expect(mockManager.request.mock.calls.filter(([message]) => message.op === "voice.open")).toHaveLength(4);
   } finally {
     cleanup();
     jest.useRealTimers();
@@ -1021,7 +1056,10 @@ test("does not overwrite a newer completed turn with an older idle open response
 test("ignores an old open response after the connection generation changes", async () => {
   let resolveFirst!: (message: unknown) => void;
   let opens = 0;
-  mockManager.request.mockImplementation(() => {
+  mockManager.request.mockImplementation(({ op }: { op: string }) => {
+    if (op === "voice.history") return Promise.resolve({ op: "voice.history.result", payload: {
+      logicalConversationId: conversationId, messages: [],
+    } });
     opens += 1;
     if (opens === 1) return new Promise((resolve) => { resolveFirst = resolve; });
     return Promise.resolve({
@@ -1054,7 +1092,7 @@ test("does not update state or retry after unmounting with an open request in fl
     channel: "agent", op: "voice.open.result",
     payload: { logicalConversationId: conversationId, contextMode: "self_context_array", ...initialStats },
   }));
-  expect(mockManager.request).toHaveBeenCalledTimes(1);
+  expect(mockManager.request.mock.calls.filter(([message]) => message.op === "voice.open")).toHaveLength(1);
   expect(handlers.size).toBe(0);
 });
 
@@ -1178,4 +1216,134 @@ test("orchestrator input captures its own trusted origin outside the transcript"
     } }); await sending; });
     await hook.unmount();
   } finally { capture.mockRestore(); }
+});
+
+test.each(["failed", "preflight_failed", "interrupted", "running", "completed"])(
+  "loads persisted history on initial %s independently of the last turn outcome", async (status) => {
+    AppState.currentState = "active";
+    mockManager.request.mockImplementation(async ({ op }: { op: string }) => {
+      if (op === "voice.history") return { op: "voice.history.result", payload: {
+        logicalConversationId: conversationId, messages: [
+          { role: "user", text: "以前の発話", clientOperationId: "previous" },
+          { role: "assistant", text: "以前の返答", clientOperationId: "previous" },
+        ],
+      } };
+      return { op: op === "voice.open" ? "voice.open.result" : "voice.status.result", payload: {
+        logicalConversationId: conversationId, contextMode: "self_context_array",
+        clientOperationId: operationId, status, code: "turn_failed", text: "返答",
+        inputText: "処理中の発話", ...initialStats,
+      } };
+    });
+    const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
+    await waitFor(() => expect(result.current.history.slice(0, 2).map(({ text }) => text))
+      .toEqual(["以前の発話", "以前の返答"]));
+    expect(result.current.ready).toBe(true);
+    expect(result.current.turnStatus).toBe(status === "running" || status === "completed" ? status : "failed");
+  },
+);
+
+test("a persisted failure settles the turn, refreshes history, and allows the next submission", async () => {
+  const original = mockManager.request.getMockImplementation();
+  let messages = [{ role: "user", text: "以前の発話", clientOperationId: "previous" }];
+  mockManager.request.mockImplementation((message: { op: string }) => message.op === "voice.history"
+    ? Promise.resolve({ op: "voice.history.result", payload: { logicalConversationId: conversationId, messages } })
+    : original?.(message));
+  const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
+  await waitFor(() => expect(result.current.history[0]?.text).toBe("以前の発話"));
+  let first!: Promise<void>;
+  await act(async () => { first = result.current.sendTranscript("失敗する発話", jest.fn()); });
+  messages = [...messages, { role: "user", text: "保存された発話", clientOperationId: operationId }];
+  await act(async () => {
+    handlers.get("voice.turn.failed")?.({ payload: {
+      logicalConversationId: conversationId, clientOperationId: operationId,
+      status: "failed", code: "turn_failed",
+    } });
+    await first;
+  });
+  await waitFor(() => expect(result.current.history.map(({ text }) => text))
+    .toEqual(["以前の発話", "保存された発話"]));
+  expect(result.current.ready).toBe(true);
+  expect(result.current.turnStatus).toBe("failed");
+  jest.mocked(randomUUID).mockReturnValue("22222222-3333-4444-8555-666666666666");
+  let second!: Promise<void>;
+  await act(async () => { second = result.current.sendTranscript("次の発話", jest.fn()); });
+  void second.catch(() => {});
+  expect(result.current.turnStatus).toBe("accepted");
+  expect(result.current.error).toBe("");
+  expect(mockManager.request.mock.calls.filter(([message]) => message.op === "turn.start")).toHaveLength(2);
+});
+
+test("polling and reconnect do not replay old failures over a new interaction", async () => {
+  jest.useFakeTimers();
+  try {
+    let status = "failed";
+    let currentOperationId = operationId;
+    let historyText = "最初の失敗した発話";
+    mockManager.request.mockImplementation(async ({ op }: { op: string }) => {
+      if (op === "voice.history") return { op: "voice.history.result", payload: {
+        logicalConversationId: conversationId,
+        messages: [{ role: "user", text: historyText, clientOperationId: currentOperationId }],
+      } };
+      return { op: "voice.open.result", payload: {
+        logicalConversationId: conversationId, contextMode: "self_context_array",
+        clientOperationId: currentOperationId, status, code: "turn_failed", text: "外部送信の返答", ...initialStats,
+      } };
+    });
+    const { result, rerender } = await renderHook(() => useVoiceConversation(jest.fn()));
+    expect(result.current.error).toBe("turn_failed");
+    await act(async () => { await jest.advanceTimersByTimeAsync(15000); });
+    expect(result.current.error).toBe("turn_failed");
+    await act(async () => { result.current.setError(""); await jest.advanceTimersByTimeAsync(15000); });
+    expect(result.current.error).toBe("");
+    await act(async () => { result.current.setError("新しいマイクエラー"); });
+    mockSnapshot = { connected: true, generation: 2 };
+    await rerender(undefined);
+    expect(result.current.ready).toBe(true);
+    expect(result.current.error).toBe("新しいマイクエラー");
+    currentOperationId = "22222222-3333-4444-8555-666666666666";
+    historyText = "外部送信で再び失敗した発話";
+    await act(async () => { await jest.advanceTimersByTimeAsync(15000); });
+    expect(result.current.turnStatus).toBe("failed");
+    expect(result.current.history[0]?.text).toBe("外部送信で再び失敗した発話");
+    expect(result.current.error).toBe("turn_failed");
+    currentOperationId = "33333333-4444-4555-8666-777777777777";
+    status = "completed";
+    await act(async () => { await jest.advanceTimersByTimeAsync(15000); });
+    expect(result.current.reply?.text).toBe("外部送信の返答");
+    expect(result.current.turnStatus).toBe("completed");
+    expect(result.current.error).toBe("");
+    await act(async () => { result.current.setError("別のマイクエラー"); await jest.advanceTimersByTimeAsync(15000); });
+    expect(result.current.error).toBe("別のマイクエラー");
+  } finally {
+    cleanup();
+    jest.useRealTimers();
+  }
+});
+
+test("foreground refreshes history after a failed turn without a new submission", async () => {
+  let foreground!: (state: AppStateStatus) => void;
+  jest.mocked(AppState.addEventListener).mockImplementation((_event, callback) => {
+    foreground = callback;
+    return { remove: jest.fn() };
+  });
+  const original = mockManager.request.getMockImplementation();
+  let text = "復帰前の履歴";
+  mockManager.request.mockImplementation((message: { op: string }) => {
+    if (message.op === "voice.history") return Promise.resolve({ op: "voice.history.result", payload: {
+      logicalConversationId: conversationId,
+      messages: [{ role: "user", text, clientOperationId: operationId }],
+    } });
+    if (message.op === "voice.open") return Promise.resolve({ op: "voice.open.result", payload: {
+      logicalConversationId: conversationId, contextMode: "self_context_array", clientOperationId: operationId,
+      status: "failed", code: "turn_failed", ...initialStats,
+    } });
+    return original?.(message);
+  });
+  const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
+  await waitFor(() => expect(result.current.history[0]?.text).toBe("復帰前の履歴"));
+  text = "復帰後の履歴";
+  await act(async () => { foreground("active"); });
+  expect(result.current.history[0]?.text).toBe("復帰後の履歴");
+  expect(result.current.turnStatus).toBe("failed");
+  expect(mockManager.request.mock.calls.filter(([message]) => message.op === "turn.start")).toHaveLength(0);
 });

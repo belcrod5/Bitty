@@ -602,6 +602,7 @@ export function useStreamingStt(options: Options) {
     }
     if (message.type === "speech_activity_begin") {
       pauseDictationIdle();
+      latestRef.current.onError("");
       latestRef.current.onSpeechBegin();
       return;
     }

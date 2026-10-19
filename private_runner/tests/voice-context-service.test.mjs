@@ -2443,12 +2443,28 @@ test("main native turn failure logs only bounded terminal facts", async (t) => {
       codexErrorInfo: "other", outputPresent: false }],
     [{ agentEvents: [] }, { cause: "empty_answer", terminalStatus: "completed",
       codexErrorInfo: "missing", outputPresent: false }],
+    [{ regularTurnStatus: "failed", regularTurnError: {
+      message: "private message and credential", codexErrorInfo: {
+        responseStreamDisconnected: { httpStatusCode: 503, message: "private credential" },
+      },
+    } }, { cause: "terminal_non_success", terminalStatus: "failed",
+      codexErrorInfo: "responseStreamDisconnected", httpStatusCode: 503, outputPresent: true }],
+    [{ regularTurnStatus: "failed", regularTurnError: {
+      message: "private message and credential", codexErrorInfo: {
+        responseTooManyFailedAttempts: { httpStatusCode: "private credential" },
+      },
+    } }, { cause: "terminal_non_success", terminalStatus: "failed",
+      codexErrorInfo: "responseTooManyFailedAttempts", outputPresent: true }],
   ]) {
     const { service, conversation } = await fixture(t, { taskChecklistPath: "task-checklists/main.md",
       nativeRequests: [checklistReadCall("read")], ...options });
-    assert.equal((await complete(service, conversation, "private user request", randomUUID(),
+    const operationId = randomUUID();
+    assert.equal((await complete(service, conversation, "private user request", operationId,
       async () => "accept")).result.status, "failed");
-    assert.deepEqual(warnings.shift(), { stage: "turn_completion", code: "turn_failed",
+    const { threadId, turnId, ...warning } = warnings.shift();
+    assert.match(threadId, /^[0-9a-f-]{36}$/);
+    assert.match(turnId, /^[0-9a-f-]{36}$/);
+    assert.deepEqual(warning, { clientOperationId: operationId, stage: "turn_completion", code: "turn_failed",
       terminalMethod: "turn/completed", ...expected });
   }
   assert.deepEqual(warnings, []);

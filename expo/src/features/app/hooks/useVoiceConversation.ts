@@ -1,7 +1,7 @@
 import { getVoiceControl, type AppControlOrigin } from "../../appControl/voiceControl";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { randomUUID } from "expo-crypto";
-import { Alert } from "react-native";
+import { Alert, AppState } from "react-native";
 import { useRunnerWebSocketManager, useRunnerWebSocketSnapshot } from "../../runnerWs/RunnerWebSocketContext";
 import type { RunnerWsMessage } from "../../runnerWs/types";
 import type { VoiceContextStats } from "../types/appTypes";
@@ -88,6 +88,7 @@ export function useVoiceConversation(
   const { connected, generation } = useRunnerWebSocketSnapshot();
   const [logicalConversationId, setLogicalConversationId] = useState("");
   const [turnStatus, setTurnStatus] = useState<TurnStatus>("idle");
+  const [settledOperationId, setSettledOperationId] = useState("");
   const [reply, setReply] = useState<{ text: string; operationId: string; outputTokens?: number;
     completedOrdinal?: number } | null>(null);
   const [error, setError] = useState("");
@@ -102,12 +103,14 @@ export function useVoiceConversation(
   const pendingRef = useRef<PendingTurn | null>(null);
   const startTurnTasksRef = useRef(new Map<string, Promise<void>>());
   const turnRevisionRef = useRef(0);
+  const settledOperationRef = useRef("");
   const conversationIdRef = useRef("");
   const onCompletedRef = useRef(onCompleted);
   const onJobRef = useRef(onJob);
   const ttsRef = useRef(tts);
   const aliveRef = useRef(true);
   const syncingRef = useRef(false);
+  const syncErrorRef = useRef("");
   const validatedGenerationRef = useRef(0);
   onCompletedRef.current = onCompleted;
   onJobRef.current = onJob;
@@ -150,6 +153,8 @@ export function useVoiceConversation(
       return;
     }
     pendingRef.current = null;
+    settledOperationRef.current = id;
+    setSettledOperationId(id);
     if (!pending.accepted) {
       setLocalHistory((current) => current.filter((message) => message.clientOperationId !== id));
     }
@@ -276,6 +281,10 @@ export function useVoiceConversation(
       }
       if (conversationIdRef.current && conversationIdRef.current !== conversationId) {
         historyRequestRef.current += 1;
+        settledOperationRef.current = "";
+        setSettledOperationId("");
+        syncErrorRef.current = "";
+        setError("");
         setReply(null);
         setHistory([]);
         setLocalHistory([]);
@@ -288,7 +297,11 @@ export function useVoiceConversation(
       conversationIdRef.current = conversationId;
       const stats = contextStatsOf(openPayload);
       setContextStats((current) => sameContextStats(current, stats) ? current : stats);
-      setError("");
+      const previousSyncError = syncErrorRef.current;
+      if (previousSyncError) {
+        syncErrorRef.current = "";
+        setError((current) => current === previousSyncError ? "" : current);
+      }
       let pending = pendingRef.current;
       if (!pending && typeof openPayload.clientOperationId === "string" && openPayload.clientOperationId
         && (openPayload.status === "accepted" || openPayload.status === "running"
@@ -304,15 +317,27 @@ export function useVoiceConversation(
       if (!pending) {
         validatedGenerationRef.current = startedGeneration;
         setLogicalConversationId(conversationId);
+        const operationId = String(openPayload.clientOperationId || "");
+        const alreadySettled = operationId && settledOperationRef.current === operationId;
+        // Completed snapshots may add metadata without replaying the turn outcome.
+        if (alreadySettled && openPayload.status !== "completed") return;
+        if (["completed", "failed", "preflight_failed", "interrupted"].includes(String(openPayload.status))) {
+          settledOperationRef.current = operationId;
+          setSettledOperationId(operationId);
+        }
         if (openPayload.status === "completed" && typeof openPayload.text === "string"
           && typeof openPayload.clientOperationId === "string") {
           setReply({ text: openPayload.text, operationId: openPayload.clientOperationId,
             outputTokens: typeof openPayload.outputTokens === "number" ? openPayload.outputTokens : undefined,
             completedOrdinal: typeof openPayload.completedOrdinal === "number" ? openPayload.completedOrdinal : undefined });
-          setTurnStatus("completed");
+          if (!alreadySettled) {
+            setTurnStatus("completed");
+            setError("");
+          }
         } else if ((openPayload.status === "interrupted" || openPayload.status === "preflight_failed")
           && openPayload.code === "voice_cancelled") {
           setTurnStatus("idle");
+          setError("");
         } else if (openPayload.status === "unknown" || openPayload.status === "failed"
           || openPayload.status === "preflight_failed" || openPayload.status === "interrupted") {
           setTurnStatus("failed");
@@ -361,7 +386,9 @@ export function useVoiceConversation(
         && turnRevisionRef.current === turnRevisionAtStart) {
         setLogicalConversationId("");
         if (pendingRef.current) setTurnStatus("sending");
-        setError(cause instanceof Error ? cause.message : "Private Runnerへ接続できません。");
+        const message = cause instanceof Error ? cause.message : "Private Runnerへ接続できません。";
+        syncErrorRef.current = message;
+        setError(message);
       }
     } finally {
       syncingRef.current = false;
@@ -445,6 +472,8 @@ export function useVoiceConversation(
     const pending = pendingRef.current;
     if (!pending || !conversationIdRef.current) return;
     pendingRef.current = null;
+    settledOperationRef.current = pending.id;
+    setSettledOperationId(pending.id);
     turnRevisionRef.current += 1;
     pending.resolve?.();
     setTurnStatus("idle");
@@ -535,8 +564,14 @@ export function useVoiceConversation(
   }, [manager, orchestratorId, refreshHistory]);
 
   useEffect(() => {
-    if (logicalConversationId && pendingRef.current && !pendingRef.current.text) void refreshHistory();
-  }, [logicalConversationId, refreshHistory]);
+    if (!logicalConversationId || !connected) return;
+    const refresh = () => { void refreshHistory(); };
+    refresh();
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") refresh();
+    });
+    return () => subscription.remove();
+  }, [connected, logicalConversationId, refreshHistory, settledOperationId]);
 
   const visibleHistory = useMemo(() => [...history, ...localHistory.filter((local) => !history.some((message) =>
     message.role === local.role && message.clientOperationId === local.clientOperationId))], [history, localHistory]);

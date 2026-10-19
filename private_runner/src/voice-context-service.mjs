@@ -1821,13 +1821,24 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
       const failNativeTurn = (cause, message) => {
         if (onApproval && taskChecklistPath && !readOnlyPreflight) {
           const info = terminal?.params?.turn?.error?.codexErrorInfo;
+          const kind = typeof info === "string" ? info : info && typeof info === "object" && !Array.isArray(info)
+            && Object.keys(info).length === 1 ? Object.keys(info)[0] : "";
+          const httpStatusCode = info?.[kind]?.httpStatusCode;
           console.warn("[voice-context] native turn failed", {
+            clientOperationId: checklistTurn?.clientOperationId,
+            ...identity,
             stage: "turn_completion", code: "turn_failed", cause,
             terminalMethod: terminal?.method === "turn/completed" ? "turn/completed" : "missing",
             terminalStatus: ["failed", "error", "completed", "complete", "succeeded", "success"].includes(status)
               ? status : status ? "other" : "missing",
-            codexErrorInfo: ["usageLimitExceeded", "rateLimitExceeded"].includes(info)
-              ? info : info == null ? "missing" : "other",
+            codexErrorInfo: ["contextWindowExceeded", "sessionBudgetExceeded", "usageLimitExceeded",
+              "rateLimitExceeded", "flexUnavailable", "serverOverloaded", "cyberPolicy",
+              "misalignmentPolicyViolation", "tooManyDenials", "internalServerError", "unauthorized",
+              "badRequest", "threadRollbackFailed", "sandboxError", "httpConnectionFailed",
+              "responseStreamConnectionFailed", "responseStreamDisconnected", "responseTooManyFailedAttempts"].includes(kind)
+              ? kind : info == null ? "missing" : "other",
+            ...(Number.isInteger(httpStatusCode) && httpStatusCode >= 100 && httpStatusCode <= 599
+              ? { httpStatusCode } : {}),
             outputPresent: output.some((part) => Boolean(part.trim())),
           });
         }
