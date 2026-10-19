@@ -2,6 +2,8 @@ import { getPendingVoiceControlSignal } from "../utils/pendingVoiceNavigation";
 import { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from "react";
 import {
   Alert,
+  Animated,
+  AppState,
   Platform,
   Pressable,
   SafeAreaView,
@@ -90,6 +92,7 @@ import {
   useSkiaBoardViewportPersistence,
 } from "../hooks/useSkiaBoardViewportPersistence";
 import type { WorkspaceFileTarget } from "../utils/workspaceFiles";
+import { USE_NATIVE_ANIMATION_DRIVER } from "../utils/animationDriver";
 import { useReduceMotionEnabled } from "../hooks/useReduceMotionEnabled";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { VoiceConversationScreen, type VoiceConversationPlayback } from "./VoiceConversationScreen";
@@ -708,6 +711,36 @@ export function SkiaMiniBoardScreen({
   const selectionOpacity = useSharedValue(1);
   const { width: windowWidth } = useWindowDimensions();
   const { activeScreen, openDrawer, unreadCount } = useAppShell();
+  const unreadNumberOpacity = useRef(new Animated.Value(1)).current;
+  const previousUnreadCount = useRef<number | null>(null);
+  useEffect(() => {
+    const previous = previousUnreadCount.current;
+    const canAnimate = activeScreen === "skia_board" && reduceMotion === false && AppState.currentState === "active";
+    previousUnreadCount.current = canAnimate ? unreadCount : null;
+    let flash: Animated.CompositeAnimation | undefined;
+    const reset = () => {
+      flash?.stop();
+      unreadNumberOpacity.setValue(1);
+    };
+    const subscription = AppState.addEventListener("change", () => {
+      // The first snapshot after returning to the app establishes a fresh baseline.
+      previousUnreadCount.current = null;
+      reset();
+    });
+    if (canAnimate && previous !== null && unreadCount > previous) {
+      flash = Animated.sequence([
+        Animated.timing(unreadNumberOpacity, { toValue: 0.5, duration: 180, useNativeDriver: USE_NATIVE_ANIMATION_DRIVER }),
+        Animated.timing(unreadNumberOpacity, { toValue: 1, duration: 220, useNativeDriver: USE_NATIVE_ANIMATION_DRIVER }),
+        Animated.timing(unreadNumberOpacity, { toValue: 0.5, duration: 180, useNativeDriver: USE_NATIVE_ANIMATION_DRIVER }),
+        Animated.timing(unreadNumberOpacity, { toValue: 1, duration: 220, useNativeDriver: USE_NATIVE_ANIMATION_DRIVER }),
+      ]);
+      flash.start();
+    }
+    return () => {
+      subscription.remove();
+      reset();
+    };
+  }, [activeScreen, reduceMotion, unreadCount, unreadNumberOpacity]);
   const activeScreenRef = useRef(activeScreen);
   activeScreenRef.current = activeScreen;
   const [voiceOpen, setVoiceOpen] = useState(false);
@@ -2067,7 +2100,7 @@ export function SkiaMiniBoardScreen({
             <Text style={screenStyles.headerButtonText}>☰</Text>
             {unreadCount > 0 ? (
               <View style={screenStyles.unreadBadge} testID="skia-board-unread-badge" pointerEvents="none">
-                <Text style={screenStyles.unreadBadgeText}>{unreadCount > 99 ? "99+" : unreadCount}</Text>
+                <Animated.Text style={[screenStyles.unreadBadgeText, { opacity: unreadNumberOpacity }]}>{unreadCount > 99 ? "99+" : unreadCount}</Animated.Text>
               </View>
             ) : null}
           </TouchableOpacity>

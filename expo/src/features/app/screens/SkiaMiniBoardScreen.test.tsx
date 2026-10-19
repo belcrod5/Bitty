@@ -1,5 +1,5 @@
 import React from "react";
-import { Alert, Platform, StyleSheet, View } from "react-native";
+import { Alert, Animated, AppState, Platform, StyleSheet, View } from "react-native";
 import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
 import { fitTailTextLines, placeOrchestratorActivities, SkiaMiniBoardScreen } from "./SkiaMiniBoardScreen";
 import type { SkiaBoardPopupHandle } from "../components/popupChatTypes";
@@ -16,7 +16,7 @@ let mockUnreadCount = 0;
 const mockMeasureInWindow = jest.fn((callback: (x: number, y: number, width: number, height: number) => void) => {
   callback(50, 80, 800, 1000);
 });
-let mockReduceMotion = true;
+let mockReduceMotion: boolean | null = true;
 jest.mock("../hooks/useReduceMotionEnabled", () => ({ useReduceMotionEnabled: () => mockReduceMotion }));
 jest.mock("../hooks/useRegisteredDirectoryActiveSessionCount", () => ({
   useRegisteredDirectoryActiveSessionCount: () => mockRunningSessionCount,
@@ -2260,4 +2260,121 @@ test("shows the session unread count on navigation and removes it when read", as
   await screen.rerender(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
   expect(screen.queryByTestId("skia-board-unread-badge")).toBeNull();
   expect(screen.getByLabelText("ナビゲーションを開く")).toBeTruthy();
+});
+
+
+describe("menu unread number flash", () => {
+  const originalAppState = Object.getOwnPropertyDescriptor(AppState, "currentState");
+  const tree = () => <SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />;
+  let sequence: jest.SpyInstance;
+  let animation: Animated.CompositeAnimation;
+
+  beforeEach(() => {
+    Object.defineProperty(AppState, "currentState", { configurable: true, writable: true, value: "active" });
+    mockReduceMotion = false;
+    animation = { start: jest.fn(), stop: jest.fn(), reset: jest.fn() };
+    sequence = jest.spyOn(Animated, "sequence").mockReturnValue(animation);
+  });
+
+  afterEach(() => {
+    sequence.mockRestore();
+    if (originalAppState) Object.defineProperty(AppState, "currentState", originalAppState);
+  });
+
+  test("flashes only increases, including increases beyond the displayed 99+ cap", async () => {
+    const timing = jest.spyOn(Animated, "timing");
+    const screen = await render(tree());
+    expect(sequence).not.toHaveBeenCalled();
+    timing.mockClear();
+    for (const count of [1, 2, 100, 101]) {
+      mockUnreadCount = count;
+      await screen.rerender(tree());
+      expect(animation.start).toHaveBeenCalledTimes([1, 2, 100, 101].indexOf(count) + 1);
+    }
+    expect(screen.getByText("99+")).toBeTruthy();
+    expect(sequence.mock.calls.every(([steps]) => steps.length === 4)).toBe(true);
+    expect(timing.mock.calls.slice(0, 4).map(([, config]) => [config.toValue, config.duration])).toEqual([
+      [0.5, 180], [1, 220], [0.5, 180], [1, 220],
+    ]);
+    await screen.rerender(tree());
+    mockUnreadCount = 100;
+    await screen.rerender(tree());
+    expect(animation.start).toHaveBeenCalledTimes(4);
+    expect(animation.stop).toHaveBeenCalled();
+    await screen.unmount();
+    timing.mockRestore();
+  });
+
+  test.each([true, null])("does not animate the initial snapshot or reduced/unknown motion (%s)", async (motion) => {
+    mockUnreadCount = 7;
+    mockReduceMotion = motion;
+    const screen = await render(tree());
+    mockUnreadCount = 8;
+    await screen.rerender(tree());
+    mockReduceMotion = false;
+    await screen.rerender(tree());
+    expect(sequence).not.toHaveBeenCalled();
+    mockUnreadCount = 9;
+    await screen.rerender(tree());
+    expect(animation.start).toHaveBeenCalledTimes(1);
+    await screen.unmount();
+  });
+
+  test("does not flash an existing initial count or replay hidden-screen updates", async () => {
+    mockUnreadCount = 5;
+    const screen = await render(tree());
+    expect(sequence).not.toHaveBeenCalled();
+    mockActiveScreen = "settings";
+    mockUnreadCount = 6;
+    await screen.rerender(tree());
+    mockActiveScreen = "skia_board";
+    await screen.rerender(tree());
+    expect(sequence).not.toHaveBeenCalled();
+    mockUnreadCount = 7;
+    await screen.rerender(tree());
+    expect(animation.start).toHaveBeenCalledTimes(1);
+    mockActiveScreen = "settings";
+    await screen.rerender(tree());
+    expect(animation.stop).toHaveBeenCalledTimes(1);
+    await screen.unmount();
+  });
+
+  test("stops on background, skips the resume snapshot, and cleans up on reduced motion and unmount", async () => {
+    const listeners = new Set<(state: string) => void>();
+    const appStateSubscription = jest.spyOn(AppState, "addEventListener").mockImplementation((_, listener) => {
+      const callback = listener as (state: string) => void;
+      listeners.add(callback);
+      return { remove: () => listeners.delete(callback) };
+    });
+    const screen = await render(tree());
+    mockUnreadCount = 1;
+    await screen.rerender(tree());
+    expect(animation.start).toHaveBeenCalledTimes(1);
+    const resetOpacity = jest.spyOn(Animated.Value.prototype, "setValue");
+    await act(async () => {
+      Object.defineProperty(AppState, "currentState", { configurable: true, writable: true, value: "background" });
+      listeners.forEach((listener) => listener("background"));
+    });
+    expect(animation.stop).toHaveBeenCalledTimes(1);
+    expect(resetOpacity).toHaveBeenLastCalledWith(1);
+    mockUnreadCount = 2;
+    await screen.rerender(tree());
+    await act(async () => {
+      Object.defineProperty(AppState, "currentState", { configurable: true, writable: true, value: "active" });
+      listeners.forEach((listener) => listener("active"));
+    });
+    mockUnreadCount = 3;
+    await screen.rerender(tree());
+    expect(animation.start).toHaveBeenCalledTimes(1);
+    mockUnreadCount = 4;
+    await screen.rerender(tree());
+    expect(animation.start).toHaveBeenCalledTimes(2);
+    mockReduceMotion = true;
+    await screen.rerender(tree());
+    expect(resetOpacity).toHaveBeenLastCalledWith(1);
+    await screen.unmount();
+    expect(listeners.size).toBe(0);
+    appStateSubscription.mockRestore();
+    resetOpacity.mockRestore();
+  });
 });
