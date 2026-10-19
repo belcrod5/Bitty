@@ -1,6 +1,6 @@
 import React from "react";
 import { Alert, Animated, AppState, Platform, StyleSheet, View } from "react-native";
-import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, waitFor, within } from "@testing-library/react-native";
 import { fitTailTextLines, placeOrchestratorActivities, SkiaMiniBoardScreen } from "./SkiaMiniBoardScreen";
 import type { SkiaBoardPopupHandle } from "../components/popupChatTypes";
 import { gridFromSectionRect } from "../utils/skiaBoardSectionGeometry";
@@ -2265,9 +2265,12 @@ test("shows the session unread count on navigation and removes it when read", as
 });
 
 
-describe("menu unread badge flash", () => {
+describe("menu completion badge flash", () => {
   const originalAppState = Object.getOwnPropertyDescriptor(AppState, "currentState");
   const tree = () => <SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />;
+  const complete = (payload: unknown = { sessionId: "completed-session" }) => act(async () => {
+    mockBoardVoiceHandlers.get("turn_completed_notification")?.({ payload });
+  });
   let sequence: jest.SpyInstance;
   let animation: Animated.CompositeAnimation;
 
@@ -2283,65 +2286,103 @@ describe("menu unread badge flash", () => {
     if (originalAppState) Object.defineProperty(AppState, "currentState", originalAppState);
   });
 
-  test("flashes only increases, including increases beyond the displayed 99+ cap", async () => {
+  test("flashes immediately on live completion, regardless of stale or unchanged count", async () => {
+    mockUnreadCount = 100;
     const timing = jest.spyOn(Animated, "timing");
     const screen = await render(tree());
     expect(sequence).not.toHaveBeenCalled();
     timing.mockClear();
-    for (const count of [1, 2, 100, 101]) {
+    await complete();
+    expect(animation.start).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("99+")).toBeTruthy();
+    expect(timing.mock.calls.slice(0, 4).map(([, config]) => [config.toValue, config.duration])).toEqual([
+      [0.5, 80], [1, 120], [0.5, 80], [1, 120],
+    ]);
+    for (const count of [101, 101, 50]) {
       mockUnreadCount = count;
       await screen.rerender(tree());
-      expect(animation.start).toHaveBeenCalledTimes([1, 2, 100, 101].indexOf(count) + 1);
     }
-    expect(screen.getByText("99+")).toBeTruthy();
-    expect(sequence.mock.calls.every(([steps]) => steps.length === 4)).toBe(true);
-    expect(timing.mock.calls.slice(0, 4).map(([, config]) => [config.toValue, config.duration])).toEqual([
-      [0.5, 180], [1, 220], [0.5, 180], [1, 220],
-    ]);
-    await screen.rerender(tree());
-    mockUnreadCount = 100;
-    await screen.rerender(tree());
-    expect(animation.start).toHaveBeenCalledTimes(4);
-    expect(animation.stop).toHaveBeenCalled();
+    expect(animation.start).toHaveBeenCalledTimes(1);
+    expect(animation.stop).not.toHaveBeenCalled();
+    await complete();
+    expect(animation.start).toHaveBeenCalledTimes(2);
+    expect(animation.stop).toHaveBeenCalledTimes(1);
     await screen.unmount();
     timing.mockRestore();
   });
 
-  test.each([true, null])("does not animate the initial snapshot or reduced/unknown motion (%s)", async (motion) => {
-    mockUnreadCount = 7;
+  test("does not flash for initial values or count-only changes", async () => {
+    const screen = await render(tree());
+    for (const count of [1, 2, 100, 101, 0]) {
+      mockUnreadCount = count;
+      await screen.rerender(tree());
+    }
+    expect(sequence).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("skia-board-unread-badge")).toBeNull();
+    await screen.unmount();
+  });
+
+  test.each([0, 4])("shows a numberless dot before authoritative count %i arrives without restarting", async (count) => {
+    const screen = await render(tree());
+    expect(screen.queryByTestId("skia-board-unread-badge")).toBeNull();
+    await complete();
+    const dot = screen.getByTestId("skia-board-unread-badge");
+    expect(within(dot).queryAllByText(/\d/)).toHaveLength(0);
+    expect(StyleSheet.flatten(dot.props.style).height).toBe(10);
+    expect(animation.start).toHaveBeenCalledTimes(1);
+    mockUnreadCount = count;
+    await screen.rerender(tree());
+    expect(animation.start).toHaveBeenCalledTimes(1);
+    expect(animation.stop).not.toHaveBeenCalled();
+    if (count > 0) expect(screen.getByText(String(count))).toBeTruthy();
+    const finish = (animation.start as jest.Mock).mock.calls[0][0];
+    await act(async () => finish({ finished: true }));
+    expect(Boolean(screen.queryByTestId("skia-board-unread-badge"))).toBe(count > 0);
+    await screen.unmount();
+  });
+
+  test.each([true, null])("ignores reduced/unknown motion events without replay (%s)", async (motion) => {
     mockReduceMotion = motion;
     const screen = await render(tree());
-    mockUnreadCount = 8;
-    await screen.rerender(tree());
+    await complete();
     mockReduceMotion = false;
     await screen.rerender(tree());
     expect(sequence).not.toHaveBeenCalled();
-    mockUnreadCount = 9;
+    await complete();
+    expect(animation.start).toHaveBeenCalledTimes(1);
+    mockReduceMotion = true;
     await screen.rerender(tree());
+    expect(animation.stop).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("skia-board-unread-badge")).toBeNull();
+    await screen.unmount();
+  });
+
+  test("ignores invalid completion identities", async () => {
+    const screen = await render(tree());
+    for (const payload of [null, {}, { sessionId: "   " }, { threadId: "" }]) await complete(payload);
+    expect(sequence).not.toHaveBeenCalled();
+    await complete({ threadId: "valid-thread" });
     expect(animation.start).toHaveBeenCalledTimes(1);
     await screen.unmount();
   });
 
-  test("does not flash an existing initial count or replay hidden-screen updates", async () => {
-    mockUnreadCount = 5;
-    const screen = await render(tree());
-    expect(sequence).not.toHaveBeenCalled();
+  test("does not replay hidden-screen completions and stops when hidden", async () => {
     mockActiveScreen = "settings";
-    mockUnreadCount = 6;
-    await screen.rerender(tree());
+    const screen = await render(tree());
+    await complete();
     mockActiveScreen = "skia_board";
     await screen.rerender(tree());
     expect(sequence).not.toHaveBeenCalled();
-    mockUnreadCount = 7;
-    await screen.rerender(tree());
+    await complete();
     expect(animation.start).toHaveBeenCalledTimes(1);
     mockActiveScreen = "settings";
     await screen.rerender(tree());
     expect(animation.stop).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("skia-board-unread-badge")).toBeNull();
     await screen.unmount();
   });
 
-  test("stops on background, skips the resume snapshot, and cleans up on reduced motion and unmount", async () => {
+  test("stops in background, skips inactive events and resume replay, and cleans up on unmount", async () => {
     const listeners = new Set<(state: string) => void>();
     const appStateSubscription = jest.spyOn(AppState, "addEventListener").mockImplementation((_, listener) => {
       const callback = listener as (state: string) => void;
@@ -2349,33 +2390,28 @@ describe("menu unread badge flash", () => {
       return { remove: () => listeners.delete(callback) };
     });
     const screen = await render(tree());
-    mockUnreadCount = 1;
-    await screen.rerender(tree());
+    await complete();
     expect(animation.start).toHaveBeenCalledTimes(1);
+    const finish = (animation.start as jest.Mock).mock.calls[0][0];
     const resetOpacity = jest.spyOn(Animated.Value.prototype, "setValue");
-    await act(async () => {
-      Object.defineProperty(AppState, "currentState", { configurable: true, writable: true, value: "background" });
-      listeners.forEach((listener) => listener("background"));
-    });
+    for (const state of ["background", "inactive", "active"]) {
+      await act(async () => {
+        Object.defineProperty(AppState, "currentState", { configurable: true, writable: true, value: state });
+        listeners.forEach((listener) => listener(state));
+      });
+      if (state !== "active") await complete();
+    }
     expect(animation.stop).toHaveBeenCalledTimes(1);
     expect(resetOpacity).toHaveBeenLastCalledWith(1);
-    mockUnreadCount = 2;
-    await screen.rerender(tree());
-    await act(async () => {
-      Object.defineProperty(AppState, "currentState", { configurable: true, writable: true, value: "active" });
-      listeners.forEach((listener) => listener("active"));
-    });
-    mockUnreadCount = 3;
-    await screen.rerender(tree());
+    expect(screen.queryByTestId("skia-board-unread-badge")).toBeNull();
     expect(animation.start).toHaveBeenCalledTimes(1);
-    mockUnreadCount = 4;
-    await screen.rerender(tree());
-    expect(animation.start).toHaveBeenCalledTimes(2);
-    mockReduceMotion = true;
-    await screen.rerender(tree());
-    expect(resetOpacity).toHaveBeenLastCalledWith(1);
+    await complete();
     await screen.unmount();
     expect(listeners.size).toBe(0);
+    expect(mockBoardVoiceHandlers.has("turn_completed_notification")).toBe(false);
+    const resetCalls = resetOpacity.mock.calls.length;
+    finish({ finished: false });
+    expect(resetOpacity).toHaveBeenCalledTimes(resetCalls);
     appStateSubscription.mockRestore();
     resetOpacity.mockRestore();
   });

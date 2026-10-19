@@ -166,6 +166,24 @@ describe("useSessionNotificationLifecycleController", () => {
     expect(markRead).toHaveBeenCalledWith(expect.objectContaining({ backendId: "claude", sessionId: "popup-session" }));
   });
 
+  it("plays live completion sound before deferred HTTP unread reconciliation without optimistic counts", async () => {
+    const { result } = await renderController();
+    await waitFor(() => expect(mockSyncUnread).toHaveBeenCalledTimes(1));
+    let resolveSnapshot!: (value: { unreadCount: number; directoryCounts: Array<{ directory: string; unreadCount: number }> }) => void;
+    mockSyncUnread.mockImplementationOnce(() => new Promise((resolve) => { resolveSnapshot = resolve; }));
+    await act(async () => {
+      messageHandlers.get("turn_completed_notification")?.({
+        channel: "llm", op: "turn_completed_notification", sessionId: "completed-session",
+        payload: { backendId: "codex", directory: "/repo" },
+      });
+    });
+    expect(playUiSfx).toHaveBeenCalledTimes(1);
+    expect(result.current.unreadCount).toBe(0);
+    await act(async () => { resolveSnapshot({ unreadCount: 3, directoryCounts: [{ directory: "/repo", unreadCount: 3 }] }); });
+    expect(result.current.unreadCount).toBe(3);
+    expect(playUiSfx).toHaveBeenCalledTimes(1);
+  });
+
   it("refreshes unread counts for text-free completions outside the visible chat", async () => {
     const { result } = await renderController();
     await waitFor(() => expect(mockSyncUnread).toHaveBeenCalledTimes(1));
