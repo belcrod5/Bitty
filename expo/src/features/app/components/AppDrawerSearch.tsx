@@ -1,3 +1,4 @@
+import Svg, { Circle, Path } from "react-native-svg";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -13,6 +14,7 @@ import {
   type GestureResponderEvent,
   type LayoutChangeEvent,
 } from "react-native";
+import { useAppShell } from "../contexts/AppShellContext";
 import { useChatScreen } from "../contexts/ChatScreenContext";
 import { useAppStyles } from "../styles";
 import { useVisualTheme } from "../theme/VisualThemeContext";
@@ -63,6 +65,8 @@ function resultDate(value: string | undefined): string {
 export function AppDrawerSearch({
   directoryQuery,
   onChangeDirectoryQuery,
+  unreadOnly,
+  onToggleUnreadOnly,
   active,
   onActiveChange,
   directoryMatchCount,
@@ -72,6 +76,8 @@ export function AppDrawerSearch({
   viewportBottom,
   onSelectChatResult,
 }: {
+  unreadOnly: boolean;
+  onToggleUnreadOnly: () => void;
   directoryQuery: string;
   onChangeDirectoryQuery: (query: string) => void;
   active: boolean;
@@ -86,6 +92,7 @@ export function AppDrawerSearch({
   const styles = useAppStyles();
   const { theme } = useVisualTheme();
   const { runnerUrl, runnerToken } = useChatScreen();
+  const { unreadCount } = useAppShell();
   const { height: windowHeight } = useWindowDimensions();
   const inputRef = useRef<TextInput>(null);
   const requestRef = useRef(0);
@@ -301,34 +308,66 @@ export function AppDrawerSearch({
       onLayout={updateContainerY}
       testID="app-drawer-search-container"
     >
-      <View style={[styles.appDrawerSearchBox, active && styles.appDrawerSearchBoxFocused]}>
-        <TextInput
-          ref={inputRef}
-          style={styles.appDrawerSearchInput}
-          value={query}
-          onChangeText={changeQuery}
-          onFocus={() => onActiveChange(true)}
-          placeholder={mode === "directory" ? "ディレクトリを検索" : "チャット内を検索"}
-          placeholderTextColor={theme.colors.borderStrong}
-          autoCapitalize="none"
-          autoCorrect={false}
-          clearButtonMode="never"
-          inputAccessoryViewID={Platform.OS === "ios" ? APP_DRAWER_SEARCH_INPUT_ACCESSORY_ID : undefined}
-          onSubmitEditing={submitSearch}
-          returnKeyType="search"
-          submitBehavior="blurAndSubmit"
-          accessibilityLabel={mode === "directory" ? "ディレクトリ検索" : "チャット検索"}
-        />
-        {query ? (
-          <TouchableOpacity
-            style={styles.appDrawerSearchClearButton}
-            onPress={() => changeQuery("")}
-            accessibilityRole="button"
-            accessibilityLabel="検索をクリア"
-          >
-            <Text style={styles.appDrawerSearchClearButtonText}>×</Text>
-          </TouchableOpacity>
-        ) : null}
+      <View style={styles.appDrawerSearchToolbar}>
+        <View style={[styles.appDrawerSearchBox, active && styles.appDrawerSearchBoxFocused]}>
+          <TextInput
+            ref={inputRef}
+            style={styles.appDrawerSearchInput}
+            value={query}
+            onChangeText={changeQuery}
+            onFocus={() => onActiveChange(true)}
+            placeholder={mode === "directory" ? "ディレクトリを検索" : "チャット内を検索"}
+            placeholderTextColor={theme.colors.borderStrong}
+            autoCapitalize="none"
+            autoCorrect={false}
+            clearButtonMode="never"
+            inputAccessoryViewID={Platform.OS === "ios" ? APP_DRAWER_SEARCH_INPUT_ACCESSORY_ID : undefined}
+            onSubmitEditing={submitSearch}
+            returnKeyType="search"
+            submitBehavior="blurAndSubmit"
+            accessibilityLabel={mode === "directory" ? "ディレクトリ検索" : "チャット検索"}
+          />
+          {query ? (
+            <TouchableOpacity
+              style={styles.appDrawerSearchClearButton}
+              onPress={() => changeQuery("")}
+              accessibilityRole="button"
+              accessibilityLabel="検索をクリア"
+            >
+              <Text style={styles.appDrawerSearchClearButtonText}>×</Text>
+            </TouchableOpacity>
+          ) : null}
+        </View>
+        <Pressable
+          style={({ pressed }) => [
+            styles.appDrawerUnreadFilter,
+            unreadOnly && styles.appDrawerUnreadFilterSelected,
+            pressed && { opacity: 0.7 },
+          ]}
+          onPress={onToggleUnreadOnly}
+          accessibilityRole="button"
+          accessibilityLabel="未読のみ表示"
+          accessibilityValue={{ text: `未読 ${unreadCount}件` }}
+          accessibilityHint="未読のあるディレクトリとセッションに絞り込みます"
+          accessibilityState={{ selected: unreadOnly }}
+          testID="app-drawer-unread-filter"
+        >
+          <Svg width={23} height={23} viewBox="0 0 24 24" fill="none">
+            <Path
+              d="M10 7h9M5 12h14M5 17h14"
+              stroke={unreadOnly ? theme.colors.textOnAccent : theme.colors.textMuted}
+              strokeWidth={1.8}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+            <Circle cx={5} cy={7} r={2} fill={unreadOnly ? theme.colors.textOnAccent : theme.colors.primaryAction} />
+          </Svg>
+          {unreadCount > 0 ? (
+            <View style={styles.appDrawerUnreadFilterBadge} testID="app-drawer-unread-filter-badge" pointerEvents="none">
+              <Text style={styles.appDrawerUnreadFilterBadgeText}>{unreadCount > 99 ? "99+" : unreadCount}</Text>
+            </View>
+          ) : null}
+        </Pressable>
       </View>
       {active ? (
         <View

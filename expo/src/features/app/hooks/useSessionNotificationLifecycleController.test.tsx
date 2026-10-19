@@ -1,5 +1,6 @@
 import { act, renderHook, waitFor } from "@testing-library/react-native";
 import { AppState } from "react-native";
+import type { RunnerWsMessage, RunnerWsMessageFilter } from "../../runnerWs/types";
 import {
   dismissReadDirectoryNotifications,
   dismissReadSessionNotifications,
@@ -29,9 +30,15 @@ const mockDismiss = dismissReadSessionNotifications as jest.Mock;
 const mockReconcileDirectory = reconcileReadDirectoryNotifications as jest.Mock;
 const mockSetBadge = setUnreadBadgeCount as jest.Mock;
 const mockSyncUnread = syncUnreadSessionCounts as jest.Mock;
+const playUiSfx = jest.fn();
+const messageHandlers = new Map<string, (message: RunnerWsMessage) => void>();
 let runnerConnectionState = "ready";
 let runnerSnapshotListener: (() => void) | null = null;
 const runnerWebSocketManager = {
+  subscribe: (filter: RunnerWsMessageFilter, handler: (message: RunnerWsMessage) => void) => {
+    messageHandlers.set(String(filter.op), handler);
+    return () => { if (messageHandlers.get(String(filter.op)) === handler) messageHandlers.delete(String(filter.op)); };
+  },
   getSnapshot: () => ({ connectionState: runnerConnectionState }),
   subscribeSnapshot: (listener: () => void) => {
     runnerSnapshotListener = listener;
@@ -57,6 +64,7 @@ function renderController({
   const normalizedLlmDirectoryForRequest = () => "/fallback";
   const registeredDirectoryPaths = ["/repo"];
   return renderHook(() => useSessionNotificationLifecycleController({
+    playUiSfx,
     getPopupSessionTarget,
     getRunnerHttpAuth,
     normalizedLlmDirectoryForRequest,
@@ -72,6 +80,7 @@ describe("useSessionNotificationLifecycleController", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    messageHandlers.clear();
     appStateListener = null;
     runnerConnectionState = "ready";
     runnerSnapshotListener = null;
@@ -139,6 +148,89 @@ describe("useSessionNotificationLifecycleController", () => {
       runnerSnapshotListener?.();
     });
     await waitFor(() => expect(mockSyncUnread).toHaveBeenCalledTimes(2));
+  });
+
+  it("sounds once from a live completion even when a local callback also reconciles it", async () => {
+    const { result } = await renderController({ popup: "popup-session", popupBackendId: "claude" });
+    const markRead = jest.fn();
+    result.current.markSessionReadAsyncRef.current = markRead;
+    await act(async () => {
+      messageHandlers.get("turn_completed_notification")?.({
+        channel: "llm", op: "turn_completed_notification", sessionId: "popup-session",
+        payload: { backendId: "claude", directory: "/repo", previewText: "" },
+      });
+      result.current.handleForegroundSessionCompletion({ backendId: "claude", sessionId: "popup-session", directory: "/repo" });
+    });
+    expect(playUiSfx).toHaveBeenCalledTimes(1);
+    expect(playUiSfx).toHaveBeenCalledWith("reply");
+    expect(markRead).toHaveBeenCalledWith(expect.objectContaining({ backendId: "claude", sessionId: "popup-session" }));
+  });
+
+  it("plays live completion sound before deferred HTTP unread reconciliation without optimistic counts", async () => {
+    const { result } = await renderController();
+    await waitFor(() => expect(mockSyncUnread).toHaveBeenCalledTimes(1));
+    let resolveSnapshot!: (value: { unreadCount: number; directoryCounts: Array<{ directory: string; unreadCount: number }> }) => void;
+    mockSyncUnread.mockImplementationOnce(() => new Promise((resolve) => { resolveSnapshot = resolve; }));
+    await act(async () => {
+      messageHandlers.get("turn_completed_notification")?.({
+        channel: "llm", op: "turn_completed_notification", sessionId: "completed-session",
+        payload: { backendId: "codex", directory: "/repo" },
+      });
+    });
+    expect(playUiSfx).toHaveBeenCalledTimes(1);
+    expect(result.current.unreadCount).toBe(0);
+    await act(async () => { resolveSnapshot({ unreadCount: 3, directoryCounts: [{ directory: "/repo", unreadCount: 3 }] }); });
+    expect(result.current.unreadCount).toBe(3);
+    expect(playUiSfx).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes unread counts for text-free completions outside the visible chat", async () => {
+    const { result } = await renderController();
+    await waitFor(() => expect(mockSyncUnread).toHaveBeenCalledTimes(1));
+    mockSyncUnread.mockResolvedValue({ unreadCount: 4, directoryCounts: [{ directory: "/repo", unreadCount: 4 }] });
+    await act(async () => {
+      messageHandlers.get("turn_completed_notification")?.({
+        channel: "llm", op: "turn_completed_notification", threadId: "scheduled-session",
+        payload: { backendId: "codex", directory: "/repo", previewText: "" },
+      });
+    });
+    expect(playUiSfx).toHaveBeenCalledTimes(1);
+    expect(result.current.unreadCount).toBe(4);
+    expect(result.current.directoryUnreadCountByPath).toEqual({ "/repo": 4 });
+  });
+
+  it.each(["background", "inactive"])("keeps %s completions silent and does not replay them on resume", async (state) => {
+    const { result } = await renderController({ popup: "popup-session" });
+    await waitFor(() => expect(mockSyncUnread).toHaveBeenCalledTimes(1));
+    const markRead = jest.fn();
+    result.current.markSessionReadAsyncRef.current = markRead;
+    Object.defineProperty(AppState, "currentState", { configurable: true, writable: true, value: state });
+    await act(async () => {
+      messageHandlers.get("turn_completed_notification")?.({
+        channel: "llm", op: "turn_completed_notification", sessionId: "popup-session",
+        payload: { backendId: "codex", directory: "/repo" },
+      });
+      result.current.handleForegroundSessionCompletion({ backendId: "codex", sessionId: "popup-session", directory: "/repo" });
+    });
+    expect(mockSyncUnread).toHaveBeenCalledTimes(1);
+    expect(markRead).not.toHaveBeenCalled();
+    Object.defineProperty(AppState, "currentState", { configurable: true, writable: true, value: "active" });
+    await act(async () => { appStateListener?.("active"); });
+    expect(mockSyncUnread).toHaveBeenCalledTimes(2);
+    expect(playUiSfx).not.toHaveBeenCalled();
+    expect(mockDismiss).not.toHaveBeenCalled();
+  });
+
+  it("keeps voice unread in the native badge and counts only directory sessions in the menu", async () => {
+    mockSyncUnread.mockResolvedValue({ unreadCount: 7, voiceUnreadCount: 5, directoryCounts: [{ directory: "/repo", unreadCount: 2 }] });
+    const { result } = await renderController();
+    await waitFor(() => expect(mockSetBadge).toHaveBeenCalledWith(7));
+    expect(result.current.unreadCount).toBe(2);
+    await act(async () => {
+      result.current.applyUnreadCountSnapshot({ unreadCount: 5, voiceUnreadCount: 5, directoryCounts: [{ directory: "/repo", unreadCount: 0 }] });
+    });
+    expect(result.current.unreadCount).toBe(0);
+    expect(playUiSfx).not.toHaveBeenCalled();
   });
 
   it("does not treat a selected Skia board card as a visible chat", async () => {

@@ -2,6 +2,8 @@ import { getPendingVoiceControlSignal } from "../utils/pendingVoiceNavigation";
 import { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from "react";
 import {
   Alert,
+  Animated,
+  AppState,
   Platform,
   Pressable,
   SafeAreaView,
@@ -44,6 +46,8 @@ import {
   withSequence,
   type SharedValue,
 } from "react-native-reanimated";
+import { useRunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketContext";
+import { parseOptionalSessionId } from "../utils/llmSession";
 import { useAppShell } from "../contexts/AppShellContext";
 import { useChatScreen } from "../contexts/ChatScreenContext";
 import { useConversation } from "../contexts/ConversationContext";
@@ -90,6 +94,7 @@ import {
   useSkiaBoardViewportPersistence,
 } from "../hooks/useSkiaBoardViewportPersistence";
 import type { WorkspaceFileTarget } from "../utils/workspaceFiles";
+import { USE_NATIVE_ANIMATION_DRIVER } from "../utils/animationDriver";
 import { useReduceMotionEnabled } from "../hooks/useReduceMotionEnabled";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { VoiceConversationScreen, type VoiceConversationPlayback } from "./VoiceConversationScreen";
@@ -707,7 +712,45 @@ export function SkiaMiniBoardScreen({
   const canvasHostRef = useRef<View | null>(null);
   const selectionOpacity = useSharedValue(1);
   const { width: windowWidth } = useWindowDimensions();
-  const { activeScreen, openDrawer } = useAppShell();
+  const { activeScreen, openDrawer, unreadCount } = useAppShell();
+  const unreadBadgeOpacity = useRef(new Animated.Value(1)).current;
+  const [completionFlashing, setCompletionFlashing] = useState(false);
+  const runnerWebSocketManager = useRunnerWebSocketManager();
+  useEffect(() => {
+    let flash: Animated.CompositeAnimation | undefined;
+    const reset = () => {
+      const current = flash;
+      flash = undefined;
+      current?.stop();
+      unreadBadgeOpacity.setValue(1);
+      setCompletionFlashing(false);
+    };
+    // Sound consumes this same live event; HTTP unread reconciliation must not delay attention.
+    const unsubscribe = runnerWebSocketManager.subscribe({ channel: "llm", op: "turn_completed_notification" }, (message) => {
+      if (activeScreen !== "skia_board" || reduceMotion !== false || AppState.currentState !== "active") return;
+      const payload = message.payload && typeof message.payload === "object"
+        ? message.payload as Record<string, unknown> : {};
+      if (!parseOptionalSessionId(message.sessionId || message.threadId || payload.sessionId || payload.threadId)) return;
+      reset();
+      setCompletionFlashing(true);
+      const animation = Animated.sequence([
+        Animated.timing(unreadBadgeOpacity, { toValue: 0.5, duration: 80, useNativeDriver: USE_NATIVE_ANIMATION_DRIVER }),
+        Animated.timing(unreadBadgeOpacity, { toValue: 1, duration: 120, useNativeDriver: USE_NATIVE_ANIMATION_DRIVER }),
+        Animated.timing(unreadBadgeOpacity, { toValue: 0.5, duration: 80, useNativeDriver: USE_NATIVE_ANIMATION_DRIVER }),
+        Animated.timing(unreadBadgeOpacity, { toValue: 1, duration: 120, useNativeDriver: USE_NATIVE_ANIMATION_DRIVER }),
+      ]);
+      flash = animation;
+      animation.start(() => {
+        if (flash === animation) reset();
+      });
+    });
+    const subscription = AppState.addEventListener("change", reset);
+    return () => {
+      unsubscribe();
+      subscription.remove();
+      reset();
+    };
+  }, [activeScreen, reduceMotion, runnerWebSocketManager, unreadBadgeOpacity]);
   const activeScreenRef = useRef(activeScreen);
   activeScreenRef.current = activeScreen;
   const [voiceOpen, setVoiceOpen] = useState(false);
@@ -2062,9 +2105,18 @@ export function SkiaMiniBoardScreen({
             style={screenStyles.headerButton}
             onPress={openDrawer}
             accessibilityRole="button"
-            accessibilityLabel="ナビゲーションを開く"
+            accessibilityLabel={unreadCount > 0 ? `ナビゲーションを開く、未読 ${unreadCount}件` : "ナビゲーションを開く"}
           >
             <Text style={screenStyles.headerButtonText}>☰</Text>
+            {unreadCount > 0 || completionFlashing ? (
+              <Animated.View
+                style={[screenStyles.unreadBadge, unreadCount <= 0 && screenStyles.unreadCompletionDot, { opacity: unreadBadgeOpacity }]}
+                testID="skia-board-unread-badge"
+                pointerEvents="none"
+              >
+                {unreadCount > 0 ? <Text style={screenStyles.unreadBadgeText}>{unreadCount > 99 ? "99+" : unreadCount}</Text> : null}
+              </Animated.View>
+            ) : null}
           </TouchableOpacity>
           <TouchableOpacity
             style={screenStyles.headerButton}
@@ -2226,6 +2278,32 @@ function createScreenStyles(theme: VisualTheme) {
       alignItems: "center",
       justifyContent: "center",
       backgroundColor: theme.colors.floatingControlSurface,
+    },
+    unreadBadge: {
+      position: "absolute",
+      top: -3,
+      right: -5,
+      minWidth: 21,
+      height: 21,
+      paddingHorizontal: 5,
+      borderRadius: 11,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: theme.colors.primaryAction,
+      borderWidth: 2,
+      borderColor: theme.colors.floatingControlSurface,
+    },
+    unreadCompletionDot: {
+      minWidth: 10,
+      height: 10,
+      paddingHorizontal: 0,
+      borderRadius: 5,
+    },
+    unreadBadgeText: {
+      color: theme.colors.textOnAccent,
+      fontSize: 11,
+      lineHeight: 15,
+      fontWeight: "800",
     },
     headerButtonText: {
       color: theme.colors.floatingControlText,

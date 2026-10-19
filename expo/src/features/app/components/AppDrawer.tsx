@@ -146,6 +146,7 @@ export const AppDrawer = memo(function AppDrawer({
   } = useSkiaBoard();
   const expandedSet = useMemo(() => new Set(expandedDirectoryIds), [expandedDirectoryIds]);
   const [searchQuery, setSearchQuery] = useState("");
+  const [unreadOnly, setUnreadOnly] = useState(false);
   const [searchActive, setSearchActive] = useState(false);
   const [searchViewportBottom, setSearchViewportBottom] = useState<number | null>(null);
   const normalizedSearchQuery = normalizeDrawerSearchText(searchQuery);
@@ -194,9 +195,9 @@ export const AppDrawer = memo(function AppDrawer({
     const unreadCount = directoryUnreadCountByPath[directory.path] || 0;
     const directoryLabel = String(directory.displayName || "").trim() || directory.path;
     const sessionEntries = sessionState?.entries || [];
-    const baseVisibleSessionEntries = expanded
-      ? sessionEntries
-      : sessionEntries.filter((session) => isLlmSessionUnread(session));
+    const unreadSessionEntries = sessionEntries.filter(isLlmSessionUnread);
+    if (unreadOnly && unreadCount <= 0 && unreadSessionEntries.length <= 0) return [];
+    const baseVisibleSessionEntries = expanded && !unreadOnly ? sessionEntries : unreadSessionEntries;
     const directoryMatches = drawerSearchIncludes(normalizedSearchQuery, [
       directoryLabel,
       directory.path,
@@ -226,6 +227,7 @@ export const AppDrawer = memo(function AppDrawer({
     normalizedSearchQuery,
     registeredDirectories,
     selectedDirectoryPath,
+    unreadOnly,
   ]);
 
   const renderSessionEntry = (
@@ -338,6 +340,8 @@ export const AppDrawer = memo(function AppDrawer({
   return (
     <SafeAreaView style={styles.appDrawerRoot}>
       <AppDrawerSearch
+        unreadOnly={unreadOnly}
+        onToggleUnreadOnly={() => setUnreadOnly((current) => !current)}
         directoryQuery={searchQuery}
         onChangeDirectoryQuery={setSearchQuery}
         active={searchActive}
@@ -420,7 +424,7 @@ export const AppDrawer = memo(function AppDrawer({
           {registeredDirectories.length <= 0 ? (
             <Text style={styles.hint}>登録ディレクトリはありません。追加ボタンから登録してください。</Text>
           ) : directoryViews.length <= 0 ? (
-            <Text style={styles.hint}>一致するディレクトリはありません。</Text>
+            <Text style={styles.hint}>{unreadOnly ? "未読のあるディレクトリはありません。" : "一致するディレクトリはありません。"}</Text>
           ) : (
             directoryViews.map(({
               directory,
@@ -475,6 +479,9 @@ export const AppDrawer = memo(function AppDrawer({
                     <TouchableOpacity
                       style={styles.appDrawerExpandButton}
                       onPress={() => onToggleDirectoryExpanded(directory.id, directory.path)}
+                      accessibilityRole="button"
+                      accessibilityLabel={`${directoryLabel}の履歴を${expanded ? "閉じる" : "開く"}`}
+                      accessibilityState={{ expanded }}
                     >
                       <DrawerChevron expanded={expanded} />
                     </TouchableOpacity>
@@ -506,7 +513,7 @@ export const AppDrawer = memo(function AppDrawer({
                     <View style={styles.appDrawerSessionBlock}>
                       {sessionState?.error ? <Text style={styles.errorText}>{sessionState.error}</Text> : null}
                       {!sessionState?.loading && !sessionState?.error && visibleSessionEntries.length <= 0 ? (
-                        <Text style={styles.hint}>履歴はありません。</Text>
+                        <Text style={styles.hint}>{unreadOnly ? (sessionState?.hasMore ? "未読の履歴をさらに読み込んでください。" : "未読の履歴はありません。") : "履歴はありません。"}</Text>
                       ) : null}
                       {visibleSessionEntries.map((session) => renderSessionEntry(directory, sessionState, session, 0))}
                       {showLoadMoreSessions && sessionState?.hasMore ? (

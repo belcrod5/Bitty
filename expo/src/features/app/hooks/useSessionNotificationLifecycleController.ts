@@ -36,7 +36,9 @@ export function useSessionNotificationLifecycleController({
   normalizedLlmDirectoryForRequest,
   registeredDirectoryPaths,
   runnerWebSocketManager,
+  playUiSfx,
 }: {
+  playUiSfx: (key: "reply") => void;
   getPopupSessionTarget: () => {
     backendId: string;
     sessionId: string;
@@ -196,8 +198,28 @@ export function useSessionNotificationLifecycleController({
     syncUnreadState,
   ]);
 
+  useEffect(() => runnerWebSocketManager.subscribe?.(
+    { channel: "llm", op: "turn_completed_notification" },
+    (message) => {
+      if (AppState.currentState !== "active") return;
+      const payload = message.payload && typeof message.payload === "object"
+        ? message.payload as Record<string, unknown> : {};
+      const sessionId = parseOptionalSessionId(message.sessionId || message.threadId || payload.sessionId || payload.threadId);
+      if (!sessionId) return;
+      // This live broadcast is deduplicated by the Runner. Request/relay completion
+      // callbacks also reconcile reads, but replayed relay events must never play sound.
+      playUiSfx("reply");
+      handleForegroundSessionCompletion({
+        backendId: String(payload.backendId || "codex").trim() || "codex",
+        sessionId,
+        directory: String(payload.directory || "").trim(),
+      });
+    }
+  ), [handleForegroundSessionCompletion, playUiSfx, runnerWebSocketManager]);
+
   return {
     applyUnreadCountSnapshot,
+    unreadCount: Object.values(directoryUnreadCountByPath).reduce((sum, count) => sum + count, 0),
     directoryUnreadCountByPath,
     handleForegroundSessionCompletion,
     handleDirectoryReadStateCommitted,

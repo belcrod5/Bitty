@@ -16,6 +16,7 @@ import type { CodexAuthRegistration } from "./useCodexStatusAuthController";
 
 export function useAppShellContextValue(args: AppShellContextValue): AppShellContextValue {
   const {
+    unreadCount,
     activeScreen,
     drawerOpen,
     setActiveScreen,
@@ -29,6 +30,7 @@ export function useAppShellContextValue(args: AppShellContextValue): AppShellCon
 
   return useMemo(
     () => ({
+      unreadCount,
       activeScreen,
       drawerOpen,
       setActiveScreen,
@@ -39,7 +41,7 @@ export function useAppShellContextValue(args: AppShellContextValue): AppShellCon
       openSkiaBoardScreen,
       openCloudflareTunnelMonitorScreen,
     }),
-    [activeScreen, drawerOpen, setActiveScreen, setDrawerOpen, openDrawer, closeDrawer, openSettingsScreen, openSkiaBoardScreen, openCloudflareTunnelMonitorScreen]
+    [unreadCount, activeScreen, drawerOpen, setActiveScreen, setDrawerOpen, openDrawer, closeDrawer, openSettingsScreen, openSkiaBoardScreen, openCloudflareTunnelMonitorScreen]
   );
 }
 

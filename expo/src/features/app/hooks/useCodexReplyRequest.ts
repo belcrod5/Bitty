@@ -1437,7 +1437,6 @@ export function useCodexReplyRequest<
       const youtubeIds = current.extractYouTubeVideoIds(nextReplyRaw);
       void current.fetchYouTubeVideoMetadata(youtubeIds);
       const nextReply = current.stripYouTubeTags(nextReplyRaw);
-      const nextReplyForHistory = nextReply || (youtubeIds.length > 0 ? "YouTube動画候補を表示しました。" : "");
       const finalReplySessionId = String(result.threadId || trackedThreadId || requestThreadId || requestUiSessionId || "").trim();
       updateRuntimeRequest("completed", "completed", "reply received", {
         sessionId: finalReplySessionId,
@@ -1492,10 +1491,7 @@ export function useCodexReplyRequest<
       void current.onLlmMessageCompleted?.({
         backendId: requestBackendId,
         sessionId: finalReplySessionId,
-        threadId: String(result.threadId || finalReplySessionId).trim(),
         directory: requestDirectory,
-        previewText: finalReplyForSpeech || current.stripYouTubeTags(nextReplyForHistory || nextReplyRaw),
-        completedAtMs: Date.now(),
       });
       const autoSpeechTarget = {
         panelId: requestPanelId,

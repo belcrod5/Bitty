@@ -17,6 +17,10 @@ const mockHasDirectory = jest.fn(() => false);
 let mockSkiaBoardLoaded = true;
 let mockRunnerUrl = "http://runner";
 let mockRunnerToken = "runner-token";
+let mockUnreadCount = 0;
+jest.mock("../contexts/AppShellContext", () => ({
+  useAppShell: () => ({ unreadCount: mockUnreadCount }),
+}));
 jest.mock("../contexts/SkiaBoardContext", () => ({
   useSkiaBoard: () => ({
     addDirectory: mockAddDirectory,
@@ -148,6 +152,7 @@ beforeEach(() => {
   mockSkiaBoardLoaded = true;
   mockRunnerUrl = "http://runner";
   mockRunnerToken = "runner-token";
+  mockUnreadCount = 0;
 });
 
 afterEach(() => {
@@ -1077,4 +1082,126 @@ test("loads subagent children when an unloaded drawer session is expanded", asyn
   await fireEvent.press(drawer.getByLabelText("サブエージェントを開く"));
 
   expect(onLoadSessionChildren).toHaveBeenCalledWith("dir-1", "/work/bitty", "parent-session");
+});
+
+
+test("toggles unread sessions without read siblings or other backend sessions sharing an id", async () => {
+  const unread = session({ sessionId: "shared-id", backendId: "claude", firstUserMessage: "Unread Claude", lastReadAt: "" });
+  const read = session({ sessionId: "shared-id", backendId: "codex", firstUserMessage: "Read Codex" });
+  const drawer = await renderDrawer({
+    expandedDirectoryIds: [],
+    directorySessionsById: { "dir-1": directoryState([unread, read]) },
+    directoryUnreadCountByPath: { "/work/bitty": 1 },
+  });
+  const filter = drawer.getByRole("button", { name: "未読のみ表示" });
+  expect(filter.props.accessibilityState.selected).toBe(false);
+  await fireEvent.press(filter);
+  expect(drawer.getByRole("button", { name: "未読のみ表示" }).props.accessibilityState.selected).toBe(true);
+  expect(drawer.getByText("Unread Claude")).toBeTruthy();
+  expect(drawer.queryByText("Read Codex")).toBeNull();
+  await fireEvent.press(drawer.getByRole("button", { name: "未読のみ表示" }));
+  expect(drawer.getByRole("button", { name: "未読のみ表示" }).props.accessibilityState.selected).toBe(false);
+});
+
+test.each([0, 3])("does not retain a read root because its loaded children are unread (directory count %i)", async (unreadCount) => {
+  const parent = session({ sessionId: "parent", firstUserMessage: "Read parent" });
+  const unreadChild = session({ sessionId: "child", parentSessionId: "parent", firstUserMessage: "Unread child", source: "subagent", lastReadAt: "" });
+  const drawer = await renderDrawer({
+    directoryUnreadCountByPath: { "/work/bitty": unreadCount },
+    directorySessionsById: { "dir-1": directoryState([parent], {
+      parent: { loading: false, loaded: true, error: "", entries: [unreadChild] },
+    }) },
+  });
+  await fireEvent.press(drawer.getByLabelText("未読のみ表示"));
+  expect(drawer.queryByText("Read parent")).toBeNull();
+  expect(drawer.queryByText("Unread child")).toBeNull();
+  expect(Boolean(drawer.queryByText("Bitty"))).toBe(unreadCount > 0);
+});
+
+test("keeps ordinary row controls and manually expanded children in unread mode", async () => {
+  const parent = session({ sessionId: "parent", firstUserMessage: "Unread parent", lastReadAt: "" });
+  const child = session({ sessionId: "child", parentSessionId: "parent", firstUserMessage: "Read child", source: "subagent" });
+  const unreadChild = session({ sessionId: "unread-child", parentSessionId: "parent", firstUserMessage: "Unread child", source: "subagent", lastReadAt: "" });
+  const onLoadSessionChildren = jest.fn();
+  const onSelectSessionHistoryEntry = jest.fn();
+  const drawer = await renderDrawer({
+    directoryUnreadCountByPath: { "/work/bitty": 1 },
+    directorySessionsById: { "dir-1": directoryState([parent], {
+      parent: { loading: false, loaded: true, error: "", entries: [child, unreadChild] },
+    }) },
+    onLoadSessionChildren,
+    onSelectSessionHistoryEntry,
+  });
+  await fireEvent.press(drawer.getByLabelText("未読のみ表示"));
+  expect(drawer.getByLabelText("Bittyの履歴を閉じる")).toBeTruthy();
+  expect(drawer.queryByText("Unread child")).toBeNull();
+  await fireEvent.press(drawer.getByLabelText("サブエージェントを開く"));
+  expect(onLoadSessionChildren).toHaveBeenCalledWith("dir-1", "/work/bitty", "parent");
+  expect(drawer.getByText("Read child")).toBeTruthy();
+  expect(drawer.getByText("Unread child")).toBeTruthy();
+  await fireEvent.press(drawer.getByText("Unread parent"), { nativeEvent: { pageX: 30, pageY: 60 } });
+  expect(onSelectSessionHistoryEntry).toHaveBeenCalledWith("codex", "parent", "cli", "/work/bitty", expect.any(Object));
+  await fireEvent.press(drawer.getByLabelText("未読のみ表示"));
+  expect(drawer.getByText("Read child")).toBeTruthy();
+  expect(drawer.getByText("Unread child")).toBeTruthy();
+  await fireEvent.press(drawer.getByLabelText("サブエージェントを閉じる"));
+  expect(drawer.queryByText("Read child")).toBeNull();
+  expect(drawer.queryByText("Unread child")).toBeNull();
+});
+
+test("retains manual directory expansion and pagination when unread roots are outside the loaded page", async () => {
+  const onLoadMoreSessions = jest.fn();
+  const onToggleDirectoryExpanded = jest.fn();
+  const directoryProps: Partial<AppDrawerProps> = {
+    registeredDirectories: [
+      { id: "dir-1", path: "/work/bitty", displayName: "Bitty", markerColor: "none" },
+      { id: "dir-2", path: "/work/read", displayName: "Read directory", markerColor: "none" },
+    ],
+    directoryUnreadCountByPath: { "/work/bitty": 3, "/work/read": 0 },
+    onLoadMoreSessions,
+    onToggleDirectoryExpanded,
+  };
+  const collapsed = await renderDrawer({ ...directoryProps, expandedDirectoryIds: [] });
+  await fireEvent.press(collapsed.getByLabelText("未読のみ表示"));
+  expect(collapsed.getByText("Bitty")).toBeTruthy();
+  expect(collapsed.queryByText("Read directory")).toBeNull();
+  expect(collapsed.queryByText("もっと読み込む")).toBeNull();
+  await fireEvent.press(collapsed.getByLabelText("Bittyの履歴を開く"));
+  expect(onToggleDirectoryExpanded).toHaveBeenCalledWith("dir-1", "/work/bitty");
+  await collapsed.unmount();
+  const expanded = await renderDrawer({ ...directoryProps, expandedDirectoryIds: ["dir-1"] });
+  await fireEvent.press(expanded.getByLabelText("未読のみ表示"));
+  expect(expanded.queryByText("Fix drawer search")).toBeNull();
+  expect(expanded.getByLabelText("Bittyの履歴を閉じる")).toBeTruthy();
+  expect(expanded.getByText("未読の履歴をさらに読み込んでください。")).toBeTruthy();
+  await fireEvent.press(expanded.getByText("もっと読み込む"));
+  expect(onLoadMoreSessions).toHaveBeenCalledWith("dir-1", "/work/bitty");
+  await fireEvent.changeText(expanded.getByPlaceholderText("ディレクトリを検索"), "does not match");
+  expect(expanded.queryByText("Bitty")).toBeNull();
+  expect(expanded.queryByText("もっと読み込む")).toBeNull();
+});
+
+test("reports an empty unread filter and restores all directories when disabled", async () => {
+  const drawer = await renderDrawer();
+  await fireEvent.press(drawer.getByLabelText("未読のみ表示"));
+  expect(drawer.getByText("未読のあるディレクトリはありません。")).toBeTruthy();
+  expect(drawer.queryByText("Bitty")).toBeNull();
+  await fireEvent.press(drawer.getByLabelText("未読のみ表示"));
+  expect(drawer.getByText("Bitty")).toBeTruthy();
+  expect(drawer.getByText("Fix drawer search")).toBeTruthy();
+});
+
+
+test.each([[0, ""], [1, "1"], [120, "99+"]] as const)("shows the shared menu unread count %i on the filter without losing the actual accessible count", async (count, text) => {
+  mockUnreadCount = count;
+  const drawer = await renderDrawer();
+  const filter = drawer.getByLabelText("未読のみ表示");
+  expect(filter.props.accessibilityValue.text).toBe(`未読 ${count}件`);
+  if (count === 0) {
+    expect(drawer.queryByTestId("app-drawer-unread-filter-badge")).toBeNull();
+  } else {
+    expect(within(drawer.getByTestId("app-drawer-unread-filter-badge")).getByText(text)).toBeTruthy();
+  }
+  await fireEvent.press(filter);
+  expect(drawer.getByLabelText("未読のみ表示").props.accessibilityValue.text).toBe(`未読 ${count}件`);
 });

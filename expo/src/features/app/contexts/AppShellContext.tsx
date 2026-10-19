@@ -2,6 +2,7 @@ import { createContext, useContext, type Dispatch, type ReactNode, type SetState
 import type { AppScreen } from "../types/appTypes";
 
 export type AppShellContextValue = {
+  unreadCount: number;
   activeScreen: AppScreen;
   drawerOpen: boolean;
   setActiveScreen: Dispatch<SetStateAction<AppScreen>>;
