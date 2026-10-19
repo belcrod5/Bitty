@@ -8,6 +8,7 @@ import type { AppScreen } from "../types/appTypes";
 
 type AppScreenContentProps = {
   activeScreen: AppScreen;
+  boardPopupRef?: ComponentProps<typeof SkiaMiniBoardScreen>["ref"];
   onStartNewSessionInDirectory:
     ComponentProps<typeof SkiaMiniBoardScreen>["onStartNewSessionInDirectory"];
   openSessionHistoryPopup: ComponentProps<typeof SkiaMiniBoardScreen>["openSessionHistoryPopup"];
@@ -18,6 +19,7 @@ type AppScreenContentProps = {
 
 export function AppScreenContent({
   activeScreen,
+  boardPopupRef,
   onStartNewSessionInDirectory,
   openSessionHistoryPopup,
   voicePlayback,
@@ -33,6 +35,7 @@ export function AppScreenContent({
         <CloudflareTunnelMonitorScreen />
       ) : activeScreen === "skia_board" ? (
         <SkiaMiniBoardScreen
+          ref={boardPopupRef}
           onStartNewSessionInDirectory={onStartNewSessionInDirectory}
           openSessionHistoryPopup={openSessionHistoryPopup}
           voicePlayback={voicePlayback}

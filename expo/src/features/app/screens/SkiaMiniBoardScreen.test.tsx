@@ -1,7 +1,8 @@
 import React from "react";
-import { Alert, Platform, StyleSheet } from "react-native";
+import { Alert, Platform, StyleSheet, View } from "react-native";
 import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
 import { fitTailTextLines, placeOrchestratorActivities, SkiaMiniBoardScreen } from "./SkiaMiniBoardScreen";
+import type { SkiaBoardPopupHandle } from "../components/popupChatTypes";
 import { gridFromSectionRect } from "../utils/skiaBoardSectionGeometry";
 import { VisualThemeProvider } from "../theme/VisualThemeContext";
 import { VISUAL_THEMES } from "../theme/visualThemes";
@@ -10,7 +11,12 @@ import { clearPendingVoiceOrchestratorId, getPendingVoiceOrchestratorId,
 import { usePendingVoiceNavigationController } from "../hooks/usePendingVoiceNavigationController";
 
 let mockRunningSessionCount: number | null = 0;
-jest.mock("../hooks/useReduceMotionEnabled", () => ({ useReduceMotionEnabled: () => true }));
+let mockActiveScreen = "skia_board";
+const mockMeasureInWindow = jest.fn((callback: (x: number, y: number, width: number, height: number) => void) => {
+  callback(50, 80, 800, 1000);
+});
+let mockReduceMotion = true;
+jest.mock("../hooks/useReduceMotionEnabled", () => ({ useReduceMotionEnabled: () => mockReduceMotion }));
 jest.mock("../hooks/useRegisteredDirectoryActiveSessionCount", () => ({
   useRegisteredDirectoryActiveSessionCount: () => mockRunningSessionCount,
 }));
@@ -301,7 +307,7 @@ jest.mock("react-native-gesture-handler", () => {
 });
 
 jest.mock("../contexts/AppShellContext", () => ({
-  useAppShell: () => ({ activeScreen: "skia_board", openDrawer: jest.fn() }),
+  useAppShell: () => ({ activeScreen: mockActiveScreen, openDrawer: jest.fn() }),
 }));
 const mockBoardVoiceHandlers = new Map<string, (message: { payload: unknown }) => void>();
 const mockBoardVoiceRequest = jest.fn(async () => ({ op: "voice.orchestrators.list.result", payload: {
@@ -459,6 +465,10 @@ jest.mock("../hooks/useSkiaMiniChatSessions", () => ({
 beforeEach(() => {
   (globalThis as Record<string, unknown>).__skiaBoardFrameCallback = null;
   mockRunningSessionCount = 0;
+  mockActiveScreen = "skia_board";
+  mockReduceMotion = true;
+  mockMeasureInWindow.mockClear();
+  jest.spyOn(View.prototype, "measureInWindow").mockImplementation(mockMeasureInWindow);
   mockBoardVoiceHandlers.clear();
   mockBoardVoiceRequest.mockReset();
   mockBoardVoiceRequest.mockResolvedValue({ op: "voice.orchestrators.list.result", payload: {
@@ -2117,4 +2127,118 @@ test("cards receive hits before an overlapping background section", async () => 
     fireCardTap();
   });
   expect(openSessionHistoryPopup).toHaveBeenCalledTimes(1);
+});
+
+test("resolves the current pan and zoom destination and selects an untapped notification session on arrival", async () => {
+  const ref = React.createRef<SkiaBoardPopupHandle>();
+  const openSessionHistoryPopup = jest.fn();
+  await render(<SkiaMiniBoardScreen ref={ref} onStartNewSessionInDirectory={jest.fn()}
+    openSessionHistoryPopup={openSessionHistoryPopup} />);
+  const registry = gestureRegistry();
+  await act(async () => {
+    registry.Pan.onTouchesDown({ numberOfTouches: 1 });
+    registry.Pan.onBegin({ x: 350, y: 300 });
+    registry.Pan.onStart();
+    registry.Pan.onUpdate({ numberOfPointers: 1, translationX: 80, translationY: 40 });
+    registry.Pan.onFinalize();
+    registry.Pinch.onBegin();
+    registry.Pinch.onStart({ focalX: 80, focalY: 40 });
+    registry.Pinch.onUpdate({ focalX: 80, focalY: 40, numberOfPointers: 2, scale: 2 });
+    const frame = (globalThis as Record<string, unknown>).__skiaBoardFrameCallback as () => void;
+    frame();
+  });
+  const target = await ref.current!.resolveCloseTarget({ backendId: "claude", sessionId: "session-1" });
+  expect(target?.rect).toEqual({ x: 166, y: 156, width: 540, height: 224 });
+  expect(openSessionHistoryPopup).not.toHaveBeenCalled();
+  await act(async () => target!.onComplete());
+  await act(async () => {
+    gestureRegistry().Pan.onTouchesDown({ numberOfTouches: 1 });
+    gestureRegistry().Tap.onEnd({ x: 140, y: 100 }, true);
+  });
+  expect(openSessionHistoryPopup).toHaveBeenCalledTimes(1);
+});
+
+test("matches popup sessions by backend and preserves arrival selection when board cards reorder", async () => {
+  const ref = React.createRef<SkiaBoardPopupHandle>();
+  const openSessionHistoryPopup = jest.fn();
+  const tree = () => <SkiaMiniBoardScreen ref={ref} onStartNewSessionInDirectory={jest.fn()}
+    openSessionHistoryPopup={openSessionHistoryPopup} />;
+  const screen = await render(tree());
+  expect(await ref.current!.resolveCloseTarget({ backendId: "codex", sessionId: "session-1" })).toBeNull();
+  const target = await ref.current!.resolveCloseTarget({ backendId: "claude", sessionId: "session-1" });
+  await act(async () => target!.onComplete());
+  mockSessions = [{ ...mockDefaultSession, cardId: "session:other", sessionId: "other", row: 1 }, mockDefaultSession];
+  await screen.rerender(tree());
+  await act(async () => fireCardTap());
+  expect(openSessionHistoryPopup).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "session-1", backendId: "claude" }));
+});
+
+test("selects an offscreen card after fallback closing without inventing a visible destination", async () => {
+  mockSessions = [{ ...mockDefaultSession, row: 20 }];
+  const ref = React.createRef<SkiaBoardPopupHandle>();
+  const openSessionHistoryPopup = jest.fn();
+  await render(<SkiaMiniBoardScreen ref={ref} onStartNewSessionInDirectory={jest.fn()}
+    openSessionHistoryPopup={openSessionHistoryPopup} />);
+  const target = await ref.current!.resolveCloseTarget({ backendId: "claude", sessionId: "session-1" });
+  expect(target?.rect).toBeNull();
+  await act(async () => target!.onComplete());
+  await act(async () => gestureRegistry().Tap.onEnd({ x: 30, y: 18 + 20 * 130 + 10 }, true));
+  expect(openSessionHistoryPopup).toHaveBeenCalledTimes(1);
+});
+
+test("ignores missing cards and a hidden or unmounted board", async () => {
+  const ref = React.createRef<SkiaBoardPopupHandle>();
+  const tree = () => <SkiaMiniBoardScreen ref={ref} onStartNewSessionInDirectory={jest.fn()}
+    openSessionHistoryPopup={jest.fn()} />;
+  const screen = await render(tree());
+  expect(await ref.current!.resolveCloseTarget({ backendId: "claude", sessionId: "missing" })).toBeNull();
+  const target = await ref.current!.resolveCloseTarget({ backendId: "claude", sessionId: "session-1" });
+  mockActiveScreen = "settings";
+  await screen.rerender(tree());
+  expect(await ref.current!.resolveCloseTarget({ backendId: "claude", sessionId: "session-1" })).toBeNull();
+  await act(async () => target!.onComplete());
+  await screen.unmount();
+  expect(() => target!.onComplete()).not.toThrow();
+});
+
+test.each([false, true])("blinks the cyberpunk arrival border only when motion is allowed (%s)", async (reduceMotion) => {
+  mockReduceMotion = reduceMotion;
+  const ref = React.createRef<SkiaBoardPopupHandle>();
+  await render(<VisualThemeProvider themeId="cyberpunk" onSelectTheme={() => undefined}>
+    <SkiaMiniBoardScreen ref={ref} onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />
+  </VisualThemeProvider>);
+  const target = await ref.current!.resolveCloseTarget({ backendId: "claude", sessionId: "session-1" });
+  const { withTiming } = require("react-native-reanimated") as { withTiming: jest.Mock };
+  withTiming.mockClear();
+  await act(async () => target!.onComplete());
+  expect(withTiming.mock.calls.map(([value]) => value)).toEqual(reduceMotion ? [] : [0.1, 1, 0.2, 1]);
+});
+
+test("uses the current card position if the board changes during native measurement", async () => {
+  const ref = React.createRef<SkiaBoardPopupHandle>();
+  const tree = () => <SkiaMiniBoardScreen ref={ref} onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />;
+  const screen = await render(tree());
+  let measure!: (x: number, y: number, width: number, height: number) => void;
+  mockMeasureInWindow.mockImplementationOnce((callback) => { measure = callback; });
+  const pending = ref.current!.resolveCloseTarget({ backendId: "claude", sessionId: "session-1" });
+  mockSessions = [{ ...mockDefaultSession, row: 1 }];
+  await screen.rerender(tree());
+  measure(50, 80, 800, 1000);
+  expect((await pending)?.rect).toMatchObject({ x: 68, y: 228 });
+});
+
+test("does not restore a removed target when the close animation finishes", async () => {
+  const ref = React.createRef<SkiaBoardPopupHandle>();
+  const openSessionHistoryPopup = jest.fn();
+  const tree = () => <SkiaMiniBoardScreen ref={ref} onStartNewSessionInDirectory={jest.fn()}
+    openSessionHistoryPopup={openSessionHistoryPopup} />;
+  const screen = await render(tree());
+  const target = await ref.current!.resolveCloseTarget({ backendId: "claude", sessionId: "session-1" });
+  mockSessions = [];
+  await screen.rerender(tree());
+  await act(async () => target!.onComplete());
+  mockSessions = [mockDefaultSession];
+  await screen.rerender(tree());
+  await act(async () => fireCardTap());
+  expect(openSessionHistoryPopup).not.toHaveBeenCalled();
 });

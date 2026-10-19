@@ -90,3 +90,35 @@ export function startCyberpunkPopupTransition({
   animation.start(({ finished }) => onFinish(finished));
   return animation;
 }
+
+export function startPopupMinimizeTransition({
+  durationMs,
+  reduceMotion,
+  progress,
+  cardOpacity,
+  cardScaleY,
+  flashOpacity,
+  dragTranslateY,
+  blink,
+  onFinish,
+}: PopupTransitionOptions & {
+  dragTranslateY: Animated.Value;
+  blink: boolean;
+}): Animated.CompositeAnimation {
+  flashOpacity.setValue(0);
+  cardScaleY.setValue(1);
+  cardOpacity.setValue(1);
+  const duration = reduceMotion ? 0 : durationMs;
+  const animation = Animated.parallel([
+    timing(progress, 0, duration, Easing.inOut(Easing.cubic)),
+    timing(dragTranslateY, 0, duration, Easing.out(Easing.cubic)),
+    ...(blink && !reduceMotion ? [Animated.sequence([
+      timing(cardOpacity, 0.2, duration * 0.15),
+      timing(cardOpacity, 1, duration * 0.15),
+      timing(cardOpacity, 0.25, duration * 0.15),
+      timing(cardOpacity, 1, duration * 0.15),
+    ])] : []),
+  ]);
+  animation.start(({ finished }) => onFinish(finished));
+  return animation;
+}

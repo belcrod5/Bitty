@@ -1,6 +1,6 @@
 import { Animated } from "react-native";
 
-import { startCyberpunkPopupTransition } from "./popupChatTransitions";
+import { startCyberpunkPopupTransition, startPopupMinimizeTransition } from "./popupChatTransitions";
 
 function animation(): Animated.CompositeAnimation {
   return {
@@ -70,5 +70,23 @@ test("suppresses cyberpunk blink and vertical stretch with Reduce Motion", () =>
   expect(setFlashOpacity).toHaveBeenCalledWith(0);
   expect(Animated.sequence).not.toHaveBeenCalled();
   expect(Animated.timing).toHaveBeenCalledTimes(1);
+  expect(onFinish).toHaveBeenCalledWith(true);
+});
+
+test.each([false, true])("minimizes geometry while respecting Reduce Motion (%s)", (reduceMotion) => {
+  const progress = new Animated.Value(2);
+  const opacity = new Animated.Value(1);
+  const dragTranslateY = new Animated.Value(80);
+  const onFinish = jest.fn();
+  startPopupMinimizeTransition({
+    direction: "close", durationMs: 300, reduceMotion, blink: true,
+    progress, cardOpacity: opacity, cardScaleY: new Animated.Value(1),
+    flashOpacity: new Animated.Value(0), dragTranslateY, onFinish,
+  });
+  expect(Animated.timing).toHaveBeenCalledWith(progress,
+    expect.objectContaining({ toValue: 0, duration: reduceMotion ? 0 : 300 }));
+  expect(Animated.timing).toHaveBeenCalledWith(dragTranslateY,
+    expect.objectContaining({ toValue: 0, duration: reduceMotion ? 0 : 300 }));
+  expect((Animated.sequence as jest.Mock).mock.calls).toHaveLength(reduceMotion ? 0 : 1);
   expect(onFinish).toHaveBeenCalledWith(true);
 });
