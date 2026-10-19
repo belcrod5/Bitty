@@ -14,6 +14,7 @@ import {
   type GestureResponderEvent,
   type LayoutChangeEvent,
 } from "react-native";
+import { useAppShell } from "../contexts/AppShellContext";
 import { useChatScreen } from "../contexts/ChatScreenContext";
 import { useAppStyles } from "../styles";
 import { useVisualTheme } from "../theme/VisualThemeContext";
@@ -91,6 +92,7 @@ export function AppDrawerSearch({
   const styles = useAppStyles();
   const { theme } = useVisualTheme();
   const { runnerUrl, runnerToken } = useChatScreen();
+  const { unreadCount } = useAppShell();
   const { height: windowHeight } = useWindowDimensions();
   const inputRef = useRef<TextInput>(null);
   const requestRef = useRef(0);
@@ -345,20 +347,26 @@ export function AppDrawerSearch({
           onPress={onToggleUnreadOnly}
           accessibilityRole="button"
           accessibilityLabel="未読のみ表示"
+          accessibilityValue={{ text: `未読 ${unreadCount}件` }}
           accessibilityHint="未読のあるディレクトリとセッションに絞り込みます"
           accessibilityState={{ selected: unreadOnly }}
           testID="app-drawer-unread-filter"
         >
           <Svg width={23} height={23} viewBox="0 0 24 24" fill="none">
             <Path
-              d="M12 5H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-7M3 7l9 7 5-4"
+              d="M10 7h9M5 12h14M5 17h14"
               stroke={unreadOnly ? theme.colors.textOnAccent : theme.colors.textMuted}
               strokeWidth={1.8}
               strokeLinecap="round"
               strokeLinejoin="round"
             />
-            <Circle cx={19} cy={5} r={3.5} fill={unreadOnly ? theme.colors.textOnAccent : theme.colors.primaryAction} />
+            <Circle cx={5} cy={7} r={2} fill={unreadOnly ? theme.colors.textOnAccent : theme.colors.primaryAction} />
           </Svg>
+          {unreadCount > 0 ? (
+            <View style={styles.appDrawerUnreadFilterBadge} testID="app-drawer-unread-filter-badge" pointerEvents="none">
+              <Text style={styles.appDrawerUnreadFilterBadgeText}>{unreadCount > 99 ? "99+" : unreadCount}</Text>
+            </View>
+          ) : null}
         </Pressable>
       </View>
       {active ? (

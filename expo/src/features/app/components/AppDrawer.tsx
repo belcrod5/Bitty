@@ -20,8 +20,7 @@ import { useAppStyles } from "../styles";
 import { DIRECTORY_MARKER_COLORS } from "../theme/directoryMarkerColors";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { isLlmSessionUnread, resolveLlmSessionDisplayTitle } from "../utils/llmSession";
-import { getCachedDirectorySessions } from "../utils/sessionHistoryContext";
-import { runnerSessionKey, runnerSessionValue } from "../utils/runnerClientState";
+import { runnerSessionValue } from "../utils/runnerClientState";
 import { formatModelRefForDisplay } from "../utils/settingsParsers";
 import { AppModal } from "./AppModal";
 import {
@@ -189,35 +188,16 @@ export const AppDrawer = memo(function AppDrawer({
     }
   }, [expandedSessionSet, onLoadSessionChildren]);
   const directoryViews = useMemo(() => registeredDirectories.flatMap((directory) => {
-    const expanded = unreadOnly || expandedSet.has(directory.id);
+    const expanded = expandedSet.has(directory.id);
     const selectedDirectory = selectedDirectoryPath === directory.path;
     const sessionState = directorySessionsById[directory.id];
     const readProgress = directoryReadProgressByPath[directory.path];
     const unreadCount = directoryUnreadCountByPath[directory.path] || 0;
     const directoryLabel = String(directory.displayName || "").trim() || directory.path;
     const sessionEntries = sessionState?.entries || [];
-    const unreadSessionKeys = new Set(getCachedDirectorySessions(sessionState)
-      .filter(isLlmSessionUnread).map((session) => runnerSessionKey(session.backendId, session.sessionId)));
-    // Keep ancestor rows as paths to unread descendants, without showing read siblings.
-    let addedAncestor = true;
-    while (unreadOnly && addedAncestor) {
-      addedAncestor = false;
-      for (const [parentId, children] of Object.entries(sessionState?.childrenByParentId || {})) {
-        for (const child of children.entries) {
-          const parentKey = runnerSessionKey(child.backendId, parentId);
-          if (!unreadSessionKeys.has(parentKey) && unreadSessionKeys.has(runnerSessionKey(child.backendId, child.sessionId))) {
-            unreadSessionKeys.add(parentKey);
-            addedAncestor = true;
-          }
-        }
-      }
-    }
-    if (unreadOnly && unreadCount <= 0 && unreadSessionKeys.size <= 0) return [];
-    const baseVisibleSessionEntries = unreadOnly
-      ? sessionEntries.filter((session) => unreadSessionKeys.has(runnerSessionKey(session.backendId, session.sessionId)))
-      : expanded
-      ? sessionEntries
-      : sessionEntries.filter((session) => isLlmSessionUnread(session));
+    const unreadSessionEntries = sessionEntries.filter(isLlmSessionUnread);
+    if (unreadOnly && unreadCount <= 0 && unreadSessionEntries.length <= 0) return [];
+    const baseVisibleSessionEntries = expanded && !unreadOnly ? sessionEntries : unreadSessionEntries;
     const directoryMatches = drawerSearchIncludes(normalizedSearchQuery, [
       directoryLabel,
       directory.path,
@@ -233,7 +213,6 @@ export const AppDrawer = memo(function AppDrawer({
       sessionState,
       readProgress,
       unreadCount,
-      unreadSessionKeys,
       visibleSessionEntries: baseVisibleSessionEntries,
       shouldShowSessionBlock: (
         expanded ||
@@ -255,8 +234,7 @@ export const AppDrawer = memo(function AppDrawer({
     directory: RegisteredDirectoryEntry,
     sessionState: DirectorySessionTreeState | undefined,
     session: LlmSessionHistoryEntry,
-    depth: number,
-    unreadSessionKeys: Set<string>
+    depth: number
   ): ReactNode => {
     const selected = highlightedSessionId === session.sessionId;
     const sessionPrimaryTitle = resolveLlmSessionDisplayTitle(
@@ -274,8 +252,7 @@ export const AppDrawer = memo(function AppDrawer({
     const thinkTag = formatThinkTag(session.reasoningEffort);
     const hasUnread = isLlmSessionUnread(session);
     const childState = sessionState?.childrenByParentId?.[session.sessionId];
-    const childEntries = (childState?.entries || []).filter((child) => !unreadOnly || unreadSessionKeys.has(runnerSessionKey(child.backendId, child.sessionId)));
-    const childrenExpanded = (unreadOnly && childEntries.length > 0) || expandedSessionSet.has(session.sessionId);
+    const childrenExpanded = expandedSessionSet.has(session.sessionId);
     return (
       <View
         key={`${directory.id}-${session.sessionId}`}
@@ -308,22 +285,20 @@ export const AppDrawer = memo(function AppDrawer({
           }}
         >
           <View style={styles.appDrawerSessionPrimaryRow}>
-            {!unreadOnly ? (
-              <TouchableOpacity
-                style={styles.appDrawerSessionChildToggle}
-                disabled={llmSessionRestoreLoading}
-                onPress={(event) => {
-                  event.stopPropagation?.();
-                  toggleSessionChildren(directory.id, directory.path, session.sessionId, childState);
-                }}
-                accessibilityRole="button"
-                accessibilityLabel={childrenExpanded ? "サブエージェントを閉じる" : "サブエージェントを開く"}
-              >
-                {childState?.loading ? <ActivityIndicator size="small" color={theme.colors.textMuted} /> : (
-                  <DrawerChevron expanded={childrenExpanded} />
-                )}
-              </TouchableOpacity>
-            ) : null}
+            <TouchableOpacity
+              style={styles.appDrawerSessionChildToggle}
+              disabled={llmSessionRestoreLoading}
+              onPress={(event) => {
+                event.stopPropagation?.();
+                toggleSessionChildren(directory.id, directory.path, session.sessionId, childState);
+              }}
+              accessibilityRole="button"
+              accessibilityLabel={childrenExpanded ? "サブエージェントを閉じる" : "サブエージェントを開く"}
+            >
+              {childState?.loading ? <ActivityIndicator size="small" color={theme.colors.textMuted} /> : (
+                <DrawerChevron expanded={childrenExpanded} />
+              )}
+            </TouchableOpacity>
             {sessionMarkerColorHex ? (
               <View
                 style={[
@@ -355,7 +330,7 @@ export const AppDrawer = memo(function AppDrawer({
             {childState?.loaded && !childState.error && childState.entries.length <= 0 ? (
               <Text style={styles.hint}>サブエージェントはありません。</Text>
             ) : null}
-            {childEntries.map((child) => renderSessionEntry(directory, sessionState, child, depth + 1, unreadSessionKeys))}
+            {(childState?.entries || []).map((child) => renderSessionEntry(directory, sessionState, child, depth + 1))}
           </View>
         ) : null}
       </View>
@@ -460,7 +435,6 @@ export const AppDrawer = memo(function AppDrawer({
               sessionState,
               readProgress,
               unreadCount,
-              unreadSessionKeys,
               visibleSessionEntries,
               shouldShowSessionBlock,
             }) => {
@@ -502,14 +476,15 @@ export const AppDrawer = memo(function AppDrawer({
                         <Text style={styles.appDrawerUnreadCountText}>{unreadCount}</Text>
                       </View>
                     ) : null}
-                    {!unreadOnly ? (
-                      <TouchableOpacity
-                        style={styles.appDrawerExpandButton}
-                        onPress={() => onToggleDirectoryExpanded(directory.id, directory.path)}
-                      >
-                        <DrawerChevron expanded={expanded} />
-                      </TouchableOpacity>
-                    ) : null}
+                    <TouchableOpacity
+                      style={styles.appDrawerExpandButton}
+                      onPress={() => onToggleDirectoryExpanded(directory.id, directory.path)}
+                      accessibilityRole="button"
+                      accessibilityLabel={`${directoryLabel}の履歴を${expanded ? "閉じる" : "開く"}`}
+                      accessibilityState={{ expanded }}
+                    >
+                      <DrawerChevron expanded={expanded} />
+                    </TouchableOpacity>
                   </View>
                   {readProgress ? (
                     <View style={styles.appDrawerDirectoryReadProgress}>
@@ -540,7 +515,7 @@ export const AppDrawer = memo(function AppDrawer({
                       {!sessionState?.loading && !sessionState?.error && visibleSessionEntries.length <= 0 ? (
                         <Text style={styles.hint}>{unreadOnly ? (sessionState?.hasMore ? "未読の履歴をさらに読み込んでください。" : "未読の履歴はありません。") : "履歴はありません。"}</Text>
                       ) : null}
-                      {visibleSessionEntries.map((session) => renderSessionEntry(directory, sessionState, session, 0, unreadSessionKeys))}
+                      {visibleSessionEntries.map((session) => renderSessionEntry(directory, sessionState, session, 0))}
                       {showLoadMoreSessions && sessionState?.hasMore ? (
                         <TouchableOpacity
                           style={[
