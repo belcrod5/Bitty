@@ -99,7 +99,7 @@ export function useStreamingSttTransport() {
       throw error;
     }
     return {
-      ...(continuation ? { commit: (revision: number) => active ? native.commit!(revision) : Promise.resolve(false) } : {}),
+      ...(continuation ? { commit: (revision: number) => active ? native.commit!(revision) : Promise.reject(new Error("native_stt_inactive")) } : {}),
       setInputMuted: (muted: boolean) => active && native.setInputMuted ? native.setInputMuted(muted) : Promise.reject(new Error("native_stt_mute_unsupported")),
       stop: () => active ? native.stop() : Promise.resolve(),
       abort,
