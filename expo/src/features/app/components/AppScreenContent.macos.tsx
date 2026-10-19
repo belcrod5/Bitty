@@ -10,6 +10,7 @@ import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 
 type AppScreenContentProps = {
   activeScreen: AppScreen;
+  boardPopupRef?: ComponentProps<typeof SkiaMiniBoardScreen>["ref"];
   onStartNewSessionInDirectory:
     ComponentProps<typeof SkiaMiniBoardScreen>["onStartNewSessionInDirectory"];
   openSessionHistoryPopup: ComponentProps<typeof SkiaMiniBoardScreen>["openSessionHistoryPopup"];
@@ -20,6 +21,7 @@ type AppScreenContentProps = {
 
 export function AppScreenContent({
   activeScreen,
+  boardPopupRef,
   onStartNewSessionInDirectory,
   openSessionHistoryPopup,
   voicePlayback,
@@ -38,6 +40,7 @@ export function AppScreenContent({
         style={[styles.screen, !boardVisible && styles.hiddenBoard]}
       >
         <SkiaMiniBoardScreen
+          ref={boardPopupRef}
           onStartNewSessionInDirectory={onStartNewSessionInDirectory}
           openSessionHistoryPopup={openSessionHistoryPopup}
           voicePlayback={voicePlayback}

@@ -49,7 +49,7 @@ import {
   type VisualThemeId,
 } from "./theme/visualThemes";
 import { PushNotificationRegistrar } from "./components/PushNotificationRegistrar";
-import type { PopupChatSourceRect, SessionPopupOrigin } from "./components/popupChatTypes";
+import type { PopupChatSourceRect, SessionPopupOrigin, SkiaBoardPopupHandle } from "./components/popupChatTypes";
 import { useBufferedClientLogs } from "./hooks/useBufferedClientLogs";
 import { getNetworkUsageSnapshot } from "../ws/networkUsageMetrics";
 import { useUiSfxController } from "./hooks/useUiSfxController";
@@ -849,6 +849,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   const [chatScreenLayout, setChatScreenLayout] = useState({ width: 0, height: 0 });
   const [drawerSessionPopupPanelId, setDrawerSessionPopupPanelId] = useState("");
   const [panelRuntimeEntriesById, setPanelRuntimeEntriesById] = useState<Record<string, PanelRuntimeEntry>>({});
+  const boardPopupRef = useRef<SkiaBoardPopupHandle | null>(null);
   const [drawerSessionPopupVisible, setDrawerSessionPopupVisible] = useState(false);
   const [drawerSessionPopupCycleId, setDrawerSessionPopupCycleId] = useState("");
   const [drawerSessionPopupSourceRect, setDrawerSessionPopupSourceRect] = useState<PopupChatSourceRect | null>(null);
@@ -5905,6 +5906,16 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     if (options?.clearHighlight) clearDrawerPopupHighlightOnCloseRef.current = true;
     setDrawerSessionPopupVisible(false);
   }, []);
+  const resolvePopupCloseTarget = useCallback(() => {
+    if (activeScreen !== "skia_board" || clearDrawerPopupHighlightOnCloseRef.current) return null;
+    const entry = panelRuntimeEntriesByIdRef.current[drawerSessionPopupPanelId];
+    const sessionId = parseOptionalSessionId(entry?.snapshot?.selectedSessionId || entry?.sessionId);
+    if (!sessionId) return null;
+    return boardPopupRef.current?.resolveCloseTarget({
+      backendId: String(entry?.snapshot?.backendId || "codex"),
+      sessionId,
+    }) || null;
+  }, [activeScreen, drawerSessionPopupPanelId]);
   const closeDrawerSessionPopup = useCallback(() => {
     if (drawerSessionPopupPanelId) {
       const popupEntry = panelRuntimeEntriesByIdRef.current[drawerSessionPopupPanelId];
@@ -6168,6 +6179,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
       <View style={styles.safeArea}>
       <AppScreenContent
         activeScreen={activeScreen}
+        boardPopupRef={boardPopupRef}
         pendingVoiceOrchestratorId={pendingVoiceOrchestratorId}
         onVoiceNavigationHandled={clearPendingVoiceOrchestratorId}
         onStartNewSessionInDirectory={appDrawerProps.onStartNewSessionInDirectory}
@@ -6211,6 +6223,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
               panelId={drawerSessionPopupPanelId}
               cycleId={drawerSessionPopupCycleId}
               sourceRect={drawerSessionPopupSourceRect}
+              resolveCloseTarget={resolvePopupCloseTarget}
               onClose={closeDrawerSessionPopup}
               onRequestClose={requestDrawerSessionPopupClose}
               playThemeSfx={playThemeSfx}

@@ -1,5 +1,5 @@
 import { getPendingVoiceControlSignal } from "../utils/pendingVoiceNavigation";
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from "react";
 import {
   Alert,
   Platform,
@@ -22,6 +22,7 @@ import {
   PaintStyle,
   Path,
   Picture,
+  RoundedRect,
   Skia,
   StrokeCap,
   StrokeJoin,
@@ -40,12 +41,13 @@ import {
   useSharedValue,
   withDecay,
   withTiming,
+  withSequence,
   type SharedValue,
 } from "react-native-reanimated";
 import { useAppShell } from "../contexts/AppShellContext";
 import { useChatScreen } from "../contexts/ChatScreenContext";
 import { useConversation } from "../contexts/ConversationContext";
-import type { SessionPopupOrigin } from "../components/popupChatTypes";
+import type { SessionPopupOrigin, SkiaBoardPopupHandle } from "../components/popupChatTypes";
 import type { LlmSessionSource } from "../hooks/useLlmSessionExplorer";
 import {
   useSkiaMiniChatSessions,
@@ -88,6 +90,7 @@ import {
   useSkiaBoardViewportPersistence,
 } from "../hooks/useSkiaBoardViewportPersistence";
 import type { WorkspaceFileTarget } from "../utils/workspaceFiles";
+import { useReduceMotionEnabled } from "../hooks/useReduceMotionEnabled";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { VoiceConversationScreen, type VoiceConversationPlayback } from "./VoiceConversationScreen";
 import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
@@ -384,6 +387,7 @@ type BoardCardProps = {
   item: SkiaMiniBoardItem;
   theme: VisualTheme;
   selected: boolean;
+  selectionOpacity: SharedValue<number>;
   titleFontSize: number;
   bodyFontSize: number;
   runnerUrl: string;
@@ -400,6 +404,7 @@ const BoardCard = memo(function BoardCard({
   item,
   theme,
   selected,
+  selectionOpacity,
   titleFontSize,
   bodyFontSize,
   runnerUrl,
@@ -471,7 +476,7 @@ const BoardCard = memo(function BoardCard({
 
   // カード内容(位置transform以外)は変わった時だけSkPictureへ焼き直す。パン・ズーム中の
   // 毎フレーム再生がカード1枚あたり save/concat/drawPicture の約3コマンドに減り、
-  // ベクタ再生なのでズームしても劣化しない。選択枠もキーに含める(選択変更時のみ再生成)。
+  // ベクタ再生なのでズームしても劣化しない。選択枠は外で描画し、選択や点滅で本文を再生成しない。
   const picture = useMemo(
     () =>
       createPicture(
@@ -512,14 +517,7 @@ const BoardCard = memo(function BoardCard({
 
           drawCardRect(2, 4, fillPaint(theme.colors.shadow, 0.16));
           drawCardRect(0, 0, fillPaint(theme.board.cardSurface));
-          drawCardRect(
-            0,
-            0,
-            strokePaint(
-              selected ? theme.colors.accent : theme.board.cardBorder,
-              selected ? theme.borders.focus : theme.borders.thin,
-            ),
-          );
+          drawCardRect(0, 0, strokePaint(theme.board.cardBorder, theme.borders.thin));
           if (!isSession) {
             if (boardImage) {
               const imageWidth = boardImage.width();
@@ -632,7 +630,7 @@ const BoardCard = memo(function BoardCard({
             drawText(badge.count > 1 ? `${stateLabel}${badge.count}` : stateLabel, centerX - 28, 16, 56,
               { fontSize: 9, bold: true, color: theme.board.textMuted });
           });
-          // 選択枠(strokeWidth 2.5)が矩形の外へ1.25pxはみ出すため、境界に余白を持たせる。
+          // カード枠と影が矩形の外へはみ出すため、記録範囲に余白を持たせる。
         },
         activityBadges.length
           ? Skia.XYWHRect(-24, -24, cardWidth + 58, cardHeight + 34)
@@ -656,7 +654,6 @@ const BoardCard = memo(function BoardCard({
       messageFirstBaseline,
       messageLineHeight,
       messageLines,
-      selected,
       showUnread,
       subagentIconX,
       subagentText,
@@ -670,11 +667,19 @@ const BoardCard = memo(function BoardCard({
   return (
     <Group transform={transform}>
       <Picture picture={picture} />
+      {selected ? (
+        <RoundedRect
+          x={0} y={0} width={cardWidth} height={cardHeight} r={14}
+          style="stroke" strokeWidth={theme.borders.focus}
+          color={theme.colors.accent} opacity={selectionOpacity}
+        />
+      ) : null}
     </Group>
   );
 });
 
 type SkiaMiniBoardScreenProps = {
+  ref?: Ref<SkiaBoardPopupHandle>;
   onStartNewSessionInDirectory: (directory: string) => void;
   openSessionHistoryPopup: (params: {
     backendId?: string;
@@ -689,6 +694,7 @@ type SkiaMiniBoardScreenProps = {
 };
 
 export function SkiaMiniBoardScreen({
+  ref,
   onStartNewSessionInDirectory,
   openSessionHistoryPopup,
   voicePlayback,
@@ -697,8 +703,13 @@ export function SkiaMiniBoardScreen({
 }: SkiaMiniBoardScreenProps) {
   const { theme, themeId } = useVisualTheme();
   const screenStyles = screenStylesByTheme[themeId];
+  const reduceMotion = useReduceMotionEnabled();
+  const canvasHostRef = useRef<View | null>(null);
+  const selectionOpacity = useSharedValue(1);
   const { width: windowWidth } = useWindowDimensions();
   const { activeScreen, openDrawer } = useAppShell();
+  const activeScreenRef = useRef(activeScreen);
+  activeScreenRef.current = activeScreen;
   const [voiceOpen, setVoiceOpen] = useState(false);
   const [voiceControlSignal, setVoiceControlSignal] = useState<AbortSignal | undefined>();
   const [voiceTargetId, setVoiceTargetId] = useState("");
@@ -1014,12 +1025,13 @@ export function SkiaMiniBoardScreen({
     selectedSectionIndex.value = sections.findIndex((section) => section.id === selectedSectionId);
   }, [renderedSectionRects, sectionRects, sections, selectedSectionId, selectedSectionIndex]);
 
-  // カードの並び(搭載セッション)が変わったら、indexベースの選択をクリアする。
+  // 選択はcardIdを正とし、カード追加・並べ替え時もworklet側indexを同期する。
   const cardIdsKey = useMemo(() => items.map((item) => item.cardId).join("|"), [items]);
-  useEffect(() => {
-    selectedCardIndex.value = -1;
-    setSelectedCardId("");
-  }, [cardIdsKey, selectedCardIndex]);
+  useLayoutEffect(() => {
+    const index = items.findIndex((item) => item.cardId === selectedCardId);
+    selectedCardIndex.value = index;
+    if (index < 0) setSelectedCardId("");
+  }, [cardIdsKey, items, selectedCardId, selectedCardIndex]);
   // worklet内でindex→cardIdを引くための軽量スナップショット(文字列のみ)。
   // itemsのidentityではなくカード集合キーに依存させ、内容だけの更新(ラベル・
   // メッセージ等)ではgesturesが再構築されないようにする。
@@ -1041,6 +1053,54 @@ export function SkiaMiniBoardScreen({
   useLayoutEffect(() => {
     itemsRef.current = items;
   }, [items]);
+
+  useImperativeHandle(ref, () => ({
+    resolveCloseTarget: async ({ backendId, sessionId }) => {
+      if (activeScreen !== "skia_board") return null;
+      const findSessionIndex = () => itemsRef.current.findIndex((item) => item.kind === "session"
+        && item.backendId === backendId && item.sessionId === sessionId);
+      const host = canvasHostRef.current;
+      if (findSessionIndex() < 0 || !host) return null;
+      stopCameraInertia();
+      const bounds = await new Promise<{ x: number; y: number; width: number; height: number }>((resolve) => {
+        host.measureInWindow((x, y, width, height) => resolve({ x, y, width, height }));
+      });
+      if (!canvasHostRef.current || activeScreenRef.current !== "skia_board") return null;
+      const index = findSessionIndex();
+      const item = itemsRef.current[index];
+      const position = positions.value[index];
+      if (!item || !position) return null;
+      const x = boardX.value + position.x * scale.value;
+      const y = boardY.value + position.y * scale.value;
+      const width = cardWidth * scale.value;
+      const height = skiaBoardCardHeight(item.kind) * scale.value;
+      const visible = bounds.width > 0 && bounds.height > 0
+        && x >= 0 && y >= 0 && x + width <= bounds.width && y + height <= bounds.height;
+      return {
+        rect: visible ? { x: bounds.x + x, y: bounds.y + y, width, height } : null,
+        onComplete: () => {
+          if (!canvasHostRef.current || activeScreenRef.current !== "skia_board") return;
+          const currentIndex = findSessionIndex();
+          if (currentIndex < 0) return;
+          toolMode.value = "select";
+          setTool("select");
+          selectedSectionIndex.value = -1;
+          setSelectedSectionId("");
+          selectedCardIndex.value = currentIndex;
+          setSelectedCardId(itemsRef.current[currentIndex].cardId);
+          cancelAnimation(selectionOpacity);
+          selectionOpacity.value = 1;
+          if (theme.motion.popupTransition === "flash-blink" && reduceMotion === false) {
+            selectionOpacity.value = withSequence(
+              withTiming(0.1, { duration: 60 }), withTiming(1, { duration: 60 }),
+              withTiming(0.2, { duration: 60 }), withTiming(1, { duration: 100 }),
+            );
+          }
+        },
+      };
+    },
+  }), [activeScreen, boardX, boardY, cardWidth, positions, reduceMotion, scale,
+    selectedCardIndex, selectedSectionIndex, selectionOpacity, stopCameraInertia, theme, toolMode]);
 
   const selectTool = useCallback((next: "select" | "section") => {
     toolMode.value = next;
@@ -1904,6 +1964,9 @@ export function SkiaMiniBoardScreen({
     <View style={screenStyles.screen}>
       <GestureDetector gesture={gestures}>
         <View
+          ref={canvasHostRef}
+          collapsable={false}
+          testID="skia-board-canvas-host"
           style={screenStyles.canvasHost}
           onLayout={(event) => {
             setViewportWidth(event.nativeEvent.layout.width);
@@ -1961,6 +2024,7 @@ export function SkiaMiniBoardScreen({
                     item={item}
                     theme={theme}
                     selected={item.cardId === selectedCardId}
+                    selectionOpacity={selectionOpacity}
                     titleFontSize={titleFontSize}
                     bodyFontSize={bodyFontSize}
                     runnerUrl={runnerUrl}

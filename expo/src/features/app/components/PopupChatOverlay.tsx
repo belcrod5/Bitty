@@ -13,7 +13,7 @@ import { usePanelRuntimeController } from "../contexts/PanelRuntimeControllerCon
 import { useReduceMotionEnabled } from "../hooks/useReduceMotionEnabled";
 import { ChatScreen } from "../screens/ChatScreen";
 import { CHAT_CONTENT_MAX_WIDTH } from "../styles/layoutConstants";
-import type { PopupChatPresentation, PopupChatSourceRect } from "./popupChatTypes";
+import type { PopupChatPresentation, PopupChatSourceRect, PopupChatCloseTarget } from "./popupChatTypes";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import {
   createStylesByTheme,
@@ -23,6 +23,7 @@ import {
 import {
   startCyberpunkPopupTransition,
   startStandardPopupTransition,
+  startPopupMinimizeTransition,
 } from "./popupChatTransitions";
 
 type PopupChatOverlayProps = {
@@ -30,6 +31,7 @@ type PopupChatOverlayProps = {
   panelId: string;
   cycleId?: string;
   sourceRect?: PopupChatSourceRect | null;
+  resolveCloseTarget?: () => PopupChatCloseTarget | null | Promise<PopupChatCloseTarget | null>;
   onClose: () => void;
   onRequestClose: () => void;
   playThemeSfx: (event: VisualThemeSoundEvent) => Promise<void>;
@@ -50,6 +52,7 @@ export function PopupChatOverlay({
   panelId,
   cycleId = "",
   sourceRect,
+  resolveCloseTarget,
   onClose,
   onRequestClose,
   playThemeSfx,
@@ -72,11 +75,15 @@ export function PopupChatOverlay({
   const soundEventSequenceRef = useRef(0);
   const mountedRef = useRef(false);
   const onCloseRef = useRef(onClose);
+  const resolveCloseTargetRef = useRef(resolveCloseTarget);
+  const closeTargetRef = useRef<PopupChatCloseTarget | null>(null);
+  const [closeTarget, setCloseTarget] = useState<PopupChatCloseTarget | null>(null);
   const playThemeSfxRef = useRef(playThemeSfx);
   const popupTransitionRef = useRef<Animated.CompositeAnimation | null>(null);
   const presentationTransitionRef = useRef<Animated.CompositeAnimation | null>(null);
   const dragResetTransitionRef = useRef<Animated.CompositeAnimation | null>(null);
   onCloseRef.current = onClose;
+  resolveCloseTargetRef.current = resolveCloseTarget;
   playThemeSfxRef.current = playThemeSfx;
   const [rendered, setRendered] = useState(false);
   const [contentReady, setContentReady] = useState(false);
@@ -105,18 +112,25 @@ export function PopupChatOverlay({
   }), [containerSize.height, containerSize.width]);
 
   const initialRect = useMemo(() => {
-    if (!sourceRect) return fallbackSourceRect;
+    if (!visible && closeTarget?.rect) {
+      return { ...closeTarget.rect,
+        x: closeTarget.rect.x - rootWindowOrigin.x,
+        y: closeTarget.rect.y - rootWindowOrigin.y,
+      };
+    }
+    const rect = sourceRect;
+    if (!rect) return fallbackSourceRect;
 
-    const localX = Math.max(0, Number(sourceRect.x || 0) - rootWindowOrigin.x);
-    const localY = Math.max(0, Number(sourceRect.y || 0) - rootWindowOrigin.y);
+    const localX = Math.max(0, Number(rect.x || 0) - rootWindowOrigin.x);
+    const localY = Math.max(0, Number(rect.y || 0) - rootWindowOrigin.y);
     const x = Math.min(localX, Math.max(0, containerSize.width - 1));
     const y = Math.min(localY, Math.max(0, containerSize.height - 1));
 
     return {
       x,
       y,
-      width: Math.max(1, Math.min(Number(sourceRect.width || 1), Math.max(1, containerSize.width - x))),
-      height: Math.max(1, Math.min(Number(sourceRect.height || 1), Math.max(1, containerSize.height - y))),
+      width: Math.max(1, Math.min(Number(rect.width || 1), Math.max(1, containerSize.width - x))),
+      height: Math.max(1, Math.min(Number(rect.height || 1), Math.max(1, containerSize.height - y))),
     };
   }, [
     containerSize.height,
@@ -125,6 +139,8 @@ export function PopupChatOverlay({
     rootWindowOrigin.x,
     rootWindowOrigin.y,
     sourceRect,
+    closeTarget,
+    visible,
   ]);
 
   const popupRect = useMemo(() => {
@@ -194,6 +210,8 @@ export function PopupChatOverlay({
     playPopupSoundOnce("popupClose", soundEventId);
     transitionGenerationRef.current += 1;
     completedCloseEventRef.current = eventKey;
+    closeTargetRef.current?.onComplete();
+    closeTargetRef.current = null;
     onCloseRef.current();
   }, [playPopupSoundOnce]);
 
@@ -223,6 +241,8 @@ export function PopupChatOverlay({
 
     const eventId = `${panelId}:${cycleId}`;
     closingRef.current = false;
+    closeTargetRef.current = null;
+    setCloseTarget(null);
     completedCloseEventRef.current = "";
     pendingSoundEventRef.current.popupClose = { base: "", id: "" };
     const soundEventId = getSoundEventId("popupOpen", eventId);
@@ -326,31 +346,50 @@ export function PopupChatOverlay({
       if (mountedRef.current) playPopupSoundOnce("popupClose", soundEventId);
     }, 0);
     const durationMs = reduceMotion ? 0 : motion.durationMs;
-    const closeTimer = setTimeout(
+    let closeTimer = setTimeout(
       () => completeClose(generation, eventId, soundEventId),
       durationMs + ANIMATION_FAIL_OPEN_BUFFER_MS
     );
-    const startTransition = theme.motion.popupTransition === "flash-blink"
-      ? startCyberpunkPopupTransition
-      : startStandardPopupTransition;
-    popupTransitionRef.current = startTransition({
-      direction: "close",
-      durationMs,
-      reduceMotion,
-      progress,
-      cardOpacity,
-      cardScaleY,
-      flashOpacity: transitionFlashOpacity,
-      onFinish: (finished) => {
-        if (finished) completeClose(generation, eventId, soundEventId);
-      },
-    });
+    const startClose = (target: PopupChatCloseTarget | null) => {
+      if (transitionGenerationRef.current !== generation || !closingRef.current) return;
+      clearTimeout(closeTimer);
+      closeTimer = setTimeout(
+        () => completeClose(generation, eventId, soundEventId),
+        durationMs + ANIMATION_FAIL_OPEN_BUFFER_MS
+      );
+      closeTargetRef.current = target;
+      setCloseTarget(target);
+      const options = {
+        direction: "close" as const,
+        durationMs,
+        reduceMotion,
+        progress,
+        cardOpacity,
+        cardScaleY,
+        flashOpacity: transitionFlashOpacity,
+        onFinish: (finished?: boolean) => {
+          if (finished) completeClose(generation, eventId, soundEventId);
+        },
+      };
+      popupTransitionRef.current = target?.rect
+        ? startPopupMinimizeTransition({
+          ...options,
+          dragTranslateY,
+          blink: theme.motion.popupTransition === "flash-blink",
+        })
+        : (theme.motion.popupTransition === "flash-blink"
+          ? startCyberpunkPopupTransition : startStandardPopupTransition)(options);
+    };
+    const target = resolveCloseTargetRef.current?.();
+    if (target instanceof Promise) void target.then(startClose, () => startClose(null));
+    else startClose(target || null);
 
     return () => {
       if (transitionGenerationRef.current === generation) {
         transitionGenerationRef.current += 1;
       }
       closingRef.current = false;
+      closeTargetRef.current = null;
       clearTimeout(closeTimer);
       popupTransitionRef.current?.stop();
     };
@@ -409,6 +448,7 @@ export function PopupChatOverlay({
     opacity: transitionFlashOpacity,
   }), [transitionFlashOpacity]);
 
+  const minimizing = !visible && Boolean(closeTarget?.rect);
   if (!rendered || !panelId) return null;
 
   return (
@@ -420,15 +460,22 @@ export function PopupChatOverlay({
     >
       <Animated.View
         pointerEvents="none"
-        style={[popupChatOverlayStyles.backdropVisual, backdropAnimatedStyle]}
+        style={[popupChatOverlayStyles.backdropVisual, backdropAnimatedStyle, minimizing && { opacity: 0 }]}
       />
       <Pressable
         style={popupChatOverlayStyles.backdropTouch}
         testID="popup-chat-backdrop"
         onPress={() => onRequestClose()}
       />
-      <Animated.View style={[popupChatOverlayStyles.card, animatedCardStyle]}>
-        <Animated.View style={[popupChatOverlayStyles.content, animatedContentStyle]}>
+      <Animated.View
+        testID="popup-chat-frame"
+        style={[popupChatOverlayStyles.card, animatedCardStyle, minimizing && {
+          backgroundColor: "transparent",
+          borderColor: theme.colors.accent,
+          borderWidth: theme.borders.focus,
+        }]}
+      >
+        {!minimizing ? <Animated.View style={[popupChatOverlayStyles.content, animatedContentStyle]}>
           {contentReady ? (
             <ChatScreen
               mode="mini_board_popup"
@@ -451,7 +498,7 @@ export function PopupChatOverlay({
               <View style={popupChatOverlayStyles.skeletonLineShort} />
             </View>
           )}
-        </Animated.View>
+        </Animated.View> : null}
         <Animated.View
           pointerEvents="none"
           style={[popupChatOverlayStyles.transitionFlash, transitionFlashStyle]}
