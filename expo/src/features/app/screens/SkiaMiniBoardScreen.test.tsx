@@ -12,6 +12,7 @@ import { usePendingVoiceNavigationController } from "../hooks/usePendingVoiceNav
 
 let mockRunningSessionCount: number | null = 0;
 let mockActiveScreen = "skia_board";
+let mockUnreadCount = 0;
 const mockMeasureInWindow = jest.fn((callback: (x: number, y: number, width: number, height: number) => void) => {
   callback(50, 80, 800, 1000);
 });
@@ -307,7 +308,7 @@ jest.mock("react-native-gesture-handler", () => {
 });
 
 jest.mock("../contexts/AppShellContext", () => ({
-  useAppShell: () => ({ activeScreen: mockActiveScreen, openDrawer: jest.fn() }),
+  useAppShell: () => ({ activeScreen: mockActiveScreen, openDrawer: jest.fn(), unreadCount: mockUnreadCount }),
 }));
 const mockBoardVoiceHandlers = new Map<string, (message: { payload: unknown }) => void>();
 const mockBoardVoiceRequest = jest.fn(async () => ({ op: "voice.orchestrators.list.result", payload: {
@@ -466,6 +467,7 @@ beforeEach(() => {
   (globalThis as Record<string, unknown>).__skiaBoardFrameCallback = null;
   mockRunningSessionCount = 0;
   mockActiveScreen = "skia_board";
+  mockUnreadCount = 0;
   mockReduceMotion = true;
   mockMeasureInWindow.mockClear();
   jest.spyOn(View.prototype, "measureInWindow").mockImplementation(mockMeasureInWindow);
@@ -2241,4 +2243,21 @@ test("does not restore a removed target when the close animation finishes", asyn
   await screen.rerender(tree());
   await act(async () => fireCardTap());
   expect(openSessionHistoryPopup).not.toHaveBeenCalled();
+});
+
+
+test("shows the session unread count on navigation and removes it when read", async () => {
+  mockUnreadCount = 12;
+  const screen = await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
+  expect(screen.getByLabelText("ナビゲーションを開く、未読 12件")).toBeTruthy();
+  expect(screen.getByTestId("skia-board-unread-badge")).toBeTruthy();
+  expect(screen.getByText("12")).toBeTruthy();
+  mockUnreadCount = 120;
+  await screen.rerender(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
+  expect(screen.getByText("99+")).toBeTruthy();
+  expect(screen.getByLabelText("ナビゲーションを開く、未読 120件")).toBeTruthy();
+  mockUnreadCount = 0;
+  await screen.rerender(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
+  expect(screen.queryByTestId("skia-board-unread-badge")).toBeNull();
+  expect(screen.getByLabelText("ナビゲーションを開く")).toBeTruthy();
 });

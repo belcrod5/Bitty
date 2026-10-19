@@ -1078,3 +1078,73 @@ test("loads subagent children when an unloaded drawer session is expanded", asyn
 
   expect(onLoadSessionChildren).toHaveBeenCalledWith("dir-1", "/work/bitty", "parent-session");
 });
+
+
+test("toggles unread sessions without read siblings or other backend sessions sharing an id", async () => {
+  const unread = session({ sessionId: "shared-id", backendId: "claude", firstUserMessage: "Unread Claude", lastReadAt: "" });
+  const read = session({ sessionId: "shared-id", backendId: "codex", firstUserMessage: "Read Codex" });
+  const drawer = await renderDrawer({
+    expandedDirectoryIds: [],
+    directorySessionsById: { "dir-1": directoryState([unread, read]) },
+    directoryUnreadCountByPath: { "/work/bitty": 1 },
+  });
+  const filter = drawer.getByRole("button", { name: "未読のみ表示" });
+  expect(filter.props.accessibilityState.selected).toBe(false);
+  await fireEvent.press(filter);
+  expect(drawer.getByRole("button", { name: "未読のみ表示" }).props.accessibilityState.selected).toBe(true);
+  expect(drawer.getByText("Unread Claude")).toBeTruthy();
+  expect(drawer.queryByText("Read Codex")).toBeNull();
+  await fireEvent.press(drawer.getByRole("button", { name: "未読のみ表示" }));
+  expect(drawer.getByRole("button", { name: "未読のみ表示" }).props.accessibilityState.selected).toBe(false);
+});
+
+test("keeps paths to loaded unread descendants and hides their read siblings", async () => {
+  const parent = session({ sessionId: "parent", firstUserMessage: "Ancestor" });
+  const child = session({ sessionId: "child", parentSessionId: "parent", firstUserMessage: "Read child", source: "subagent" });
+  const unread = session({ sessionId: "grandchild", parentSessionId: "child", firstUserMessage: "Unread descendant", source: "subagent", lastReadAt: "" });
+  const sibling = session({ sessionId: "sibling", parentSessionId: "parent", firstUserMessage: "Read sibling", source: "subagent" });
+  const drawer = await renderDrawer({
+    expandedDirectoryIds: [],
+    directorySessionsById: { "dir-1": directoryState([parent], {
+      parent: { loading: false, loaded: true, error: "", entries: [child, sibling] },
+      child: { loading: false, loaded: true, error: "", entries: [unread] },
+    }) },
+  });
+  await fireEvent.press(drawer.getByLabelText("未読のみ表示"));
+  expect(drawer.getByText("Ancestor")).toBeTruthy();
+  expect(drawer.getByText("Read child")).toBeTruthy();
+  expect(drawer.getByText("Unread descendant")).toBeTruthy();
+  expect(drawer.queryByText("Read sibling")).toBeNull();
+});
+
+test("retains pagination when the unread session is outside the loaded page and combines directory search", async () => {
+  const onLoadMoreSessions = jest.fn();
+  const drawer = await renderDrawer({
+    registeredDirectories: [
+      { id: "dir-1", path: "/work/bitty", displayName: "Bitty", markerColor: "none" },
+      { id: "dir-2", path: "/work/read", displayName: "Read directory", markerColor: "none" },
+    ],
+    expandedDirectoryIds: [],
+    directoryUnreadCountByPath: { "/work/bitty": 3, "/work/read": 0 },
+    onLoadMoreSessions,
+  });
+  await fireEvent.press(drawer.getByLabelText("未読のみ表示"));
+  expect(drawer.queryByText("Read directory")).toBeNull();
+  expect(drawer.queryByText("Fix drawer search")).toBeNull();
+  expect(drawer.getByText("未読の履歴をさらに読み込んでください。")).toBeTruthy();
+  await fireEvent.press(drawer.getByText("もっと読み込む"));
+  expect(onLoadMoreSessions).toHaveBeenCalledWith("dir-1", "/work/bitty");
+  await fireEvent.changeText(drawer.getByPlaceholderText("ディレクトリを検索"), "does not match");
+  expect(drawer.queryByText("Bitty")).toBeNull();
+  expect(drawer.queryByText("もっと読み込む")).toBeNull();
+});
+
+test("reports an empty unread filter and restores all directories when disabled", async () => {
+  const drawer = await renderDrawer();
+  await fireEvent.press(drawer.getByLabelText("未読のみ表示"));
+  expect(drawer.getByText("未読のあるディレクトリはありません。")).toBeTruthy();
+  expect(drawer.queryByText("Bitty")).toBeNull();
+  await fireEvent.press(drawer.getByLabelText("未読のみ表示"));
+  expect(drawer.getByText("Bitty")).toBeTruthy();
+  expect(drawer.getByText("Fix drawer search")).toBeTruthy();
+});

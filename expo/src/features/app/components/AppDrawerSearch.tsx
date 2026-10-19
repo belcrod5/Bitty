@@ -1,3 +1,4 @@
+import Svg, { Circle, Path } from "react-native-svg";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -63,6 +64,8 @@ function resultDate(value: string | undefined): string {
 export function AppDrawerSearch({
   directoryQuery,
   onChangeDirectoryQuery,
+  unreadOnly,
+  onToggleUnreadOnly,
   active,
   onActiveChange,
   directoryMatchCount,
@@ -72,6 +75,8 @@ export function AppDrawerSearch({
   viewportBottom,
   onSelectChatResult,
 }: {
+  unreadOnly: boolean;
+  onToggleUnreadOnly: () => void;
   directoryQuery: string;
   onChangeDirectoryQuery: (query: string) => void;
   active: boolean;
@@ -301,34 +306,60 @@ export function AppDrawerSearch({
       onLayout={updateContainerY}
       testID="app-drawer-search-container"
     >
-      <View style={[styles.appDrawerSearchBox, active && styles.appDrawerSearchBoxFocused]}>
-        <TextInput
-          ref={inputRef}
-          style={styles.appDrawerSearchInput}
-          value={query}
-          onChangeText={changeQuery}
-          onFocus={() => onActiveChange(true)}
-          placeholder={mode === "directory" ? "ディレクトリを検索" : "チャット内を検索"}
-          placeholderTextColor={theme.colors.borderStrong}
-          autoCapitalize="none"
-          autoCorrect={false}
-          clearButtonMode="never"
-          inputAccessoryViewID={Platform.OS === "ios" ? APP_DRAWER_SEARCH_INPUT_ACCESSORY_ID : undefined}
-          onSubmitEditing={submitSearch}
-          returnKeyType="search"
-          submitBehavior="blurAndSubmit"
-          accessibilityLabel={mode === "directory" ? "ディレクトリ検索" : "チャット検索"}
-        />
-        {query ? (
-          <TouchableOpacity
-            style={styles.appDrawerSearchClearButton}
-            onPress={() => changeQuery("")}
-            accessibilityRole="button"
-            accessibilityLabel="検索をクリア"
-          >
-            <Text style={styles.appDrawerSearchClearButtonText}>×</Text>
-          </TouchableOpacity>
-        ) : null}
+      <View style={styles.appDrawerSearchToolbar}>
+        <View style={[styles.appDrawerSearchBox, active && styles.appDrawerSearchBoxFocused]}>
+          <TextInput
+            ref={inputRef}
+            style={styles.appDrawerSearchInput}
+            value={query}
+            onChangeText={changeQuery}
+            onFocus={() => onActiveChange(true)}
+            placeholder={mode === "directory" ? "ディレクトリを検索" : "チャット内を検索"}
+            placeholderTextColor={theme.colors.borderStrong}
+            autoCapitalize="none"
+            autoCorrect={false}
+            clearButtonMode="never"
+            inputAccessoryViewID={Platform.OS === "ios" ? APP_DRAWER_SEARCH_INPUT_ACCESSORY_ID : undefined}
+            onSubmitEditing={submitSearch}
+            returnKeyType="search"
+            submitBehavior="blurAndSubmit"
+            accessibilityLabel={mode === "directory" ? "ディレクトリ検索" : "チャット検索"}
+          />
+          {query ? (
+            <TouchableOpacity
+              style={styles.appDrawerSearchClearButton}
+              onPress={() => changeQuery("")}
+              accessibilityRole="button"
+              accessibilityLabel="検索をクリア"
+            >
+              <Text style={styles.appDrawerSearchClearButtonText}>×</Text>
+            </TouchableOpacity>
+          ) : null}
+        </View>
+        <Pressable
+          style={({ pressed }) => [
+            styles.appDrawerUnreadFilter,
+            unreadOnly && styles.appDrawerUnreadFilterSelected,
+            pressed && { opacity: 0.7 },
+          ]}
+          onPress={onToggleUnreadOnly}
+          accessibilityRole="button"
+          accessibilityLabel="未読のみ表示"
+          accessibilityHint="未読のあるディレクトリとセッションに絞り込みます"
+          accessibilityState={{ selected: unreadOnly }}
+          testID="app-drawer-unread-filter"
+        >
+          <Svg width={23} height={23} viewBox="0 0 24 24" fill="none">
+            <Path
+              d="M12 5H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-7M3 7l9 7 5-4"
+              stroke={unreadOnly ? theme.colors.textOnAccent : theme.colors.textMuted}
+              strokeWidth={1.8}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+            <Circle cx={19} cy={5} r={3.5} fill={unreadOnly ? theme.colors.textOnAccent : theme.colors.primaryAction} />
+          </Svg>
+        </Pressable>
       </View>
       {active ? (
         <View

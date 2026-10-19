@@ -707,7 +707,7 @@ export function SkiaMiniBoardScreen({
   const canvasHostRef = useRef<View | null>(null);
   const selectionOpacity = useSharedValue(1);
   const { width: windowWidth } = useWindowDimensions();
-  const { activeScreen, openDrawer } = useAppShell();
+  const { activeScreen, openDrawer, unreadCount } = useAppShell();
   const activeScreenRef = useRef(activeScreen);
   activeScreenRef.current = activeScreen;
   const [voiceOpen, setVoiceOpen] = useState(false);
@@ -2062,9 +2062,14 @@ export function SkiaMiniBoardScreen({
             style={screenStyles.headerButton}
             onPress={openDrawer}
             accessibilityRole="button"
-            accessibilityLabel="ナビゲーションを開く"
+            accessibilityLabel={unreadCount > 0 ? `ナビゲーションを開く、未読 ${unreadCount}件` : "ナビゲーションを開く"}
           >
             <Text style={screenStyles.headerButtonText}>☰</Text>
+            {unreadCount > 0 ? (
+              <View style={screenStyles.unreadBadge} testID="skia-board-unread-badge" pointerEvents="none">
+                <Text style={screenStyles.unreadBadgeText}>{unreadCount > 99 ? "99+" : unreadCount}</Text>
+              </View>
+            ) : null}
           </TouchableOpacity>
           <TouchableOpacity
             style={screenStyles.headerButton}
@@ -2226,6 +2231,26 @@ function createScreenStyles(theme: VisualTheme) {
       alignItems: "center",
       justifyContent: "center",
       backgroundColor: theme.colors.floatingControlSurface,
+    },
+    unreadBadge: {
+      position: "absolute",
+      top: -3,
+      right: -5,
+      minWidth: 21,
+      height: 21,
+      paddingHorizontal: 5,
+      borderRadius: 11,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: theme.colors.primaryAction,
+      borderWidth: 2,
+      borderColor: theme.colors.floatingControlSurface,
+    },
+    unreadBadgeText: {
+      color: theme.colors.textOnAccent,
+      fontSize: 11,
+      lineHeight: 15,
+      fontWeight: "800",
     },
     headerButtonText: {
       color: theme.colors.floatingControlText,

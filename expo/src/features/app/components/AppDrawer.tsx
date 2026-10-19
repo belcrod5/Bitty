@@ -20,7 +20,8 @@ import { useAppStyles } from "../styles";
 import { DIRECTORY_MARKER_COLORS } from "../theme/directoryMarkerColors";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { isLlmSessionUnread, resolveLlmSessionDisplayTitle } from "../utils/llmSession";
-import { runnerSessionValue } from "../utils/runnerClientState";
+import { getCachedDirectorySessions } from "../utils/sessionHistoryContext";
+import { runnerSessionKey, runnerSessionValue } from "../utils/runnerClientState";
 import { formatModelRefForDisplay } from "../utils/settingsParsers";
 import { AppModal } from "./AppModal";
 import {
@@ -146,6 +147,7 @@ export const AppDrawer = memo(function AppDrawer({
   } = useSkiaBoard();
   const expandedSet = useMemo(() => new Set(expandedDirectoryIds), [expandedDirectoryIds]);
   const [searchQuery, setSearchQuery] = useState("");
+  const [unreadOnly, setUnreadOnly] = useState(false);
   const [searchActive, setSearchActive] = useState(false);
   const [searchViewportBottom, setSearchViewportBottom] = useState<number | null>(null);
   const normalizedSearchQuery = normalizeDrawerSearchText(searchQuery);
@@ -187,14 +189,33 @@ export const AppDrawer = memo(function AppDrawer({
     }
   }, [expandedSessionSet, onLoadSessionChildren]);
   const directoryViews = useMemo(() => registeredDirectories.flatMap((directory) => {
-    const expanded = expandedSet.has(directory.id);
+    const expanded = unreadOnly || expandedSet.has(directory.id);
     const selectedDirectory = selectedDirectoryPath === directory.path;
     const sessionState = directorySessionsById[directory.id];
     const readProgress = directoryReadProgressByPath[directory.path];
     const unreadCount = directoryUnreadCountByPath[directory.path] || 0;
     const directoryLabel = String(directory.displayName || "").trim() || directory.path;
     const sessionEntries = sessionState?.entries || [];
-    const baseVisibleSessionEntries = expanded
+    const unreadSessionKeys = new Set(getCachedDirectorySessions(sessionState)
+      .filter(isLlmSessionUnread).map((session) => runnerSessionKey(session.backendId, session.sessionId)));
+    // Keep ancestor rows as paths to unread descendants, without showing read siblings.
+    let addedAncestor = true;
+    while (unreadOnly && addedAncestor) {
+      addedAncestor = false;
+      for (const [parentId, children] of Object.entries(sessionState?.childrenByParentId || {})) {
+        for (const child of children.entries) {
+          const parentKey = runnerSessionKey(child.backendId, parentId);
+          if (!unreadSessionKeys.has(parentKey) && unreadSessionKeys.has(runnerSessionKey(child.backendId, child.sessionId))) {
+            unreadSessionKeys.add(parentKey);
+            addedAncestor = true;
+          }
+        }
+      }
+    }
+    if (unreadOnly && unreadCount <= 0 && unreadSessionKeys.size <= 0) return [];
+    const baseVisibleSessionEntries = unreadOnly
+      ? sessionEntries.filter((session) => unreadSessionKeys.has(runnerSessionKey(session.backendId, session.sessionId)))
+      : expanded
       ? sessionEntries
       : sessionEntries.filter((session) => isLlmSessionUnread(session));
     const directoryMatches = drawerSearchIncludes(normalizedSearchQuery, [
@@ -212,6 +233,7 @@ export const AppDrawer = memo(function AppDrawer({
       sessionState,
       readProgress,
       unreadCount,
+      unreadSessionKeys,
       visibleSessionEntries: baseVisibleSessionEntries,
       shouldShowSessionBlock: (
         expanded ||
@@ -226,13 +248,15 @@ export const AppDrawer = memo(function AppDrawer({
     normalizedSearchQuery,
     registeredDirectories,
     selectedDirectoryPath,
+    unreadOnly,
   ]);
 
   const renderSessionEntry = (
     directory: RegisteredDirectoryEntry,
     sessionState: DirectorySessionTreeState | undefined,
     session: LlmSessionHistoryEntry,
-    depth: number
+    depth: number,
+    unreadSessionKeys: Set<string>
   ): ReactNode => {
     const selected = highlightedSessionId === session.sessionId;
     const sessionPrimaryTitle = resolveLlmSessionDisplayTitle(
@@ -250,7 +274,8 @@ export const AppDrawer = memo(function AppDrawer({
     const thinkTag = formatThinkTag(session.reasoningEffort);
     const hasUnread = isLlmSessionUnread(session);
     const childState = sessionState?.childrenByParentId?.[session.sessionId];
-    const childrenExpanded = expandedSessionSet.has(session.sessionId);
+    const childEntries = (childState?.entries || []).filter((child) => !unreadOnly || unreadSessionKeys.has(runnerSessionKey(child.backendId, child.sessionId)));
+    const childrenExpanded = (unreadOnly && childEntries.length > 0) || expandedSessionSet.has(session.sessionId);
     return (
       <View
         key={`${directory.id}-${session.sessionId}`}
@@ -283,20 +308,22 @@ export const AppDrawer = memo(function AppDrawer({
           }}
         >
           <View style={styles.appDrawerSessionPrimaryRow}>
-            <TouchableOpacity
-              style={styles.appDrawerSessionChildToggle}
-              disabled={llmSessionRestoreLoading}
-              onPress={(event) => {
-                event.stopPropagation?.();
-                toggleSessionChildren(directory.id, directory.path, session.sessionId, childState);
-              }}
-              accessibilityRole="button"
-              accessibilityLabel={childrenExpanded ? "サブエージェントを閉じる" : "サブエージェントを開く"}
-            >
-              {childState?.loading ? <ActivityIndicator size="small" color={theme.colors.textMuted} /> : (
-                <DrawerChevron expanded={childrenExpanded} />
-              )}
-            </TouchableOpacity>
+            {!unreadOnly ? (
+              <TouchableOpacity
+                style={styles.appDrawerSessionChildToggle}
+                disabled={llmSessionRestoreLoading}
+                onPress={(event) => {
+                  event.stopPropagation?.();
+                  toggleSessionChildren(directory.id, directory.path, session.sessionId, childState);
+                }}
+                accessibilityRole="button"
+                accessibilityLabel={childrenExpanded ? "サブエージェントを閉じる" : "サブエージェントを開く"}
+              >
+                {childState?.loading ? <ActivityIndicator size="small" color={theme.colors.textMuted} /> : (
+                  <DrawerChevron expanded={childrenExpanded} />
+                )}
+              </TouchableOpacity>
+            ) : null}
             {sessionMarkerColorHex ? (
               <View
                 style={[
@@ -328,7 +355,7 @@ export const AppDrawer = memo(function AppDrawer({
             {childState?.loaded && !childState.error && childState.entries.length <= 0 ? (
               <Text style={styles.hint}>サブエージェントはありません。</Text>
             ) : null}
-            {(childState?.entries || []).map((child) => renderSessionEntry(directory, sessionState, child, depth + 1))}
+            {childEntries.map((child) => renderSessionEntry(directory, sessionState, child, depth + 1, unreadSessionKeys))}
           </View>
         ) : null}
       </View>
@@ -338,6 +365,8 @@ export const AppDrawer = memo(function AppDrawer({
   return (
     <SafeAreaView style={styles.appDrawerRoot}>
       <AppDrawerSearch
+        unreadOnly={unreadOnly}
+        onToggleUnreadOnly={() => setUnreadOnly((current) => !current)}
         directoryQuery={searchQuery}
         onChangeDirectoryQuery={setSearchQuery}
         active={searchActive}
@@ -420,7 +449,7 @@ export const AppDrawer = memo(function AppDrawer({
           {registeredDirectories.length <= 0 ? (
             <Text style={styles.hint}>登録ディレクトリはありません。追加ボタンから登録してください。</Text>
           ) : directoryViews.length <= 0 ? (
-            <Text style={styles.hint}>一致するディレクトリはありません。</Text>
+            <Text style={styles.hint}>{unreadOnly ? "未読のあるディレクトリはありません。" : "一致するディレクトリはありません。"}</Text>
           ) : (
             directoryViews.map(({
               directory,
@@ -431,6 +460,7 @@ export const AppDrawer = memo(function AppDrawer({
               sessionState,
               readProgress,
               unreadCount,
+              unreadSessionKeys,
               visibleSessionEntries,
               shouldShowSessionBlock,
             }) => {
@@ -472,12 +502,14 @@ export const AppDrawer = memo(function AppDrawer({
                         <Text style={styles.appDrawerUnreadCountText}>{unreadCount}</Text>
                       </View>
                     ) : null}
-                    <TouchableOpacity
-                      style={styles.appDrawerExpandButton}
-                      onPress={() => onToggleDirectoryExpanded(directory.id, directory.path)}
-                    >
-                      <DrawerChevron expanded={expanded} />
-                    </TouchableOpacity>
+                    {!unreadOnly ? (
+                      <TouchableOpacity
+                        style={styles.appDrawerExpandButton}
+                        onPress={() => onToggleDirectoryExpanded(directory.id, directory.path)}
+                      >
+                        <DrawerChevron expanded={expanded} />
+                      </TouchableOpacity>
+                    ) : null}
                   </View>
                   {readProgress ? (
                     <View style={styles.appDrawerDirectoryReadProgress}>
@@ -506,9 +538,9 @@ export const AppDrawer = memo(function AppDrawer({
                     <View style={styles.appDrawerSessionBlock}>
                       {sessionState?.error ? <Text style={styles.errorText}>{sessionState.error}</Text> : null}
                       {!sessionState?.loading && !sessionState?.error && visibleSessionEntries.length <= 0 ? (
-                        <Text style={styles.hint}>履歴はありません。</Text>
+                        <Text style={styles.hint}>{unreadOnly ? (sessionState?.hasMore ? "未読の履歴をさらに読み込んでください。" : "未読の履歴はありません。") : "履歴はありません。"}</Text>
                       ) : null}
-                      {visibleSessionEntries.map((session) => renderSessionEntry(directory, sessionState, session, 0))}
+                      {visibleSessionEntries.map((session) => renderSessionEntry(directory, sessionState, session, 0, unreadSessionKeys))}
                       {showLoadMoreSessions && sessionState?.hasMore ? (
                         <TouchableOpacity
                           style={[

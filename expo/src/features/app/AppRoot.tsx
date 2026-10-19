@@ -37,9 +37,6 @@ import {
   type RegisteredDirectoryEntry,
 } from "./types/directorySessions";
 import { AppOverlays } from "./components/AppOverlays";
-import {
-  LlmCompletionNotifications,
-} from "./components/LlmCompletionNotifications";
 import { DrawerSessionPopupHost } from "./components/DrawerSessionPopupHost";
 import { PopupChatOverlay } from "./components/PopupChatOverlay";
 import { ThemeSplash } from "./components/ThemeSplash";
@@ -92,7 +89,6 @@ import { useSessionSwitchQuiesceController } from "./hooks/useSessionSwitchQuies
 import { useWaitingApprovalResumeController } from "./hooks/useWaitingApprovalResumeController";
 import { useWaitingApprovalResumeActionController } from "./hooks/useWaitingApprovalResumeActionController";
 import { useAgentModelCatalog } from "./hooks/useAgentModelCatalog";
-import { useLlmCompletionNotifications } from "./hooks/useLlmCompletionNotifications";
 import { useAppSettingsPersistenceController } from "./hooks/useAppSettingsPersistenceController";
 import { mutatePersistedSettings } from "./utils/persistedSettingsFile";
 import { shouldAllowAutoCaptureDuringTts } from "./utils/autoAudioPolicy";
@@ -2048,14 +2044,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     if (!sessionId) return;
     void refreshSessionChildTreesAtBoundary(sessionId, "parent_progress");
   }, [refreshSessionChildTreesAtBoundary]);
-  useEffect(() => runnerWebSocketManager.subscribe(
-    { channel: "llm", op: "turn_completed_notification" },
-    (message) => {
-      const payload = message.payload && typeof message.payload === "object" ? message.payload as Record<string, unknown> : {};
-      const completedSessionId = parseOptionalSessionId(message.threadId || message.sessionId || payload.threadId || payload.sessionId);
-      if (completedSessionId) void refreshSessionChildTreesAtBoundary(completedSessionId, "child_completed");
-    }
-  ), [refreshSessionChildTreesAtBoundary, runnerWebSocketManager]);
 
   function removeRegisteredDirectory(directoryId: string) {
     const target = registeredDirectories.find((item) => item.id === directoryId);
@@ -2088,6 +2076,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     normalizedLlmDirectoryForRequest,
     registeredDirectoryPaths,
     runnerWebSocketManager,
+    playUiSfx,
   });
   const {
     markSessionReadAsync,
@@ -2131,6 +2120,16 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     refreshDirectorySessionTree,
     registeredDirectories,
   ]);
+
+  useEffect(() => runnerWebSocketManager.subscribe(
+    { channel: "llm", op: "turn_completed_notification" },
+    (message) => {
+      const payload = message.payload && typeof message.payload === "object" ? message.payload as Record<string, unknown> : {};
+      const completedSessionId = parseOptionalSessionId(message.threadId || message.sessionId || payload.threadId || payload.sessionId);
+      if (completedSessionId) void refreshSessionChildTreesAtBoundary(completedSessionId, "child_completed");
+      if (AppState.currentState === "active") refreshDirectorySessionsAfterCompletion(payload.directory);
+    }
+  ), [refreshDirectorySessionsAfterCompletion, refreshSessionChildTreesAtBoundary, runnerWebSocketManager]);
 
   const {
     queueSendReplyAfterSessionRestore,
@@ -2836,11 +2835,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     sessionTitleOverridesById,
   ]);
   resolveSessionHistoryContextRef.current = resolveSessionHistoryContext;
-  const { notifications: llmCompletionNotifications, pushNotification: pushLlmCompletionNotification,
-    dismissNotification: dismissLlmCompletionNotification } = useLlmCompletionNotifications({
-    handleForegroundSessionCompletion: sessionNotificationLifecycle.handleForegroundSessionCompletion,
-    resolveSessionHistoryContext,
-  });
   const {
     handleApprovalRequest,
     clearToolAutoApprovals,
@@ -2941,16 +2935,13 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     );
     const completedActiveSession = !params.panelId && (!visibleSessionId || visibleSessionId === sessionId);
     if (completedActiveSession) {
-      playUiSfx("reply");
       setReply(text);
       finishLlmRequest("completed", "turn completed");
     }
-    pushLlmCompletionNotification({
+    sessionNotificationLifecycle.handleForegroundSessionCompletion({
       sessionId,
-      threadId: sessionId,
+      backendId: "codex",
       directory: params.directory,
-      previewText: text,
-      completedAtMs: Date.now(),
     });
     void refreshGitChangedFiles(params.directory, { force: true });
     refreshDirectorySessionsAfterCompletion(params.directory);
@@ -2974,8 +2965,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     finishLlmRequest,
     isChatOpenForAutoSpeech,
     logSessionDiag,
-    playUiSfx,
-    pushLlmCompletionNotification,
+    sessionNotificationLifecycle.handleForegroundSessionCompletion,
     refreshDirectorySessionsAfterCompletion,
     refreshGitChangedFiles,
     selectedLlmSessionId,
@@ -4193,9 +4183,9 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   const handleLlmMessageCompleted = useCallback((completion: LlmMessageCompletion) => {
     void refreshGitChangedFiles(completion.directory, { force: true });
     refreshDirectorySessionsAfterCompletion(completion.directory);
-    pushLlmCompletionNotification(completion);
+    sessionNotificationLifecycle.handleForegroundSessionCompletion(completion);
   }, [
-    pushLlmCompletionNotification,
+    sessionNotificationLifecycle.handleForegroundSessionCompletion,
     refreshDirectorySessionsAfterCompletion,
     refreshGitChangedFiles,
   ]);
@@ -4611,6 +4601,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   }, [cancelCodexTurnRequest]);
   const selectedDirectoryPathForConversationContext = normalizedLlmDirectoryForRequest();
   const appShellContextValue = useAppShellContextValue({
+    unreadCount: sessionNotificationLifecycle.unreadCount,
     activeScreen,
     drawerOpen,
     setActiveScreen,
@@ -6082,33 +6073,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     setJumpTarget: setSessionDeepLinkJumpTarget,
     onNotFound: showDeepLinkMessageNotFound,
   });
-  const openCompletedLlmSession = useCallback((sessionRef: { backendId: string; sessionId: string }) => {
-    const sessionId = parseOptionalSessionId(sessionRef.sessionId);
-    if (!sessionId) return;
-    closeDrawer();
-    openSessionHistoryPopup({
-      backendId: String(sessionRef.backendId || "codex").trim() || "codex",
-      sessionId,
-      source: "all",
-    });
-  }, [closeDrawer, openSessionHistoryPopup]);
-  const visibleCompletionNotificationSessions = useMemo(() => {
-    const sessions: Array<{ backendId: string; sessionId: string }> = [];
-    if (activeScreen === "skia_board") {
-      const activeSessionId = parseOptionalSessionId(selectedLlmSessionId || llmConversationSessionIdRef.current);
-      if (activeSessionId) sessions.push({ backendId: llmBackend, sessionId: activeSessionId });
-    }
-    if (drawerSessionPopupPanelId) {
-      const popupEntry = panelRuntimeEntriesById[drawerSessionPopupPanelId];
-      const popupSessionId = parseOptionalSessionId(popupEntry?.snapshot?.selectedSessionId || popupEntry?.sessionId);
-      if (popupSessionId) sessions.push({
-        backendId: String(popupEntry?.snapshot?.backendId || "codex").trim() || "codex",
-        sessionId: popupSessionId,
-      });
-    }
-    return sessions;
-  }, [activeScreen, drawerSessionPopupPanelId, llmBackend, panelRuntimeEntriesById, selectedLlmSessionId]);
-
   const appDrawerProps = useAppDrawerSessionController({
     selectedDirectoryPath: selectedDirectoryPathForConversationContext,
     highlightedSessionId: drawerHighlightedSessionId,
@@ -6230,14 +6194,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
             />
           </DrawerSessionPopupHost>
         ) : null}
-        <SafeAreaView pointerEvents="box-none" style={styles.llmCompletionNotificationLayer}>
-          <LlmCompletionNotifications
-            notifications={llmCompletionNotifications}
-            visibleSessions={visibleCompletionNotificationSessions}
-            onOpenSession={openCompletedLlmSession}
-            onDismiss={dismissLlmCompletionNotification}
-          />
-        </SafeAreaView>
         <WidgetSnapshotPublisher ready={settingsLoaded} />
         <PushNotificationRegistrar onUnreadCountSnapshot={sessionNotificationLifecycle.applyUnreadCountSnapshot} />
       </KeyboardProvider>

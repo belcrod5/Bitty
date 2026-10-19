@@ -30,7 +30,28 @@ export function createMenuScreenStyles(theme: VisualTheme) {
     zIndex: 30,
     elevation: 12,
   },
+  appDrawerSearchToolbar: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  appDrawerUnreadFilter: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    borderWidth: theme.borders.thin,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  appDrawerUnreadFilterSelected: {
+    borderColor: theme.colors.primaryAction,
+    backgroundColor: theme.colors.primaryAction,
+  },
   appDrawerSearchBox: {
+    flex: 1,
+    minWidth: 0,
     minHeight: 42,
     borderRadius: 8,
     borderWidth: theme.borders.thin,
