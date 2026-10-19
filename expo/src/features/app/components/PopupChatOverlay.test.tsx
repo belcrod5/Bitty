@@ -3,6 +3,7 @@ import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
 import { StyleSheet, type Animated } from "react-native";
 
 import { VisualThemeProvider } from "../theme/VisualThemeContext";
+import { VISUAL_THEMES } from "../theme/visualThemes";
 import { PopupChatOverlay } from "./PopupChatOverlay";
 
 const mockSetPanelAutoSpeechOpen = jest.fn();
@@ -505,4 +506,37 @@ test("does not select the previous target when an in-flight minimize is interrup
   await act(async () => animation.onFinish(true));
   expect(onComplete).not.toHaveBeenCalled();
   expect(onClose).not.toHaveBeenCalled();
+});
+
+test("gives a delayed board measurement a full animation before selecting and closing", async () => {
+  jest.useFakeTimers();
+  const durationMs = VISUAL_THEMES.standard.motion.popupClose.durationMs;
+  const onComplete = jest.fn();
+  const onClose = jest.fn();
+  let finishMeasurement!: (target: { rect: { x: number; y: number; width: number; height: number }; onComplete: () => void }) => void;
+  const props = { panelId: "popup", cycleId: "delayed", onClose,
+    resolveCloseTarget: () => new Promise<Parameters<typeof finishMeasurement>[0]>((resolve) => {
+      finishMeasurement = resolve;
+    }),
+    onRequestClose: jest.fn(), playThemeSfx: jest.fn(async () => {}) };
+  const tree = (visible: boolean) => (
+    <VisualThemeProvider themeId="standard" onSelectTheme={() => undefined}>
+      <PopupChatOverlay {...props} visible={visible} />
+    </VisualThemeProvider>
+  );
+  const screen = await render(tree(true));
+  await screen.rerender(tree(false));
+  // Measurement returns 50ms before the original animation fail-open deadline.
+  await act(async () => jest.advanceTimersByTime(durationMs + 200));
+  await act(async () => finishMeasurement({ rect: { x: 10, y: 10, width: 100, height: 60 }, onComplete }));
+  const animation = mockStartPopupMinimizeTransition.mock.calls[0][0];
+  await act(async () => jest.advanceTimersByTime(51));
+  expect(onComplete).not.toHaveBeenCalled();
+  expect(onClose).not.toHaveBeenCalled();
+  await act(async () => jest.advanceTimersByTime(durationMs - 51));
+  expect(onComplete).not.toHaveBeenCalled();
+  expect(onClose).not.toHaveBeenCalled();
+  await act(async () => animation.onFinish(true));
+  expect(onComplete).toHaveBeenCalledTimes(1);
+  expect(onClose).toHaveBeenCalledTimes(1);
 });

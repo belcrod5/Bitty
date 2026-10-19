@@ -346,12 +346,17 @@ export function PopupChatOverlay({
       if (mountedRef.current) playPopupSoundOnce("popupClose", soundEventId);
     }, 0);
     const durationMs = reduceMotion ? 0 : motion.durationMs;
-    const closeTimer = setTimeout(
+    let closeTimer = setTimeout(
       () => completeClose(generation, eventId, soundEventId),
       durationMs + ANIMATION_FAIL_OPEN_BUFFER_MS
     );
     const startClose = (target: PopupChatCloseTarget | null) => {
       if (transitionGenerationRef.current !== generation || !closingRef.current) return;
+      clearTimeout(closeTimer);
+      closeTimer = setTimeout(
+        () => completeClose(generation, eventId, soundEventId),
+        durationMs + ANIMATION_FAIL_OPEN_BUFFER_MS
+      );
       closeTargetRef.current = target;
       setCloseTarget(target);
       const options = {
