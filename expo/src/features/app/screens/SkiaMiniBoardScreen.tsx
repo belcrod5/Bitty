@@ -711,7 +711,7 @@ export function SkiaMiniBoardScreen({
   const selectionOpacity = useSharedValue(1);
   const { width: windowWidth } = useWindowDimensions();
   const { activeScreen, openDrawer, unreadCount } = useAppShell();
-  const unreadNumberOpacity = useRef(new Animated.Value(1)).current;
+  const unreadBadgeOpacity = useRef(new Animated.Value(1)).current;
   const previousUnreadCount = useRef<number | null>(null);
   useEffect(() => {
     const previous = previousUnreadCount.current;
@@ -720,7 +720,7 @@ export function SkiaMiniBoardScreen({
     let flash: Animated.CompositeAnimation | undefined;
     const reset = () => {
       flash?.stop();
-      unreadNumberOpacity.setValue(1);
+      unreadBadgeOpacity.setValue(1);
     };
     const subscription = AppState.addEventListener("change", () => {
       // The first snapshot after returning to the app establishes a fresh baseline.
@@ -729,10 +729,10 @@ export function SkiaMiniBoardScreen({
     });
     if (canAnimate && previous !== null && unreadCount > previous) {
       flash = Animated.sequence([
-        Animated.timing(unreadNumberOpacity, { toValue: 0.5, duration: 180, useNativeDriver: USE_NATIVE_ANIMATION_DRIVER }),
-        Animated.timing(unreadNumberOpacity, { toValue: 1, duration: 220, useNativeDriver: USE_NATIVE_ANIMATION_DRIVER }),
-        Animated.timing(unreadNumberOpacity, { toValue: 0.5, duration: 180, useNativeDriver: USE_NATIVE_ANIMATION_DRIVER }),
-        Animated.timing(unreadNumberOpacity, { toValue: 1, duration: 220, useNativeDriver: USE_NATIVE_ANIMATION_DRIVER }),
+        Animated.timing(unreadBadgeOpacity, { toValue: 0.5, duration: 180, useNativeDriver: USE_NATIVE_ANIMATION_DRIVER }),
+        Animated.timing(unreadBadgeOpacity, { toValue: 1, duration: 220, useNativeDriver: USE_NATIVE_ANIMATION_DRIVER }),
+        Animated.timing(unreadBadgeOpacity, { toValue: 0.5, duration: 180, useNativeDriver: USE_NATIVE_ANIMATION_DRIVER }),
+        Animated.timing(unreadBadgeOpacity, { toValue: 1, duration: 220, useNativeDriver: USE_NATIVE_ANIMATION_DRIVER }),
       ]);
       flash.start();
     }
@@ -740,7 +740,7 @@ export function SkiaMiniBoardScreen({
       subscription.remove();
       reset();
     };
-  }, [activeScreen, reduceMotion, unreadCount, unreadNumberOpacity]);
+  }, [activeScreen, reduceMotion, unreadCount, unreadBadgeOpacity]);
   const activeScreenRef = useRef(activeScreen);
   activeScreenRef.current = activeScreen;
   const [voiceOpen, setVoiceOpen] = useState(false);
@@ -2099,9 +2099,9 @@ export function SkiaMiniBoardScreen({
           >
             <Text style={screenStyles.headerButtonText}>☰</Text>
             {unreadCount > 0 ? (
-              <View style={screenStyles.unreadBadge} testID="skia-board-unread-badge" pointerEvents="none">
-                <Animated.Text style={[screenStyles.unreadBadgeText, { opacity: unreadNumberOpacity }]}>{unreadCount > 99 ? "99+" : unreadCount}</Animated.Text>
-              </View>
+              <Animated.View style={[screenStyles.unreadBadge, { opacity: unreadBadgeOpacity }]} testID="skia-board-unread-badge" pointerEvents="none">
+                <Text style={screenStyles.unreadBadgeText}>{unreadCount > 99 ? "99+" : unreadCount}</Text>
+              </Animated.View>
             ) : null}
           </TouchableOpacity>
           <TouchableOpacity

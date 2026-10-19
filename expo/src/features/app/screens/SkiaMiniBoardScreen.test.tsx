@@ -2252,6 +2252,8 @@ test("shows the session unread count on navigation and removes it when read", as
   expect(screen.getByLabelText("ナビゲーションを開く、未読 12件")).toBeTruthy();
   expect(screen.getByTestId("skia-board-unread-badge")).toBeTruthy();
   expect(screen.getByText("12")).toBeTruthy();
+  expect(StyleSheet.flatten(screen.getByTestId("skia-board-unread-badge").props.style).opacity).toBe(1);
+  expect(StyleSheet.flatten(screen.getByText("12").props.style).opacity).toBeUndefined();
   mockUnreadCount = 120;
   await screen.rerender(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
   expect(screen.getByText("99+")).toBeTruthy();
@@ -2263,7 +2265,7 @@ test("shows the session unread count on navigation and removes it when read", as
 });
 
 
-describe("menu unread number flash", () => {
+describe("menu unread badge flash", () => {
   const originalAppState = Object.getOwnPropertyDescriptor(AppState, "currentState");
   const tree = () => <SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />;
   let sequence: jest.SpyInstance;
