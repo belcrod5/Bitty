@@ -256,11 +256,6 @@ function VoiceConversationSession({
       ?.orchestrators?.some((item) => item.id === orchestrator.id)) void voice.refreshHistory();
   }), [appActive, historyExpanded, manager, orchestrator.id, paused, voice.refreshHistory]);
   useEffect(() => {
-    if (appActive && voice.ready && (voice.turnStatus === "idle" || voice.turnStatus === "completed")) {
-      void voice.refreshHistory();
-    }
-  }, [appActive, voice.logicalConversationId, voice.ready, voice.refreshHistory, voice.turnStatus]);
-  useEffect(() => {
     if (!appActive || paused || !voice.ready) return;
     const historyOrdinal = historyExpanded
       ? voice.history.reduce((max, message) => Math.max(max, message.completedOrdinal || 0), 0) : 0;

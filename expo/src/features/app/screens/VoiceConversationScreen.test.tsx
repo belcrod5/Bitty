@@ -764,7 +764,6 @@ test("the footer reveals stored messages and closes the history panel", async ()
   expect(StyleSheet.flatten(screen.getByText("最初の質問").parent?.props.style).backgroundColor).toBe(colors.accent);
   expect(StyleSheet.flatten(screen.getByText("最初の返答").parent?.props.style).backgroundColor).toBe(colors.surfaceMuted);
   expect(screen.getByText("最初の質問").props.style.color).toBe(colors.textOnAccent);
-  expect(mockVoice.refreshHistory).toHaveBeenCalled();
   await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: 80 }); });
   expect(screen.getByText("最初の質問")).toBeTruthy();
   await act(async () => { fireEvent.press(screen.getByTestId("voice-history-close")); });
@@ -914,7 +913,7 @@ test("the existing footer exposes history control and leaves editing gestures al
   await screen.unmount();
 });
 
-test("an open history panel reloads when voice.open becomes ready or changes conversation", async () => {
+test("an open history panel waits for the hook to validate its conversation", async () => {
   mockVoice.ready = false;
   mockVoice.turnStatus = "idle";
   mockVoice.history = [{ role: "user", text: "前の接続先の発話", clientOperationId: "old" }];
@@ -925,10 +924,13 @@ test("an open history panel reloads when voice.open becomes ready or changes con
   expect(screen.queryByText("前の接続先の発話")).toBeNull();
   mockVoice.ready = true;
   await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
-  expect(mockVoice.refreshHistory).toHaveBeenCalledTimes(1);
+  expect(screen.getByText("前の接続先の発話")).toBeTruthy();
+  mockVoice.history = [];
+  mockVoice.reply = { text: "", operationId: "" };
   mockVoice.logicalConversationId = "conversation-two";
   await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
-  expect(mockVoice.refreshHistory).toHaveBeenCalledTimes(2);
+  expect(screen.queryByText("前の接続先の発話")).toBeNull();
+  expect(screen.getByText("履歴はまだありません")).toBeTruthy();
   await screen.unmount();
 });
 

@@ -403,7 +403,7 @@ test("repeated empty Mac sessions restart beyond the error retry limit and still
     expect(result.current.phase).toBe("recording");
   }
   expect(options.sendTranscript).not.toHaveBeenCalled();
-  expect(options.onError).not.toHaveBeenCalled();
+  expect(options.onError.mock.calls).toEqual(Array.from({ length: 6 }, () => [""]));
   expect(options.onDiagnostic.mock.calls.some(([event]) => event === "stt_error_retry")).toBe(false);
   await finishSpeech(mockSessions.at(-1)!, "再開後の音声");
   expect(options.sendTranscript).toHaveBeenCalledWith("再開後の音声", expect.any(Function));
@@ -1881,4 +1881,17 @@ test("stop while idle invalidates delayed manual acceptance and never rearms aft
   expect(mockSessions).toHaveLength(0);
   expect(hook.result.current.isArmed()).toBe(false);
   expect(hook.result.current.phase).toBe("idle");
+});
+
+test("new speech clears the previous error before delivering its transcript", async () => {
+  const options = createOptions();
+  const { result } = await renderHook(() => useStreamingStt(options));
+  const session = await openReady(result);
+  expect(options.onError).not.toHaveBeenCalled();
+  await emit(session, { type: "speech_activity_begin" });
+  expect(options.onError).toHaveBeenCalledWith("");
+  expect(options.onSpeechBegin).toHaveBeenCalledTimes(1);
+  await emit(session, { type: "transcript", text: "次の発話", isFinal: false });
+  expect(options.setTranscript).toHaveBeenCalledWith("次の発話");
+  expect(result.current.phase).toBe("recording");
 });
