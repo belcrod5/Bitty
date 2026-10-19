@@ -56,7 +56,7 @@ public class BittyStreamingSttModule: Module {
     AsyncFunction("commit") { (revision: Int, promise: Promise) in
       self.queue.async {
         guard let current = self.current, !current.terminal else {
-          promise.resolve(false)
+          promise.reject("not_active", "音声認識は実行されていません。")
           return
         }
         current.commit(revision: revision, promise: promise)
@@ -548,7 +548,7 @@ private final class StreamingSession: NSObject, URLSessionWebSocketDelegate {
     commitTimeout?.cancel()
     commitTimeout = nil
     commitRevision = nil
-    commitPromise?.resolve(false)
+    commitPromise?.reject("stt_ended", "音声認識の接続が終了しました。")
     commitPromise = nil
     stopCapture()
     converter = nil

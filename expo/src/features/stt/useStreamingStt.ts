@@ -246,7 +246,11 @@ export function useStreamingStt(options: Options) {
         });
         if (version !== sessionVersionRef.current || candidateRef.current !== candidate) return;
         if (!accepted) {
-          finishFailure("音声入力を確定できませんでした。内容を確認して手動で送信してください。", text);
+          // A rejected revision means capture continued. Its invalidation event can
+          // arrive after this native Promise, so do not depend on their order.
+          candidateRef.current = null;
+          clearCorrection(false);
+          setPhase("recording");
           return;
         }
         terminalRef.current = true;
@@ -292,7 +296,7 @@ export function useStreamingStt(options: Options) {
     } finally {
       if (autoSendingRef.current === version) autoSendingRef.current = null;
     }
-  }, [abortSession, awaitReplyCycle, finishFailure, updateReplyCycle]);
+  }, [abortSession, awaitReplyCycle, clearCorrection, finishFailure, updateReplyCycle]);
 
   const sendCorrectionPreview = useCallback(() => {
     const preview = previewRef.current;

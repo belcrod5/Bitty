@@ -1688,17 +1688,48 @@ describe("continuing capture during correction", () => {
     expect(hook.result.current.isCapturing()).toBe(false);
   });
 
-  test("rejected old commit never sends when resumed speech has invalidated its revision", async () => {
+  test.each(["before", "after"])("resumed speech invalidation arriving %s a rejected commit appends and sends once", async (order) => {
+    const { options, hook, session, commit } = await openCandidate();
+    let resolveCommit!: (accepted: boolean) => void;
+    commit.mockImplementationOnce(() => new Promise((resolve) => { resolveCommit = resolve; }));
+    await emit(session, { type: "candidate", revision: 1 });
+    if (order === "before") await emit(session, { type: "candidate_invalidated", revision: 1 });
+    await act(async () => { resolveCommit(false); });
+    expect(options.sendTranscript).not.toHaveBeenCalled();
+    expect(session.abort).not.toHaveBeenCalled();
+    expect(options.onError).not.toHaveBeenCalled();
+    expect(hook.result.current.phase).toBe("recording");
+    expect(hook.result.current.isCapturing()).toBe(true);
+    if (order === "after") await emit(session, { type: "candidate_invalidated", revision: 1 });
+    await emit(session, { type: "segment_start" });
+    await emit(session, { type: "transcript", text: "後半", isFinal: true });
+    await emit(session, { type: "candidate", revision: 2 });
+    expect(options.sendTranscript).toHaveBeenCalledTimes(1);
+    expect(options.sendTranscript).toHaveBeenCalledWith("前半 後半", expect.any(Function));
+    expect(commit.mock.calls).toEqual([[1], [2]]);
+    expect(mockSessions).toHaveLength(1);
+    expect(options.onError).not.toHaveBeenCalled();
+  });
+
+  test("an old rejected commit cannot clear a newer candidate while its correction is pending", async () => {
     const { options, hook, session, commit } = await openCandidate();
     let resolveCommit!: (accepted: boolean) => void;
     commit.mockImplementationOnce(() => new Promise((resolve) => { resolveCommit = resolve; }));
     await emit(session, { type: "candidate", revision: 1 });
     await emit(session, { type: "candidate_invalidated", revision: 1 });
     await emit(session, { type: "segment_start" });
+    await emit(session, { type: "transcript", text: "後半", isFinal: true });
+    let resolveCorrection!: (value: { changed: boolean; text: string }) => void;
+    jest.mocked(correctSttTranscript).mockImplementationOnce(() => new Promise((resolve) => { resolveCorrection = resolve; }));
+    await emit(session, { type: "candidate", revision: 2 });
     await act(async () => { resolveCommit(false); });
-    expect(options.sendTranscript).not.toHaveBeenCalled();
+    expect(hook.result.current.phase).toBe("correcting");
     expect(session.abort).not.toHaveBeenCalled();
-    expect(hook.result.current.phase).toBe("recording");
+    expect(options.onError).not.toHaveBeenCalled();
+    await act(async () => { resolveCorrection({ changed: false, text: "前半 後半" }); });
+    expect(commit.mock.calls).toEqual([[1], [2]]);
+    expect(options.sendTranscript).toHaveBeenCalledTimes(1);
+    expect(options.sendTranscript).toHaveBeenCalledWith("前半 後半", expect.any(Function));
   });
 
   test("editing a preview stops capture and sends the edited draft without committing old audio", async () => {

@@ -222,13 +222,17 @@ test("continuation is enabled only for an opted-in client with a compatible nati
     expect(mockNative.start).toHaveBeenLastCalledWith("ws://runner.test/stream-stt", expect.any(Object));
     await legacy.abort();
     native.continuationVersion = 1;
-    native.commit = jest.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    native.commit = jest.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+      .mockRejectedValueOnce(new Error("stt_ended"));
     const current = result.current.connect("http://runner.test", "token", callbacks);
     expect(mockNative.start).toHaveBeenLastCalledWith("ws://runner.test/stream-stt?continuation=1", expect.any(Object));
     await expect(current.commit!(1)).resolves.toBe(false);
     await expect(current.commit!(2)).resolves.toBe(true);
+    await expect(current.commit!(3)).rejects.toThrow("stt_ended");
     expect(mockNative.abort).toHaveBeenCalledTimes(1);
     await current.abort();
+    await expect(current.commit!(4)).rejects.toThrow("native_stt_inactive");
+    expect(native.commit).toHaveBeenCalledTimes(3);
     const disabled = result.current.connect("http://runner.test", "token", { ...callbacks, continueDuringCorrection: false });
     expect(disabled.commit).toBeUndefined();
     expect(mockNative.start).toHaveBeenLastCalledWith("ws://runner.test/stream-stt", expect.any(Object));

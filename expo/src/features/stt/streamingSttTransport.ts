@@ -8,6 +8,7 @@ export type StreamingSttTransportCallbacks = {
 };
 
 export type StreamingSttSession = {
+  // False means the candidate is stale and capture continues; failures reject.
   commit?: (revision: number) => Promise<boolean>;
   setInputMuted?: (muted: boolean) => Promise<void>;
   stop: () => Promise<void>;
