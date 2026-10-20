@@ -80,6 +80,8 @@ test("forwards native start rejection and terminal events", async () => {
   mockListeners.get("BittyStreamingSttError")?.({ message: "native failure" });
   mockListeners.get("BittyStreamingSttClose")?.({});
   expect(callbacks.onError).toHaveBeenCalledWith("native failure");
+  mockListeners.get("BittyStreamingSttError")?.({ message: "permission denied", retryable: false });
+  expect(callbacks.onError).toHaveBeenLastCalledWith("permission denied", false);
   expect(callbacks.onClose).toHaveBeenCalledTimes(1);
   await act(async () => { await session.abort(); });
 });

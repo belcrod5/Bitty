@@ -304,7 +304,7 @@ private final class StreamingSession: NSObject, URLSessionWebSocketDelegate {
         guard !self.terminal, self.ready, !self.stopping else { return }
         self.diagnose("permission_result", ["permissionGranted": granted])
         guard granted else {
-          self.fail("マイクの使用が許可されていません。")
+          self.fail("マイクの使用が許可されていません。", retryable: false)
           return
         }
         do {
@@ -637,11 +637,11 @@ private final class StreamingSession: NSObject, URLSessionWebSocketDelegate {
     cleanup()
   }
 
-  private func fail(_ message: String) {
+  private func fail(_ message: String, retryable: Bool = true) {
     guard !terminal else { return }
     diagnose("failed")
     terminal = true
     cleanup()
-    emit("BittyStreamingSttError", ["message": message])
+    emit("BittyStreamingSttError", ["message": message, "retryable": retryable])
   }
 }

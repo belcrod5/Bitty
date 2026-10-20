@@ -134,6 +134,16 @@ test("Mac capture shutdown failures are returned to the caller", async () => {
   await expect(session.abort()).rejects.toThrow("capture_stop_failed");
 });
 
+test("denied Mac microphone permission is reported as non-retryable", async () => {
+  mockCaptureStart.mockRejectedValueOnce(Object.assign(new Error("denied"), { code: "microphone_denied" }));
+  const handlers = callbacks();
+  const { result } = await renderHook(() => useStreamingSttTransport());
+  const session = result.current.connect("http://runner.test", "token", handlers);
+  await act(async () => { mockSockets[0].emit({ type: "ready" }); await Promise.resolve(); });
+  expect(handlers.onError).toHaveBeenCalledWith("マイクを開始できませんでした。", false);
+  await session.abort();
+});
+
 test("ready cue mute drops PCM while native capture remains active", async () => {
   const { result } = await renderHook(() => useStreamingSttTransport());
   const session = result.current.connect("http://runner.test", "token", callbacks());
