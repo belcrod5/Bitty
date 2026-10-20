@@ -60,8 +60,9 @@ export function useStreamingSttTransport() {
         callbacks.onMessage(event.data);
       })();
       pendingCaptureStartRef.current = pending;
-      void pending.catch(() => {
-        if (currentRef.current === current && !current.stopping) callbacks.onError("マイクを開始できませんでした。");
+      void pending.catch((error: unknown) => {
+        if (currentRef.current === current && !current.stopping) callbacks.onError("マイクを開始できませんでした。",
+          !(error && typeof error === "object" && "code" in error && error.code === "microphone_denied"));
       }).finally(() => {
         if (pendingCaptureStartRef.current === pending) pendingCaptureStartRef.current = null;
       });

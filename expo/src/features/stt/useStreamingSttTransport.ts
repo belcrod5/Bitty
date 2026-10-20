@@ -51,8 +51,10 @@ export function useStreamingSttTransport() {
       native.addListener("BittyStreamingSttSample", ({ rms }: { rms: number }) => {
         if (active && typeof rms === "number" && Number.isFinite(rms)) callbacks.onSample(rms);
       }),
-      native.addListener("BittyStreamingSttError", ({ message }: { message: string }) => {
-        if (active) callbacks.onError(message);
+      native.addListener("BittyStreamingSttError", ({ message, retryable }: { message: string; retryable?: boolean }) => {
+        if (!active) return;
+        if (typeof retryable === "boolean") callbacks.onError(message, retryable);
+        else callbacks.onError(message);
       }),
       native.addListener("BittyStreamingSttClose", () => {
         if (active) callbacks.onClose();

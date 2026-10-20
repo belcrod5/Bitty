@@ -83,7 +83,7 @@ export function useStreamingStt(options: Options) {
   const sawTtsPlaybackRef = useRef(false);
   const replyCycleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ttsStartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const candidateRef = useRef<{ revision: number; sending: boolean } | null>(null);
+  const candidateRef = useRef<{ revision: number; sending: boolean; text?: string } | null>(null);
   const correctionRequestRef = useRef<{
     draft: string;
     contextKey: string;
@@ -234,6 +234,12 @@ export function useStreamingStt(options: Options) {
   }, []);
 
   const finishFailure = useCallback((message: string, draft?: string) => {
+    latestRef.current.onDiagnostic?.("stt_terminal_failure", {
+      version: sessionVersionRef.current, retries: errorRetriesRef.current,
+      candidateRevision: candidateRef.current?.revision ?? null,
+      committing: candidateRef.current?.sending ?? false, draftChars: draft?.length
+        ?? displayStreamingTranscript(transcriptStateRef.current).length,
+    });
     sessionVersionRef.current += 1;
     terminalRef.current = true;
     listeningRef.current = false;
@@ -247,6 +253,41 @@ export function useStreamingStt(options: Options) {
     onError(message);
   }, [abortSession, clearCorrection, clearReplyCycleWait, onError, setTranscript]);
 
+  const scheduleStart = useCallback((delayMs = RETRY_DELAY_MS) => {
+    clearTimer(retryTimerRef);
+    retryTimerRef.current = setTimeout(() => startSessionRef.current(), delayMs);
+  }, []);
+
+  const retrySession = useCallback((message: string, cause: string) => {
+    if (terminalRef.current) return;
+    if (!listeningRef.current || errorRetriesRef.current >= MAX_ERROR_RETRIES) {
+      latestRef.current.onDiagnostic?.("stt_recovery_exhausted", { cause, retries: errorRetriesRef.current });
+      finishFailure(message, candidateRef.current?.text ?? previewRef.current?.text);
+      return;
+    }
+    const candidate = candidateRef.current;
+    const draft = candidate?.text ?? previewRef.current?.text ?? displayStreamingTranscript(transcriptStateRef.current);
+    // A finalized segment remains sendable after reconnection reaches a quiet
+    // completion. Never bypass commit or replay a possibly dispatched chat send.
+    if (candidate || transcriptStateRef.current.finalText.trim()) recognitionSegmentSeenRef.current = true;
+    terminalRef.current = true;
+    const version = ++sessionVersionRef.current;
+    const attempt = ++errorRetriesRef.current;
+    clearCorrection();
+    pauseDictationIdle();
+    transcriptStateRef.current = startStreamingTranscript(draft);
+    latestRef.current.setTranscript(draft);
+    setPhase("connecting");
+    latestRef.current.onDiagnostic?.("stt_error_retry", {
+      version, cause, attempt, draftChars: draft.length,
+      candidateRevision: candidate?.revision ?? null, committing: candidate?.sending ?? false,
+    });
+    void abortSession().then(() => {
+      if (version !== sessionVersionRef.current || !listeningRef.current) return;
+      scheduleStart(RETRY_DELAY_MS * 2 ** (attempt - 1));
+    }).catch(() => finishFailure("マイクの停止を確認できませんでした。"));
+  }, [abortSession, clearCorrection, finishFailure, scheduleStart]);
+
   const sendAutoTranscript = useCallback(async (text: string, version: number) => {
     if (version !== sessionVersionRef.current) return;
     const candidate = candidateRef.current;
@@ -255,31 +296,37 @@ export function useStreamingStt(options: Options) {
       const session = sessionRef.current;
       if (!session?.commit) return;
       candidate.sending = true;
+      candidate.text = text;
       const commitStartedAt = Date.now();
+      let accepted: boolean;
       try {
-        const accepted = await session.commit(candidate.revision);
-        latestRef.current.onDiagnostic?.("stt_candidate_commit", {
-          version, revision: candidate.revision, accepted, durationMs: Date.now() - commitStartedAt,
-        });
-        if (version !== sessionVersionRef.current || candidateRef.current !== candidate) return;
-        if (!accepted) {
-          // A rejected revision means capture continued. Its invalidation event can
-          // arrive after this native Promise, so do not depend on their order.
-          candidateRef.current = null;
-          clearCorrection(false);
-          setPhase("recording");
-          return;
-        }
-        terminalRef.current = true;
-        autoSendingRef.current = version;
-        await abortSession();
-        if (version !== sessionVersionRef.current) return;
+        accepted = await session.commit(candidate.revision);
       } catch {
         if (version === sessionVersionRef.current && candidateRef.current === candidate) {
-          finishFailure("音声入力を確定できませんでした。内容を確認して手動で送信してください。", text);
+          retrySession("音声入力を確定できませんでした。", "candidate_commit");
         }
         return;
       }
+      latestRef.current.onDiagnostic?.("stt_candidate_commit", {
+        version, revision: candidate.revision, accepted, durationMs: Date.now() - commitStartedAt,
+      });
+      if (version !== sessionVersionRef.current || candidateRef.current !== candidate) return;
+      if (!accepted) {
+        // A rejected revision means capture continued. Its invalidation event can
+        // arrive after this native Promise, so do not depend on their order.
+        candidateRef.current = null;
+        clearCorrection(false);
+        setPhase("recording");
+        return;
+      }
+      terminalRef.current = true;
+      autoSendingRef.current = version;
+      try { await abortSession(); }
+      catch {
+        if (version === sessionVersionRef.current) finishFailure("マイクの停止を確認できませんでした。", text);
+        return;
+      }
+      if (version !== sessionVersionRef.current) return;
     }
     autoSendingRef.current = version;
     latestRef.current.onDiagnostic?.("stt_auto_send_dispatch", { version, chars: text.length,
@@ -316,7 +363,7 @@ export function useStreamingStt(options: Options) {
     } finally {
       if (autoSendingRef.current === version) autoSendingRef.current = null;
     }
-  }, [abortSession, awaitReplyCycle, clearCorrection, finishFailure, playSendCue, updateReplyCycle]);
+  }, [abortSession, awaitReplyCycle, clearCorrection, finishFailure, playSendCue, retrySession, updateReplyCycle]);
 
   const sendCorrectionPreview = useCallback(() => {
     const preview = previewRef.current;
@@ -479,11 +526,6 @@ export function useStreamingStt(options: Options) {
     finishFailure(message);
   }, [finishFailure]);
 
-  const scheduleStart = useCallback((delayMs = RETRY_DELAY_MS) => {
-    clearTimer(retryTimerRef);
-    retryTimerRef.current = setTimeout(() => startSessionRef.current(), delayMs);
-  }, []);
-
   const startSession = useCallback(() => {
     if (!listeningRef.current || (latestRef.current.ownership && !latestRef.current.ownership.isOwner())) return;
     pauseDictationIdle();
@@ -515,16 +557,17 @@ export function useStreamingStt(options: Options) {
           onDiagnostic: (payload) => {
             if (sessionRef.current === session) latestRef.current.onDiagnostic?.("stt_capture_diagnostic", { ...payload, version });
           },
-          onError: (message) => {
+          onError: (message, retryable = true) => {
             if (sessionRef.current === session) {
-              latestRef.current.onDiagnostic?.("stt_transport_error", { version });
-              fail(message);
+              latestRef.current.onDiagnostic?.("stt_transport_error", { version, retryable });
+              if (retryable) retrySession(message, "transport_error");
+              else fail(message);
             }
           },
           onClose: () => {
             if (sessionRef.current === session && !terminalRef.current) {
               latestRef.current.onDiagnostic?.("stt_transport_closed_before_done", { version });
-              fail("Private Runnerとの音声接続が終了しました。");
+              retrySession("Private Runnerとの音声接続が終了しました。", "transport_close");
             }
           },
         });
@@ -534,7 +577,7 @@ export function useStreamingStt(options: Options) {
       }
       sessionRef.current = session;
     }).catch(() => fail("マイクの終了を確認できませんでした。音声入力を開始できません。"));
-  }, [fail, transport.connect]);
+  }, [fail, retrySession, transport.connect]);
   startSessionRef.current = startSession;
 
   function handleMessage(raw: unknown, session: StreamingSttSession) {
@@ -569,6 +612,7 @@ export function useStreamingStt(options: Options) {
         return;
       }
       clearCorrection(false);
+      recognitionSegmentSeenRef.current = true;
       candidateRef.current = { revision: message.revision, sending: false };
       latestRef.current.onDiagnostic?.("stt_candidate_received", {
         version: sessionVersionRef.current, revision: message.revision,
@@ -595,6 +639,9 @@ export function useStreamingStt(options: Options) {
           if (!current()) return;
         }
         recordingRef.current = true;
+        if (errorRetriesRef.current > 0) latestRef.current.onDiagnostic?.("stt_recovery_ready", {
+          version: sessionVersionRef.current, attempt: errorRetriesRef.current,
+        });
         setPhase("recording");
         if (latestRef.current.continuousDictation && recognitionSegmentSeenRef.current) {
           dictationReadySinceRef.current ??= Date.now();
@@ -664,19 +711,8 @@ export function useStreamingStt(options: Options) {
         retryable: message.retryable,
         retries: errorRetriesRef.current,
       });
-      if (message.retryable && listeningRef.current && errorRetriesRef.current < MAX_ERROR_RETRIES) {
-        terminalRef.current = true;
-        const version = ++sessionVersionRef.current;
-        const attempt = ++errorRetriesRef.current;
-        const draft = displayStreamingTranscript(transcriptStateRef.current);
-        transcriptStateRef.current = startStreamingTranscript(draft);
-        latestRef.current.setTranscript(draft);
-        setPhase("connecting");
-        latestRef.current.onDiagnostic?.("stt_error_retry", { version, attempt });
-        void abortSession().then(() => {
-          if (version !== sessionVersionRef.current || !listeningRef.current) return;
-          scheduleStart(RETRY_DELAY_MS * 2 ** (attempt - 1));
-        }).catch(() => finishFailure("マイクの停止を確認できませんでした。"));
+      if (message.retryable) {
+        retrySession(message.message || "音声認識に失敗しました。", "runner_error");
         return;
       }
       fail(message.message || "音声認識に失敗しました。");

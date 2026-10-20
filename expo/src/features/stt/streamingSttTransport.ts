@@ -2,7 +2,7 @@ export type StreamingSttTransportCallbacks = {
   continueDuringCorrection?: boolean;
   onMessage: (raw: unknown) => void;
   onSample: (rms: number) => void;
-  onError: (message: string) => void;
+  onError: (message: string, retryable?: boolean) => void;
   onClose: () => void;
   onDiagnostic?: (payload: Record<string, unknown>) => void;
 };

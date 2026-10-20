@@ -169,9 +169,15 @@ export function createMacosStreamingSttHandler({
           void startSegment();
         } else {
           phase = "candidate";
-          candidate = ++revision;
-          diagnose("macos_candidate", { revision: candidate });
-          send({ type: "candidate", revision: candidate });
+          loudMs = 0;
+          if (candidate === null) {
+            candidate = ++revision;
+            diagnose("macos_candidate", { revision: candidate });
+            send({ type: "candidate", revision: candidate });
+          } else {
+            diagnose("macos_candidate_noise_ignored", { revision: candidate });
+          }
+          commit();
         }
         return;
       }
@@ -235,7 +241,7 @@ export function createMacosStreamingSttHandler({
         phase = "ready";
         readyAt = performance.now();
         diagnose("macos_ready");
-        send({ type: readySent ? "segment_start" : "ready" });
+        if (!readySent || candidate === null) send({ type: readySent ? "segment_start" : "ready" });
         readySent = true;
         if (continuation && turnHasSpeech) transcriptInactivity.update(lastRecognizedText);
         noSpeechTimer = setTimeout(() => endInput("no_speech_timeout"), noSpeechTimeoutMs);
@@ -259,6 +265,16 @@ export function createMacosStreamingSttHandler({
         && typeof message.text === "string" && typeof message.isFinal === "boolean") {
         const nativeHadText = !!message.text.trim();
         if (nativeHadText) {
+          // PCM amplitude only starts a speculative recognizer. A candidate changes
+          // only once that recognizer confirms words, so ambient noise keeps its preview.
+          if (candidate !== null) {
+            const invalidated = candidate;
+            candidate = null;
+            diagnose("macos_candidate_invalidated", { revision: invalidated, trigger: "recognized_text" });
+            send({ type: "candidate_invalidated", revision: invalidated });
+            send({ type: "segment_start" });
+            commit();
+          }
           lastRecognizedText = message.text;
           beginSpeech();
         }
@@ -406,7 +422,7 @@ export function createMacosStreamingSttHandler({
 
     const commit = () => {
       if (!pendingCommit || terminal) return;
-      if (candidate === pendingCommit && loudMs > 0 && loudMs < VAD_START_MS) return;
+      if (candidate === pendingCommit && (phase !== "candidate" || loudMs > 0)) return;
       const requested = pendingCommit;
       pendingCommit = null;
       clearTimeout(commitTimer);
@@ -447,12 +463,7 @@ export function createMacosStreamingSttHandler({
         } else { handoff = []; handoffBytes = 0; }
         if (loudMs >= VAD_START_MS && !restartRequested) {
           restartRequested = true;
-          const invalidated = candidate;
-          candidate = null;
-          if (invalidated !== null) {
-            diagnose("macos_candidate_invalidated", { revision: invalidated });
-            send({ type: "candidate_invalidated", revision: invalidated });
-          }
+          diagnose("macos_continuation_probe", { revision: candidate, trigger: "pcm_onset" });
           if (phase === "candidate") void startSegment();
         }
         commit();
