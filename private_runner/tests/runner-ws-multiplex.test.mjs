@@ -283,6 +283,66 @@ test("orchestrator question hooks deliver responses and close pending questions 
   assert.deepEqual(await disconnected, { answers: {} });
 });
 
+test("orchestrator calendar reads stay on the initiating socket and settle on response, abort or disconnect", async (t) => {
+  const service = __TESTING__.voiceContextService;
+  const originalStart = service.start;
+  let hooks;
+  const operationId = "11111111-2222-4333-8444-555555555555";
+  service.start = async (_message, _notify, _onApproval, callbacks) => {
+    hooks = callbacks;
+    return { clientOperationId: operationId, status: "accepted" };
+  };
+  const owner = createRunnerWsConnectionForTest();
+  const other = createRunnerWsConnectionForTest();
+  t.after(() => { service.start = originalStart; owner.close(); other.close(); });
+  owner.emit("message", JSON.stringify({ channel: "agent", op: "turn.start", requestId: "calendar-start", operationId,
+    payload: { backendId: "codex", orchestratorId: "other", logicalConversationId: "conversation",
+      clientOperationId: operationId, input: { blocks: [{ type: "text", text: "check calendar" }] } } }), false);
+  await waitFor(() => hooks);
+  const native = { method: "item/tool/call", params: { namespace: "calendar", tool: "calendar_search_events",
+    callId: "calendar-call", threadId: "native-thread", turnId: "native-turn",
+    arguments: { start: "2026-10-20T00:00:00+09:00", end: "2026-10-21T00:00:00+09:00" } } };
+  const result = { ok: true, data: { events: [], truncated: false } };
+  const pending = hooks.onCalendarToolCall(native);
+  const request = owner.sent.find((message) => message.op === "voice.calendar.request");
+  assert.equal(request.operationId, operationId);
+  assert.equal(request.payload.orchestratorId, "other");
+  assert.equal(request.payload.threadId, native.params.threadId);
+  assert.equal(request.payload.turnId, native.params.turnId);
+  assert.equal(typeof request.payload.startedAtMs, "number");
+  assert.deepEqual(request.payload.params, native.params);
+  assert.equal(other.sent.some((message) => message.op === "voice.calendar.request"), false);
+  const respond = (socket, requestId, responseOperationId = operationId) => socket.emit("message", JSON.stringify({
+    channel: "agent", op: "voice.calendar.respond", requestId, operationId: responseOperationId,
+    payload: { requestId: request.payload.requestId, result },
+  }), false);
+  respond(other, "forged-calendar-response");
+  respond(owner, "wrong-calendar-operation", "wrong-operation");
+  await waitFor(() => other.sent.some((message) => message.requestId === "forged-calendar-response")
+    && owner.sent.some((message) => message.requestId === "wrong-calendar-operation"));
+  assert.equal(other.sent.find((message) => message.requestId === "forged-calendar-response").payload.accepted, false);
+  assert.equal(owner.sent.find((message) => message.requestId === "wrong-calendar-operation").payload.accepted, false);
+  assert.equal(owner.sent.some((message) => message.op === "voice.calendar.resolved"), false);
+  respond(owner, "calendar-response");
+  assert.deepEqual(await pending, { success: true, contentItems: [{ type: "inputText", text: JSON.stringify(result) }] });
+  assert.equal(owner.sent.find((message) => message.requestId === "calendar-response").payload.accepted, true);
+  assert.deepEqual(owner.sent.filter((message) => message.op === "voice.calendar.resolved").map((message) => message.payload),
+    [{ requestId: request.payload.requestId, orchestratorId: "other" }]);
+  respond(owner, "replayed-calendar-response");
+  assert.equal(owner.sent.find((message) => message.requestId === "replayed-calendar-response").payload.accepted, false);
+
+  const controller = new AbortController();
+  const aborted = hooks.onCalendarToolCall(native, controller.signal);
+  controller.abort();
+  assert.equal(JSON.parse((await aborted).contentItems[0].text).error.code, "request_cancelled");
+  assert.equal(owner.sent.filter((message) => message.op === "voice.calendar.resolved").length, 2);
+  const disconnected = hooks.onCalendarToolCall(native);
+  owner.close();
+  assert.equal(JSON.parse((await disconnected).contentItems[0].text).error.code, "device_unavailable");
+  assert.equal(other.sent.some((message) => ["voice.calendar.request", "voice.calendar.resolved"].includes(message.op)), false);
+  assert.equal(owner.sent.some((message) => ["voice.userInput.request", "voice.approval.request"].includes(message.op)), false);
+});
+
 test("voice acceptance creates one attachable TTS job and keeps its error separate", async (t) => {
   const service = __TESTING__.voiceContextService;
   const originalStart = service.start;

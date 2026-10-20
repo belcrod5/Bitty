@@ -4,6 +4,7 @@ import test from "node:test";
 import { APP_CONTROL_UNAVAILABLE_INSTRUCTION, createCodexBackend, executeCodexTurn, startCodexTurn } from "../src/codex-turn-execution.mjs";
 import { serializeAgentError } from "../src/agent/agent-protocol.mjs";
 import { CONVERSATION_HISTORY_TOOL_INSTRUCTIONS } from "../src/agent/agent-runtime.mjs";
+import { calendarConversationDynamicTools } from "../src/calendar-tool-service.mjs";
 
 function fakeClient(notifications = [{ method: "turn/completed", params: {} }]) {
   const calls = [];
@@ -20,7 +21,6 @@ function fakeClient(notifications = [{ method: "turn/completed", params: {} }]) 
       calls.push({ kind: "request", method, params });
       if (method === "thread/start") return { thread: { id: "thread-new" } };
       if (method === "thread/resume") return { thread: { id: params.threadId } };
-      if (method === "modelProvider/capabilities/read") return { namespaceTools: true };
       if (method === "model/list") return { data: [], nextCursor: null };
       if (method === "plugin/list") return { marketplaces: [] };
       if (method === "mcpServerStatus/list") return { data: [], nextCursor: null };
@@ -242,6 +242,37 @@ test("an answer after the deadline is rejected even before the timer callback ru
     result: { answers: { q1: { answers: ["A"] } } } }), (error) => error.code === "action_expired");
   await run.turn;
   assert.deepEqual(run.nativeResponse(), { answers: {} });
+});
+
+test("dynamic tools start and resume without unrelated capability, config or plugin preflights", async () => {
+  const dynamicTools = calendarConversationDynamicTools();
+  for (const threadId of ["", "thread-existing"]) {
+    const client = fakeClient();
+    const request = client.request.bind(client);
+    client.request = async (method, params) => {
+      if (["modelProvider/capabilities/read", "config/read", "plugin/list", "plugin/read"].includes(method)) {
+        throw new Error(`unrelated API must not gate dynamic tools: ${method}`);
+      }
+      return request(method, params);
+    };
+    await executeCodexTurn({ client, clientName: "calendar-chat", threadId, inputText: "hello", dynamicTools });
+    const threadCall = client.calls.find((call) => call.method === (threadId ? "thread/resume" : "thread/start"));
+    assert.deepEqual(threadCall.params.dynamicTools, threadId ? undefined : dynamicTools);
+    assert.equal(client.calls.some((call) => call.method === "turn/start"), true);
+  }
+});
+
+test("dynamic tool registration preserves native thread/start errors and does not start a turn", async () => {
+  const client = fakeClient();
+  const request = client.request.bind(client);
+  const nativeError = new Error("invalid dynamicTools schema");
+  client.request = async (method, params) => {
+    if (method === "thread/start") throw nativeError;
+    return request(method, params);
+  };
+  await assert.rejects(startCodexTurn({ client, inputText: "hello", dynamicTools: calendarConversationDynamicTools() }),
+    (error) => error === nativeError);
+  assert.equal(client.calls.some((call) => call.method === "turn/start"), false);
 });
 
 test("starts an unattended new thread with questions disabled and forwards turn options", async () => {

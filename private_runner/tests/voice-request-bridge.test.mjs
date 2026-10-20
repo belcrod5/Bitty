@@ -4,6 +4,117 @@ import { createVoiceRequestBridge } from "../src/voice-request-bridge.mjs";
 
 const request = { method: "item/commandExecution/requestApproval", params: { command: "echo" }, threadId: "thread", turnId: "turn" };
 const question = { ...request, method: "item/tool/requestUserInput", params: { questions: [{ id: "choice" }] } };
+const calendar = { ...request, method: "item/tool/call", params: { namespace: "calendar",
+  tool: "calendar_search_events", callId: "calendar-call", threadId: "thread", turnId: "turn",
+  arguments: { start: "2026-10-20T00:00:00+09:00", end: "2026-10-21T00:00:00+09:00" } } };
+const calendarResult = { ok: true, data: { events: [], truncated: false } };
+const readCalendarResult = (response) => {
+  assert.equal(response.success, true);
+  assert.equal(response.contentItems.length, 1);
+  assert.equal(response.contentItems[0].type, "inputText");
+  return JSON.parse(response.contentItems[0].text);
+};
+
+test("calendar results are validated, correlated and wrapped as dynamic tool responses", async () => {
+  const sent = [];
+  const resolved = [];
+  const bridge = createVoiceRequestBridge({ send: (value) => { sent.push(value); return true; },
+    onResolved: (value) => resolved.push(value) });
+  const pending = bridge.request("operation", calendar, "other");
+  const id = sent[0].requestId;
+  assert.equal(sent[0].method, "item/tool/call");
+  assert.deepEqual(sent[0].params, calendar.params);
+  assert.equal(bridge.decide("operation", id, "accept"), false);
+  assert.equal(bridge.respond("wrong-operation", id, calendarResult), false);
+  assert.equal(bridge.respond("operation", "wrong-request", calendarResult), false);
+  for (const invalid of [null, [], {}, { ok: true }, { answers: {} },
+    { success: true, contentItems: [] }, { ok: false, error: {} },
+    { ok: false, error: { code: "device_unavailable", message: "error", retryable: "false" } }]) {
+    assert.equal(bridge.respond("operation", id, invalid), false);
+  }
+  assert.equal(bridge.respond("operation", id, calendarResult), true);
+  assert.deepEqual(readCalendarResult(await pending), calendarResult);
+  assert.equal(bridge.respond("operation", id, calendarResult), false);
+  assert.deepEqual(resolved, [{ requestId: id, operationId: "operation", orchestratorId: "other", method: calendar.method }]);
+  const failed = bridge.request("failed", calendar);
+  const failure = { ok: false, error: { code: "calendar_permission_denied", message: "denied", retryable: false } };
+  assert.equal(bridge.respond("failed", sent[1].requestId, failure), true);
+  assert.deepEqual(readCalendarResult(await failed), failure);
+});
+
+test("calendar requests permit only the three read tools in the calendar namespace", async () => {
+  const sent = [];
+  const bridge = createVoiceRequestBridge({ send: (value) => { sent.push(value); return true; } });
+  for (const tool of ["calendar_list_calendars", "calendar_search_events", "calendar_get_event"]) {
+    const pending = bridge.request(tool, { ...calendar, params: { ...calendar.params, tool } });
+    assert.equal(bridge.respond(tool, sent.at(-1).requestId, calendarResult), true);
+    assert.deepEqual(readCalendarResult(await pending), calendarResult);
+  }
+  for (const params of [
+    ...["calendar_create_event", "calendar_update_event", "calendar_delete_event", "unknown"].map((tool) => ({ ...calendar.params, tool })),
+    { ...calendar.params, namespace: "other" },
+  ]) {
+    assert.equal(readCalendarResult(await bridge.request("invalid", { ...calendar, params })).error.code, "invalid_arguments");
+  }
+  assert.equal(sent.length, 3);
+});
+
+test("calendar timeout is 30 seconds and late responses are rejected before the timer runs", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1000 });
+  const sent = [];
+  const resolved = [];
+  const bridge = createVoiceRequestBridge({ send: (value) => { sent.push(value); return true; },
+    onResolved: (value) => resolved.push(value), timeoutMs: 5 });
+  let done = false;
+  const pending = bridge.request("operation", calendar).then((value) => { done = true; return value; });
+  assert.equal(sent[0].startedAtMs, 1000);
+  t.mock.timers.tick(29_999);
+  await Promise.resolve();
+  assert.equal(done, false);
+  t.mock.timers.tick(1);
+  assert.equal(readCalendarResult(await pending).error.code, "device_unavailable");
+  assert.equal(bridge.respond("operation", sent[0].requestId, calendarResult), false);
+  const late = bridge.request("late", calendar);
+  t.mock.timers.setTime(61_000);
+  assert.equal(bridge.respond("late", sent[1].requestId, calendarResult), false);
+  assert.equal(readCalendarResult(await late).error.code, "device_unavailable");
+  assert.equal(resolved.length, 2);
+});
+
+test("calendar forwarding retains its original receipt time and remaining deadline", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 21_000 });
+  const sent = [];
+  const bridge = createVoiceRequestBridge({ send: (value) => { sent.push(value); return true; } });
+  const pending = bridge.request("operation", { ...calendar, startedAtMs: 1000 });
+  assert.equal(sent[0].startedAtMs, 1000);
+  t.mock.timers.tick(10_000);
+  assert.equal(readCalendarResult(await pending).error.code, "device_unavailable");
+  assert.equal(readCalendarResult(await bridge.request("expired", { ...calendar, startedAtMs: 1000 })).error.code, "device_unavailable");
+  assert.equal(sent.length, 1);
+});
+
+test("calendar cancellation, disconnect and send failure resolve with calendar errors", async () => {
+  const sent = [];
+  const resolved = [];
+  const bridge = createVoiceRequestBridge({ send: (value) => { sent.push(value); return true; },
+    onResolved: (value) => resolved.push(value) });
+  const controller = new AbortController();
+  const cancelled = bridge.request("cancelled", calendar, "main", "", controller.signal);
+  controller.abort();
+  assert.equal(readCalendarResult(await cancelled).error.code, "request_cancelled");
+  assert.equal(bridge.respond("cancelled", sent[0].requestId, calendarResult), false);
+  assert.equal(readCalendarResult(await bridge.request("aborted", calendar, "main", "", controller.signal)).error.code, "request_cancelled");
+  const disconnected = bridge.request("disconnected", calendar);
+  bridge.close();
+  assert.equal(readCalendarResult(await disconnected).error.code, "device_unavailable");
+  assert.equal(bridge.respond("disconnected", sent[1].requestId, calendarResult), false);
+  assert.equal(readCalendarResult(await bridge.request("closed", calendar)).error.code, "device_unavailable");
+  assert.equal(resolved.length, 2);
+  for (const send of [() => false, () => { throw new Error("send failed"); }]) {
+    const failed = createVoiceRequestBridge({ send });
+    assert.equal(readCalendarResult(await failed.request("failed", calendar)).error.code, "device_unavailable");
+  }
+});
 
 test("questions use original timestamp, validate responses and resolve only once", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1000 });

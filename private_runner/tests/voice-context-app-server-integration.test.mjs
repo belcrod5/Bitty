@@ -44,11 +44,13 @@ async function waitForPort(value, child) {
   throw new Error("isolated Codex App Server did not listen");
 }
 
-for (const { withGlobalMcp, cancelSummary = false, renameContext = false, controlContext = false } of [
+for (const { withGlobalMcp, cancelSummary = false, renameContext = false, controlContext = false, calendarContext = false } of [
   { withGlobalMcp: true }, { withGlobalMcp: false }, { withGlobalMcp: false, cancelSummary: true },
   { withGlobalMcp: false, renameContext: true }, { withGlobalMcp: false, controlContext: true },
+  { withGlobalMcp: false, calendarContext: "new" }, { withGlobalMcp: false, calendarContext: "existing" },
 ]) test(
-  controlContext ? "isolated Codex App Server delivers current voice control reference on a loaded parent"
+  calendarContext ? `isolated Codex App Server calls calendar read tools on ${calendarContext} voice parents`
+    : controlContext ? "isolated Codex App Server delivers current voice control reference on a loaded parent"
     : renameContext ? "isolated Codex App Server switches settings parent for a renamed orchestrator"
     : cancelSummary ? "isolated Codex App Server cancels the summary model stream before disconnecting"
     : withGlobalMcp ? "isolated Codex App Server sends voice context with inherited MCP" : "isolated Codex App Server sends selected voice context without global MCP",
@@ -81,10 +83,19 @@ for (const { withGlobalMcp, cancelSummary = false, renameContext = false, contro
         response.write(": held summary\n\n");
         return;
       }
-      if (renameContext || controlContext || modelRequestCount <= 2) {
-        const text = renameContext || controlContext ? '{"decision":"continue","reason":"same topic"}'
+      if (calendarContext || renameContext || controlContext || modelRequestCount <= 2) {
+        const latestUser = input.input.filter((item) => item.role === "user").at(-1)?.content?.[0]?.text;
+        const calendarTurn = calendarContext && latestUser?.startsWith("CALENDAR_CHECK_");
+        const calendarResult = input.input.at(-1)?.type === "custom_tool_call_output";
+        const text = calendarTurn ? "配送予定は明日の午前中です。"
+          : calendarContext || renameContext || controlContext ? '{"decision":"continue","reason":"same topic"}'
           : modelRequestCount === 1 ? "CURRENT_ASSISTANT" : summaryText;
-        const item = {
+        const item = calendarTurn && !calendarResult ? {
+          id: `fc_mock_${modelRequestCount}`, type: "custom_tool_call", namespace: "functions",
+          name: "exec", call_id: `call_calendar_${modelRequestCount}`,
+          input: 'text(await tools.calendar__calendar_search_events({ start: "2026-10-21T00:00:00+09:00", end: "2026-10-22T00:00:00+09:00" }));',
+          status: "completed",
+        } : {
           id: `msg_mock_${modelRequestCount}`, type: "message", role: "assistant", status: "completed",
           content: [{ type: "output_text", text }],
         };
@@ -153,7 +164,7 @@ for (const { withGlobalMcp, cancelSummary = false, renameContext = false, contro
     ]);
     await fs.rm(temp, { recursive: true, force: true });
   });
-  await waitForPort(appPort, codex);
+  await waitForPort(appPort, codex).catch((error) => { throw new Error(`${error.message}: ${codexError}`); });
 
   const rootDir = path.join(temp, "voice-data");
   const rpcErrors = [];
@@ -181,6 +192,82 @@ for (const { withGlobalMcp, cancelSummary = false, renameContext = false, contro
   probe.notify("initialized", {});
   assert.equal((await probe.request("mcpServerStatus/list", {})).data.some(({ name }) => name === "voice_probe"), withGlobalMcp);
   probe.close();
+  if (calendarContext) {
+    let service = createVoiceContextService({ rootDir, createClient });
+    const { logicalConversationId } = await service.open();
+    const calendarCalls = [];
+    const turn = async (text, withCalendar) => {
+      const clientOperationId = randomUUID();
+      const terminal = new Promise((resolve, reject) => {
+        void service.start({ operationId: clientOperationId, payload: {
+          backendId: "codex", logicalConversationId, clientOperationId,
+          input: { blocks: [{ type: "text", text }] },
+        } }, resolve, async () => "decline", withCalendar ? {
+          onCalendarToolCall: async (request, signal) => {
+            assert.equal(signal.aborted, false);
+            calendarCalls.push(request);
+            return { success: true, contentItems: [{ type: "inputText", text: "MOCK_CALENDAR_DELIVERY_09_TO_12" }] };
+          },
+        } : {}).catch(reject);
+      });
+      const result = await within(terminal, 20000, `calendar turn did not finish: ${rpcErrors.join("; ")} ${codexError}`);
+      assert.equal(result.status, "completed", `${JSON.stringify(result)} ${rpcErrors.join("; ")} ${codexError}`);
+      await within((async () => { while (await service.isBusy()) await delay(25); })(), 20000, "calendar turn did not settle");
+    };
+    await turn(calendarContext === "existing" ? "BEFORE_CALENDAR" : "CALENDAR_CHECK_0", calendarContext !== "existing");
+    // A new client and service must restore the parent and its current dynamic tools.
+    service = createVoiceContextService({ rootDir, createClient });
+    await turn("CALENDAR_CHECK_1", true);
+    service = createVoiceContextService({ rootDir, createClient });
+    await turn("CALENDAR_CHECK_2", true);
+    const expectedCalls = calendarContext === "existing" ? 2 : 3;
+    assert.equal(calendarCalls.length, expectedCalls);
+    for (const request of calendarCalls) {
+      assert.equal(request.method, "item/tool/call");
+      assert.equal(request.params.namespace, "calendar");
+      assert.equal(request.params.tool, "calendar_search_events");
+      assert.deepEqual(request.params.arguments, { start: "2026-10-21T00:00:00+09:00", end: "2026-10-22T00:00:00+09:00" });
+    }
+    const parentCalls = voiceCalls.filter(({ method, params }) => ["thread/start", "thread/resume"].includes(method)
+      && params.approvalPolicy === "on-request");
+    assert.deepEqual(parentCalls.map(({ method }) => method), calendarContext === "existing"
+      ? ["thread/start", "thread/start", "thread/resume"] : ["thread/start", "thread/resume", "thread/resume"]);
+    const readNames = ["calendar_list_calendars", "calendar_search_events", "calendar_get_event"];
+    for (const [index, { method, params }] of parentCalls.entries()) {
+      if (method === "thread/resume") {
+        assert.equal(Object.hasOwn(params, "dynamicTools"), false);
+        continue;
+      }
+      const calendar = params.dynamicTools.find(({ name }) => name === "calendar");
+      if (calendarContext === "existing" && index === 0) assert.equal(calendar, undefined);
+      else {
+        assert.deepEqual(calendar.tools.map(({ name }) => name), readNames);
+        assert.ok(calendar.tools.every(({ deferLoading }) => deferLoading === false));
+      }
+    }
+    const parentTurns = voiceCalls.filter(({ method, params }) => method === "turn/start" && params.approvalPolicy === "on-request");
+    assert.equal(parentTurns[1].params.threadId, parentTurns[2].params.threadId);
+    if (calendarContext === "existing") {
+      assert.notEqual(parentTurns[0].params.threadId, parentTurns[1].params.threadId);
+      assert.ok(voiceCalls.some(({ method, params }) => method === "thread/inject_items"
+        && params.threadId === parentTurns[1].params.threadId && JSON.stringify(params.items).includes("BEFORE_CALENDAR")));
+    }
+    const calendarInputs = modelRequests.filter(({ input }) => input.filter((item) => item.role === "user")
+      .at(-1)?.content?.[0]?.text?.startsWith("CALENDAR_CHECK_"));
+    assert.equal(calendarInputs.length, expectedCalls * 2);
+    for (const request of calendarInputs) {
+      // Codex exposes these non-deferred tools through its code-mode host in model input.
+      const tools = JSON.stringify(request.input.filter(({ type }) => type === "additional_tools"));
+      for (const name of readNames) assert.ok(tools.includes(`calendar__${name}`), name);
+      assert.equal(tools.includes("tool_search"), false);
+      for (const name of ["calendar_create_event", "calendar_update_event", "calendar_delete_event"]) assert.equal(tools.includes(name), false);
+    }
+    assert.equal(calendarInputs.filter(({ input }) => input.at(-1)?.type === "custom_tool_call_output"
+      && JSON.stringify(input.at(-1)).includes("MOCK_CALENDAR_DELIVERY_09_TO_12")).length, expectedCalls);
+    assert.match(JSON.stringify(await service.history()), /配送予定は明日の午前中です。/);
+    assert.deepEqual(rpcErrors, []);
+    return;
+  }
   if (controlContext) {
     const service = createVoiceContextService({ rootDir, createClient });
     const { logicalConversationId } = await service.open();

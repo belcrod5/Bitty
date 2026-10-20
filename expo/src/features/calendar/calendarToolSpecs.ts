@@ -1,18 +1,21 @@
 export const CALENDAR_DYNAMIC_TOOLS_CONTRACT = "calendar-dynamic-tools-v2";
 export const CALENDAR_DYNAMIC_TOOLS_NAMESPACE = "calendar";
 
-export const CALENDAR_TOOL_NAMES = [
+export const CALENDAR_READ_TOOL_NAMES = [
   "calendar_list_calendars",
   "calendar_search_events",
   "calendar_get_event",
+] as const;
+
+export const CALENDAR_TOOL_NAMES = [
+  ...CALENDAR_READ_TOOL_NAMES,
   "calendar_create_event",
   "calendar_update_event",
   "calendar_delete_event",
 ] as const;
 
 export type CalendarToolName = typeof CALENDAR_TOOL_NAMES[number];
-export type CalendarReadToolName = Extract<CalendarToolName,
-  "calendar_list_calendars" | "calendar_search_events" | "calendar_get_event">;
+export type CalendarReadToolName = typeof CALENDAR_READ_TOOL_NAMES[number];
 export type CalendarWriteToolName = Exclude<CalendarToolName, CalendarReadToolName>;
 
 export const CALENDAR_ERROR_CODES = [
