@@ -1,9 +1,10 @@
 import { getVoiceControl, type AppControlOrigin } from "../../appControl/voiceControl";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { randomUUID } from "expo-crypto";
-import { Alert, AppState } from "react-native";
+import { AppState } from "react-native";
 import { useRunnerWebSocketManager, useRunnerWebSocketSnapshot } from "../../runnerWs/RunnerWebSocketContext";
 import type { RunnerWsMessage } from "../../runnerWs/types";
+import { playVoiceSound } from "../voiceSounds";
 import type { VoiceContextStats } from "../types/appTypes";
 
 type TurnStatus = "idle" | "sending" | "accepted" | "running" | "completed" | "failed";
@@ -22,6 +23,7 @@ type PendingTurn = {
   accepted: boolean;
   appControlOrigin?: AppControlOrigin;
   jobId?: string;
+  resetDecision?: { parentGeneration: unknown; turnSeq: unknown; required: boolean; decision: "reset" | "continue" };
   tts?: { speedScale: number };
 };
 
@@ -66,17 +68,11 @@ function sameContextStats(a: VoiceContextStats | null, b: VoiceContextStats | nu
     && a.subagentTotalCount === b.subagentTotalCount);
 }
 
-function resetDecision(required: boolean) {
-  return new Promise<"reset" | "continue">((resolve) => {
-    Alert.alert(required ? "セッションのリセットが必要です" : "セッションをリセットしていいですか？",
-      "最近の会話は引き継ぎます。",
-      required
-        ? [{ text: "リセットする", onPress: () => resolve("reset") }]
-        : [{ text: "続ける", style: "cancel", onPress: () => resolve("continue") },
-          { text: "リセットする", onPress: () => resolve("reset") }],
-      { cancelable: false });
-  });
-}
+export type VoiceResetConfirmation = {
+  required: boolean;
+  deadlineMs: number | null;
+  decide: (decision: "reset" | "continue") => void;
+};
 
 export function useVoiceConversation(
   onCompleted: (text: string, operationId: string) => void,
@@ -86,6 +82,8 @@ export function useVoiceConversation(
 ) {
   const manager = useRunnerWebSocketManager();
   const { connected, generation } = useRunnerWebSocketSnapshot();
+  const [resetConfirmation, setResetConfirmation] = useState<VoiceResetConfirmation | null>(null);
+  const cancelResetRef = useRef<(() => void) | null>(null);
   const [logicalConversationId, setLogicalConversationId] = useState("");
   const [turnStatus, setTurnStatus] = useState<TurnStatus>("idle");
   const [settledOperationId, setSettledOperationId] = useState("");
@@ -116,6 +114,31 @@ export function useVoiceConversation(
   onJobRef.current = onJob;
   ttsRef.current = tts;
 
+  const requestResetDecision = useCallback((pending: PendingTurn, required: boolean) => {
+    cancelResetRef.current?.();
+    return new Promise<"reset" | "continue" | null>((resolve) => {
+      const controller = new AbortController();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let settled = false;
+      const finish = (decision: "reset" | "continue" | null) => {
+        if (settled || decision === "continue" && required) return;
+        settled = true;
+        clearTimeout(timer);
+        controller.abort();
+        cancelResetRef.current = null;
+        setResetConfirmation(null);
+        resolve(decision);
+      };
+      cancelResetRef.current = () => finish(null);
+      void playVoiceSound("resetConfirmation", controller.signal).catch(() => undefined).then(() => {
+        if (settled) return;
+        if (!aliveRef.current || pendingRef.current !== pending) { finish(null); return; }
+        setResetConfirmation({ required, deadlineMs: required ? null : Date.now() + 10_000, decide: finish });
+        if (!required) timer = setTimeout(() => finish("continue"), 10_000);
+      });
+    });
+  }, []);
+
   const applyStatus = useCallback((payload: Record<string, unknown>, acceptedPersisted = false) => {
     if (payload.orchestratorId && payload.orchestratorId !== orchestratorId) return;
     const id = String(payload.clientOperationId || "");
@@ -143,6 +166,7 @@ export function useVoiceConversation(
       return;
     }
     if (status === "accepted" || status === "running") {
+      cancelResetRef.current?.();
       const partialText = typeof payload.partialText === "string" ? payload.partialText : "";
       if (partialText) setReply((current) => {
         if (current?.operationId !== id) return { text: partialText, operationId: id };
@@ -153,6 +177,7 @@ export function useVoiceConversation(
       return;
     }
     pendingRef.current = null;
+    cancelResetRef.current?.();
     settledOperationRef.current = id;
     setSettledOperationId(id);
     if (!pending.accepted) {
@@ -211,6 +236,7 @@ export function useVoiceConversation(
               ...(pending.tts ? { tts: pending.tts } : {}),
             },
           }, { timeoutMs: 30_000 });
+          if (!aliveRef.current || pendingRef.current !== pending) return;
           if (response.op === "turn.accepted") {
             const result = payloadOf(response);
             if (result.status === "confirmation_required") {
@@ -219,8 +245,12 @@ export function useVoiceConversation(
                 throw new Error("セッション確認を開始できません。");
               }
               const value = confirmation as Record<string, unknown>;
-              const decision = await resetDecision(value.required === true);
-              if (!aliveRef.current || pendingRef.current !== pending) return;
+              const required = value.required === true;
+              const previous = pending.resetDecision;
+              const decision = previous && previous.parentGeneration === value.parentGeneration && previous.turnSeq === value.turnSeq
+                && previous.required === required ? previous.decision : await requestResetDecision(pending, required);
+              if (!decision || !aliveRef.current || pendingRef.current !== pending) return;
+              pending.resetDecision = { parentGeneration: value.parentGeneration, turnSeq: value.turnSeq, required, decision };
               const confirmed = await manager.request({ channel: "agent", op: "voice.session-reset.respond",
                 operationId: pending.id, payload: {
                   orchestratorId, logicalConversationId: conversationIdRef.current,
@@ -251,7 +281,7 @@ export function useVoiceConversation(
       if (startTurnTasksRef.current.get(pending.id) === task) startTurnTasksRef.current.delete(pending.id);
     });
     return task;
-  }, [applyStatus, manager, orchestratorId]);
+  }, [applyStatus, manager, orchestratorId, requestResetDecision]);
 
   const sync = useCallback(async () => {
     if (syncingRef.current || !manager.getSnapshot().connected) return;
@@ -275,6 +305,7 @@ export function useVoiceConversation(
         const message = "音声会話の接続先が変わりました。前の送信状態を確認できません。";
         pendingRef.current.reject?.(new Error(message));
         pendingRef.current = null;
+        cancelResetRef.current?.();
         setTurnStatus("failed");
         setError(message);
         return;
@@ -439,6 +470,8 @@ export function useVoiceConversation(
     return () => {
       aliveRef.current = false;
       pendingRef.current?.reject?.(new Error("音声画面を閉じました。"));
+      pendingRef.current = null;
+      cancelResetRef.current?.();
       delta();
       complete();
       failed();
@@ -472,6 +505,7 @@ export function useVoiceConversation(
     const pending = pendingRef.current;
     if (!pending || !conversationIdRef.current) return;
     pendingRef.current = null;
+    cancelResetRef.current?.();
     settledOperationRef.current = pending.id;
     setSettledOperationId(pending.id);
     turnRevisionRef.current += 1;
@@ -577,6 +611,7 @@ export function useVoiceConversation(
     message.role === local.role && message.clientOperationId === local.clientOperationId))], [history, localHistory]);
 
   return {
+    resetConfirmation,
     ready: Boolean(logicalConversationId) && connected,
     logicalConversationId,
     turnStatus,

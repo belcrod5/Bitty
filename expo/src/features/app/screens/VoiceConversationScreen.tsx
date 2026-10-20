@@ -12,6 +12,7 @@ import { ContextUsageIndicator } from "../components/ContextUsageIndicator";
 import { CodexStatusSummaryMenu } from "../components/CodexStatusSummaryMenu";
 import { VoiceOrchestratorIcon, type VoiceOrchestrator } from "../components/VoiceOrchestratorIcon";
 import { VoiceOrchestratorManager } from "../components/VoiceOrchestratorManager";
+import { VoiceResetConfirmationModal } from "../components/VoiceResetConfirmationModal";
 import { UserInputModal } from "../components/UserInputModal";
 import { useVoiceUserInput } from "../hooks/useVoiceUserInput";
 import { useChatScreen } from "../contexts/ChatScreenContext";
@@ -478,6 +479,7 @@ function VoiceConversationSession({
       pointerEvents="box-none"
       style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, justifyContent: "flex-end" }}
     >
+      <VoiceResetConfirmationModal request={voice.resetConfirmation} />
       <VoiceHistoryBackdrop expanded={historyExpanded} visible={historyMounted}
         height={historyHeight} />
       <Reanimated.View

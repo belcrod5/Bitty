@@ -1,10 +1,13 @@
 import { getVoiceControl } from "../../appControl/voiceControl";
 import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react-native";
-import { Alert, AppState, type AppStateStatus } from "react-native";
+import { AppState, type AppStateStatus } from "react-native";
 import { randomUUID } from "expo-crypto";
 import { useVoiceConversation } from "./useVoiceConversation";
+import { playVoiceSound } from "../voiceSounds";
 import type { VoiceContextStats } from "../types/appTypes";
+
+jest.mock("../voiceSounds", () => ({ playVoiceSound: jest.fn(async () => {}) }));
 
 jest.mock("expo-crypto", () => ({ randomUUID: jest.fn(() => "11111111-2222-4333-8444-555555555555") }));
 
@@ -472,7 +475,6 @@ test("sends one final text block and reads aloud only after a completed turn", a
 });
 
 test("holds the same operation while reset confirmation is answered", async () => {
-  const alert = jest.spyOn(Alert, "alert").mockImplementation(() => undefined);
   let starts = 0;
   mockManager.request.mockImplementation(async ({ op }: { op: string }) => {
     if (op === "voice.open") return { op: "voice.open.result", payload: {
@@ -497,13 +499,13 @@ test("holds the same operation while reset confirmation is answered", async () =
   await waitFor(() => expect(result.current.ready).toBe(true));
   let sent!: Promise<void>;
   await act(async () => { sent = result.current.sendTranscript("境界の発話", onAccepted); await Promise.resolve(); });
-  await waitFor(() => expect(alert).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(result.current.resetConfirmation).not.toBeNull());
   expect(onAccepted).not.toHaveBeenCalled();
   mockSnapshot = { connected: true, generation: 2 };
   await act(async () => { rerender({}); await Promise.resolve(); });
   await waitFor(() => expect(mockManager.request).toHaveBeenCalledWith(expect.objectContaining({ op: "voice.status" })));
-  expect(alert).toHaveBeenCalledTimes(1);
-  await act(async () => { alert.mock.calls[0][2]?.[1]?.onPress?.(); });
+  expect(playVoiceSound).toHaveBeenCalledTimes(1);
+  await act(async () => { result.current.resetConfirmation?.decide("reset"); });
   await waitFor(() => expect(result.current.turnStatus).toBe("accepted"));
   const startsSent = mockManager.request.mock.calls.filter(([message]) => message.op === "turn.start");
   expect(startsSent).toHaveLength(2);
@@ -518,11 +520,9 @@ test("holds the same operation while reset confirmation is answered", async () =
     logicalConversationId: conversationId, clientOperationId: operationId, text: "返答", ...initialStats,
   } }));
   await sent;
-  alert.mockRestore();
 });
 
-test("a stale reset alert cannot send a decision after the operation settles", async () => {
-  const alert = jest.spyOn(Alert, "alert").mockImplementation(() => undefined);
+test("a stale reset popup cannot send a decision after the operation settles", async () => {
   mockManager.request.mockImplementation(async ({ op }: { op: string }) => {
     if (op === "voice.open") return { op: "voice.open.result", payload: {
       logicalConversationId: conversationId, contextMode: "self_context_array", ...initialStats,
@@ -538,13 +538,13 @@ test("a stale reset alert cannot send a decision after the operation settles", a
   await waitFor(() => expect(result.current.ready).toBe(true));
   let sent!: Promise<void>;
   await act(async () => { sent = result.current.sendTranscript("境界の発話", jest.fn()); await Promise.resolve(); });
-  await waitFor(() => expect(alert).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(result.current.resetConfirmation).not.toBeNull());
+  const staleDecision = result.current.resetConfirmation!.decide;
   await act(async () => handlers.get("voice.turn.completed")?.({ payload: {
     logicalConversationId: conversationId, clientOperationId: operationId, text: "別端末で完了", ...initialStats,
   } }));
-  await act(async () => { alert.mock.calls[0][2]?.[1]?.onPress?.(); await sent; });
+  await act(async () => { staleDecision("reset"); await sent; });
   expect(mockManager.request.mock.calls.some(([message]) => message.op === "voice.session-reset.respond")).toBe(false);
-  alert.mockRestore();
 });
 
 test("streams only the matching voice reply and reconciles it with the completed text", async () => {
@@ -625,8 +625,7 @@ test("an unknown operation remains interruptible after reopening", async () => {
   expect(mockManager.request.mock.calls.filter(([request]) => request.op === "turn.start")).toHaveLength(0);
 });
 
-test("stopping during the reset alert ignores its late answer", async () => {
-  const alert = jest.spyOn(Alert, "alert").mockImplementation(() => undefined);
+test("stopping during the reset popup ignores its late answer", async () => {
   const original = mockManager.request.getMockImplementation();
   mockManager.request.mockImplementation(async (message: { op: string }) => {
     if (message.op === "turn.start") return { op: "turn.accepted", payload: { clientOperationId: operationId,
@@ -638,14 +637,14 @@ test("stopping during the reset alert ignores its late answer", async () => {
   await waitFor(() => expect(result.current.ready).toBe(true));
   let sent!: Promise<void>;
   await act(async () => { sent = result.current.sendTranscript("held", jest.fn()); });
-  await waitFor(() => expect(alert).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(result.current.resetConfirmation).not.toBeNull());
+  const staleDecision = result.current.resetConfirmation!.decide;
   await act(async () => result.current.interrupt());
   await sent;
-  await act(async () => { alert.mock.calls[0][2]?.[1]?.onPress?.(); });
+  await act(async () => { staleDecision("reset"); });
   expect(mockManager.request.mock.calls.filter(([request]) => request.op === "voice.session-reset.respond")).toHaveLength(0);
   expect(mockManager.request.mock.calls.filter(([request]) => request.op === "turn.start")).toHaveLength(1);
   expect(result.current.turnStatus).toBe("idle");
-  alert.mockRestore();
 });
 
 test("reopening after an intentional voice interruption is ready for recording", async () => {
@@ -1346,4 +1345,143 @@ test("foreground refreshes history after a failed turn without a new submission"
   expect(result.current.history[0]?.text).toBe("復帰後の履歴");
   expect(result.current.turnStatus).toBe("failed");
   expect(mockManager.request.mock.calls.filter(([message]) => message.op === "turn.start")).toHaveLength(0);
+});
+
+describe("reset confirmation countdown lifecycle", () => {
+  let required: boolean;
+  let awaitingDecision: boolean;
+  const decisions = () => mockManager.request.mock.calls.filter(([request]) => request.op === "voice.session-reset.respond");
+  beforeEach(() => {
+    jest.useFakeTimers();
+    required = false;
+    awaitingDecision = true;
+    const original = mockManager.request.getMockImplementation();
+    mockManager.request.mockImplementation(async (message: { op: string }) => {
+      if (message.op === "turn.start") return { op: "turn.accepted", payload: {
+        clientOperationId: operationId, status: awaitingDecision ? "confirmation_required" : "accepted",
+        resetConfirmation: { parentGeneration: 2, turnSeq: 12, required },
+      } };
+      if (message.op === "voice.status") return { op: "error", payload: { code: "not_found" } };
+      if (message.op === "voice.session-reset.respond") {
+        awaitingDecision = false;
+        return { op: "voice.session-reset.respond.result" };
+      }
+      return original?.(message);
+    });
+    jest.mocked(playVoiceSound).mockImplementation(async () => {});
+  });
+  afterEach(() => { cleanup(); jest.clearAllTimers(); jest.useRealTimers(); });
+
+  async function openPrompt() {
+    const hook = await renderHook(() => useVoiceConversation(jest.fn()));
+    await act(async () => {
+      void hook.result.current.sendTranscript("確認中の発話", jest.fn()).catch(() => {});
+    });
+    return hook;
+  }
+
+  test("plays the cue before showing the prompt, then continues at 10 seconds exactly once", async () => {
+    let finishSound!: () => void;
+    jest.mocked(playVoiceSound).mockImplementationOnce(() => new Promise((resolve) => { finishSound = resolve; }));
+    const { result } = await openPrompt();
+    expect(playVoiceSound).toHaveBeenCalledWith("resetConfirmation", expect.any(AbortSignal));
+    expect(result.current.resetConfirmation).toBeNull();
+    await act(async () => { await jest.advanceTimersByTimeAsync(5_000); });
+    expect(decisions()).toHaveLength(0);
+    await act(async () => finishSound());
+    const staleDecision = result.current.resetConfirmation!.decide;
+    await act(async () => { await jest.advanceTimersByTimeAsync(9_999); });
+    expect(decisions()).toHaveLength(0);
+    expect(playVoiceSound).toHaveBeenCalledTimes(1);
+    await act(async () => { await jest.advanceTimersByTimeAsync(1); staleDecision("reset"); });
+    expect(decisions()).toHaveLength(1);
+    expect(decisions()[0][0].payload.decision).toBe("continue");
+    expect(result.current.resetConfirmation).toBeNull();
+    expect(result.current.turnStatus).toBe("accepted");
+  });
+
+  test.each(["reset", "continue"] as const)("manual %s wins over the timeout and repeated presses", async (decision) => {
+    const { result } = await openPrompt();
+    const decide = result.current.resetConfirmation!.decide;
+    await act(async () => { decide(decision); decide("reset"); });
+    await act(async () => { await jest.advanceTimersByTimeAsync(10_000); });
+    expect(decisions()).toHaveLength(1);
+    expect(decisions()[0][0].payload.decision).toBe(decision);
+  });
+
+  test("required reset never times out or accepts Continue", async () => {
+    required = true;
+    const { result } = await openPrompt();
+    expect(result.current.resetConfirmation?.deadlineMs).toBeNull();
+    await act(async () => { result.current.resetConfirmation!.decide("continue"); await jest.advanceTimersByTimeAsync(30_000); });
+    expect(decisions()).toHaveLength(0);
+    expect(result.current.resetConfirmation?.required).toBe(true);
+    expect(playVoiceSound).toHaveBeenCalledTimes(1);
+    await act(async () => result.current.resetConfirmation!.decide("reset"));
+    expect(decisions()).toHaveLength(1);
+  });
+
+  test("sound failure still opens the prompt and permits automatic Continue", async () => {
+    jest.mocked(playVoiceSound).mockRejectedValueOnce(new Error("speaker unavailable"));
+    const { result } = await openPrompt();
+    expect(result.current.resetConfirmation).not.toBeNull();
+    await act(async () => { await jest.advanceTimersByTimeAsync(10_000); });
+    expect(decisions()[0][0].payload.decision).toBe("continue");
+  });
+
+  test("interrupting while the sound loads aborts it and never opens a late popup", async () => {
+    let finishSound!: () => void;
+    jest.mocked(playVoiceSound).mockImplementationOnce(() => new Promise((resolve) => { finishSound = resolve; }));
+    const { result } = await openPrompt();
+    const signal = jest.mocked(playVoiceSound).mock.calls[0][1]!;
+    await act(async () => result.current.interrupt());
+    expect(signal.aborted).toBe(true);
+    await act(async () => { finishSound(); await jest.advanceTimersByTimeAsync(20_000); });
+    expect(result.current.resetConfirmation).toBeNull();
+    expect(decisions()).toHaveLength(0);
+  });
+
+  test("unmount clears the timeout and invalidates old button callbacks", async () => {
+    const { result, unmount } = await openPrompt();
+    const decide = result.current.resetConfirmation!.decide;
+    await unmount();
+    await act(async () => { decide("reset"); await jest.advanceTimersByTimeAsync(20_000); });
+    expect(decisions()).toHaveLength(0);
+  });
+
+  test("switching orchestrators invalidates the previous popup and timer", async () => {
+    let orchestratorId = "main";
+    const hook = await renderHook(() => useVoiceConversation(jest.fn(), undefined, undefined, orchestratorId));
+    await act(async () => { void hook.result.current.sendTranscript("切替前の発話", jest.fn()).catch(() => {}); });
+    const decide = hook.result.current.resetConfirmation!.decide;
+    orchestratorId = "other";
+    await hook.rerender(undefined);
+    await act(async () => { decide("reset"); await jest.advanceTimersByTimeAsync(10_000); });
+    expect(hook.result.current.resetConfirmation).toBeNull();
+    expect(decisions()).toHaveLength(0);
+  });
+
+  test("reconnection preserves the prompt deadline and reuses the selected decision after a lost response", async () => {
+    const { result, rerender } = await openPrompt();
+    const prompt = result.current.resetConfirmation;
+    mockSnapshot = { connected: false, generation: 1 };
+    await rerender(undefined);
+    mockSnapshot = { connected: true, generation: 2 };
+    await rerender(undefined);
+    expect(result.current.resetConfirmation).toBe(prompt);
+    expect(playVoiceSound).toHaveBeenCalledTimes(1);
+    const request = mockManager.request.getMockImplementation();
+    mockManager.request.mockImplementationOnce((message: { op: string }) => {
+      if (message.op === "voice.session-reset.respond") throw new Error("response lost");
+      return request?.(message);
+    });
+    await act(async () => result.current.resetConfirmation!.decide("reset"));
+    expect(decisions()).toHaveLength(1);
+    mockSnapshot = { connected: true, generation: 3 };
+    await rerender(undefined);
+    expect(decisions()).toHaveLength(2);
+    expect(decisions().map(([message]) => message.payload.decision)).toEqual(["reset", "reset"]);
+    expect(playVoiceSound).toHaveBeenCalledTimes(1);
+    expect(result.current.turnStatus).toBe("accepted");
+  });
 });

@@ -65,7 +65,7 @@ const mockUseWorkspaceFileMutations = jest.fn((_params: unknown) => ({
   deleteFile: jest.fn(),
 }));
 
-jest.mock("../../stt/voiceInputSounds", () => ({ playVoiceInputSound: jest.fn(async () => {}) }));
+jest.mock("../voiceSounds", () => ({ playVoiceSound: jest.fn(async () => {}) }));
 jest.mock("@legendapp/list", () => {
   const ReactModule = jest.requireActual<typeof React>("react");
   const { View } = jest.requireActual("react-native") as typeof import("react-native");

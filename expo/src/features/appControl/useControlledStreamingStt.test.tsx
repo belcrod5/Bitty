@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { AppState } from "react-native";
 import { act, renderHook } from "@testing-library/react-native";
-import { playVoiceInputSound as mockPlayVoiceInputSound } from "../stt/voiceInputSounds";
+import { playVoiceSound as mockPlayVoiceInputSound } from "../app/voiceSounds";
 import { useControlledStreamingStt } from "./useControlledStreamingStt";
 import { getVoiceControl, type VoiceTarget } from "./voiceControl";
 import type { StreamingSttTransportCallbacks } from "../stt/streamingSttTransport";
@@ -18,7 +18,7 @@ const mockManager = {
   send: (message: RunnerWsMessage) => { mockSent.push(message); },
 };
 const mockSessions: Array<{ callbacks: StreamingSttTransportCallbacks; abort: jest.Mock; setInputMuted: jest.Mock }> = [];
-jest.mock("../stt/voiceInputSounds", () => ({ playVoiceInputSound: jest.fn(async () => {}) }));
+jest.mock("../app/voiceSounds", () => ({ playVoiceSound: jest.fn(async () => {}) }));
 jest.mock("../runnerWs/RunnerWebSocketContext", () => ({ useRunnerWebSocketManager: () => mockManager }));
 jest.mock("../stt/useStreamingSttTransport", () => ({
   useStreamingSttTransport: () => ({ supported: true, controlVersion: 1, hasPermission: async () => true,
