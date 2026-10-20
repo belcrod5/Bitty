@@ -11,6 +11,7 @@ import type { ConversationMessage } from "../types/appTypes";
 let mockImageResolver: ((url: string) => any) | undefined;
 const mockStartStreamingStt = jest.fn(async () => undefined);
 const mockStopStreamingStt = jest.fn();
+const mockSendManualTranscript = jest.fn(async (_text: string, onAccepted: () => boolean, _resume: boolean) => { onAccepted(); });
 const mockCancelCorrection = jest.fn(() => true);
 const mockBeginCorrectionEdit = jest.fn();
 const mockDiscardCorrection = jest.fn();
@@ -64,6 +65,7 @@ const mockUseWorkspaceFileMutations = jest.fn((_params: unknown) => ({
   deleteFile: jest.fn(),
 }));
 
+jest.mock("../../stt/voiceInputSounds", () => ({ playVoiceInputSound: jest.fn(async () => {}) }));
 jest.mock("@legendapp/list", () => {
   const ReactModule = jest.requireActual<typeof React>("react");
   const { View } = jest.requireActual("react-native") as typeof import("react-native");
@@ -133,6 +135,7 @@ jest.mock("../../stt/useStreamingStt", () => ({
       phase: mockStreamingSttPhase,
       start: mockStartStreamingStt,
       stop: mockStopStreamingStt,
+      sendManualTranscript: mockSendManualTranscript,
       cancelCorrection: mockCancelCorrection,
       sendCorrectionPreview: jest.fn(),
       beginCorrectionEdit: mockBeginCorrectionEdit,
@@ -154,7 +157,7 @@ jest.mock("../../stt/useStreamingSttTransport", () => ({
   useStreamingSttTransport: () => ({
     supported: true,
     connect: (_url: string, _token: string, callbacks: { onMessage: (message: string) => void }) => {
-      const session = { callbacks, abort: jest.fn(async () => {}), stop: jest.fn(async () => {}) };
+      const session = { callbacks, playReadyCue: jest.fn(async () => {}), setInputMuted: jest.fn(async () => {}), abort: jest.fn(async () => {}), stop: jest.fn(async () => {}) };
       mockSttSessions.push(session);
       return session;
     },
@@ -581,18 +584,20 @@ describe("ChatScreen voice input", () => {
     await act(async () => {
       await screen.getByTestId("streaming-stt-footer").props.onSubmit("edited transcript", () => true);
     });
-    expect(mockSendReplyTranscriptForPanel).toHaveBeenCalledWith("panel-a", "edited transcript", expect.any(Object));
+    expect(mockSendManualTranscript).toHaveBeenCalledWith("edited transcript", expect.any(Function), false);
     expect(screen.queryByTestId("streaming-stt-footer")).toBeNull();
     expect(mockStartStreamingStt).not.toHaveBeenCalled();
   });
 
-  it("does not submit the old draft after the correction timer has claimed send", async () => {
+  it("delegates manual submission and correction ownership to the shared voice lifecycle", async () => {
     mockStreamingSttPhase = "recording";
     mockCancelCorrection.mockReturnValue(false);
     const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
     await act(async () => {
       await screen.getByTestId("streaming-stt-footer").props.onSubmit("old transcript", () => true);
     });
+    expect(mockSendManualTranscript).toHaveBeenCalledWith("old transcript", expect.any(Function), false);
+    expect(mockCancelCorrection).not.toHaveBeenCalled();
     expect(mockSendReplyTranscriptForPanel).not.toHaveBeenCalled();
   });
 

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { AppState } from "react-native";
 import { act, renderHook } from "@testing-library/react-native";
+import { playVoiceInputSound as mockPlayVoiceInputSound } from "../stt/voiceInputSounds";
 import { useControlledStreamingStt } from "./useControlledStreamingStt";
 import { getVoiceControl, type VoiceTarget } from "./voiceControl";
 import type { StreamingSttTransportCallbacks } from "../stt/streamingSttTransport";
@@ -17,11 +18,12 @@ const mockManager = {
   send: (message: RunnerWsMessage) => { mockSent.push(message); },
 };
 const mockSessions: Array<{ callbacks: StreamingSttTransportCallbacks; abort: jest.Mock; setInputMuted: jest.Mock }> = [];
+jest.mock("../stt/voiceInputSounds", () => ({ playVoiceInputSound: jest.fn(async () => {}) }));
 jest.mock("../runnerWs/RunnerWebSocketContext", () => ({ useRunnerWebSocketManager: () => mockManager }));
 jest.mock("../stt/useStreamingSttTransport", () => ({
   useStreamingSttTransport: () => ({ supported: true, controlVersion: 1, hasPermission: async () => true,
     connect: (_url: string, _token: string, callbacks: StreamingSttTransportCallbacks) => {
-      const session = { callbacks, abort: jest.fn(async () => {}), setInputMuted: jest.fn(async () => {}), stop: jest.fn() };
+      const session = { callbacks, playReadyCue: (signal?: AbortSignal) => mockPlayVoiceInputSound("ready", signal), abort: jest.fn(async () => {}), setInputMuted: jest.fn(async () => {}), stop: jest.fn() };
       mockSessions.push(session); return session;
     } }),
 }));
@@ -47,8 +49,9 @@ afterEach(() => { jest.clearAllTimers(); jest.useRealTimers(); });
 test("normal A to orchestrator B: real shared hooks release A, announce B, confirm native ready, mute cue, then send only to B", async () => {
   const control = getVoiceControl(mockManager as unknown as RunnerWebSocketManager);
   const announcement = jest.fn(async () => {});
-  const cue = jest.fn(async () => {});
-  control.configure({ preflight: async () => null, open: async () => ({}), announce: announcement, readyCue: cue });
+  const cue = jest.mocked(mockPlayVoiceInputSound);
+  cue.mockClear();
+  control.configure({ preflight: async () => null, open: async () => ({}), announce: announcement });
   const stopRoot = control.start(); await advance();
   const sendA = jest.fn(); const sendB = jest.fn();
   const source = await renderHook(() => useSurface(a, sendA));
@@ -67,12 +70,13 @@ test("normal A to orchestrator B: real shared hooks release A, announce B, confi
   expect(mockSessions[0].abort).toHaveBeenCalledTimes(1);
   expect(mockSessions).toHaveLength(2);
   expect(announcement).toHaveBeenCalledWith(b, undefined, expect.anything());
-  expect(cue).not.toHaveBeenCalled();
+  expect(cue).toHaveBeenCalledTimes(1);
   expect(mockSent.some((m) => m.op === "app.control.result" && m.operationId === id)).toBe(false);
   // A's delayed native callback cannot become B's input.
   await emit(0, { type: "transcript", text: "late source", isFinal: true });
   await emit(1, { type: "ready" }); await advance(30);
-  expect(cue).toHaveBeenCalledTimes(1);
+  expect(cue).toHaveBeenCalledTimes(2);
+  expect(cue).toHaveBeenLastCalledWith("ready", expect.anything());
   expect(mockSessions[1].setInputMuted.mock.calls).toEqual([[true], [false]]);
   expect(mockSent.find((m) => m.op === "app.control.result" && m.operationId === id)?.payload)
     .toMatchObject({ status: "applied", desired: "listening", observed: "recording", target: b });
@@ -102,7 +106,7 @@ test("manual B start uses the same lease; reply/TTS completion on A cannot resta
 
 test("a control wait diagnoses TTS versus screen readiness once per reason change", async () => {
   const control = getVoiceControl(mockManager as unknown as RunnerWebSocketManager);
-  control.configure({ preflight: async () => null, open: async () => ({}), announce: async () => {}, readyCue: async () => {} });
+  control.configure({ preflight: async () => null, open: async () => ({}), announce: async () => {} });
   const stopRoot = control.start(); await advance();
   const source = await renderHook(() => useSurface(a, jest.fn()));
   const diagnostic = jest.fn();

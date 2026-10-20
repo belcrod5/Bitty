@@ -19,7 +19,7 @@ function fixture() {
   const control = new VoiceControl(manager);
   const navigation = { preflight: jest.fn(async (_target: VoiceTarget): Promise<string | null> => null),
     open: jest.fn(async (_target: VoiceTarget): Promise<false | { panelId?: string }> => ({ panelId: "popup" })),
-    announce: jest.fn(async () => {}), readyCue: jest.fn(async () => {}), releaseSpeech: jest.fn(async (_target: VoiceTarget, _panelId?: string) => {}), diag: jest.fn((_operationId: string, _stage: string, _reason?: string) => {}) };
+    announce: jest.fn(async () => {}), releaseSpeech: jest.fn(async (_target: VoiceTarget, _panelId?: string) => {}), diag: jest.fn((_operationId: string, _stage: string, _reason?: string) => {}) };
   control.configure(navigation);
   const stop = control.start();
   const surface = (id: string, target: VoiceTarget, panelId?: string) => {
@@ -30,7 +30,7 @@ function fixture() {
       controlVersion: () => 1, hasPermission: jest.fn(async () => true),
       disarm: jest.fn(async () => { state.snapshot = { desired: "stopped", observed: "stopped" }; }),
       start: jest.fn(async () => { state.snapshot = { desired: "listening", observed: "recording" }; }),
-      announce: jest.fn(async () => {}), readyCue: jest.fn(async () => {}), notice: jest.fn() };
+      announce: jest.fn(async () => {}), notice: jest.fn() };
     const unregister = control.register(value);
     return { value, state, unregister };
   };
@@ -102,7 +102,6 @@ test("handoff releases A, uses the exact normal popup even with another panel of
   expect(hidden.value.start).not.toHaveBeenCalled();
   expect(f.result(id)).toBeUndefined();
   destination.state.snapshot.observed = "recording"; await settle(30);
-  expect(destination.value.readyCue).toHaveBeenCalledTimes(1);
   expect(f.result(id)).toMatchObject({ status: "applied", target: b, desired: "listening", observed: "recording" });
   expect(Number(f.result(id)?.generation)).toBeGreaterThan(before);
   f.stop();

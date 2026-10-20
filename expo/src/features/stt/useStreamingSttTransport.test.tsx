@@ -242,3 +242,35 @@ test("continuation is enabled only for an opted-in client with a compatible nati
     delete native.commit;
   }
 });
+
+test("ready feedback uses the native capture player and rejects calls after session release", async () => {
+  const native = mockNative as typeof mockNative & {
+    playReadyCue?: jest.Mock<Promise<void>, []>;
+    setInputMuted?: jest.Mock<Promise<void>, [boolean]>;
+  };
+  native.playReadyCue = jest.fn(async () => {});
+  native.setInputMuted = jest.fn<Promise<void>, [boolean]>().mockResolvedValue(undefined);
+  try {
+    const { result } = await renderHook(() => useStreamingSttTransport());
+    const session = result.current.connect("https://runner.example", "token", diagnosticCallbacks());
+    await session.setInputMuted!(true);
+    await session.playReadyCue!();
+    await session.setInputMuted!(false);
+    expect(native.playReadyCue).toHaveBeenCalledTimes(1);
+    expect(native.setInputMuted!.mock.calls).toEqual([[true], [false]]);
+    await session.abort();
+    await expect(session.playReadyCue!()).rejects.toThrow("native_stt_inactive");
+    expect(native.playReadyCue).toHaveBeenCalledTimes(1);
+  } finally {
+    delete native.playReadyCue;
+    delete native.setInputMuted;
+  }
+});
+
+test("older native binaries expose no unsafe ready feedback or mute capability", async () => {
+  const { result } = await renderHook(() => useStreamingSttTransport());
+  const session = result.current.connect("https://runner.example", "token", diagnosticCallbacks());
+  expect(session.playReadyCue).toBeUndefined();
+  expect(session.setInputMuted).toBeUndefined();
+  await session.abort();
+});

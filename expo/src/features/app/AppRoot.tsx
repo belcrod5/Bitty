@@ -6023,19 +6023,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
         });
       } finally { signal.removeEventListener("abort", cancel); }
     },
-    readyCue: async () => {
-      const { sound } = await Audio.Sound.createAsync(UI_SFX_ASSETS.recordStart, { shouldPlay: false, volume: UI_SFX_VOLUMES.recordStart });
-      try {
-        await new Promise<void>((resolve, reject) => {
-          const timer = setTimeout(() => reject(new Error("ready_cue_timeout")), 2_000);
-          sound.setOnPlaybackStatusUpdate((status) => {
-            if (!status.isLoaded) { if (status.error) { clearTimeout(timer); reject(new Error("ready_cue_failed")); } return; }
-            if (status.didJustFinish) { clearTimeout(timer); resolve(); }
-          });
-          void sound.playAsync().catch((error) => { clearTimeout(timer); reject(error); });
-        });
-      } finally { await sound.unloadAsync(); }
-    },
   });
   useEffect(() => voiceControl.start(), [voiceControl]);
   usePendingPushSessionNavigationController({

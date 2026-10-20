@@ -63,6 +63,16 @@ public class BittyStreamingSttModule: Module {
       }
     }
 
+    AsyncFunction("playReadyCue") { (promise: Promise) in
+      self.queue.async {
+        guard let current = self.current, !current.terminal else {
+          promise.reject("not_active", "音声認識は実行されていません。")
+          return
+        }
+        current.playReadyCue(promise: promise)
+      }
+    }
+
     AsyncFunction("setInputMuted") { (muted: Bool, promise: Promise) in
       self.queue.async {
         self.current?.setInputMuted(muted)
@@ -122,6 +132,9 @@ private final class StreamingSession: NSObject, URLSessionWebSocketDelegate {
   private var ready = false
   private var stopping = false
   private var inputMuted = false
+  private var readyCuePlayer: AVAudioPlayer?
+  private var readyCueTimer: DispatchWorkItem?
+  private var readyCuePromise: Promise?
   private var stopPromise: Promise?
   private var commitPromise: Promise?
   private var commitRevision: Int?
@@ -521,7 +534,60 @@ private final class StreamingSession: NSObject, URLSessionWebSocketDelegate {
     }
   }
 
+  // Keep feedback inside the capture session: Expo's playback manager would
+  // change/deactivate AVAudioSession behind the running microphone engine.
+  func playReadyCue(promise: Promise) {
+    guard !terminal, !stopping, inputMuted, engine?.isRunning == true, readyCuePlayer == nil else {
+      promise.reject("cue_not_ready", "音声入力の開始音を再生できません。")
+      return
+    }
+    do {
+      let owner = Bundle(for: BittyStreamingSttModule.self)
+      guard let bundleURL = owner.url(forResource: "BittyVoiceInputSounds", withExtension: "bundle"),
+            let url = Bundle(url: bundleURL)?.url(forResource: "voice-input-ready", withExtension: "wav") else {
+        promise.reject("cue_missing", "音声入力の開始音が見つかりません。")
+        return
+      }
+      let player = try AVAudioPlayer(contentsOf: url)
+      player.volume = 0.65
+      guard player.play() else {
+        promise.reject("cue_failed", "音声入力の開始音を再生できません。")
+        return
+      }
+      readyCuePlayer = player
+      readyCuePromise = promise
+      waitForReadyCue(deadline: ProcessInfo.processInfo.systemUptime + 2)
+    } catch {
+      promise.reject("cue_failed", error.localizedDescription)
+    }
+  }
+
+  private func waitForReadyCue(deadline: TimeInterval) {
+    // AVAudioPlayer delegate delivery needs a run loop; ownership stays on our
+    // serial queue and actual playback completion is checked here instead.
+    let timer = DispatchWorkItem { [weak self] in
+      guard let self, let player = self.readyCuePlayer else { return }
+      if !player.isPlaying || ProcessInfo.processInfo.systemUptime >= deadline {
+        self.stopReadyCue()
+      } else {
+        self.waitForReadyCue(deadline: deadline)
+      }
+    }
+    readyCueTimer = timer
+    queue.asyncAfter(deadline: .now() + 0.02, execute: timer)
+  }
+
+  private func stopReadyCue() {
+    readyCueTimer?.cancel()
+    readyCueTimer = nil
+    readyCuePlayer?.stop()
+    readyCuePlayer = nil
+    readyCuePromise?.resolve(nil)
+    readyCuePromise = nil
+  }
+
   private func stopCapture() {
+    stopReadyCue()
     tapLock.lock()
     tapOpen = false
     tapLock.unlock()

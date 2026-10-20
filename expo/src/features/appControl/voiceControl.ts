@@ -18,7 +18,6 @@ export type VoiceSurface = {
   disarm: () => Promise<void>;
   start: () => Promise<void>;
   announce: (signal: AbortSignal) => Promise<void>;
-  readyCue: () => Promise<void>;
   notice: (message: string) => void;
 };
 type Entry = { surface: VoiceSurface; generation: number; target: VoiceTarget };
@@ -28,7 +27,6 @@ type Navigation = {
   preflight: (target: VoiceTarget) => Promise<string | null>;
   open: (target: VoiceTarget, signal: AbortSignal) => Promise<false | { panelId?: string }>;
   announce: (target: VoiceTarget, panelId: string | undefined, signal: AbortSignal) => Promise<void>;
-  readyCue: () => Promise<void>;
   releaseSpeech?: (target: VoiceTarget, panelId: string | undefined) => Promise<void>;
   diag?: (operationId: string, stage: string, reason?: string) => void;
 };
@@ -67,7 +65,6 @@ export class VoiceControl {
   constructor(private manager: RunnerWebSocketManager) {}
 
   announce(target: VoiceTarget, panelId: string | undefined, signal: AbortSignal) { return this.navigation?.announce(target, panelId, signal) ?? Promise.resolve(); }
-  readyCue() { return this.navigation?.readyCue() ?? Promise.resolve(); }
   isArmed() { return Array.from(this.entries.values()).some((e) => e.surface.snapshot().desired === "listening"); }
   isSessionOpen() { return this.releasing > 0 || this.releaseFailed || Array.from(this.entries.values()).some((e) => ["starting", "recording", "unknown"].includes(e.surface.snapshot().observed)); }
   async disarmCapturing() { await Promise.all(Array.from(this.entries.values()).filter((e) => ["starting", "recording", "unknown"].includes(e.surface.snapshot().observed)).map((e) => this.release(e.surface))); await this.releaseBarrier; }
@@ -369,7 +366,6 @@ export class VoiceControl {
       this.navigation?.diag?.(id, "start_input");
       await this.wait(op, destination.surface.start());
       await this.until(op, "native_recording", () => destination.surface.snapshot().observed === "recording");
-      await this.wait(op, destination.surface.readyCue());
       if (!this.valid(op) || !this.isOwner(destination.surface.id)) throw new Error("operation_cancelled");
       this.report(id, op.connection, { status: "applied", generation: destination.generation, target,
         ...destination.surface.snapshot() });

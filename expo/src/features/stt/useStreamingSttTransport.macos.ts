@@ -1,4 +1,5 @@
 import { useCallback, useRef } from "react";
+import { playVoiceInputSound } from "./voiceInputSounds";
 import { NativeModules } from "react-native";
 import { LIVE_PCM_FORMAT, useLivePcmCapture } from "./useLivePcmCapture.macos";
 import { openStreamingSttSocket, parseStreamingSttMessage, pcmRms, sendPcm } from "./streamingSttClient";
@@ -83,6 +84,7 @@ export function useStreamingSttTransport() {
       await stopCapture();
     };
     return {
+      playReadyCue: (signal) => playVoiceInputSound("ready", signal),
       setInputMuted: async (muted: boolean) => { current.muted = muted; },
       stop: async () => {
         if (currentRef.current !== current) return;

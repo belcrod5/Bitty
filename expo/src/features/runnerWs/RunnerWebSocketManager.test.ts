@@ -1441,7 +1441,7 @@ test("app control registers over the real manager handshake before issuing a tru
     id: "surface", panelId: "drawer_session_popup", target: () => target,
     snapshot: () => ({ desired: "stopped", observed: "stopped" }), draft: () => "", busy: () => false, canStart: () => true,
     controlVersion: () => nativeControlVersion, hasPermission: async () => true,
-    disarm: async () => {}, start: async () => {}, announce: async () => {}, readyCue: async () => {}, notice: () => {},
+    disarm: async () => {}, start: async () => {}, announce: async () => {}, notice: () => {},
   };
   const unregister = control.register(surface);
   const stop = control.start();

@@ -8,7 +8,6 @@ type Options = Parameters<typeof useStreamingStt>[0] & {
   panelId?: string;
   busy: boolean;
   announce?: (signal: AbortSignal) => Promise<void>;
-  readyCue?: () => Promise<void>;
 };
 
 // Both screens, including their manual/initial/reply/retry starts, share one microphone lease.
@@ -44,11 +43,6 @@ export function useControlledStreamingStt(options: Options) {
       disarm: () => latest.current.stt.disarm(),
       start: () => latest.current.stt.start(),
       announce: (signal) => latest.current.options.announce?.(signal) ?? control.announce(latest.current.options.target, latest.current.options.panelId, signal),
-      readyCue: async () => {
-        await latest.current.stt.setInputMuted(true);
-        try { await (latest.current.options.readyCue?.() ?? control.readyCue()); }
-        finally { await latest.current.stt.setInputMuted(false); }
-      },
       notice: (message) => latest.current.options.onError(message),
     };
     return control.register(surface);
