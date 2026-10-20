@@ -247,7 +247,7 @@ export function createAgentWsConnection({ service, ws, sendEnvelope, subjectId, 
           protocolVersion: AGENT_PROTOCOL_VERSION,
           supportedProtocolVersions: [AGENT_PROTOCOL_VERSION],
           operations: [
-            "turn.start", "voice.open", "voice.status", "voice.history", "voice.turn.interrupt", "voice.session-reset.respond", "voice.task-checklist.complete.respond", "voice.settings", "voice.settings.update", "voice.memory.clear", "voice.messages.clear", "voice.orchestrators.list", "voice.orchestrators.select", "voice.orchestrators.create", "voice.orchestrators.update", "voice.orchestrators.delete", "voice.approval.decision", "voice.userInput.respond", "turn.interrupt", "action.claim", "action.respond", "events.resume", "events.detach", "session.handoff",
+            "turn.start", "voice.open", "voice.status", "voice.history", "voice.turn.interrupt", "voice.session-reset.respond", "voice.task-checklist.complete.respond", "voice.settings", "voice.settings.update", "voice.learning.status", "voice.learning.configure", "voice.learning.usage", "voice.learning.price.configure", "voice.memory.clear", "voice.messages.clear", "voice.orchestrators.list", "voice.orchestrators.select", "voice.orchestrators.create", "voice.orchestrators.update", "voice.orchestrators.delete", "voice.approval.decision", "voice.userInput.respond", "turn.interrupt", "action.claim", "action.respond", "events.resume", "events.detach", "session.handoff",
             "session.compact", "sessions.list", "sessions.active-count", "history.read", "history.search", "conversation.read",
             "workspaces.list", "workspace.prepare", "workspace.confirm", "workspace.revoke",
           ],

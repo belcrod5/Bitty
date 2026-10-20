@@ -227,7 +227,11 @@ function snapshots(events) {
 
 export function readVoiceEventState(buffer, prunedThroughPairSeq = 0) {
   const events = readEvents(buffer, prunedThroughPairSeq, true).events;
-  return { pairs: snapshots(events).pairs,
+  const snapshot = snapshots(events);
+  return { pairs: snapshot.pairs,
+    completedPairs: [...snapshot.byId.values()].filter((state) => state.status === "completed").map((state) => ({
+      pairSeq: state.pairSeq, clientOperationId: state.clientOperationId, user: state.userText,
+      assistant: state.text, completedAt: state.assistantAt })),
     operationIds: events.filter((event) => event.type === "accepted").map((event) => event.clientOperationId) };
 }
 
@@ -264,7 +268,7 @@ const visibleBytes = (pairs, input, instructions) => bytes(instructions) + bytes
 
 export function createVoiceContextService({ rootDir, createClient, sharedWorkspaceDirectory,
   sharedMemoryStore, memoryEventPairs, memoryConversationId, pairExclusive, managedSessions,
-  hasOutstandingActivity, taskChecklistPath, onChecklistChanged, getOrchestratorName }) {
+  hasOutstandingActivity, taskChecklistPath, onChecklistChanged, getOrchestratorName, onDurablePair }) {
   const sharedMemory = Boolean(sharedMemoryStore || memoryEventPairs);
   const root = path.resolve(rootDir);
   const tempRoot = path.join(path.dirname(root), "ephemeral-tmp");
@@ -655,6 +659,9 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
         if (extra.checklistCompletion) next.checklistCompletion = extra.checklistCompletion;
         await atomicWrite(activeFile, JSON.stringify(next));
         active = next;
+        // Observe the durable pair before event pruning; observation failure cannot fail the conversation.
+        try { await onDurablePair?.({ ...pairs.at(-1), clientOperationId, completedAt: event.at,
+          logicalConversationId: active.logicalConversationId }); } catch {}
       }
       if (events.length > MAX_EVENTS) {
         const bounded = boundedEvents(events, memoryStore.lastPairSeq);
@@ -1230,7 +1237,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
     forceNewThread = false, onDispatchIntent, onTurnIdentified, onNewParent, onStarted, onNativeRoot,
     onApproval, onUserInput, onCalendarToolCall, onText, readOnlyPreflight = false, checklistTurn,
     resumeThreadId = "", previousTurnId: previousTurnOverride = "",
-    onTextError, onContextUsage, signal, appControlInstruction = "" }) {
+    onTextError, onContextUsage, signal, appControlInstruction = "", onLearningUsage }) {
     if (signal?.aborted) throw invalid("turn_interrupted", "Voice turn was cancelled");
     const model = requestedModel || settings().model;
     const effort = requestedEffort || settings().effort;
@@ -1343,7 +1350,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
         approvalPolicy: onApproval ? "on-request" : "never",
         sandbox: onApproval ? "workspace-write" : "read-only",
         experimentalRawEvents: false, persistExtendedHistory: false,
-        model, ...(onApproval && !continuing ? { dynamicTools: [
+        model, ...(onLearningUsage ? { allowProviderModelFallback: false } : {}), ...(onApproval && !continuing ? { dynamicTools: [
           ...(taskChecklistPath ? CHECKLIST_TOOLS : []),
           ...(managedSessions ? voiceSubagentTools : []),
           ...(onCalendarToolCall ? CALENDAR_READ_TOOLS : []),
@@ -1353,6 +1360,13 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
             "features.default_mode_request_user_input": true } : summaryConfig,
         developerInstructions: instructions,
       }, 30000);
+      if (onLearningUsage && !onApproval) onLearningUsage({
+        reportedModel: typeof started?.model === "string" ? started.model : null,
+        reportedProvider: typeof started?.modelProvider === "string" ? started.modelProvider : null,
+        reportedEffort: null });
+      if (onLearningUsage && typeof started?.model === "string" && started.model !== model) {
+        throw invalid("learning_model_changed", "Learning model differs from the selected model");
+      }
       const threadId = started?.thread?.id;
       if (typeof threadId !== "string" || !threadId || started.thread.ephemeral !== !onApproval
         || (continuing && threadId !== (resumeThreadId || active.nativeThreadId))) {
@@ -1468,6 +1482,15 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
         if (!codexTurnEventMatches(params, identity)) return;
         if (method === "item/started" || method === "item/completed" || method === "item/agentMessage/delta") hasCurrentTurnItem = true;
         if (method === "thread/tokenUsage/updated") {
+          if (onLearningUsage && !onApproval && !continuing) {
+            const value = params?.tokenUsage?.total;
+            const count = (key) => Number.isSafeInteger(value?.[key]) && value[key] >= 0 ? value[key] : null;
+            onLearningUsage({ usage: { inputTokens: count("inputTokens"), outputTokens: count("outputTokens"),
+              cachedInputTokens: count("cachedInputTokens"), reasoningOutputTokens: count("reasoningOutputTokens"),
+              cacheWriteInputTokens: count("cacheWriteInputTokens"), totalTokens: count("totalTokens"),
+              cachedInputIncluded: true, reasoningOutputIncluded: true,
+              source: "codex.thread.tokenUsage.total", schema: "codex.TokenUsageBreakdown" } });
+          }
           const lastTokens = params?.tokenUsage?.last?.totalTokens;
           const window = params?.tokenUsage?.modelContextWindow;
           measuredContextUsage = Number.isSafeInteger(lastTokens) && lastTokens >= 0
@@ -1819,6 +1842,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
       const turnId = turn?.turn?.id;
       if (typeof turnId !== "string" || !turnId) throw invalid("capability_unsupported", "Codex turn ID is unavailable", "turn_id_unavailable");
       identity = { threadId, turnId };
+      if (onLearningUsage && !onApproval) onLearningUsage({ turnId });
       if (onApproval) {
         stage = "dispatch_started_store";
         await onTurnIdentified?.(identity);
@@ -2302,6 +2326,15 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
       return path.join(workspaceRoot, active.workspaceConversationId || active.logicalConversationId);
     },
     async scheduleSummary() { return exclusive(async () => { await load(); await startSummary(); }); },
+    async analyzeLearning({ input, instructions, model, effort, signal, onLearningUsage = () => {} }) {
+      await exclusive(load);
+      const models = await listCodexModelsFromAppServer(createClient, "bitty-voice");
+      if (!models.some((option) => option.modelId === model && option.effortOptions.includes(effort))) {
+        throw invalid("learning_model_unavailable", "Learning model or effort is no longer available");
+      }
+      // Uses the same tool-free, ephemeral execution contract as summaries; no approval callback is accepted.
+      return modelTurn({ input, instructions, model, effort, signal, onLearningUsage });
+    },
     async getSettings() {
       await exclusive(load);
       const models = await listCodexModelsFromAppServer(createClient, "bitty-voice");

@@ -7335,6 +7335,15 @@ runnerWsServer.on("connection", (ws, req) => {
       })).catch((error) => sendVoiceError(message, error));
       return true;
     }
+    if (["voice.learning.status", "voice.learning.configure", "voice.learning.usage", "voice.learning.price.configure"].includes(message.op)) {
+      const operation = message.op === "voice.learning.status" ? voiceContextService.learningStatus()
+        : message.op === "voice.learning.configure" ? voiceContextService.configureLearning(message.payload || {})
+        : message.op === "voice.learning.usage" ? voiceContextService.learningUsage(message.payload || {})
+        : voiceContextService.configureLearningPrice(message.payload?.snapshot ?? null);
+      void operation.then((payload) => sendRunnerWsEnvelope(ws, { channel: "agent", op: `${message.op}.result`,
+        requestId: message.requestId || "", payload })).catch((error) => sendVoiceError(message, error));
+      return true;
+    }
     if (["voice.settings", "voice.settings.update", "voice.memory.clear", "voice.messages.clear"].includes(message.op)) {
       let operation;
       if (message.op === "voice.settings") operation = voiceContextService.getSettings(orchestratorId);

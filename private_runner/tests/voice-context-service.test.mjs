@@ -4,7 +4,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createVoiceContextService } from "../src/voice-context-service.mjs";
+import { createVoiceContextService, readVoiceEventState } from "../src/voice-context-service.mjs";
 import { CALENDAR_READ_TOOL_NAMES } from "../src/calendar-tool-service.mjs";
 import { createVoiceRequestBridge } from "../src/voice-request-bridge.mjs";
 
@@ -17,7 +17,8 @@ function fakeCodex({ reply = "answer", summaryReply, topicReplies = [], overview
   threadReadDelayMs = 0, userItem = false, ephemeral = true, mcpPage, configuredMcpServers = {},
   missingTurnId = false, failMethod, failResponseThreadStartAt = 0,
   loseTurnStartResponseAt = 0, lostTurnStatus = "completed", regularTurnStatus = "completed", regularTurnError,
-  nativeReadErrors = new Map(), nativeThreads = new Map() } = {}) {
+  nativeReadErrors = new Map(), nativeThreads = new Map(), isolatedEvents = [], earlyIsolatedEvents = [],
+  isolatedStatus = "completed", threadStartReport = {} } = {}) {
   const calls = [];
   const releases = [];
   const summaryReleases = [];
@@ -84,7 +85,7 @@ function fakeCodex({ reply = "answer", summaryReply, topicReplies = [], overview
           const id = randomUUID();
           nativeThreads.set(id, { id, turns: [] });
           if (!isSummaryThread) responseThreadId = id;
-          return { thread: { id, ephemeral: ephemeral ? params.ephemeral : !params.ephemeral } };
+          return { ...threadStartReport, thread: { id, ephemeral: ephemeral ? params.ephemeral : !params.ephemeral } };
         }
         if (method === "thread/resume") {
           responseThreadId = params.threadId;
@@ -135,6 +136,9 @@ function fakeCodex({ reply = "answer", summaryReply, topicReplies = [], overview
             if (lostTurnStatus === "completed") nativeTurn.items.push({ type: "agentMessage", text: reply });
             throw new Error("turn/start response lost");
           }
+          for (const event of isIsolated ? earlyIsolatedEvents : []) listener(event.method, {
+            threadId: params.threadId, turnId, ...event.params,
+          });
           if (!isIsolated) {
             for (const event of earlyAgentEvents) listener(event.method, {
               threadId: params.threadId, turnId, ...event.params,
@@ -210,6 +214,9 @@ function fakeCodex({ reply = "answer", summaryReply, topicReplies = [], overview
                 params: { ...toolParams, threadId: "another-thread" } }) });
               calls.push({ method: "tool/result", params: await serverHandler({ method: "item/tool/call", params: toolParams }) });
             }
+            if (isIsolated) for (const event of isolatedEvents) listener(event.method, {
+              threadId: params.threadId, turnId, ...event.params,
+            });
             let nativeAnswer = "";
             if (agentEvents && !isIsolated) {
               for (const event of agentEvents) listener(event.method, {
@@ -244,7 +251,7 @@ function fakeCodex({ reply = "answer", summaryReply, topicReplies = [], overview
               : isTopicThread ? [] : (contextUsageByTurn[responseIndex] || [])) {
               listener("thread/tokenUsage/updated", { threadId: params.threadId, turnId, tokenUsage });
             }
-            const status = !isIsolated && !isChecklistPreflight ? regularTurnStatus : "completed";
+            const status = isIsolated ? isolatedStatus : !isChecklistPreflight ? regularTurnStatus : "completed";
             listener("turn/completed", { threadId: params.threadId, turnId,
               turn: { status, ...(!isIsolated && !isChecklistPreflight && regularTurnError
                 ? { error: regularTurnError } : {}), ...(completionUsage ? { usage: completionUsage } : {}) } });
@@ -303,7 +310,8 @@ async function fixture(t, options = {}) {
   });
   const service = createVoiceContextService({ rootDir, createClient: codex.createClient,
     managedSessions: options.managedSessions, taskChecklistPath: options.taskChecklistPath,
-    onChecklistChanged: options.onChecklistChanged, hasOutstandingActivity: options.hasOutstandingActivity });
+    onChecklistChanged: options.onChecklistChanged, hasOutstandingActivity: options.hasOutstandingActivity,
+    onDurablePair: options.onDurablePair });
   const conversation = await service.open();
   return { rootDir, codex, service, conversation };
 }
@@ -4516,4 +4524,120 @@ test("control reference reaches only accepted dialogue turn metadata and is clea
   assert.equal(codex.calls.filter((call) => call.method === "turn/start" && carriesReference(call)).length, 1);
   const next = codex.calls.find((call) => call.method === "turn/start" && call.params.input?.[0]?.text === "続きです");
   assert.match(next.params.additionalContext["bitty.appControl"].value, /No app control context/);
+});
+
+test("learning analysis uses fresh restricted threads and attributes only matching cumulative usage", async (t) => {
+  const total = { inputTokens: 100, outputTokens: 30, cachedInputTokens: 8, reasoningOutputTokens: 5, totalTokens: 130 };
+  const { service, codex } = await fixture(t, { summaryReply: "{}", configuredMcpServers: { personal: {} },
+    threadStartReport: { model: "another-model", modelProvider: "actual-provider", reasoningEffort: "low" },
+    earlyIsolatedEvents: [{ method: "thread/tokenUsage/updated", params: {
+      tokenUsage: { total: { inputTokens: 70, outputTokens: 10 }, last: { inputTokens: 7, outputTokens: 1 } },
+    } }],
+    isolatedEvents: [
+      { method: "thread/tokenUsage/updated", params: { threadId: "another-thread", tokenUsage: { total: { inputTokens: 999 } } } },
+      { method: "thread/tokenUsage/updated", params: { turnId: "previous-turn", tokenUsage: { total: { inputTokens: 998 } } } },
+    ], summaryContextUsage: { total, last: { inputTokens: 2, outputTokens: 3, totalTokens: 5 } } });
+  const observations = [];
+  const analyze = () => service.analyzeLearning({ input: "{}", instructions: "Analyze supplied data only", model: "another-model",
+    effort: "high", onLearningUsage: (value) => observations.push(value) });
+  const first = await analyze();
+  const second = await analyze();
+  assert.notEqual(first.threadId, second.threadId);
+  assert.equal(observations[0].reportedModel, "another-model");
+  assert.equal(observations[0].reportedProvider, "actual-provider");
+  assert.equal(observations[0].reportedEffort, null);
+  assert.equal(observations.filter((value) => value.turnId).length, 2);
+  const usage = observations.filter((value) => value.usage).map((value) => value.usage);
+  assert.equal(usage.length, 4);
+  assert.equal(usage[0].inputTokens, 70);
+  assert.deepEqual(usage[1], { ...total, cacheWriteInputTokens: null, cachedInputIncluded: true,
+    reasoningOutputIncluded: true, source: "codex.thread.tokenUsage.total", schema: "codex.TokenUsageBreakdown" });
+  assert.deepEqual(usage[3], usage[1]);
+  const starts = codex.calls.filter((call) => call.method === "thread/start");
+  assert.equal(starts.length, 2);
+  for (const { params } of starts) {
+    assert.equal(params.ephemeral, true);
+    assert.equal(params.approvalPolicy, "never");
+    assert.equal(params.sandbox, "read-only");
+    assert.equal(params.allowProviderModelFallback, false);
+    assert.equal(params.dynamicTools, undefined);
+    assert.equal(params.config.web_search, "disabled");
+    assert.equal(params.config.agents.enabled, false);
+    assert.equal(params.config.apps._default.enabled, false);
+    assert.deepEqual(params.config.mcp_servers, { personal: { enabled: false } });
+  }
+  for (const { params } of codex.calls.filter((call) => call.method === "turn/start")) {
+    assert.deepEqual(params.sandboxPolicy, { type: "readOnly", networkAccess: false });
+    assert.equal(params.model, "another-model"); assert.equal(params.effort, "high");
+  }
+  assert.equal(codex.clients.every((client) => client.closed), true);
+});
+
+test("learning analysis retains usage reported before failed or interrupted completion", async (t) => {
+  for (const status of ["failed", "interrupted"]) await t.test(status, async (t) => {
+    const { service } = await fixture(t, { summaryReply: "{}", isolatedStatus: status,
+      summaryContextUsage: { total: { inputTokens: 21, outputTokens: 4, totalTokens: 25 } } });
+    const observations = [];
+    await assert.rejects(service.analyzeLearning({ input: "{}", instructions: "Analyze only", model: "gpt-6-luna",
+      effort: "low", onLearningUsage: (value) => observations.push(value) }),
+    { code: status === "failed" ? "turn_failed" : "turn_interrupted" });
+    assert.equal(observations.at(-1).usage.totalTokens, 25);
+    assert.equal(observations.at(-1).usage.cachedInputTokens, null);
+    assert.equal(observations.some((value) => value.turnId), true);
+  });
+});
+
+test("learning cancellation retains early usage and closes its isolated client", async (t) => {
+  const { service, codex } = await fixture(t, { summaryReply: "{}", holdSummaries: true, finishOnInterrupt: true,
+    earlyIsolatedEvents: [{ method: "thread/tokenUsage/updated", params: {
+      tokenUsage: { total: { inputTokens: 12, outputTokens: 0 } },
+    } }] });
+  const controller = new AbortController();
+  const observations = [];
+  const pending = service.analyzeLearning({ input: "{}", instructions: "Analyze only", model: "gpt-6-luna", effort: "low",
+    signal: controller.signal, onLearningUsage: (value) => observations.push(value) });
+  const rejected = assert.rejects(pending, { code: "turn_interrupted" });
+  await waitFor(() => observations.some((value) => value.usage));
+  controller.abort();
+  await rejected;
+  assert.equal(observations.at(-1).usage.inputTokens, 12);
+  assert.equal(codex.calls.filter((call) => call.method === "turn/interrupt").length, 1);
+  assert.equal(codex.clients.every((client) => client.closed), true);
+});
+
+test("learning rejects unavailable catalog choices and provider model substitution before a turn starts", async (t) => {
+  const { service, codex } = await fixture(t, { summaryReply: "{}", threadStartReport: { model: "substituted-model" } });
+  for (const [model, effort] of [["missing-model", "low"], ["gpt-6-luna", "high"]]) {
+    await assert.rejects(service.analyzeLearning({ input: "{}", instructions: "Analyze only", model, effort }),
+      { code: "learning_model_unavailable" });
+  }
+  assert.equal(codex.calls.some((call) => call.method === "thread/start"), false);
+  const observations = [];
+  await assert.rejects(service.analyzeLearning({ input: "{}", instructions: "Analyze only", model: "gpt-6-luna",
+    effort: "low", onLearningUsage: (value) => observations.push(value) }), { code: "learning_model_changed" });
+  assert.equal(observations[0].reportedModel, "substituted-model");
+  assert.equal(codex.calls.some((call) => call.method === "turn/start"), false);
+});
+
+test("learning rejects native tool attempts inside its read-only execution boundary", async (t) => {
+  const { service, codex } = await fixture(t, { summaryReply: "{}", toolItem: true });
+  await assert.rejects(service.analyzeLearning({ input: "{}", instructions: "Analyze only", model: "gpt-6-luna", effort: "low" }),
+    { code: "capability_unsupported", voiceReason: "tool_or_approval" });
+  assert.equal(codex.calls.some((call) => call.method === "turn/interrupt"), true);
+  assert.equal(codex.calls.find((call) => call.method === "thread/start").params.allowProviderModelFallback, false);
+});
+
+test("durable learning observations preserve recovery provenance and cannot fail completed responses", async (t) => {
+  const observed = [];
+  const { service, conversation, rootDir } = await fixture(t, { onDurablePair: async (pair) => {
+    observed.push(pair); throw new Error("learning storage unavailable");
+  } });
+  const completed = await complete(service, conversation, "keep reports short");
+  assert.equal(completed.result.status, "completed");
+  assert.equal(observed.length, 1);
+  assert.equal(observed[0].logicalConversationId, conversation.logicalConversationId);
+  assert.equal(observed[0].user, "keep reports short");
+  const recovered = readVoiceEventState(await fs.readFile(path.join(rootDir, conversation.logicalConversationId, "events.jsonl")));
+  assert.deepEqual(recovered.completedPairs, [{ pairSeq: observed[0].pairSeq, user: observed[0].user,
+    assistant: observed[0].assistant, clientOperationId: observed[0].clientOperationId, completedAt: observed[0].completedAt }]);
 });

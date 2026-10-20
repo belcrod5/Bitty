@@ -60,6 +60,12 @@ jest.mock("../keyboardController", () => ({
 jest.mock("./AppModal", () => ({
   AppModal: jest.fn(({ children }: { children: ReactNode }) => children),
 }));
+jest.mock("./OrchestratorLearningPanel", () => ({
+  OrchestratorLearningPanel: () => {
+    const ReactModule = require("react");
+    return ReactModule.createElement(require("react-native").Text, null, "共有学習パネル");
+  },
+}));
 jest.mock("./SettingsSelect", () => ({
   SettingsSelect: ({ label, onSelect, options, onOpen, searchValue, onSearchChange }: { label: string;
     onSelect: (value: string) => void; onOpen?: () => void;
@@ -250,4 +256,16 @@ test("deletion confirms and removes only a non-main orchestrator", async () => {
   expect(onListChanged).toHaveBeenCalled();
   await screen.unmount();
   alerts.mockRestore();
+});
+
+test("shared learning opens independently and back returns to the orchestrator list", async () => {
+  const screen = await render(<VoiceOrchestratorManager {...props} />);
+  await fireEvent.press(screen.getByTestId("orchestrator-learning-open"));
+  expect(screen.getByText("共有学習パネル")).toBeTruthy();
+  expect(screen.queryByTestId("orchestrator-row-main")).toBeNull();
+  expect(screen.queryByTestId("orchestrator-save")).toBeNull();
+  await act(async () => { jest.mocked(AppModal).mock.lastCall?.[0].onRequestClose?.(); });
+  expect(screen.getByTestId("orchestrator-row-main")).toBeTruthy();
+  expect(onClose).not.toHaveBeenCalled();
+  await screen.unmount();
 });
