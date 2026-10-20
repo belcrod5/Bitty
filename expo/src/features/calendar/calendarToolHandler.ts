@@ -4,6 +4,8 @@ import {
   calendarError,
   CALENDAR_DYNAMIC_TOOLS_CONTRACT,
   CALENDAR_DYNAMIC_TOOLS_NAMESPACE,
+  CALENDAR_READ_TOOL_NAMES,
+  CALENDAR_TOOL_NAMES,
   type CalendarReadToolName,
   type CalendarToolName,
   type CalendarToolResult,
@@ -62,10 +64,7 @@ export type CalendarToolHandlerOptions = {
 };
 
 function isTool(value: unknown): value is CalendarToolName {
-  return typeof value === "string" && [
-    "calendar_list_calendars", "calendar_search_events", "calendar_get_event",
-    "calendar_create_event", "calendar_update_event", "calendar_delete_event",
-  ].includes(value);
+  return CALENDAR_TOOL_NAMES.some((name) => name === value);
 }
 
 function canonical(value: unknown): string | null {
@@ -164,9 +163,7 @@ export function createCalendarToolHandler(options: CalendarToolHandlerOptions) {
     if (serialized === null) return calendarError("invalid_arguments");
     const requestId = await hash(lengthPrefix([call.threadId, call.turnId, call.callId, call.tool]));
     const requestHash = await hash(serialized);
-    const isWrite = call.tool.startsWith("calendar_") && ![
-      "calendar_list_calendars", "calendar_search_events", "calendar_get_event",
-    ].includes(call.tool);
+    const isWrite = !CALENDAR_READ_TOOL_NAMES.some((name) => name === call.tool);
     let permission = await getCalendarPermission();
     if (!permission.ok) {
       if (!foreground()) return calendarError("foreground_required");

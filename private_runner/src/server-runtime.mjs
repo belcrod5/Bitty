@@ -7192,12 +7192,14 @@ runnerWsServer.on("connection", (ws, req) => {
   const attachedTtsJobIds = new Set();
   const voiceRequests = createVoiceRequestBridge({
     send: ({ requestId, operationId, method, params, threadId, turnId, orchestratorId, orchestratorName, startedAtMs }) => sendRunnerWsEnvelope(ws, {
-      channel: "agent", op: method === "item/tool/requestUserInput" ? "voice.userInput.request" : "voice.approval.request",
+      channel: "agent", op: method === "item/tool/call" ? "voice.calendar.request"
+        : method === "item/tool/requestUserInput" ? "voice.userInput.request" : "voice.approval.request",
       operationId, streamId: operationId,
       payload: { requestId, method, params, threadId, turnId, orchestratorId, orchestratorName, startedAtMs },
     }),
     onResolved: ({ requestId, operationId, orchestratorId, method }) => sendRunnerWsEnvelope(ws, {
-      channel: "agent", op: method === "item/tool/requestUserInput" ? "voice.userInput.resolved" : "voice.approval.resolved",
+      channel: "agent", op: method === "item/tool/call" ? "voice.calendar.resolved"
+        : method === "item/tool/requestUserInput" ? "voice.userInput.resolved" : "voice.approval.resolved",
       operationId, payload: { requestId, orchestratorId },
     }),
   });
@@ -7227,11 +7229,11 @@ runnerWsServer.on("connection", (ws, req) => {
 
   function handleVoiceMessage(message) {
     if (message.channel !== "agent") return false;
-    if (message.op === "voice.userInput.respond") {
+    if (message.op === "voice.userInput.respond" || message.op === "voice.calendar.respond") {
       const requestId = String(message.payload?.requestId || "");
       const accepted = voiceRequests.respond(message.operationId, requestId, message.payload?.result);
       sendRunnerWsEnvelope(ws, {
-        channel: "agent", op: "voice.userInput.respond.result", requestId: message.requestId || "",
+        channel: "agent", op: `${message.op}.result`, requestId: message.requestId || "",
         operationId: message.operationId, payload: { requestId, accepted },
       });
       return true;
@@ -7378,6 +7380,9 @@ runnerWsServer.on("connection", (ws, req) => {
       }),
       onUserInput: (request, signal) => voiceRequests.request(operationId, request,
         voicePayload.orchestratorId || "main", "", signal),
+      onCalendarToolCall: (request, signal) => voiceRequests.request(operationId, {
+        ...request, threadId: request.params.threadId, turnId: request.params.turnId,
+      }, voicePayload.orchestratorId || "main", "", signal),
       onAccepted: (orchestratorTts) => {
         if (voiceTts === undefined) return;
         try {

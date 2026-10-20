@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createVoiceContextService } from "../src/voice-context-service.mjs";
+import { CALENDAR_READ_TOOL_NAMES } from "../src/calendar-tool-service.mjs";
+import { createVoiceRequestBridge } from "../src/voice-request-bridge.mjs";
 
 function fakeCodex({ reply = "answer", summaryReply, topicReplies = [], overviewReplies = [], holdOverviews = false, failTopicJudge = false,
   holdTopicJudges = false, agentEvents, earlyAgentEvents = [], completionUsage, contextUsageByTurn = [], summaryContextUsage,
@@ -3194,9 +3196,10 @@ test("saved custom instructions keep the fixed checklist read and maintenance ru
   assert.ok(threads.every(({ params }) => params.developerInstructions.includes("task_checklist.write_task_checklist")));
   assert.ok(threads.some(({ params }) => params.developerInstructions.includes("新しい親セッションでは")));
   assert.ok(threads.some(({ params }) => !params.developerInstructions.includes("新しい親セッションでは")));
-  assert.ok(threads.every(({ params }) => params.dynamicTools?.some((tool) => tool.name === "task_checklist")));
-  assert.ok(threads.every(({ params }) => params.dynamicTools?.find((tool) => tool.name === "task_checklist")
+  assert.ok(threads.filter(({ method }) => method === "thread/start").every(({ params }) => params.dynamicTools?.some((tool) => tool.name === "task_checklist")));
+  assert.ok(threads.filter(({ method }) => method === "thread/start").every(({ params }) => params.dynamicTools?.find((tool) => tool.name === "task_checklist")
     ?.tools.some((tool) => tool.name === "write_task_checklist")));
+  assert.ok(threads.filter(({ method }) => method === "thread/resume").every(({ params }) => !Object.hasOwn(params, "dynamicTools")));
 });
 
 test("legacy main parent starts a fresh thread before the user's first checklist turn", async (t) => {
@@ -3651,6 +3654,153 @@ test("managed sessions remain in every voice turn beyond the ten-pair window", a
   await assert.rejects(service.clearMessages(), { code: "session_busy" });
   childStatus = "completed";
   await service.clearMessages();
+});
+
+test("voice calendar reads are visible on new and resumed parents and return device data", async (t) => {
+  const toolCalls = [];
+  const managedCalls = [];
+  const calendarCall = { method: "item/tool/call", namespace: "calendar", tool: "calendar_search_events",
+    callId: "calendar-read", arguments: { start: "2026-10-20T00:00:00+09:00", end: "2026-10-21T00:00:00+09:00" },
+    threadId: "root", turnId: "root" };
+  const managedSessions = { refresh: async () => ({ records: [] }), contextOf: () => "",
+    handleTool: async (request) => { managedCalls.push(request); } };
+  const { service, conversation, codex } = await fixture(t, { managedSessions,
+    taskChecklistPath: "task-checklists/main.md",
+    nativeRequests: [checklistReadCall("calendar-preflight"), calendarCall] });
+  const response = { success: true, contentItems: [{ type: "inputText", text: '{"ok":true,"data":{"events":[{"title":"配送予定"}]}}' }] };
+  const hooks = { onCalendarToolCall: async (request, signal) => {
+    toolCalls.push({ request, signal });
+    return response;
+  } };
+  for (const input of ["配送予定を確認", "もう一度確認"]) {
+    assert.equal((await complete(service, conversation, input, randomUUID(), async () => "decline", hooks)).result.status, "completed");
+  }
+  assert.equal(toolCalls.length, 2);
+  assert.deepEqual(managedCalls, []);
+  assert.deepEqual(toolCalls[0].request.params.arguments, calendarCall.arguments);
+  assert.ok(toolCalls.every(({ signal }) => !signal.aborted));
+  const threads = codex.calls.filter(({ method, params }) => ["thread/start", "thread/resume"].includes(method)
+    && params.approvalPolicy === "on-request");
+  assert.equal(threads.filter(({ method }) => method === "thread/resume").length, 2);
+  assert.ok(threads.filter(({ method }) => method === "thread/resume").every(({ params }) => !Object.hasOwn(params, "dynamicTools")));
+  for (const { params } of threads.filter(({ method }) => method === "thread/start")) {
+    const calendar = params.dynamicTools.find(({ name }) => name === "calendar");
+    assert.deepEqual(calendar.tools.map(({ name }) => name), CALENDAR_READ_TOOL_NAMES);
+    assert.ok(calendar.tools.every(({ deferLoading, description }) => deferLoading === false && description.includes("信頼できない外部データ")));
+  }
+  assert.deepEqual(codex.calls.filter(({ method, request }) => method === "native/result"
+    && request.params.namespace === "calendar").map(({ result }) => result), [response, response]);
+});
+
+test("legacy voice calendar parent migrates once after its native child settles", async (t) => {
+  const nativeThreads = new Map();
+  const requests = [];
+  const { service, conversation, codex, rootDir } = await fixture(t, { nativeThreads, nativeRequests: requests });
+  await complete(service, conversation, "earlier conversation");
+  const activeFile = path.join(rootDir, "active.json");
+  const before = JSON.parse(await fs.readFile(activeFile, "utf8"));
+  const childId = randomUUID();
+  nativeThreads.get(before.nativeThreadId).turns[0].items.push({ type: "collabAgentToolCall",
+    status: "completed", receiverThreadIds: [childId] });
+  const childTurn = { id: randomUUID(), status: "in_progress", items: [] };
+  nativeThreads.set(childId, { id: childId, parentThreadId: before.nativeThreadId, turns: [childTurn] });
+  const hooks = { onCalendarToolCall: async () => ({ success: true, contentItems: [] }) };
+  const blocked = await complete(service, conversation, "配送確認", randomUUID(), async () => "decline", hooks);
+  assert.equal(blocked.result.code, "session_busy");
+  assert.equal(JSON.parse(await fs.readFile(activeFile, "utf8")).nativeThreadId, before.nativeThreadId);
+  childTurn.status = "completed";
+  assert.equal((await complete(service, conversation, "配送確認", randomUUID(), async () => "decline", hooks)).result.status, "completed");
+  const migrated = JSON.parse(await fs.readFile(activeFile, "utf8"));
+  assert.notEqual(migrated.nativeThreadId, before.nativeThreadId);
+  assert.equal(migrated.nativeCalendarReadEnabled, true);
+  assert.ok(codex.calls.some(({ method, params }) => method === "thread/inject_items"
+    && params.threadId === migrated.nativeThreadId && JSON.stringify(params.items).includes("earlier conversation")));
+  const reloaded = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  await reloaded.open();
+  await complete(reloaded, conversation, "もう一度確認", randomUUID(), async () => "decline", hooks);
+  assert.equal(JSON.parse(await fs.readFile(activeFile, "utf8")).nativeThreadId, migrated.nativeThreadId);
+});
+
+test("voice calendar cannot run during the checklist preflight", async (t) => {
+  let calls = 0;
+  const { service, conversation } = await fixture(t, { taskChecklistPath: "task-checklists/main.md", nativeRequests: [{
+    method: "item/tool/call", namespace: "calendar", tool: "calendar_search_events", callId: "read",
+    arguments: {}, threadId: "root", turnId: "root", preflight: true,
+  }] });
+  const hooks = { onCalendarToolCall: async () => { calls++; return { success: true, contentItems: [] }; } };
+  const { result } = await complete(service, conversation, "確認", randomUUID(), async () => "decline", hooks);
+  assert.equal(result.code, "checklist_preflight_unsafe_tool");
+  assert.equal(calls, 0);
+});
+
+test("voice calendar rejects foreign calls, writes and unavailable device hooks", async (t) => {
+  const toolCalls = [];
+  const requests = ["calendar_list_calendars", "calendar_create_event", "calendar_update_event", "calendar_delete_event", "unknown"].map((tool) => ({
+    method: "item/tool/call", namespace: "calendar", tool, callId: tool, arguments: {}, threadId: "root", turnId: "root",
+  }));
+  requests.unshift({ ...requests[0], threadId: "unrelated-thread" }, { ...requests[0], turnId: "unrelated-turn" });
+  const { service, conversation, codex } = await fixture(t, { nativeRequests: requests });
+  const hooks = { onCalendarToolCall: async (request) => { toolCalls.push(request); return { success: true, contentItems: [] }; } };
+  await complete(service, conversation, "確認", randomUUID(), async () => "decline", hooks);
+  assert.equal(toolCalls.length, 1);
+  const results = codex.calls.filter(({ method }) => method === "native/result").map(({ result }) => result);
+  assert.deepEqual(results.map((result) => result?.success), [undefined, undefined, true, false, false, false, false]);
+  await complete(service, conversation, "端末なし");
+  assert.equal(toolCalls.length, 1);
+  assert.equal(Object.hasOwn(codex.calls.filter(({ method }) => method === "thread/resume").at(-1)
+    .params, "dynamicTools"), false);
+  assert.equal(codex.calls.filter(({ method }) => method === "native/result").at(-1).result.success, false);
+});
+
+test("voice calendar deadlines include native descendant ownership verification", async (t) => {
+  const initial = Date.now();
+  let elapsed = 0;
+  t.mock.method(Date, "now", () => initial + elapsed);
+  for (const ownershipWaitMs of [500, 31_001]) {
+    const child = randomUUID();
+    const { service, conversation, codex } = await fixture(t, {
+      threadParents: { get [child]() { elapsed += ownershipWaitMs; return "root"; } },
+      nativeRequests: [{ method: "item/tool/call", namespace: "calendar", tool: "calendar_search_events",
+        callId: "read", arguments: {}, threadId: child, turnId: "child-turn" }],
+    });
+    const sent = [];
+    const bridge = createVoiceRequestBridge({ send: (request) => { sent.push(request); return true; } });
+    const hooks = { onCalendarToolCall: async (request, signal) => {
+      const response = bridge.request("operation", request, "main", "", signal);
+      if (sent.length) bridge.respond("operation", sent[0].requestId, { ok: true, data: { events: [] } });
+      return response;
+    } };
+    const startedAtMs = Date.now();
+    assert.equal((await complete(service, conversation, "確認", randomUUID(), async () => "decline", hooks)).result.status, "completed");
+    assert.equal(sent.length, ownershipWaitMs < 30_000 ? 1 : 0);
+    const response = codex.calls.find(({ method }) => method === "native/result").result;
+    assert.equal(response.success, true);
+    const result = JSON.parse(response.contentItems[0].text);
+    if (ownershipWaitMs < 30_000) {
+      assert.equal(sent[0].startedAtMs, startedAtMs);
+      assert.deepEqual(result, { ok: true, data: { events: [] } });
+    } else {
+      assert.equal(result.error.code, "device_unavailable");
+    }
+  }
+});
+
+test("native calendar resolution cancels pending voice device requests", async (t) => {
+  let forwarded;
+  const resolveAfterForward = new Promise((resolve) => { forwarded = resolve; });
+  const { service, conversation, codex } = await fixture(t, { nativeRequests: [{
+    method: "item/tool/call", namespace: "calendar", tool: "calendar_get_event", callId: "read",
+    arguments: { eventId: "delivery" }, threadId: "root", turnId: "root", resolveAfterForward,
+  }] });
+  let requestSignal;
+  const hooks = { onCalendarToolCall: async (_, signal) => {
+    requestSignal = signal;
+    forwarded();
+    return new Promise((resolve) => signal.addEventListener("abort", () => resolve({ success: false, contentItems: [] }), { once: true }));
+  } };
+  assert.equal((await complete(service, conversation, "確認", randomUUID(), async () => "decline", hooks)).result.status, "completed");
+  assert.equal(requestSignal.aborted, true);
+  assert.equal(codex.calls.find(({ method }) => method === "native/result").result.success, false);
 });
 
 test("voice App Server routes only the active turn's managed tool call", async (t) => {

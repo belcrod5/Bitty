@@ -8,6 +8,7 @@ import path from "node:path";
 import test from "node:test";
 import { createCodexAppServerClient } from "../src/codex-app-server-client.mjs";
 import { APP_CONTROL_UNAVAILABLE_INSTRUCTION, startCodexTurn } from "../src/codex-turn-execution.mjs";
+import { calendarConversationDynamicTools } from "../src/calendar-tool-service.mjs";
 
 const enabled = process.env.RUN_APP_CONTROL_CODEX_MOCK_INTEGRATION === "1";
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -20,10 +21,10 @@ async function freePort() {
   return result;
 }
 
-test("isolated loaded Codex thread receives current control reference and explicit clearing at model boundary",
+for (const withCalendar of [false, true]) test(
+  `isolated loaded Codex thread ${withCalendar ? "with calendar tools " : ""}receives current control reference and explicit clearing at model boundary`,
   { skip: !enabled, timeout: 40000 }, async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-app-control-provider-"));
-    t.after(() => fs.rm(root, { recursive: true, force: true }));
     const codexHome = path.join(root, "codex-home");
     await fs.mkdir(codexHome, { mode: 0o700 });
     const modelRequests = [];
@@ -62,6 +63,7 @@ test("isolated loaded Codex thread receives current control reference and explic
     t.after(async () => {
       child.kill();
       if (child.exitCode === null) await Promise.race([new Promise((resolve) => child.once("exit", resolve)), delay(2000)]);
+      await fs.rm(root, { recursive: true, force: true, maxRetries: 3 });
     });
     let ready = false;
     for (let attempt = 0; attempt < 100 && !ready; attempt++) {
@@ -77,21 +79,20 @@ test("isolated loaded Codex thread receives current control reference and explic
     const client = createCodexAppServerClient({ upstreamUrl: `ws://127.0.0.1:${appPort}`, turnCompletionTimeoutMs: 20000 });
     t.after(() => client.close());
     await client.openPromise;
-    await client.request("initialize", { clientInfo: { name: "bitty-control-test", version: "1" }, capabilities: { experimentalApi: true } });
-    client.notify("initialized", {});
-    const { thread } = await client.request("thread/start", { cwd: root, ephemeral: false,
-      approvalPolicy: "never", developerInstructions: "STABLE_THREAD_INSTRUCTION" });
+    const dynamicTools = withCalendar ? calendarConversationDynamicTools() : undefined;
     const seedCompletion = client.waitForTurnCompletion();
-    const seed = await client.request("turn/start", { threadId: thread.id, input: [{ type: "text", text: "SEED_EXISTING_THREAD" }] });
-    seedCompletion.expect({ threadId: thread.id, turnId: seed.turn.id });
+    const seed = await startCodexTurn({ client, clientName: "bitty-control-test", cwd: root,
+      approvalPolicy: "never", developerInstructions: "STABLE_THREAD_INSTRUCTION", dynamicTools,
+      inputText: "SEED_EXISTING_THREAD" });
+    seedCompletion.expect(seed);
     await seedCompletion.promise;
     for (const value of ["CONTROL_REFERENCE_A", "CONTROL_REFERENCE_B", ""]) {
       const turnClient = createCodexAppServerClient({ upstreamUrl: `ws://127.0.0.1:${appPort}`, turnCompletionTimeoutMs: 20000 });
       t.after(() => turnClient.close());
       const completion = turnClient.waitForTurnCompletion();
-      const identity = await startCodexTurn({ client: turnClient, clientName: "bitty-control-test", threadId: thread.id,
+      const identity = await startCodexTurn({ client: turnClient, clientName: "bitty-control-test", threadId: seed.threadId,
         cwd: root, approvalPolicy: "never", developerInstructions: "IGNORED_LOADED_THREAD_OVERRIDE",
-        input: { blocks: [{ type: "text", text: "MOCK_USER_INPUT" }] }, trustedInstructions: value });
+        input: { blocks: [{ type: "text", text: "MOCK_USER_INPUT" }] }, trustedInstructions: value, dynamicTools });
       completion.expect(identity);
       await completion.promise;
       turnClient.close();

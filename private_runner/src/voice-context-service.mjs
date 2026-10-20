@@ -6,6 +6,14 @@ import { promisify } from "node:util";
 import { APP_CONTROL_UNAVAILABLE_INSTRUCTION, codexTurnEventMatches, extractCodexAgentMessageText, listCodexModelsFromAppServer } from "./codex-turn-execution.mjs";
 import { openVoiceMemoryStore } from "./voice-memory-store.mjs";
 import { voiceSubagentTools } from "./voice-subagents.mjs";
+import { calendarConversationDynamicTools, CALENDAR_READ_TOOL_NAMES } from "./calendar-tool-service.mjs";
+
+const CALENDAR_READ_TOOLS = calendarConversationDynamicTools().map((namespace) => ({
+  ...namespace,
+  description: "iPhoneカレンダーの予定を読み取るツール",
+  tools: namespace.tools.filter((tool) => CALENDAR_READ_TOOL_NAMES.includes(tool.name))
+    .map((tool) => ({ ...tool, deferLoading: false })),
+}));
 
 const CONTEXT_MODE = "self_context_array";
 const DEFAULT_MODEL = "gpt-6-luna";
@@ -725,7 +733,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
       || (active.pendingSwitch !== undefined && (!isRecord(active.pendingSwitch)
         || active.pendingSwitch.parentGeneration !== active.parentGeneration
         || !Number.isSafeInteger(active.pendingSwitch.turnSeq) || active.pendingSwitch.turnSeq < 1
-        || !["topic", "message_limit", "settings", "memory", "checklist"].includes(active.pendingSwitch.reason)))
+        || !["topic", "message_limit", "settings", "memory", "checklist", "calendar"].includes(active.pendingSwitch.reason)))
       || (active.pendingConfirmation !== undefined && (!isRecord(active.pendingConfirmation)
         || !UUID.test(active.pendingConfirmation.clientOperationId)
         || typeof active.pendingConfirmation.text !== "string" || !active.pendingConfirmation.text.trim()
@@ -749,6 +757,8 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
         || !Number.isSafeInteger(active.pendingDispatch.turnSeq)
         || active.pendingDispatch.turnSeq < 1
         || typeof active.pendingDispatch.newParent !== "boolean"
+        || (active.pendingDispatch.calendarReadEnabled !== undefined
+          && typeof active.pendingDispatch.calendarReadEnabled !== "boolean")
         || (active.pendingDispatch.turnId !== undefined
           && (typeof active.pendingDispatch.turnId !== "string" || !active.pendingDispatch.turnId))
         || (active.pendingDispatch.previousTurnId !== undefined
@@ -766,6 +776,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
       || (active.systemInstruction !== undefined && (typeof active.systemInstruction !== "string"
         || !active.systemInstruction.trim() || bytes(active.systemInstruction) > 16_000))
       || (active.checklistReadPending !== undefined && typeof active.checklistReadPending !== "boolean")
+      || (active.nativeCalendarReadEnabled !== undefined && typeof active.nativeCalendarReadEnabled !== "boolean")
       || (active.checklistCompletion !== undefined
         && (!taskChecklistPath || !validChecklistCompletion(active.checklistCompletion)))
       || (active.nativeAgentsEnabled !== undefined && active.nativeAgentsEnabled !== true)
@@ -1122,6 +1133,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
       throw invalid("session_busy", "Voice parent switch changed before commit");
     }
     const next = { ...active, nativeThreadId: candidate.threadId,
+      nativeCalendarReadEnabled: candidate.calendarReadEnabled === true,
       ...(taskChecklistPath ? { checklistReadPending: true, nativeAgentsEnabled: true,
         nativeChecklistWriteEnabled: true, nativeChecklistCompletionEnabled: true } : {}),
       ...(candidate.turnId ? { nativeTurnId: candidate.turnId } : {}) };
@@ -1203,7 +1215,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
 
   async function modelTurn({ input, items = [], instructions, model: requestedModel, effort: requestedEffort,
     forceNewThread = false, onDispatchIntent, onTurnIdentified, onNewParent, onStarted, onNativeRoot,
-    onApproval, onUserInput, onText, readOnlyPreflight = false, checklistTurn,
+    onApproval, onUserInput, onCalendarToolCall, onText, readOnlyPreflight = false, checklistTurn,
     resumeThreadId = "", previousTurnId: previousTurnOverride = "",
     onTextError, onContextUsage, signal, appControlInstruction = "" }) {
     if (signal?.aborted) throw invalid("turn_interrupted", "Voice turn was cancelled");
@@ -1298,12 +1310,6 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
       }, 30000);
       client.notify("initialized", {});
       executionTiming.initializedMs = Date.now() - modelStartedAt;
-      if (onApproval && managedSessions && !readOnlyPreflight) {
-        const capabilities = await client.request("modelProvider/capabilities/read", {}, 30000);
-        if (capabilities?.namespaceTools !== true) {
-          throw invalid("capability_unsupported", "Voice subagent tools are unavailable");
-        }
-      }
       let summaryConfig;
       if (!onApproval || readOnlyPreflight) {
         stage = "config_read";
@@ -1324,9 +1330,11 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
         approvalPolicy: onApproval ? "on-request" : "never",
         sandbox: onApproval ? "workspace-write" : "read-only",
         experimentalRawEvents: false, persistExtendedHistory: false,
-        model, ...(onApproval && taskChecklistPath
-          ? { dynamicTools: managedSessions ? [...CHECKLIST_TOOLS, ...voiceSubagentTools] : CHECKLIST_TOOLS }
-          : onApproval && managedSessions ? { dynamicTools: voiceSubagentTools } : {}),
+        model, ...(onApproval && !continuing ? { dynamicTools: [
+          ...(taskChecklistPath ? CHECKLIST_TOOLS : []),
+          ...(managedSessions ? voiceSubagentTools : []),
+          ...(onCalendarToolCall ? CALENDAR_READ_TOOLS : []),
+        ] } : {}),
         config: onApproval
           ? { ...(readOnlyPreflight ? summaryConfig : {}), agents: { enabled: true },
             "features.default_mode_request_user_input": true } : summaryConfig,
@@ -1739,6 +1747,22 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
             });
           } finally { requestControllers.delete(request.id); }
         }
+        if (method === "item/tool/call" && request.params?.namespace === "calendar") {
+          const startedAtMs = Date.now();
+          const controller = new AbortController();
+          requestControllers.set(request.id, { controller, threadId: request.params?.threadId });
+          try {
+            await identityReady;
+            if (!identity || signal?.aborted || controller.signal.aborted
+              || !await ownsRequest(request.params) || signal?.aborted || terminal || controller.signal.aborted) return undefined;
+            if (!onCalendarToolCall || !CALENDAR_READ_TOOL_NAMES.includes(request.params.tool)) {
+              return { success: false, contentItems: [{ type: "inputText", text: "Calendar read tool unavailable" }] };
+            }
+            return await onCalendarToolCall({ ...request, startedAtMs }, controller.signal);
+          } finally {
+            requestControllers.delete(request.id);
+          }
+        }
         if (method === "item/tool/call" && managedSessions) {
           await identityReady;
           if (!identity || !codexTurnEventMatches(request.params, identity)) return undefined;
@@ -2047,16 +2071,19 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
         const legacyChecklistParent = Boolean(taskChecklistPath && active.nativeThreadId
           && (active.checklistReadPending === undefined || active.nativeAgentsEnabled !== true
             || active.nativeChecklistWriteEnabled !== true || active.nativeChecklistCompletionEnabled !== true));
-        if (legacyChecklistParent && !active.pendingSwitch) {
+        // Dynamic tools are fixed at thread/start; thread/resume cannot add them.
+        const legacyCalendarParent = Boolean(hooks.onCalendarToolCall && active.nativeThreadId
+          && active.nativeCalendarReadEnabled !== true);
+        if ((legacyChecklistParent || legacyCalendarParent) && !active.pendingSwitch) {
           await saveActive({ ...active, pendingSwitch: { parentGeneration: active.parentGeneration,
-            turnSeq: Math.max(1, active.turnSeq || 0), reason: "checklist" } },
-          "Voice checklist parent switch could not be synced");
+            turnSeq: Math.max(1, active.turnSeq || 0), reason: legacyChecklistParent ? "checklist" : "calendar" } },
+          "Voice tools parent switch could not be synced");
         }
         const pending = active.pendingSwitch?.parentGeneration === active.parentGeneration
           ? active.pendingSwitch : null;
         const switching = Boolean(pending && await canSwitchParent(clientOperationId));
-        if (legacyChecklistParent && !switching) {
-          throw invalid("session_busy", "Voice checklist parent cannot switch yet");
+        if ((legacyChecklistParent || legacyCalendarParent) && !switching) {
+          throw invalid("session_busy", "Voice tools parent cannot switch yet");
         }
         if (active.contextLimitReached && !switching) {
           throw invalid("voice_context_reset_required", "Voice session must be reset before continuing");
@@ -2108,6 +2135,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
           try {
             preflight = await modelTurn({ input: CHECKLIST_PREFLIGHT_INPUT,
               instructions: prepared.preflightInstructions, onApproval, signal,
+              onCalendarToolCall: hooks.onCalendarToolCall,
               forceNewThread: prepared.switching, readOnlyPreflight: true });
             break;
           } catch (error) {
@@ -2123,12 +2151,14 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
         resumeThreadId: preflight?.threadId, previousTurnId: preflight?.turnId,
         forceNewThread: preflight ? false : prepared.switching,
         onUserInput: hooks.onUserInput,
+        onCalendarToolCall: hooks.onCalendarToolCall,
         onNativeRoot: hooks.onNativeRoot,
         signal,
         onDispatchIntent: async ({ threadId, previousTurnId }) => exclusive(async () => {
           if (active.pendingDispatch) throw invalid("session_busy", "Voice dispatch already exists");
           const candidate = { clientOperationId, threadId, parentGeneration: prepared.generation,
             turnSeq, newParent: prepared.newParent,
+            calendarReadEnabled: Boolean(hooks.onCalendarToolCall),
             ...(!prepared.newParent && previousTurnId ? { previousTurnId } : {}),
             ...(prepared.pending ? { switchTurnSeq: prepared.pending.turnSeq } : {}) };
           await saveActive({ ...active, pendingDispatch: candidate },

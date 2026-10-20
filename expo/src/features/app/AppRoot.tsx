@@ -94,6 +94,7 @@ import { mutatePersistedSettings } from "./utils/persistedSettingsFile";
 import { shouldAllowAutoCaptureDuringTts } from "./utils/autoAudioPolicy";
 import { useRunnerRouteSelection } from "./hooks/useRunnerRouteSelection";
 import { useVoiceApprovals } from "./hooks/useVoiceApprovals";
+import { useVoiceCalendar } from "./hooks/useVoiceCalendar";
 import { useApprovalRequestController } from "./hooks/useApprovalRequestController";
 import { useCodexRelayObserverLifecycleController } from "./hooks/useCodexRelayObserverLifecycleController";
 import { useCodexRelayObserverStartController } from "./hooks/useCodexRelayObserverStartController";
@@ -707,6 +708,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     isForeground: () => AppState.currentState === "active",
     confirmWrite: calendarWriteController.confirmWrite,
   }), [calendarWriteController.confirmWrite]);
+  useVoiceCalendar(runnerWebSocketManager, calendarToolHandler);
   const [ttsSound, setTtsSound] = useState<Audio.Sound | null>(null);
   const [ttsUri, setTtsUri] = useState("");
   const [ttsProvider, setTtsProvider] = useState<TtsProvider>(DEFAULT_TTS_PROVIDER);

@@ -1110,30 +1110,14 @@ function startCodexAppServerRawTurn(
         }
       }
       if (!activeThreadId) {
-        let started: CodexThreadStartResponse;
-        try {
-          if (options.onCalendarToolCall) {
-            const capabilities = await sendRequestWhenAdmitted<{ namespaceTools?: boolean }>(
-              "modelProvider/capabilities/read",
-              {},
-              PRE_TURN_RPC_TIMEOUT_MS
-            );
-            if (capabilities.namespaceTools !== true) throw new Error("namespace tools unavailable");
-          }
-          started = await sendRequestWhenAdmitted<CodexThreadStartResponse>("thread/start", {
-            cwd: cwd || undefined,
-            serviceName,
-            approvalPolicy,
-            experimentalRawEvents: false,
-            persistExtendedHistory: false,
-            ...(options.onCalendarToolCall ? { dynamicTools: calendarDynamicTools() } : {}),
-          }, PRE_TURN_RPC_TIMEOUT_MS);
-        } catch {
-          if (options.onCalendarToolCall) {
-            throw new Error(JSON.stringify(calendarDynamicToolsIncompatible("thread_start")));
-          }
-          throw new Error("thread/start failed");
-        }
+        const started = await sendRequestWhenAdmitted<CodexThreadStartResponse>("thread/start", {
+          cwd: cwd || undefined,
+          serviceName,
+          approvalPolicy,
+          experimentalRawEvents: false,
+          persistExtendedHistory: false,
+          ...(options.onCalendarToolCall ? { dynamicTools: calendarDynamicTools() } : {}),
+        }, PRE_TURN_RPC_TIMEOUT_MS);
         activeThreadId = String(started?.thread?.id || "").trim();
         turnOutputTokenBaseline = 0;
         notifyThreadIdResolved(activeThreadId);

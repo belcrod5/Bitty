@@ -54,12 +54,12 @@ test("rejects the removed legacy Codex WebSocket path", async () => {
   expect(manager.connect).not.toHaveBeenCalled();
 });
 
-test("new app threads expose calendar tools whenever the client provides the handler", async () => {
+test("ordinary chat completes with calendar tools without a namespace capability preflight", async () => {
   const manager = new FakeRunnerWebSocketManager();
   const session = startCodexAppServerTurn({
     wsUrl: "ws://127.0.0.1:8788/runner-ws",
     wsToken: "runner-token",
-    inputText: "today's events",
+    inputText: "hello",
     runnerWebSocketManager: manager as unknown as RunnerWebSocketManager,
     onApprovalRequest: jest.fn(() => "approve_once"),
     onCalendarToolCall: jest.fn(async () => ({ ok: true as const, data: null })),
@@ -69,10 +69,6 @@ test("new app threads expose calendar tools whenever the client provides the han
   await flushPromises();
   respondToLastRequest(manager, {});
   await flushPromises();
-  expect((lastSent(manager).payload as any).method).toBe("modelProvider/capabilities/read");
-  respondToLastRequest(manager, { namespaceTools: true });
-  await flushPromises();
-
   const threadStart = lastSent(manager);
   expect((threadStart.payload as any).method).toBe("thread/start");
   const [calendarNamespace] = (threadStart.payload as any).params.dynamicTools;
@@ -90,11 +86,20 @@ test("new app threads expose calendar tools whenever the client provides the han
   ]);
   expect(calendarNamespace.tools.every((tool: { deferLoading?: boolean }) => tool.deferLoading === true)).toBe(true);
 
-  await session.interrupt();
-  await expect(session.promise).rejects.toThrow("interrupted");
+  respondToLastRequest(manager, { thread: { id: "thread-1" } }, "thread-1");
+  await flushPromises();
+  respondToLastRequest(manager, { thread: { id: "thread-1", status: "idle" } }, "thread-1");
+  await flushPromises();
+  expect((lastSent(manager).payload as any).method).toBe("turn/start");
+  respondToLastRequest(manager, { turn: { id: "turn-1" } }, "thread-1");
+  await flushPromises();
+  emitTurnNotification(manager, lastSent(manager), "turn/completed", {
+    threadId: "thread-1", turn: { id: "turn-1", status: "completed" },
+  });
+  await expect(session.promise).resolves.toMatchObject({ threadId: "thread-1", turnId: "turn-1" });
 });
 
-test("calendar threads fail clearly when namespace tools are unavailable", async () => {
+test("calendar thread start preserves the actual App Server error", async () => {
   const manager = new FakeRunnerWebSocketManager();
   const session = startCodexAppServerTurn({
     wsUrl: "ws://127.0.0.1:8788/runner-ws",
@@ -109,10 +114,13 @@ test("calendar threads fail clearly when namespace tools are unavailable", async
   await flushPromises();
   respondToLastRequest(manager, {});
   await flushPromises();
-  respondToLastRequest(manager, { namespaceTools: false });
-
-  await expect(session.promise).rejects.toThrow("codex_dynamic_tools_incompatible");
-  expect(manager.send.mock.calls.some(([message]) => (message.payload as any)?.method === "thread/start")).toBe(false);
+  const threadStart = lastSent(manager);
+  expect((threadStart.payload as any).method).toBe("thread/start");
+  manager.emit({
+    channel: "llm", op: "rpc", operationId: threadStart.operationId, sessionId: threadStart.sessionId,
+    payload: { id: (threadStart.payload as any).id, error: { code: -32602, message: "invalid dynamicTools schema" } },
+  });
+  await expect(session.promise).rejects.toThrow("invalid dynamicTools schema");
 });
 
 test("manager mode resolves JSON-RPC responses delivered through subscription", async () => {

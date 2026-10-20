@@ -1,4 +1,3 @@
-import { CALENDAR_DYNAMIC_TOOLS_CONTRACT } from "./calendar-tool-service.mjs";
 import { randomUUID } from "node:crypto";
 import { isValidUserInputResponse } from "./codex-user-input.mjs";
 
@@ -10,45 +9,6 @@ const SUCCESSFUL_TURN_STATUSES = new Set(["", "completed", "complete", "succeede
 const INTERRUPTED_TURN_STATUSES = new Set(["interrupted", "cancelled", "canceled"]);
 const ACTIVE_TURN_STATUSES = new Set(["inprogress", "in_progress", "running", "active", "waiting", "waitingapproval", "waiting_approval"]);
 const STOPPED_TURN_STATUSES = new Set(["completed", "complete", "succeeded", "success", "interrupted", "cancelled", "canceled", "failed"]);
-function dynamicToolsFailure(phase) {
-  return new Error(JSON.stringify({
-    ok: false,
-    error: {
-      code: "codex_dynamic_tools_incompatible",
-      message: "Dynamic Tools互換性エラーです。phaseを確認し、Bittyのcalendar tool adapterを現行schemaへ更新してください。",
-      retryable: false,
-      expectedContract: CALENDAR_DYNAMIC_TOOLS_CONTRACT,
-      phase,
-    },
-  }));
-}
-
-async function calendarDynamicToolsPreflight(client) {
-  let capabilities;
-  try {
-    capabilities = await client.request("modelProvider/capabilities/read", {}, 30000);
-  } catch {
-    throw dynamicToolsFailure("thread_start");
-  }
-  if (capabilities?.namespaceTools !== true) throw dynamicToolsFailure("thread_start");
-  await client.request("config/read", {}, 30000);
-  const listed = await client.request("plugin/list", {}, 30000);
-  if (!Array.isArray(listed?.marketplaces)) throw new Error("calendar_api_failed");
-  for (const marketplace of listed.marketplaces) {
-    if (!Array.isArray(marketplace?.plugins)) throw new Error("calendar_api_failed");
-    for (const plugin of marketplace.plugins) {
-      if (plugin?.enabled !== true) continue;
-      const pluginName = String(plugin?.name || "").trim();
-      if (!pluginName) throw new Error("calendar_api_failed");
-      const params = { pluginName };
-      if (typeof marketplace.path === "string" && marketplace.path) params.marketplacePath = marketplace.path;
-      else if (typeof marketplace.name === "string" && marketplace.name) params.remoteMarketplaceName = marketplace.name;
-      else throw new Error("calendar_api_failed");
-      await client.request("plugin/read", params, 30000);
-    }
-  }
-}
-
 function firstNonEmptyString(...values) {
   for (const value of values) {
     if (typeof value !== "string") continue;
@@ -188,8 +148,6 @@ export async function startCodexTurn({
 
   // resume時のexcludeTurns(experimental API)を常用するため無条件で有効化
   await initializeCodexClient(client, clientName);
-
-  if (dynamicTools) await calendarDynamicToolsPreflight(client);
 
   if (activeThreadId) {
     const resumed = await client.request("thread/resume", {

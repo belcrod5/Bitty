@@ -93,8 +93,8 @@ Codex CLI 0.145.0の公式README、型定義、実装を確認した結果は次
 - 非遅延toolは各sampling requestのmodel-facing tool listへ入り、遅延toolは通常時の
   listから除外される。検索結果に一致した定義だけが`tool_search` outputへ入る。
 - `tool_search`はmodelがsearch toolを、providerがnamespace toolsをサポートする場合だけ
-  Codex Coreが追加する。App Serverの公開capabilityでは`namespaceTools`を事前確認できるが、
-  model個別の`supports_search_tool`は公開されていない。
+  Codex Coreが追加する。Codex CLI 0.163.0の公開capabilityには`namespaceTools`がなく、
+  その欠落をDynamic Tools非対応とは判断しない。
 - MCPも同じmodel-facing exposure処理を通る。現行実装では`tool_search`利用可能時はMCP
   toolも遅延、それ以外は直接公開される。コンテキスト効率は接続方式よりexposureで決まる。
 
@@ -112,14 +112,14 @@ Codex CLI 0.145.0の公式README、型定義、実装を確認した結果は次
 - 既存スレッドへ後付けしない。
 - アプリ全体またはディレクトリー単位のカレンダーON/OFF設定は作らない。
 - app-server初期化は`experimentalApi: true`にする。
-- 新規threadの前に`modelProvider/capabilities/read`を呼び、`namespaceTools: true`でなければ
-  `codex_dynamic_tools_incompatible`で終了する。
-- Codexのバージョンは固定しない。`thread/start`失敗や`item/tool/call`の形を実行時に
+- 新規threadの`dynamicTools`登録可否は`thread/start`で判断する。capabilityや
+  config/pluginの事前取得を条件にせず、登録失敗時は元のRPCエラーを伝える。
+- Codexのバージョンは固定しない。`item/tool/call`と応答の形を実行時に
   検証し、契約が合わなければ`codex_dynamic_tools_incompatible`で終了する。
 - テストではexperimental schemaの現行契約を検証する。
 
 互換性エラーには`code`、`retryable: false`、`expectedContract:
-"calendar-dynamic-tools-v2"`、`phase: "thread_start" | "tool_call_parse" | "tool_response"`を含める。
+"calendar-dynamic-tools-v2"`、`phase: "tool_call_parse" | "tool_response"`を含める。
 messageは「Dynamic Tools互換性エラーです。phaseを確認し、Bittyのcalendar tool adapterを
 現行schemaへ更新してください。」とする。ExpoとRunnerへ同じ内容を出し、機密情報、
 内部例外、自動再試行、Dynamic Toolsなしでの継続は含めない。
@@ -709,9 +709,9 @@ event log除外は`item/tool/call`要求だけでなく、calendar dynamic tool�
 - dynamicToolsが新規threadにだけ入ること。
 - `dynamicTools`が`calendar` namespaceにまとまり、全functionが`deferLoading: true`で
   あること。
-- `namespaceTools: false`またはcapability取得失敗時に、threadを開始せず
-  `codex_dynamic_tools_incompatible`を出すこと。
-- Codexを固定せず、`thread/start`拒否、tool callの必須フィールド不足、tool応答拒否を
+- capability APIやconfig/plugin取得が利用できなくてもthreadを開始できること。
+- `thread/start`拒否は元のRPCエラーを保持すること。
+- Codexを固定せず、tool callの必須フィールド不足、tool応答拒否を
   正しい`phase`の`codex_dynamic_tools_incompatible`として出し、再試行・fallbackしないこと。
 - server requestのstring/number外側ID、namespace、call IDを混同しないこと。
 - `42`、`"42"`、非数値string IDがpending/ack Mapで衝突せず、`"calendar"`以外の
