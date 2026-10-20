@@ -187,6 +187,105 @@ test('existing send/new/wait/respond preserve Runner envelopes and results', asy
   assert.ok(messages.every(message => !Object.hasOwn(message.payload, 'controlContext')));
 });
 
+for (const backendId of ['codex', 'claude']) {
+  for (const command of ['new', 'send']) {
+    test(`${backendId} ${command} returns after confirmed start without a final reply`, async t => {
+      const f = await fixture(t, (_, response) => send(response, { backends: [{ backendId }] }));
+      const wss = new WebSocketServer({ server: f.server }); t.after(() => wss.close());
+      const sessionRef = { backendId, nativeSessionId: 'started-session' };
+      const messages = [];
+      let resolved = false;
+      let fallbackReached = false;
+      wss.on('connection', socket => socket.on('message', data => {
+        const message = JSON.parse(String(data)); messages.push(message);
+        const envelope = { channel: 'agent', requestId: message.requestId, streamId: 'started-run' };
+        const accepted = () => socket.send(JSON.stringify({ ...envelope, op: 'turn.accepted', payload: { runId: 'started-run' } }));
+        const resolve = () => {
+          resolved = true;
+          socket.send(JSON.stringify({ ...envelope, op: 'event', operationId: message.payload.subscriptionId,
+            payload: { type: 'session.resolved', sessionRef, payload: { sessionRef } } }));
+        };
+        if (command === 'send') accepted();
+        else if (backendId === 'codex') {
+          // The transport can replay session.resolved before its accepted envelope.
+          resolve(); accepted();
+        } else {
+          accepted();
+          const timer = setTimeout(() => { assert.equal(socket.readyState, 1); resolve(); }, 50);
+          t.after(() => clearTimeout(timer));
+        }
+        const fallback = setTimeout(() => { fallbackReached = true; socket.close(); }, 1000);
+        t.after(() => clearTimeout(fallback));
+      }));
+      const args = command === 'new' ? ['--cwd', '/approved/work'] : ['--session', sessionRef.nativeSessionId];
+      const result = await f.run([command, '--backend', backendId, ...args], 'start work');
+      assert.equal(fallbackReached, false, 'CLI must return while the turn is still running');
+      assert.equal(result.code, 0);
+      const value = JSON.parse(result.stdout);
+      assert.equal(value.status, 'running');
+      assert.equal(value.runId, 'started-run');
+      assert.deepEqual(value.sessionRef, sessionRef);
+      assert.equal(value.operationId, messages[0].payload.clientOperationId);
+      assert.equal(Object.hasOwn(value, 'reply'), false);
+      assert.equal(resolved, command === 'new');
+      assert.deepEqual(messages.map(message => message.op), ['turn.start']);
+    });
+  }
+}
+
+test('explicit --wait and later wait resume return the final reply from the same run', async t => {
+  const f = await fixture(t, (_, response) => send(response, { backends: [{ backendId: 'codex' }] }));
+  const wss = new WebSocketServer({ server: f.server }); t.after(() => wss.close());
+  const sessionRef = { backendId: 'codex', nativeSessionId: 'started-session' };
+  const messages = [];
+  wss.on('connection', socket => socket.on('message', data => {
+    const message = JSON.parse(String(data)); messages.push(message);
+    const envelope = { channel: 'agent', streamId: 'started-run', operationId: message.payload.subscriptionId };
+    const event = payload => socket.send(JSON.stringify({ ...envelope, op: 'event', payload: { sessionRef, ...payload } }));
+    socket.send(JSON.stringify({ ...envelope, requestId: message.requestId,
+      op: message.op === 'turn.start' ? 'turn.accepted' : 'events.resumed', payload: { runId: 'started-run', active: true } }));
+    event({ type: 'session.resolved', payload: { sessionRef } });
+    const timer = setTimeout(() => {
+      event({ type: 'item.completed', payload: { itemType: 'assistant', content: [{ type: 'text', text: 'finished work' }] } });
+      event({ type: 'turn.completed', payload: {} });
+    }, 50);
+    t.after(() => clearTimeout(timer));
+  }));
+  for (const args of [
+    ['new', '--wait', '--backend', 'codex', '--cwd', '/approved/work'],
+    ['send', '--backend', 'codex', '--session', sessionRef.nativeSessionId, '--wait'],
+    ['wait', '--run', 'started-run'],
+  ]) {
+    const result = await f.run(args, args[0] === 'wait' ? '' : 'start work');
+    assert.equal(result.code, 0);
+    assert.deepEqual(JSON.parse(result.stdout), { status: 'completed', runId: 'started-run', sessionRef, reply: 'finished work' });
+  }
+  assert.deepEqual(messages.map(message => message.op), ['turn.start', 'turn.start', 'events.resume']);
+  assert.equal(messages.at(-1).payload.runId, 'started-run');
+});
+
+test('new reports rejection or pending approval before session resolution without claiming creation', async t => {
+  const f = await fixture(t, (_, response) => send(response, { backends: [{ backendId: 'codex' }] }));
+  const wss = new WebSocketServer({ server: f.server }); t.after(() => wss.close());
+  let connections = 0;
+  wss.on('connection', socket => socket.on('message', data => {
+    const message = JSON.parse(String(data));
+    connections += 1;
+    socket.send(JSON.stringify(connections === 1
+      ? { channel: 'agent', op: 'error', requestId: message.requestId, payload: { message: 'start rejected' } }
+      : { channel: 'agent', op: 'event', streamId: 'approval-run', operationId: message.payload.subscriptionId,
+        payload: { type: 'action.requested', payload: { requestId: 'approval-1', decisions: ['allow', 'deny'] } } }));
+  }));
+  const rejected = await f.run(['new', '--backend', 'codex', '--cwd', '/approved/work'], 'start work');
+  assert.equal(rejected.code, 1);
+  assert.equal(rejected.stdout, '');
+  assert.match(rejected.stderr, /start rejected/);
+  const pending = await f.run(['new', '--backend', 'codex', '--cwd', '/approved/work'], 'start work');
+  assert.equal(pending.code, 0);
+  assert.deepEqual(JSON.parse(pending.stdout), { status: 'action_required', runId: 'approval-run', sessionRef: null,
+    action: { requestId: 'approval-1', decisions: ['allow', 'deny'] } });
+});
+
 test('initial native session resolution is confirmed before operation dispatch', async t => {
   let contextReads = 0;
   const f = await fixture(t, (request, response) => {

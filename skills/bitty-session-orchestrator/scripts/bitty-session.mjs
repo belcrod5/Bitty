@@ -39,8 +39,8 @@ const usage = `Usage:
   bitty-session.mjs board-apply < board-ops.json
   bitty-session.mjs board-remove --session <id> [--backend <id>] [--cwd <path>]
   bitty-session.mjs models --backend <id>
-  bitty-session.mjs new --backend <id> --cwd <path> [--model <id>] [--effort <id>] < message.txt
-  bitty-session.mjs send --backend <id> --session <id> [--model <id>] [--effort <id>] < message.txt
+  bitty-session.mjs new --backend <id> --cwd <path> [--model <id>] [--effort <id>] [--wait] < message.txt
+  bitty-session.mjs send --backend <id> --session <id> [--model <id>] [--effort <id>] [--wait] < message.txt
   bitty-session.mjs wait --run <runId>
   bitty-session.mjs respond --run <runId> --request <requestId> --decision <allow|allow_for_session|deny>
   bitty-session.mjs handoff --backend <id> --session <id>`;
@@ -49,6 +49,10 @@ function options(args) {
   const result = {};
   while (args.length) {
     const flag = args.shift();
+    if (flag === "--wait" && !result[flag]) {
+      result[flag] = true;
+      continue;
+    }
     const value = args.shift();
     if (!flag?.startsWith("--") || !value || value.startsWith("--") || result[flag]) {
       throw new Error(usage);
@@ -119,6 +123,7 @@ async function readInput(limit = 1024 * 1024) {
 }
 
 async function runSocket(token, mode, details) {
+  const startOnly = (mode === "new" || mode === "send") && !details.waitForReply;
   if (!repoRoot) throw new Error("Set BITTY_REPO_ROOT to resolve Runner WebSocket dependencies");
   const require = createRequire(path.join(repoRoot, "private_runner/package.json"));
   const WebSocket = require("ws");
@@ -185,6 +190,7 @@ async function runSocket(token, mode, details) {
       }
       if (message.op === "turn.accepted" && message.requestId === startRequestId) {
         runId = String(payload.runId || message.streamId || runId);
+        if (startOnly && sessionRef) finish({ status: "running", runId, operationId, sessionRef });
         return;
       }
       if (message.op === "events.resumed" && message.requestId === startRequestId) {
@@ -203,7 +209,9 @@ async function runSocket(token, mode, details) {
       if (message.op !== "event" || message.operationId !== subscriptionId) return;
       const event = payload;
       if (event.sessionRef) sessionRef = event.sessionRef;
-      if (event.type === "item.completed" && event.payload?.itemType === "assistant") {
+      if (startOnly && event.type === "session.resolved" && sessionRef) {
+        finish({ status: "running", runId, operationId, sessionRef });
+      } else if (event.type === "item.completed" && event.payload?.itemType === "assistant") {
         reply = (Array.isArray(event.payload.content) ? event.payload.content : [])
           .filter((block) => block.type === "text")
           .map((block) => String(block.text || "")).join("");
@@ -405,21 +413,21 @@ async function main() {
       targetMode: "neutral",
     }) });
   } else if (command === "send") {
-    assertOptions(opts, ["--backend", "--session", "--model", "--effort"]);
+    assertOptions(opts, ["--backend", "--session", "--model", "--effort", "--wait"]);
     const sessionRef = { backendId: required(opts, "--backend"), nativeSessionId: required(opts, "--session") };
     const input = await readInput();
     const policyProfileId = await interactiveProfile(token, sessionRef.backendId);
     result = await runSocket(token, "send", {
-      sessionRef, input, policyProfileId, model: opts["--model"], effort: opts["--effort"],
+      sessionRef, input, policyProfileId, model: opts["--model"], effort: opts["--effort"], waitForReply: opts["--wait"],
     });
   } else if (command === "new") {
-    assertOptions(opts, ["--backend", "--cwd", "--model", "--effort"]);
+    assertOptions(opts, ["--backend", "--cwd", "--model", "--effort", "--wait"]);
     const backendId = required(opts, "--backend");
     const cwd = required(opts, "--cwd");
     const input = await readInput();
     const policyProfileId = await interactiveProfile(token, backendId);
     result = await runSocket(token, "new", {
-      backendId, cwd, input, policyProfileId, model: opts["--model"], effort: opts["--effort"],
+      backendId, cwd, input, policyProfileId, model: opts["--model"], effort: opts["--effort"], waitForReply: opts["--wait"],
     });
   } else if (command === "wait" || command === "respond") {
     assertOptions(opts, command === "wait" ? ["--run"] : ["--run", "--request", "--decision"]);
