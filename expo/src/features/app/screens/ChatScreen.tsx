@@ -2446,10 +2446,11 @@ export function ChatScreen({
                 }}
                 onChangeText={(text) => { streamingStt.cancelCorrection(); setTranscriptForView(text); }}
                 onSubmit={async (text, onAccepted) => {
-                  if (!streamingStt.cancelCorrection(false, true)) return;
-                  await sendReplyTranscriptByPanel(text, () => {
-                    if (onAccepted()) setEditingSttTranscript(false);
-                  });
+                  await streamingStt.sendManualTranscript(text, () => {
+                    if (!onAccepted()) return false;
+                    setEditingSttTranscript(false);
+                    return true;
+                  }, false);
                 }}
               />
             </Reanimated.View>

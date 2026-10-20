@@ -172,6 +172,18 @@ function buildSfxPack() {
   return sfx;
 }
 
+function buildVoiceInputSfxPack() {
+  // Original soft two-note chimes, distinct from the reviewed push notification WAVs.
+  const chime = (freq, durationMs) => mix([
+    tone({ freq, durationMs, volume: 0.28, wave: "sine", attackMs: 5, releaseMs: 65 }),
+    tone({ freq: freq * 2, durationMs, volume: 0.035, wave: "sine", attackMs: 5, releaseMs: 65 }),
+  ]);
+  return {
+    "voice-input-ready.wav": concat([chime(660, 80), silence(12), chime(880, 120)]),
+    "voice-input-send.wav": concat([chime(1046.5, 70), silence(8), chime(784, 100)]),
+  };
+}
+
 function buildThemeSfxPacks() {
   const cyberpunkPopupSound = (firstFreq, secondFreq) => concat([
     tone({ freq: firstFreq, durationMs: 15, volume: 0.12, pulseWidth: 0.14, attackMs: 0.5, releaseMs: 3 }),
@@ -198,13 +210,15 @@ function main() {
       }
     }
   } else {
-    const pack = buildSfxPack();
+    const pack = process.argv.includes("--voice-input-only") ? buildVoiceInputSfxPack() : { ...buildSfxPack(), ...buildVoiceInputSfxPack() };
     for (const [fileName, samples] of Object.entries(pack)) {
-      const outPath = writeWav(OUT_DIR, fileName, samples);
+      const outDir = fileName === "voice-input-ready.wav"
+        ? path.resolve("modules/bitty-stt-transport/ios/Resources") : OUT_DIR;
+      const outPath = writeWav(outDir, fileName, samples);
       written.push(path.relative(process.cwd(), outPath));
     }
   }
-  console.log(themesOnly ? "Generated theme SFX:" : "Generated retro SFX:");
+  console.log(themesOnly ? "Generated theme SFX:" : "Generated SFX:");
   for (const p of written) {
     console.log(`- ${p}`);
   }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState } from "react-native";
 import { useStreamingSttTransport } from "./useStreamingSttTransport";
+import { playVoiceInputSound } from "./voiceInputSounds";
 import type { StreamingSttSession } from "./streamingSttTransport";
 import {
   applyStreamingTranscript,
@@ -50,6 +51,7 @@ export function useStreamingStt(options: Options) {
   const { setTranscript, onError } = options;
   const [phase, setPhase] = useState<StreamingSttPhase>("idle");
   const recordingRef = useRef(false);
+  const readyCueRef = useRef<AbortController | null>(null);
   const releaseFailedRef = useRef(false);
   const releasePendingRef = useRef(false);
   const preservedDraftRef = useRef<string | null>(null);
@@ -60,7 +62,7 @@ export function useStreamingStt(options: Options) {
   }
   const startIntentRef = useRef(0);
   const sessionRef = useRef<StreamingSttSession | null>(null);
-  const pendingAbortRef = useRef<Promise<void>>(Promise.resolve());
+  const pendingReleaseRef = useRef<Promise<void>>(Promise.resolve());
   const sessionVersionRef = useRef(0);
   const transcriptStateRef = useRef<StreamingTranscript>(EMPTY_TRANSCRIPT);
   const draftAtStartRef = useRef("");
@@ -190,6 +192,8 @@ export function useStreamingStt(options: Options) {
   const abortSession = useCallback(() => {
     const session = sessionRef.current;
     sessionRef.current = null;
+    readyCueRef.current?.abort();
+    readyCueRef.current = null;
     recordingRef.current = false;
     candidateRef.current = null;
     correctionRequestRef.current?.controller.abort();
@@ -199,7 +203,7 @@ export function useStreamingStt(options: Options) {
       const queuedAt = Date.now();
       const version = sessionVersionRef.current;
       latestRef.current.onDiagnostic?.("stt_abort_queued", { version });
-      pendingAbortRef.current = pendingAbortRef.current.catch(() => undefined).then(async () => {
+      pendingReleaseRef.current = pendingReleaseRef.current.catch(() => undefined).then(async () => {
         const startedAt = Date.now();
         latestRef.current.onDiagnostic?.("stt_abort_started", {
           version, queuedMs: startedAt - queuedAt,
@@ -211,9 +215,22 @@ export function useStreamingStt(options: Options) {
         }); }
       });
       // Background cleanup is handled here; callers can still await the failure.
-      void pendingAbortRef.current.catch(() => undefined);
+      void pendingReleaseRef.current.catch(() => undefined);
     }
-    return pendingAbortRef.current;
+    return pendingReleaseRef.current;
+  }, []);
+
+  const playSendCue = useCallback(() => {
+    // The next capture (including a handoff) must wait for playback and its
+    // audio-session release, just as it waits for the previous microphone.
+    pendingReleaseRef.current = pendingReleaseRef.current.then(() => playVoiceInputSound("send"))
+      .catch((error: unknown) => {
+        if (error instanceof Error && error.message === "voice_input_sound_release_failed") {
+          releaseFailedRef.current = true;
+          throw error;
+        }
+      });
+    void pendingReleaseRef.current.catch(() => undefined);
   }, []);
 
   const finishFailure = useCallback((message: string, draft?: string) => {
@@ -268,12 +285,15 @@ export function useStreamingStt(options: Options) {
     latestRef.current.onDiagnostic?.("stt_auto_send_dispatch", { version, chars: text.length,
       listening: listeningRef.current });
     if (listeningRef.current) awaitReplyCycle();
+    let accepted = false;
     try {
       await latestRef.current.sendTranscript(text, () => {
         latestRef.current.onDiagnostic?.("stt_auto_send_accepted", {
           version, current: version === sessionVersionRef.current,
         });
-        if (version !== sessionVersionRef.current) return;
+        if (version !== sessionVersionRef.current || accepted) return;
+        accepted = true;
+        playSendCue();
         latestRef.current.setTranscript("");
         transcriptStateRef.current = startStreamingTranscript("");
         draftAtStartRef.current = "";
@@ -296,7 +316,7 @@ export function useStreamingStt(options: Options) {
     } finally {
       if (autoSendingRef.current === version) autoSendingRef.current = null;
     }
-  }, [abortSession, awaitReplyCycle, clearCorrection, finishFailure, updateReplyCycle]);
+  }, [abortSession, awaitReplyCycle, clearCorrection, finishFailure, playSendCue, updateReplyCycle]);
 
   const sendCorrectionPreview = useCallback(() => {
     const preview = previewRef.current;
@@ -479,7 +499,7 @@ export function useStreamingStt(options: Options) {
     const version = ++sessionVersionRef.current;
     lastPartialCharsRef.current = 0;
     latestRef.current.onDiagnostic?.("stt_session_start", { version });
-    void pendingAbortRef.current.then(() => {
+    void pendingReleaseRef.current.then(() => {
       if (version !== sessionVersionRef.current || !listeningRef.current || !appActiveRef.current) return;
       latestRef.current.onDiagnostic?.("stt_session_connect", { version });
       let session: StreamingSttSession;
@@ -557,12 +577,34 @@ export function useStreamingStt(options: Options) {
       return;
     }
     if (message.type === "ready") {
-      recordingRef.current = true;
-      setPhase("recording");
-      if (latestRef.current.continuousDictation && recognitionSegmentSeenRef.current) {
-        dictationReadySinceRef.current ??= Date.now();
-        scheduleDictationIdle();
-      }
+      if (recordingRef.current || readyCueRef.current) return;
+      const controller = new AbortController();
+      readyCueRef.current = controller;
+      const current = () => sessionRef.current === session && !controller.signal.aborted && !terminalRef.current;
+      void (async () => {
+        // The native microphone is already running. Never feed the cue into STT.
+        if (session.setInputMuted && session.playReadyCue) {
+          await session.setInputMuted(true);
+          if (!current()) return;
+          // A missing/unavailable speaker must not prevent voice input.
+          await session.playReadyCue(controller.signal).catch((error: unknown) => {
+            if (error instanceof Error && error.message === "voice_input_sound_release_failed") throw error;
+          });
+          if (!current()) return;
+          await session.setInputMuted(false);
+          if (!current()) return;
+        }
+        recordingRef.current = true;
+        setPhase("recording");
+        if (latestRef.current.continuousDictation && recognitionSegmentSeenRef.current) {
+          dictationReadySinceRef.current ??= Date.now();
+          scheduleDictationIdle();
+        }
+      })().catch(() => {
+        if (current()) fail("音声入力のミュートを切り替えられませんでした。");
+      }).finally(() => {
+        if (readyCueRef.current === controller) readyCueRef.current = null;
+      });
       return;
     }
     if (message.type === "transcript") {
@@ -813,34 +855,47 @@ export function useStreamingStt(options: Options) {
     void disarm().catch(() => latestRef.current.onError("マイクの停止を確認できませんでした。"));
   }, [disarm]);
 
-  const sendManualTranscript = useCallback(async (text: string, onAccepted: () => boolean) => {
+  const sendManualTranscript = useCallback(async (text: string, onAccepted: () => boolean, resumeListening = true) => {
     if (!text.trim()) return;
     if (!cancelCorrection(false, true)) return;
     const version = sessionVersionRef.current;
+    let accepted = false;
     try {
+      terminalRef.current = true;
+      await abortSession();
+      if (version !== sessionVersionRef.current) return;
       await latestRef.current.sendTranscript(text, () => {
-        if (version !== sessionVersionRef.current || !onAccepted()) return;
+        if (version !== sessionVersionRef.current || accepted || !onAccepted()) return;
+        accepted = true;
+        playSendCue();
         transcriptStateRef.current = startStreamingTranscript("");
         draftAtStartRef.current = "";
         dictationReadyElapsedRef.current = 0;
         dictationReadySinceRef.current = null;
         recognitionSegmentSeenRef.current = false;
         clearTimer(dictationIdleTimerRef);
-        awaitReplyCycle();
+        if (resumeListening) awaitReplyCycle();
+        else {
+          listeningRef.current = false;
+          setPhase("idle");
+        }
       });
-      if (version === sessionVersionRef.current && awaitingReplyCycleRef.current) {
+      if (version === sessionVersionRef.current && !accepted) {
+        listeningRef.current = false;
+        setPhase("idle");
+      } else if (version === sessionVersionRef.current && awaitingReplyCycleRef.current) {
         sawReplyLoadingRef.current = true;
         updateReplyCycle();
       }
     } catch (error) {
-      if (version === sessionVersionRef.current && awaitingReplyCycleRef.current) {
+      if (version === sessionVersionRef.current) {
         listeningRef.current = false;
         clearReplyCycleWait();
         setPhase("idle");
       }
       throw error;
     }
-  }, [awaitReplyCycle, cancelCorrection, clearReplyCycleWait, updateReplyCycle]);
+  }, [abortSession, awaitReplyCycle, cancelCorrection, clearReplyCycleWait, playSendCue, updateReplyCycle]);
 
   const abort = disarm;
 
@@ -881,11 +936,6 @@ export function useStreamingStt(options: Options) {
     active: phase !== "idle",
     controlVersion: transport.controlVersion,
     hasPermission: transport.hasPermission,
-    setInputMuted: async (muted: boolean) => {
-      const session = sessionRef.current;
-      if (!session?.setInputMuted) throw new Error("native_stt_mute_unsupported");
-      await session.setInputMuted(muted);
-    },
     phase,
     correctionPreview,
     sendCorrectionPreview,

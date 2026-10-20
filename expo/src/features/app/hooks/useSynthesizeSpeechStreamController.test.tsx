@@ -860,7 +860,7 @@ test.each([
     return { id, target: () => target, snapshot: () => ({ desired: recording ? "listening" : "stopped", observed: recording ? "recording" : "stopped" }),
       draft: () => "", busy: () => false, canStart: () => !playbackActive, controlVersion: () => 1,
       hasPermission: async () => true, disarm: async () => { recording = false; },
-      start: jest.fn(async () => { recording = true; }), announce: async () => {}, readyCue: async () => {}, notice: jest.fn() };
+      start: jest.fn(async () => { recording = true; }), announce: async () => {}, notice: jest.fn() };
   };
   const source = surface("source", sourceTarget), destination = surface("destination", destinationTarget);
   const releaseSpeech = jest.fn(async (target: VoiceTarget, panelId?: string) => {
@@ -870,7 +870,7 @@ test.each([
       ? { scope: "voice", orchestratorId: target.orchestratorId }
       : { scope: "chat", sessionId: target.sessionRef.nativeSessionId || "", panelId } });
   });
-  control.configure({ preflight: async () => null, open: async () => ({}), announce: async () => {}, readyCue: async () => {}, releaseSpeech });
+  control.configure({ preflight: async () => null, open: async () => ({}), announce: async () => {}, releaseSpeech });
   const stopControl = control.start();
   const unregisterSource = control.register(source), unregisterDestination = control.register(destination);
   try {

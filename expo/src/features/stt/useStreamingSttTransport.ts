@@ -10,6 +10,7 @@ type NativeStreamingStt = {
   controlVersion?: number;
   hasPermission?: () => Promise<boolean>;
   setInputMuted?: (muted: boolean) => Promise<void>;
+  playReadyCue?: () => Promise<void>;
   continuationVersion?: number;
   commit?: (revision: number) => Promise<boolean>;
   start(url: string, headers: Record<string, string>): Promise<void>;
@@ -100,7 +101,8 @@ export function useStreamingSttTransport() {
     }
     return {
       ...(continuation ? { commit: (revision: number) => active ? native.commit!(revision) : Promise.reject(new Error("native_stt_inactive")) } : {}),
-      setInputMuted: (muted: boolean) => active && native.setInputMuted ? native.setInputMuted(muted) : Promise.reject(new Error("native_stt_mute_unsupported")),
+      ...(native.playReadyCue ? { playReadyCue: () => active ? native.playReadyCue!() : Promise.reject(new Error("native_stt_inactive")) } : {}),
+      ...(native.setInputMuted ? { setInputMuted: (muted: boolean) => active ? native.setInputMuted!(muted) : Promise.reject(new Error("native_stt_inactive")) } : {}),
       stop: () => active ? native.stop() : Promise.resolve(),
       abort,
     };

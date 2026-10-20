@@ -95,6 +95,8 @@ let mockUseActualStreamingStt = false;
 const mockNativeSttListeners = new Map<string, (event: any) => void>();
 const mockNativeStt = {
   continuationVersion: 1,
+  playReadyCue: jest.fn(async () => {}),
+  setInputMuted: jest.fn(async (_muted: boolean) => {}),
   start: jest.fn(async (_url: string, _headers: Record<string, string>) => undefined),
   commit: jest.fn(async (_revision: number) => true),
   stop: jest.fn(async () => undefined),
@@ -132,6 +134,7 @@ const mockFooterRenders: { transcript: string; voiceStatus?: "responding" | "spe
 let mockReduceMotion: boolean | null = false;
 const initialPlatform = Platform.OS;
 
+jest.mock("../../stt/voiceInputSounds", () => ({ playVoiceInputSound: jest.fn(async () => {}) }));
 jest.mock("expo-blur", () => {
   const ReactModule = require("react");
   const { View } = require("react-native");
