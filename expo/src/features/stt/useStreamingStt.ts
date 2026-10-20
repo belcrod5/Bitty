@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState } from "react-native";
 import { useStreamingSttTransport } from "./useStreamingSttTransport";
-import { playVoiceInputSound } from "./voiceInputSounds";
+import { playVoiceSound } from "../app/voiceSounds";
 import type { StreamingSttSession } from "./streamingSttTransport";
 import {
   applyStreamingTranscript,
@@ -223,7 +223,7 @@ export function useStreamingStt(options: Options) {
   const playSendCue = useCallback(() => {
     // The next capture (including a handoff) must wait for playback and its
     // audio-session release, just as it waits for the previous microphone.
-    pendingReleaseRef.current = pendingReleaseRef.current.then(() => playVoiceInputSound("send"))
+    pendingReleaseRef.current = pendingReleaseRef.current.then(() => playVoiceSound("send"))
       .catch((error: unknown) => {
         if (error instanceof Error && error.message === "voice_input_sound_release_failed") {
           releaseFailedRef.current = true;

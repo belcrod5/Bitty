@@ -134,7 +134,7 @@ const mockFooterRenders: { transcript: string; voiceStatus?: "responding" | "spe
 let mockReduceMotion: boolean | null = false;
 const initialPlatform = Platform.OS;
 
-jest.mock("../../stt/voiceInputSounds", () => ({ playVoiceInputSound: jest.fn(async () => {}) }));
+jest.mock("../voiceSounds", () => ({ playVoiceSound: jest.fn(async () => {}) }));
 jest.mock("expo-blur", () => {
   const ReactModule = require("react");
   const { View } = require("react-native");

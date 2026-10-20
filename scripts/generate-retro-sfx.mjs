@@ -184,6 +184,15 @@ function buildVoiceInputSfxPack() {
   };
 }
 
+function buildVoiceResetSfxPack() {
+  // Original notification-style bell: two bright notes with a soft decaying overtone.
+  const bell = (freq, durationMs) => mix([
+    tone({ freq, durationMs, volume: 0.26, wave: "sine", attackMs: 3, releaseMs: durationMs - 8 }),
+    tone({ freq: freq * 2.76, durationMs, volume: 0.045, wave: "sine", attackMs: 2, releaseMs: durationMs - 5 }),
+  ]);
+  return { "voice-reset-confirmation.wav": concat([bell(880, 125), silence(25), bell(1174.66, 240)]) };
+}
+
 function buildThemeSfxPacks() {
   const cyberpunkPopupSound = (firstFreq, secondFreq) => concat([
     tone({ freq: firstFreq, durationMs: 15, volume: 0.12, pulseWidth: 0.14, attackMs: 0.5, releaseMs: 3 }),
@@ -210,7 +219,9 @@ function main() {
       }
     }
   } else {
-    const pack = process.argv.includes("--voice-input-only") ? buildVoiceInputSfxPack() : { ...buildSfxPack(), ...buildVoiceInputSfxPack() };
+    const pack = process.argv.includes("--voice-reset-only") ? buildVoiceResetSfxPack()
+      : process.argv.includes("--voice-input-only") ? buildVoiceInputSfxPack()
+        : { ...buildSfxPack(), ...buildVoiceInputSfxPack(), ...buildVoiceResetSfxPack() };
     for (const [fileName, samples] of Object.entries(pack)) {
       const outDir = fileName === "voice-input-ready.wav"
         ? path.resolve("modules/bitty-stt-transport/ios/Resources") : OUT_DIR;

@@ -1,7 +1,7 @@
 import { act, cleanup, renderHook } from "@testing-library/react-native";
 import { AppState, type AppStateStatus } from "react-native";
 import { CONTINUOUS_DICTATION_IDLE_MS, REPLY_CYCLE_START_TIMEOUT_MS, TTS_START_GRACE_MS, useStreamingStt } from "./useStreamingStt";
-import { playVoiceInputSound } from "./voiceInputSounds";
+import { playVoiceSound } from "../app/voiceSounds";
 import type { StreamingSttTransportCallbacks } from "./streamingSttTransport";
 import { correctSttTranscript, type SttCorrectionContext } from "./sttSettingsClient";
 
@@ -13,7 +13,7 @@ const mockConnect = jest.fn((_url: string, _token: string, callbacks: StreamingS
 });
 
 class MockSession {
-  playReadyCue = (signal?: AbortSignal) => playVoiceInputSound("ready", signal);
+  playReadyCue = (signal?: AbortSignal) => playVoiceSound("ready", signal);
   setInputMuted = jest.fn<Promise<void>, [boolean]>().mockResolvedValue(undefined);
   stop = jest.fn<Promise<void>, []>().mockResolvedValue(undefined);
   abort = jest.fn<Promise<void>, []>().mockResolvedValue(undefined);
@@ -23,7 +23,7 @@ class MockSession {
   }
 }
 
-jest.mock("./voiceInputSounds", () => ({ playVoiceInputSound: jest.fn(async () => {}) }));
+jest.mock("../app/voiceSounds", () => ({ playVoiceSound: jest.fn(async () => {}) }));
 jest.mock("./useStreamingSttTransport", () => ({
   useStreamingSttTransport: () => ({ supported: true, connect: mockConnect }),
 }));
@@ -96,7 +96,7 @@ beforeEach(() => {
   AppState.currentState = "active";
   jest.mocked(AppState.addEventListener).mockReturnValue({ remove: jest.fn() });
   jest.mocked(correctSttTranscript).mockImplementation(async (_url, _token, text) => ({ changed: false, text }));
-  jest.mocked(playVoiceInputSound).mockImplementation(async () => {});
+  jest.mocked(playVoiceSound).mockImplementation(async () => {});
   mockSessions.length = 0;
 });
 
@@ -2030,43 +2030,43 @@ test("new speech clears the previous error before delivering its transcript", as
 // Cue timing belongs to the capture lifecycle, including retries and manual starts.
 test("ready cue waits for native readiness, mutes capture, and ignores duplicate ready", async () => {
   let finishCue!: () => void;
-  jest.mocked(playVoiceInputSound).mockImplementationOnce(() => new Promise((resolve) => { finishCue = resolve; }));
+  jest.mocked(playVoiceSound).mockImplementationOnce(() => new Promise((resolve) => { finishCue = resolve; }));
   const { result } = await renderHook(() => useStreamingStt(createOptions()));
   await act(async () => { await result.current.start(); });
-  expect(playVoiceInputSound).not.toHaveBeenCalled();
+  expect(playVoiceSound).not.toHaveBeenCalled();
   const session = mockSessions[0];
   await emit(session, { type: "ready" });
   expect(session.setInputMuted.mock.calls).toEqual([[true]]);
   expect(result.current.getSnapshot().observed).toBe("starting");
   await emit(session, { type: "ready" });
-  expect(playVoiceInputSound).toHaveBeenCalledTimes(1);
+  expect(playVoiceSound).toHaveBeenCalledTimes(1);
   await act(async () => { finishCue(); });
   expect(session.setInputMuted.mock.calls).toEqual([[true], [false]]);
   expect(result.current.getSnapshot().observed).toBe("recording");
   await emit(session, { type: "ready" });
-  expect(playVoiceInputSound).toHaveBeenCalledTimes(1);
+  expect(playVoiceSound).toHaveBeenCalledTimes(1);
 });
 
 test("stopping during the ready cue cancels playback and never unmutes or revives the old session", async () => {
   let finishCue!: () => void;
-  jest.mocked(playVoiceInputSound).mockImplementationOnce(() => new Promise((resolve) => { finishCue = resolve; }));
+  jest.mocked(playVoiceSound).mockImplementationOnce(() => new Promise((resolve) => { finishCue = resolve; }));
   const { result } = await renderHook(() => useStreamingStt(createOptions()));
   await act(async () => { await result.current.start(); });
   const session = mockSessions[0];
   await emit(session, { type: "ready" });
-  const signal = jest.mocked(playVoiceInputSound).mock.calls[0][1]!;
+  const signal = jest.mocked(playVoiceSound).mock.calls[0][1]!;
   await act(async () => { await result.current.disarm(); });
   expect(signal.aborted).toBe(true);
   await act(async () => { finishCue(); });
   expect(session.setInputMuted.mock.calls).toEqual([[true]]);
   expect(result.current.getSnapshot()).toEqual({ desired: "stopped", observed: "stopped" });
   await openReady(result);
-  expect(playVoiceInputSound).toHaveBeenCalledTimes(2);
+  expect(playVoiceSound).toHaveBeenCalledTimes(2);
   expect(session.setInputMuted.mock.calls).toEqual([[true]]);
 });
 
 test("ready playback failure still unmutes input; mute failure safely disarms", async () => {
-  jest.mocked(playVoiceInputSound).mockRejectedValueOnce(new Error("speaker unavailable"));
+  jest.mocked(playVoiceSound).mockRejectedValueOnce(new Error("speaker unavailable"));
   const options = createOptions();
   const { result } = await renderHook(() => useStreamingStt(options));
   const session = await openReady(result);
@@ -2078,7 +2078,7 @@ test("ready playback failure still unmutes input; mute failure safely disarms", 
   await emit(retry, { type: "ready" });
   expect(result.current.isArmed()).toBe(false);
   expect(retry.abort).toHaveBeenCalledTimes(1);
-  expect(playVoiceInputSound).toHaveBeenCalledTimes(1);
+  expect(playVoiceSound).toHaveBeenCalledTimes(1);
 });
 
 test("old native capture without muting remains usable and skips unsafe ready playback", async () => {
@@ -2088,7 +2088,7 @@ test("old native capture without muting remains usable and skips unsafe ready pl
   Object.assign(session, { setInputMuted: undefined });
   await emit(session, { type: "ready" });
   expect(result.current.isCapturing()).toBe(true);
-  expect(playVoiceInputSound).not.toHaveBeenCalled();
+  expect(playVoiceSound).not.toHaveBeenCalled();
 });
 
 test("automatic send cue occurs once after accepted dispatch and capture release", async () => {
@@ -2099,9 +2099,9 @@ test("automatic send cue occurs once after accepted dispatch and capture release
   const session = await openReady(result);
   await finishSpeech(session, "送信する文章");
   expect(session.abort).toHaveBeenCalledTimes(1);
-  expect(playVoiceInputSound).toHaveBeenCalledTimes(1);
+  expect(playVoiceSound).toHaveBeenCalledTimes(1);
   await act(async () => { accept(); accept(); });
-  expect(jest.mocked(playVoiceInputSound).mock.calls.map(([key]) => key)).toEqual(["ready", "send"]);
+  expect(jest.mocked(playVoiceSound).mock.calls.map(([key]) => key)).toEqual(["ready", "send"]);
 });
 
 test("manual send releases capture before dispatch and plays only when accepted", async () => {
@@ -2113,9 +2113,9 @@ test("manual send releases capture before dispatch and plays only when accepted"
   let sent!: Promise<void>;
   await act(async () => { sent = result.current.sendManualTranscript("手動送信", () => true); });
   expect(options.sendTranscript).not.toHaveBeenCalled();
-  expect(playVoiceInputSound).toHaveBeenCalledTimes(1);
+  expect(playVoiceSound).toHaveBeenCalledTimes(1);
   await act(async () => { release(); await sent; });
-  expect(jest.mocked(playVoiceInputSound).mock.calls.map(([key]) => key)).toEqual(["ready", "send"]);
+  expect(jest.mocked(playVoiceSound).mock.calls.map(([key]) => key)).toEqual(["ready", "send"]);
 });
 
 test("empty, failed, and stale manual sends never announce a send", async () => {
@@ -2125,7 +2125,7 @@ test("empty, failed, and stale manual sends never announce a send", async () => 
   await act(async () => { await result.current.sendManualTranscript("stale", () => false); });
   options.sendTranscript.mockRejectedValueOnce(new Error("dispatch failed"));
   await act(async () => { await expect(result.current.sendManualTranscript("failed", () => true)).rejects.toThrow("dispatch failed"); });
-  expect(playVoiceInputSound).not.toHaveBeenCalled();
+  expect(playVoiceSound).not.toHaveBeenCalled();
 });
 
 test("no-speech retries announce each new ready capture and never announce a send", async () => {
@@ -2134,7 +2134,7 @@ test("no-speech retries announce each new ready capture and never announce a sen
   await emit(session, { type: "done", reason: "no_speech_timeout", hasSpeech: false });
   await advanceTimers(250);
   await emit(mockSessions.at(-1)!, { type: "ready" });
-  expect(jest.mocked(playVoiceInputSound).mock.calls.map(([key]) => key)).toEqual(["ready", "ready"]);
+  expect(jest.mocked(playVoiceSound).mock.calls.map(([key]) => key)).toEqual(["ready", "ready"]);
 });
 
 test("manual chat sends can keep listening stopped while using the same send cue", async () => {
@@ -2142,7 +2142,7 @@ test("manual chat sends can keep listening stopped while using the same send cue
   options.autoReplyAfterStt = false;
   const { result } = await renderHook(() => useStreamingStt(options));
   await act(async () => { await result.current.sendManualTranscript("手動送信", () => true, false); });
-  expect(playVoiceInputSound).toHaveBeenCalledWith("send");
+  expect(playVoiceSound).toHaveBeenCalledWith("send");
   expect(result.current.isArmed()).toBe(false);
   expect(result.current.phase).toBe("idle");
   await advanceTimers(1_000);
@@ -2156,7 +2156,7 @@ test("a manual dispatch rejected before acceptance leaves released input stopped
   await openReady(result);
   await act(async () => { await result.current.sendManualTranscript("blocked", () => true); });
   expect(result.current.getSnapshot()).toEqual({ desired: "stopped", observed: "stopped" });
-  expect(jest.mocked(playVoiceInputSound).mock.calls.map(([key]) => key)).toEqual(["ready"]);
+  expect(jest.mocked(playVoiceSound).mock.calls.map(([key]) => key)).toEqual(["ready"]);
 });
 
 
@@ -2165,7 +2165,7 @@ test("a fast reply cannot reopen capture until the send cue releases audio", asy
   const hook = await renderHook((current: Options) => useStreamingStt(current), { initialProps: options });
   const session = await openReady(hook.result);
   let releaseCue!: () => void;
-  jest.mocked(playVoiceInputSound).mockImplementationOnce(() => new Promise((resolve) => { releaseCue = resolve; }));
+  jest.mocked(playVoiceSound).mockImplementationOnce(() => new Promise((resolve) => { releaseCue = resolve; }));
   await finishSpeech(session, "すぐに返答される文章");
   await hook.rerender({ ...options, replyLoading: true });
   await hook.rerender({ ...options, replyLoading: false });
@@ -2179,7 +2179,7 @@ test("handoff release also waits for the pending send cue", async () => {
   const { result } = await renderHook(() => useStreamingStt(createOptions()));
   const session = await openReady(result);
   let releaseCue!: () => void;
-  jest.mocked(playVoiceInputSound).mockImplementationOnce(() => new Promise((resolve) => { releaseCue = resolve; }));
+  jest.mocked(playVoiceSound).mockImplementationOnce(() => new Promise((resolve) => { releaseCue = resolve; }));
   await finishSpeech(session, "切り替える前の文章");
   let released = false;
   let pending!: Promise<void>;
@@ -2193,7 +2193,7 @@ test("an unsafe send sound release blocks the next microphone start", async () =
   const options = createOptions();
   const hook = await renderHook((current: Options) => useStreamingStt(current), { initialProps: options });
   const session = await openReady(hook.result);
-  jest.mocked(playVoiceInputSound).mockRejectedValueOnce(new Error("voice_input_sound_release_failed"));
+  jest.mocked(playVoiceSound).mockRejectedValueOnce(new Error("voice_input_sound_release_failed"));
   await finishSpeech(session, "送信後に再生停止が失敗する文章");
   await hook.rerender({ ...options, replyLoading: true });
   await hook.rerender({ ...options, replyLoading: false });
@@ -2208,7 +2208,7 @@ test("an unsafe ready sound release stops capture instead of unmuting it", async
   const { result } = await renderHook(() => useStreamingStt(createOptions()));
   await act(async () => { await result.current.start(); });
   const session = mockSessions[0];
-  jest.mocked(playVoiceInputSound).mockRejectedValueOnce(new Error("voice_input_sound_release_failed"));
+  jest.mocked(playVoiceSound).mockRejectedValueOnce(new Error("voice_input_sound_release_failed"));
   await emit(session, { type: "ready" });
   expect(session.setInputMuted.mock.calls).toEqual([[true]]);
   expect(session.abort).toHaveBeenCalledTimes(1);

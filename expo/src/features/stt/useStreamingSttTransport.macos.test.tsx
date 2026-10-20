@@ -20,7 +20,7 @@ class MockSocket {
 
 const mockSockets: MockSocket[] = [];
 
-jest.mock("./voiceInputSounds", () => ({ playVoiceInputSound: jest.fn(async () => {}) }));
+jest.mock("../app/voiceSounds", () => ({ playVoiceSound: jest.fn(async () => {}) }));
 jest.mock("./useLivePcmCapture.macos", () => ({
   LIVE_PCM_FORMAT: { sampleRate: 16_000, channels: 1, bitsPerSample: 16 },
   useLivePcmCapture: (onPcm: typeof mockPcmHandler, onError: typeof mockCaptureError) => {
@@ -171,11 +171,11 @@ test("canceled Mac startup still propagates a failed native stop", async () => {
 });
 
 test("Mac ready feedback uses the shared Audio player and carries capture cancellation", async () => {
-  const { playVoiceInputSound } = jest.requireMock("./voiceInputSounds") as { playVoiceInputSound: jest.Mock };
+  const { playVoiceSound } = jest.requireMock("../app/voiceSounds") as { playVoiceSound: jest.Mock };
   const { result } = await renderHook(() => useStreamingSttTransport());
   const session = result.current.connect("http://runner.test", "token", callbacks());
   const controller = new AbortController();
   await session.playReadyCue!(controller.signal);
-  expect(playVoiceInputSound).toHaveBeenCalledWith("ready", controller.signal);
+  expect(playVoiceSound).toHaveBeenCalledWith("ready", controller.signal);
   await session.abort();
 });

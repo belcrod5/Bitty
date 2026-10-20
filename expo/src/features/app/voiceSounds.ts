@@ -1,12 +1,13 @@
-import { Audio } from "../app/audio";
+import { Audio } from "./audio";
 
 const SOUNDS = {
   ready: require("../../../modules/bitty-stt-transport/ios/Resources/voice-input-ready.wav"),
+  resetConfirmation: require("../../../assets/sfx/voice-reset-confirmation.wav"),
   send: require("../../../assets/sfx/voice-input-send.wav"),
 };
 
 // Playback settles only after audio-session release, before the next capture starts.
-export function playVoiceInputSound(key: keyof typeof SOUNDS, signal?: AbortSignal): Promise<void> {
+export function playVoiceSound(key: keyof typeof SOUNDS, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) return Promise.resolve();
   return new Promise((resolve, reject) => {
     let sound: Audio.Sound | undefined;
