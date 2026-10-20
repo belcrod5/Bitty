@@ -55,6 +55,20 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
     if (learning) await learning.observe([{ ...pair, orchestratorId, memoryConversationId: memoryStore.conversationId }]);
     else recoveredLearningPairs.push({ ...pair, orchestratorId });
   };
+  const learningContext = (orchestratorId) => ({
+    retrieve: (args) => learning ? learning.retrieve({ ...args, orchestratorId }) : Promise.resolve({ contextRevision: 0,
+      selectedDigest: "unavailable", items: [], suppressRecent: true, instruction: "" }),
+    delivered: (args) => learning?.delivered({ ...args, orchestratorId }),
+    recordRead: (args) => learning?.recordRead(args),
+    tool: async ({ tool, arguments: args, operationId, input }) => {
+      if (!learning) throw failure("Learning is unavailable", "learning_store_unavailable");
+      if (tool === "read_context" && Object.keys(args).sort().join() === "sourceItemIds,targets")
+        return { selection: await learning.retrieve({ orchestratorId, input, targets: args.targets }), sourceItemIds: args.sourceItemIds };
+      if (tool === "read_skill" && Object.keys(args).sort().join() === "hash,id,version") return learning.readSkill({ ...args, orchestratorId });
+      if (tool === "propose_batch") return learning.proposeBatch({ ...args, orchestratorId, operationId });
+      throw failure("Unknown learning tool", "learning_request_invalid");
+    },
+  });
   let storeFailure;
   const contexts = new Map();
   const reservations = new Set();
@@ -211,7 +225,7 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
       onChecklistChanged: (conversationId) => onChecklistChanged?.({ orchestratorId: "main", logicalConversationId: conversationId }),
       memoryConversationId: registry.memoryConversationId || undefined,
       memoryEventPairs: allEventPairs, pairExclusive, managedSessions: managedSessions("main"),
-      onDurablePair: observePair("main"),
+      onDurablePair: observePair("main"), learningContext: learningContext("main"),
       hasOutstandingActivity: hasOutstandingActivity("main") });
     try {
       const opened = await main.open();
@@ -256,7 +270,7 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
       taskChecklistPath: `task-checklists/${id}.md`,
       onChecklistChanged: (conversationId) => onChecklistChanged?.({ orchestratorId: id, logicalConversationId: conversationId }),
       sharedWorkspaceDirectory: workspaceDirectory, sharedMemoryStore: memoryStore, pairExclusive,
-      onDurablePair: observePair(id),
+      onDurablePair: observePair(id), learningContext: learningContext(id),
       managedSessions: managedSessions(id), hasOutstandingActivity: hasOutstandingActivity(id) });
     contexts.set(id, service);
     try { await service.open(); }
@@ -375,6 +389,19 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
       const models = settings.model === "" && settings.effort === "" ? [] : (await main.getSettings()).models;
       await learning.configure(settings, models);
       return learning.status();
+    },
+    async manageLearning(operation, payload) {
+      await exclusive(load);
+      if (!learning) throw failure("Learning storage is unavailable", "learning_store_unavailable");
+      const methods = { decide: "decide", change: "requestChange", correct: "correctEvaluation", forget: "forget", proposal: "proposalDecision", retry: "retry" };
+      if (!methods[operation]) throw failure("Unknown learning operation", "learning_request_invalid");
+      await learning[methods[operation]](payload);
+      return learning.status();
+    },
+    async learningDelivery({ orchestratorId, operationId }) {
+      await exclusive(load);
+      idOf(orchestratorId);
+      return { delivery: await learning?.delivery({ orchestratorId, operationId }) || null };
     },
     async learningUsage(options) {
       await exclusive(load);

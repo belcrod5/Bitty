@@ -8,6 +8,7 @@ import { useControlledStreamingStt } from "../../appControl/useControlledStreami
 import { getVoiceControl } from "../../appControl/voiceControl";
 import { StreamingSttFooter, type StreamingSttFooterHandle } from "../components/StreamingSttFooter";
 import { VoiceHistoryBackdrop, getMacVoiceBlurView } from "../components/VoiceHistoryBackdrop";
+import { AnswerLearningDetails } from "../components/AnswerLearningDetails";
 import { ContextUsageIndicator } from "../components/ContextUsageIndicator";
 import { CodexStatusSummaryMenu } from "../components/CodexStatusSummaryMenu";
 import { VoiceOrchestratorIcon, type VoiceOrchestrator } from "../components/VoiceOrchestratorIcon";
@@ -568,6 +569,7 @@ function VoiceConversationSession({
                           ) : null}
                         </View>
                         <Text style={{ color: textColor, fontSize: 15, lineHeight: 21 }}>{message.text}</Text>
+                        {!user ? <AnswerLearningDetails orchestratorId={orchestrator.id} operationId={message.clientOperationId} color={textColor} paused={paused} /> : null}
                       </View>
                     );
                   })}

@@ -15,6 +15,21 @@ const CALENDAR_READ_TOOLS = calendarConversationDynamicTools().map((namespace) =
     .map((tool) => ({ ...tool, deferLoading: false })),
 }));
 
+const LEARNING_TOOLS = [{ type: "namespace", name: "orchestrator_learning", description: "Read only this chat's adopted skills and register bounded batch proposals; never execution permission",
+  tools: [{ type: "function", name: "read_context", deferLoading: false,
+    description: "Retrieve target-specific adopted learning after completed tools in this turn confirm the exact target names. The Runner matches those names to successful tool outputs in this turn; never infer targets from the user input alone.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["targets"],
+      properties: { targets: { type: "array", maxItems: 8, items: { type: "string" } } } } },
+  { type: "function", name: "read_skill", deferLoading: false,
+    description: "Read an adopted skill using its exact id, version and hash from the delivered learning context",
+    inputSchema: { type: "object", additionalProperties: false, required: ["id", "version", "hash"],
+      properties: { id: { type: "string" }, version: { type: "integer" }, hash: { type: "string" } } } },
+  { type: "function", name: "propose_batch", deferLoading: false,
+    description: "After tools confirm current targets, register one bounded proposal, then ask the user via the existing approval path. This tool executes nothing.",
+    inputSchema: { type: "object", additionalProperties: false,
+      required: ["itemId", "version", "targets", "operation", "exclusions", "order", "onFailure"],
+      properties: { itemId: { type: "string" }, version: { type: "integer" }, targets: { type: "array", items: { type: "string" } },
+        operation: { type: "string" }, exclusions: { type: "string" }, order: { type: "string" }, onFailure: { type: "string" } } } }] }];
 const CONTEXT_MODE = "self_context_array";
 const DEFAULT_MODEL = "gpt-6-luna";
 const DEFAULT_EFFORT = "low";
@@ -268,7 +283,7 @@ const visibleBytes = (pairs, input, instructions) => bytes(instructions) + bytes
 
 export function createVoiceContextService({ rootDir, createClient, sharedWorkspaceDirectory,
   sharedMemoryStore, memoryEventPairs, memoryConversationId, pairExclusive, managedSessions,
-  hasOutstandingActivity, taskChecklistPath, onChecklistChanged, getOrchestratorName, onDurablePair }) {
+  hasOutstandingActivity, taskChecklistPath, onChecklistChanged, getOrchestratorName, onDurablePair, learningContext }) {
   const sharedMemory = Boolean(sharedMemoryStore || memoryEventPairs);
   const root = path.resolve(rootDir);
   const tempRoot = path.join(path.dirname(root), "ephemeral-tmp");
@@ -1153,6 +1168,8 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
     }
     const next = { ...active, nativeThreadId: candidate.threadId,
       nativeCalendarReadEnabled: candidate.calendarReadEnabled === true,
+      ...(candidate.learningSnapshot ? { learningSnapshot: { contextRevision: candidate.learningSnapshot.contextRevision,
+        selectedDigest: candidate.learningSnapshot.selectedDigest, items: candidate.learningSnapshot.items.map(({ id, version }) => ({ id, version })) }, nativeLearningEnabled: true } : {}),
       ...(taskChecklistPath ? { checklistReadPending: true, nativeAgentsEnabled: true,
         nativeChecklistWriteEnabled: true, nativeChecklistCompletionVersion: CHECKLIST_COMPLETION_VERSION } : {}),
       ...(candidate.turnId ? { nativeTurnId: candidate.turnId } : {}) };
@@ -1237,7 +1254,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
     forceNewThread = false, onDispatchIntent, onTurnIdentified, onNewParent, onStarted, onNativeRoot,
     onApproval, onUserInput, onCalendarToolCall, onText, readOnlyPreflight = false, checklistTurn,
     resumeThreadId = "", previousTurnId: previousTurnOverride = "",
-    onTextError, onContextUsage, signal, appControlInstruction = "", onLearningUsage }) {
+    onTextError, onContextUsage, signal, appControlInstruction = "", onLearningUsage, outputSchema, onLearningTool, onSkillReadCompleted, learningSelection }) {
     if (signal?.aborted) throw invalid("turn_interrupted", "Voice turn was cancelled");
     const model = requestedModel || settings().model;
     const effort = requestedEffort || settings().effort;
@@ -1272,6 +1289,8 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
     let checklistOverviewDirty = false;
     const modelStartedAt = Date.now();
     const requestControllers = new Map();
+    const learningReadCalls = new Map();
+    const learningReadProofs = [];
     function interruptForCancellation() {
       if (!signal?.aborted) return;
       for (const { controller } of requestControllers.values()) controller.abort();
@@ -1354,6 +1373,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
           ...(taskChecklistPath ? CHECKLIST_TOOLS : []),
           ...(managedSessions ? voiceSubagentTools : []),
           ...(onCalendarToolCall ? CALENDAR_READ_TOOLS : []),
+          ...(learningContext ? LEARNING_TOOLS : []),
         ] } : {}),
         config: onApproval
           ? { ...(readOnlyPreflight ? summaryConfig : {}), agents: { enabled: true },
@@ -1472,6 +1492,8 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
         interruptionSent = true;
         void client.request("turn/interrupt", identity, 30000).catch(() => {});
       }
+      const verifiedToolItems = new Map();
+      const contextSelections = [];
       function observe(method, params) {
         if (method === "serverRequest/resolved") {
           const pending = requestControllers.get(params?.requestId);
@@ -1510,6 +1532,19 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
           return;
         }
         const itemType = String(params?.item?.type || "");
+        if (method === "item/completed" && TOOL_ITEM_TYPES.has(itemType)
+          && ["completed", "success"].includes(params?.item?.status)) {
+          if (!learningReadCalls.has(params.item.id) && verifiedToolItems.size < 100) {
+            const item = params.item;
+            const output = itemType === "commandExecution" && item.exitCode === 0 ? item.aggregatedOutput
+              : itemType === "dynamicToolCall" && item.success === true ? item.contentItems
+                : itemType === "mcpToolCall" && !item.error && item.result?.isError !== true ? item.result : null;
+            const proof = typeof output === "string" ? output : output ? JSON.stringify(output) : "";
+            if (proof && bytes(proof) <= 8000) verifiedToolItems.set(params.item.id, proof);
+          }
+          const skill = learningReadCalls.get(params.item.id);
+          if (skill && params.item.success !== false) learningReadProofs.push({ callId: params.item.id, skill });
+        }
         if (readOnlyPreflight && ["item/started", "item/completed", "item/failed"].includes(method)
           && itemType === "subAgentActivity") toolBeforeChecklistRead = true;
         if (readOnlyPreflight && method === "item/started" && itemType === "dynamicToolCall") {
@@ -1625,6 +1660,31 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
           toolSeen = true;
           interruptForTool();
           return { decision: "decline" };
+        }
+        if (method === "item/tool/call" && request.params?.namespace === "orchestrator_learning" && !readOnlyPreflight) {
+          await identityReady;
+          const params = request.params;
+          if (!identity || !codexTurnEventMatches(params, identity) || signal?.aborted || terminal || !onLearningTool
+            || typeof params.callId !== "string" || !params.callId || !isRecord(params.arguments)) return undefined;
+          try {
+            let arguments_ = params.arguments;
+            if (["read_context", "propose_batch"].includes(params.tool)) {
+              const targets = params.arguments.targets;
+              if (!Array.isArray(targets) || !targets.length || targets.length > (params.tool === "read_context" ? 8 : 100)
+                || targets.some((target) => typeof target !== "string" || !target || bytes(target) > 300
+                  || ![...verifiedToolItems.values()].some((proof) => proof.includes(target))))
+                throw invalid("learning_targets_unverified", "Read and confirm each current target with tools in this turn first");
+              const sourceItemIds = [...verifiedToolItems].filter(([, proof]) => targets.some((target) => proof.includes(target))).map(([id]) => id);
+              arguments_ = { ...params.arguments, sourceItemIds };
+            }
+            if (params.tool === "read_skill" && ![...(learningSelection?.items || []), ...contextSelections.flatMap((value) => value.items)]
+              .some((item) => item.id === params.arguments.id && item.skill?.version === params.arguments.version && item.skill?.hash === params.arguments.hash))
+              throw invalid("learning_skill_unavailable", "Read the applicable learning context and exact skill descriptor in this turn first");
+            const value = await onLearningTool({ tool: params.tool, arguments: arguments_, callId: params.callId });
+            if (["read_skill", "read_context"].includes(params.tool)) learningReadCalls.set(params.callId, value);
+            if (params.tool === "read_context" && value?.selection) contextSelections.push(value.selection);
+            return { success: true, contentItems: [{ type: "inputText", text: JSON.stringify(value) }] };
+          } catch (cause) { return { success: false, contentItems: [{ type: "inputText", text: String(cause.message || "Learning tool unavailable") }] }; }
         }
         if (method === "item/tool/call" && (readOnlyPreflight
           || taskChecklistPath && request.params?.namespace === "task_checklist")) {
@@ -1834,6 +1894,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
       turnStartRequested = true;
       const turn = await client.request("turn/start", {
         threadId, input: [{ type: "text", text: input }], cwd,
+        ...(outputSchema ? { outputSchema } : {}),
         model, effort, approvalPolicy: onApproval ? "on-request" : "never",
         ...(onApproval ? { additionalContext: { "bitty.appControl": { kind: "application",
           value: appControlInstruction || APP_CONTROL_UNAVAILABLE_INSTRUCTION } } } : {}),
@@ -1938,6 +1999,13 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
       removeServerRequestHandler();
       removeAbortListener();
       client?.close();
+      // A successful read survives an interrupted/failed outer turn. Delivery has settled before this boundary.
+      try {
+        for (const proof of learningReadProofs) await onSkillReadCompleted?.(proof);
+        for (const [callId, skill] of learningReadCalls) if (!learningReadProofs.some((proof) => proof.callId === callId))
+          await onSkillReadCompleted?.({ callId, skill, unconfirmed: true });
+        await onSkillReadCompleted?.({ complete: true });
+      } catch { /* Reference records remain explicitly unconfirmed if their storage is unavailable. */ }
       await checklistChangeProof;
       if (checklistOverviewDirty) {
         await scheduleChecklistOverview().catch(() => {});
@@ -2101,9 +2169,17 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
     let stage = "preflight";
     try {
       const managedContext = managedSessions?.contextOf(await managedSessions.refresh()) || "";
+      const learning = await learningContext?.retrieve({ input });
       const prepared = await exclusive(async () => {
         if (signal.aborted) throw invalid("turn_interrupted", "Voice turn was cancelled");
-        const selected = pairs.slice(-RECENT_PAIRS);
+        const selected = learning?.suppressRecent ? [] : pairs.slice(-RECENT_PAIRS);
+        const previousLearning = active.learningSnapshot;
+        const learningChanged = Boolean(learningContext && active.nativeThreadId && (active.nativeLearningEnabled !== true
+          || previousLearning?.contextRevision !== learning?.contextRevision || previousLearning?.selectedDigest !== learning?.selectedDigest));
+        const learningRemoved = Boolean(learningChanged && previousLearning?.items?.some((old) =>
+          !learning?.items?.some((item) => item.id === old.id && item.version === old.version)));
+        if (learningChanged && !active.pendingSwitch) await saveActive({ ...active, pendingSwitch: {
+          parentGeneration: active.parentGeneration, turnSeq: Math.max(1, active.turnSeq || 0), reason: "learning" } }, "Learning parent switch could not be synced");
         const legacyChecklistParent = Boolean(taskChecklistPath && active.nativeThreadId
           && (active.checklistReadPending === undefined || active.nativeAgentsEnabled !== true
             || active.nativeChecklistWriteEnabled !== true || active.nativeChecklistCompletionVersion !== CHECKLIST_COMPLETION_VERSION));
@@ -2118,7 +2194,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
         const pending = active.pendingSwitch?.parentGeneration === active.parentGeneration
           ? active.pendingSwitch : null;
         const switching = Boolean(pending && await canSwitchParent(clientOperationId));
-        if ((legacyChecklistParent || legacyCalendarParent) && !switching) {
+        if ((legacyChecklistParent || legacyCalendarParent || learningRemoved || learningChanged && active.nativeLearningEnabled !== true) && !switching) {
           throw invalid("session_busy", "Voice tools parent cannot switch yet");
         }
         if (active.contextLimitReached && !switching) {
@@ -2130,8 +2206,9 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
           .some((line) => line.trim() && !/^- \[[ x]\] \S/u.test(line));
         const needsChecklistRead = Boolean(taskChecklistPath
           && (newParent || active.checklistReadPending !== false));
-        const instructions = `${responseInstructions()}${legacyChecklist ? `\n${CHECKLIST_REPAIR_INSTRUCTION}` : ""}`;
-        const preflightInstructions = needsChecklistRead ? `${CHECKLIST_READ_INSTRUCTION}\n\n${responseInstructions()}` : instructions;
+        const effectiveLearning = learningChanged && !switching ? previousLearning : learning;
+        const instructions = `${responseInstructions()}${effectiveLearning?.instruction || ""}${legacyChecklist ? `\n${CHECKLIST_REPAIR_INSTRUCTION}` : ""}`;
+        const preflightInstructions = needsChecklistRead ? `${CHECKLIST_READ_INSTRUCTION}\n\n${instructions}` : instructions;
         if (visibleBytes(selected, input, instructions) + bytes(managedContext) > MAX_VISIBLE_BYTES
           || needsChecklistRead && visibleBytes([], CHECKLIST_PREFLIGHT_INPUT, preflightInstructions) > MAX_VISIBLE_BYTES) {
           throw invalid("voice_context_too_large", "Voice context exceeds safe model input budget");
@@ -2142,6 +2219,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
         return {
           selected: active.nativeThreadId && !switching ? [] : selected,
           newParent,
+          learning: effectiveLearning,
           needsChecklistRead,
           instructions,
           preflightInstructions,
@@ -2187,6 +2265,21 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
         resumeThreadId: preflight?.threadId, previousTurnId: preflight?.turnId,
         forceNewThread: preflight ? false : prepared.switching,
         onUserInput: hooks.onUserInput,
+        learningSelection: prepared.learning,
+        onLearningTool: learningContext ? async ({ tool, arguments: arguments_, callId }) => {
+          const value = await learningContext.tool({ tool, arguments: arguments_, callId, operationId: clientOperationId, input });
+          if (value?.selection) await exclusive(async () => {
+            const snapshot = value.selection;
+            const old = active.learningSnapshot || { items: [], selectedDigest: "" };
+            const items = [...new Map([...old.items, ...snapshot.items.map(({ id, version }) => ({ id, version }))].map((item) => [`${item.id}:${item.version}`, item])).values()];
+            // Persist possible parent exposure before returning context, including a later failed outer turn.
+            await saveActive({ ...active, learningSnapshot: { contextRevision: snapshot.contextRevision,
+              selectedDigest: createHash("sha256").update(JSON.stringify([old.selectedDigest, snapshot.selectedDigest, callId])).digest("hex"), items } },
+              "Learning context read could not be synced");
+          });
+          return value;
+        } : undefined,
+        onSkillReadCompleted: learningContext ? (proof) => learningContext.recordRead({ operationId: clientOperationId, ...proof }) : undefined,
         onCalendarToolCall: hooks.onCalendarToolCall,
         onNativeRoot: hooks.onNativeRoot,
         signal,
@@ -2195,6 +2288,8 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
           const candidate = { clientOperationId, threadId, parentGeneration: prepared.generation,
             turnSeq, newParent: prepared.newParent,
             calendarReadEnabled: Boolean(hooks.onCalendarToolCall),
+            ...(prepared.learning ? { learningSnapshot: { contextRevision: prepared.learning.contextRevision, selectedDigest: prepared.learning.selectedDigest,
+              items: prepared.learning.items.map(({ id, version }) => ({ id, version })) } } : {}),
             ...(!prepared.newParent && previousTurnId ? { previousTurnId } : {}),
             ...(prepared.pending ? { switchTurnSeq: prepared.pending.turnSeq } : {}) };
           await saveActive({ ...active, pendingDispatch: candidate },
@@ -2229,6 +2324,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
         }, onTextError: hooks.onTextError,
         onStarted: async ({ threadId, turnId }) => {
           await exclusive(() => append(clientOperationId, "native_started", { threadId, turnId }));
+          if (prepared.learning) await Promise.resolve(learningContext.delivered({ operationId: clientOperationId, threadId, turnId, snapshot: prepared.learning })).catch(() => {});
           if (prepared.judgeTarget) scheduleTopicJudge(prepared.judgeTarget);
           hooks.onStarted?.({ threadId, turnId });
         } });
@@ -2326,14 +2422,14 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
       return path.join(workspaceRoot, active.workspaceConversationId || active.logicalConversationId);
     },
     async scheduleSummary() { return exclusive(async () => { await load(); await startSummary(); }); },
-    async analyzeLearning({ input, instructions, model, effort, signal, onLearningUsage = () => {} }) {
+    async analyzeLearning({ input, instructions, outputSchema, model, effort, signal, onLearningUsage = () => {} }) {
       await exclusive(load);
       const models = await listCodexModelsFromAppServer(createClient, "bitty-voice");
       if (!models.some((option) => option.modelId === model && option.effortOptions.includes(effort))) {
         throw invalid("learning_model_unavailable", "Learning model or effort is no longer available");
       }
       // Uses the same tool-free, ephemeral execution contract as summaries; no approval callback is accepted.
-      return modelTurn({ input, instructions, model, effort, signal, onLearningUsage });
+      return modelTurn({ input, instructions, outputSchema, model, effort, signal, onLearningUsage });
     },
     async getSettings() {
       await exclusive(load);

@@ -1031,3 +1031,32 @@ test("learning can stop without a model catalog while enabling still requires va
   await assert.rejects(service.configureLearning({ model: "another-model", effort: "high", settingsRevision: 3 }), /Model catalog unavailable/);
   assert.deepEqual((await service.learningStatus()).settings, stopped.settings);
 });
+
+test("learning management facade connects bulk adoption, publication, response delivery and forgetting", async (t) => {
+  const { rootDir, service, codex } = await fixture(t);
+  const main = await service.open("main");
+  await (await turn(service, "main", main.logicalConversationId, "Prefer short reports")).finished;
+  const workspace = (await fs.readdir(path.join(path.dirname(rootDir), "workspaces")))[0];
+  const file = path.join(path.dirname(rootDir), "workspaces", workspace, "orchestrator-learning", "state.json");
+  const saved = JSON.parse(await fs.readFile(file, "utf8"));
+  const id = randomUUID();
+  saved.candidates.push({ id, version: 1, status: "candidate", kind: "procedure", content: "Check reports", conditions: "This chat only",
+    reason: "Synthetic explicit procedure", scope: { orchestratorId: "main" }, evidence: [{ ...saved.pending[0], user: undefined, assistant: undefined }],
+    createdAt: new Date().toISOString(), skill: { purpose: "Check reports", triggers: "Report checks", inputs: "Current report", steps: "Read and check",
+      outputs: "Findings", exceptions: "Only requested report", approvals: "Current approval path" } });
+  await fs.writeFile(file, JSON.stringify(saved));
+  const restarted = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
+  let status = await restarted.manageLearning("decide", { items: [{ id, version: 1 }], action: "adopt" });
+  assert.equal(status.candidates[0].status, "active");
+  status = await restarted.manageLearning("decide", { items: [{ id, version: 2 }], action: "publish" });
+  assert.equal(status.candidates[0].published.version, 3);
+  const response = await turn(restarted, "main", main.logicalConversationId, "Check reports");
+  const completed = await response.finished; assert.equal(completed.status, "completed");
+  const proof = await restarted.learningDelivery({ orchestratorId: "main", operationId: completed.clientOperationId });
+  assert.equal(proof.delivery.items[0].id, id); assert.equal(proof.delivery.readsVerified, true);
+  status = await restarted.manageLearning("change", { items: [{ id, version: 3 }], instruction: "Make findings shorter" });
+  assert.equal(status.requests[0].instruction, "Make findings shorter");
+  status = await restarted.manageLearning("forget", { items: [{ id, version: 3 }] });
+  assert.equal(status.candidates.length, 0);
+  assert.equal((await restarted.learningDelivery({ orchestratorId: "main", operationId: completed.clientOperationId })).delivery, null);
+});
