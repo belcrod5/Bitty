@@ -45,6 +45,58 @@ function panelSnapshot(
 }
 
 describe("useConversationRuntimeStoreController conditional terminal update", () => {
+  it("only publishes relevant display changes while preserving request freshness", async () => {
+    const { result } = await renderHook(useConversationRuntimeStoreController);
+    const listener = jest.fn();
+    const unsubscribe = result.current.subscribeConversationRuntime(["session-1"], listener);
+    const request = { ...activeRequest(100), updatedAtMs: 1000 };
+    await act(() => {
+      result.current.upsertConversationRuntimeSnapshot({ sessionId: "session-1", request });
+    });
+    const revision = result.current.getConversationRuntimeRevision("session-1");
+    listener.mockClear();
+    await act(() => {
+      result.current.upsertConversationRuntimeSnapshot({ sessionId: "unrelated", isResponding: true });
+      result.current.upsertConversationRuntimeSnapshot({ sessionId: "session-1" });
+      result.current.upsertConversationRuntimeSnapshot({ sessionId: "session-1", request: { ...request, updatedAtMs: 2000 } });
+    });
+    expect(listener).not.toHaveBeenCalled();
+    expect(result.current.getConversationRuntimeRevision("session-1")).toBe(revision);
+    expect(result.current.getConversationRuntimeSnapshot("session-1")).toMatchObject({
+      executionGeneration: 1, request: { updatedAtMs: 2000 },
+    });
+    await act(() => {
+      result.current.upsertConversationRuntimeSnapshot({
+        sessionId: "session-1", request: { ...request, lifecycle: "completed", status: "completed", updatedAtMs: 3000 },
+      });
+    });
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(result.current.getConversationRuntimeRevision("session-1")).toBe(revision + 1);
+    unsubscribe();
+    listener.mockClear();
+    await act(() => {
+      result.current.upsertConversationRuntimeSnapshot({ sessionId: "session-1", contextUsedPct: 20 });
+    });
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it("keeps defensive copies when omitted collections are reused internally", async () => {
+    const { result } = await renderHook(useConversationRuntimeStoreController);
+    const input = [{ ...message("owned", "original"), youtubeVideoIds: ["original-id"] }];
+    const first = result.current.upsertConversationRuntimeSnapshot({ sessionId: "session-1", conversationMessages: input })!;
+    input[0].content = "changed input";
+    input[0].youtubeVideoIds[0] = "changed input id";
+    first.conversationMessages[0].content = "changed output";
+    first.conversationMessages[0].youtubeVideoIds![0] = "changed output id";
+    const next = result.current.upsertConversationRuntimeSnapshot({ sessionId: "session-1", contextUsedPct: 20 })!;
+    next.conversationMessages[0].content = "changed reused output";
+    const read = result.current.getConversationRuntimeSnapshot("session-1")!;
+    read.conversationMessages[0].youtubeVideoIds![0] = "changed read";
+    expect(result.current.getConversationRuntimeSnapshot("session-1")?.conversationMessages).toEqual([
+      { ...message("owned", "original"), youtubeVideoIds: ["original-id"] },
+    ]);
+  });
+
   it("updates an active request status without replacing its panel conversation", async () => {
     const { result } = await renderHook(() => useConversationRuntimeStoreController());
     await act(() => {

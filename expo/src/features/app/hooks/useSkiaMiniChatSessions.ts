@@ -119,7 +119,6 @@ export function useSkiaMiniChatSessions() {
     ensureRegisteredDirectorySessions,
     loadSessionChildrenBatch,
   } = useConversation();
-  const { getSnapshot, revision: runtimeRevision } = usePanelRuntimeStore();
   const { clearPanelSnapshot, hydratePanelFromSessionHistory } = usePanelRuntimeController();
   const {
     state: boardState,
@@ -137,7 +136,6 @@ export function useSkiaMiniChatSessions() {
   } = useSkiaBoard();
   const clearPanelSnapshotRef = useRef(clearPanelSnapshot);
   const hydratePanelFromSessionHistoryRef = useRef(hydratePanelFromSessionHistory);
-  const getSnapshotRef = useRef(getSnapshot);
   // 同一マウント内で発行済みのhydrate要求(進行中含む)のパネル別記録。
   const lastRequestedHydrationByPanelRef = useRef<Record<string, PanelHydrationRequestMark>>({});
   // 直近まで割当があったパネルの記録。割当が外れたパネルのsnapshotだけを破棄する。
@@ -146,12 +144,6 @@ export function useSkiaMiniChatSessions() {
   const [hydratingPanelCount, setHydratingPanelCount] = useState(0);
   const [panelHydrationErrorCount, setPanelHydrationErrorCount] = useState(0);
   const [nowMs, setNowMs] = useState(Date.now());
-
-  useEffect(() => {
-    clearPanelSnapshotRef.current = clearPanelSnapshot;
-    hydratePanelFromSessionHistoryRef.current = hydratePanelFromSessionHistory;
-    getSnapshotRef.current = getSnapshot;
-  }, [clearPanelSnapshot, getSnapshot, hydratePanelFromSessionHistory]);
 
   useEffect(() => {
     void ensureRegisteredDirectorySessions("screen_mount");
@@ -312,6 +304,16 @@ export function useSkiaMiniChatSessions() {
       }];
     });
   }, [boardState, sessionCandidates, sessionTitleOverridesById, summaryCandidates]);
+
+  const { getSnapshot, revision: runtimeRevision } = usePanelRuntimeStore(
+    assignedSessions.map(({ panelId }) => panelId)
+  );
+  const getSnapshotRef = useRef(getSnapshot);
+  useEffect(() => {
+    clearPanelSnapshotRef.current = clearPanelSnapshot;
+    hydratePanelFromSessionHistoryRef.current = hydratePanelFromSessionHistory;
+    getSnapshotRef.current = getSnapshot;
+  }, [clearPanelSnapshot, getSnapshot, hydratePanelFromSessionHistory]);
 
   const childStateByParentId = useMemo(() => new Map(
     Object.values(directorySessionsById).flatMap((state) => (

@@ -223,13 +223,26 @@ function normalizeRequestSnapshot(
 
 export function useConversationRuntimeStoreController() {
   const runtimeBySessionIdRef = useRef<Record<string, ConversationRuntimeSnapshot>>({});
-  const revisionRef = useRef(0);
-  const listenersRef = useRef(new Set<() => void>());
-  const subscribeConversationRuntime = useCallback((listener: () => void) => {
-    listenersRef.current.add(listener);
-    return () => { listenersRef.current.delete(listener); };
+  const revisionsRef = useRef<Record<string, number>>({});
+  const listenersRef = useRef(new Map<string, Set<() => void>>());
+  const subscribeConversationRuntime = useCallback((sessionIds: readonly string[], listener: () => void) => {
+    const ids = [...new Set(sessionIds.map(normalizeSessionId).filter(Boolean))];
+    for (const id of ids) {
+      const listeners = listenersRef.current.get(id) || new Set<() => void>();
+      listeners.add(listener);
+      listenersRef.current.set(id, listeners);
+    }
+    return () => {
+      for (const id of ids) {
+        const listeners = listenersRef.current.get(id);
+        listeners?.delete(listener);
+        if (!listeners?.size) listenersRef.current.delete(id);
+      }
+    };
   }, []);
-  const getConversationRuntimeRevision = useCallback(() => revisionRef.current, []);
+  const getConversationRuntimeRevision = useCallback((sessionId: string) => (
+    revisionsRef.current[normalizeSessionId(sessionId)] || 0
+  ), []);
 
   const getConversationRuntimeSnapshot = useCallback((sessionIdRaw: unknown) => {
     const sessionId = normalizeSessionId(sessionIdRaw);
@@ -274,7 +287,7 @@ export function useConversationRuntimeStoreController() {
       ? (keepPreviousRequest ? cloneRequestSnapshot(previous?.request) : normalizedRequestInput)
       : shouldClearRespondingRequest
       ? null
-      : cloneRequestSnapshot(previous?.request);
+      : previous?.request ?? null;
     const inputIsResponding = keepPreviousRequest
       ? (previous?.isResponding ?? false)
       : (
@@ -296,7 +309,7 @@ export function useConversationRuntimeStoreController() {
     const nextTurnStartedAtMs = normalizeStartedAtMs(nextRequest?.startedAtMs);
     let activityTrail = nextTurnStartedAtMs !== null && nextTurnStartedAtMs !== previousTurnStartedAtMs
       ? []
-      : [...(previous?.activityTrail || [])];
+      : previous?.activityTrail || [];
     const nextActivity = nextRequest && isConversationRuntimeRequestResponding(nextRequest)
       ? resolveSessionActivity(nextRequest.status, nextRequest.statusDetail)
       : null;
@@ -328,20 +341,34 @@ export function useConversationRuntimeStoreController() {
       || previous.isResponding !== nextIsResponding
       || previous.selectedThreadStatusType !== selectedThreadStatusType
     );
+    const events = Object.prototype.hasOwnProperty.call(input, "events")
+      ? (Array.isArray(input.events) ? input.events : [])
+      : previous?.events || [];
+    const messages = Array.isArray(input.conversationMessages)
+      ? input.conversationMessages : previous?.conversationMessages || [];
+    const pendingApproval = Object.prototype.hasOwnProperty.call(input, "pendingApproval")
+      ? input.pendingApproval ?? null : previous?.pendingApproval ?? null;
+    const contextUsedPct = Object.prototype.hasOwnProperty.call(input, "contextUsedPct")
+      ? normalizeContextUsedPct(input.contextUsedPct) : previous?.contextUsedPct ?? null;
+    const eventsChanged = events !== previous?.events && (events.length > 0 || !!previous?.events.length);
+    const messagesChanged = messages !== previous?.conversationMessages && (messages.length > 0 || !!previous?.conversationMessages.length);
+    const requestChangedForDisplay = !!previous?.request !== !!nextRequest || (
+      !!previous?.request && !!nextRequest && (Object.keys(nextRequest) as Array<keyof ConversationRuntimeRequestSnapshot>)
+        .some((key) => key !== "updatedAtMs" && key !== "completedAtMs" && nextRequest[key] !== previous.request![key])
+    );
+    const displayChanged = !previous || eventsChanged || messagesChanged
+      || pendingApproval !== previous.pendingApproval
+      || contextUsedPct !== previous.contextUsedPct
+      || nextIsResponding !== previous.isResponding
+      || selectedThreadStatusType !== previous.selectedThreadStatusType
+      || activityTrail !== previous.activityTrail || requestChangedForDisplay;
     const next: ConversationRuntimeSnapshot = {
       sessionId,
-      events: Object.prototype.hasOwnProperty.call(input, "events")
-        ? cloneRuntimeEvents(Array.isArray(input.events) ? input.events : [])
-        : cloneRuntimeEvents(previous?.events || []),
-      pendingApproval: Object.prototype.hasOwnProperty.call(input, "pendingApproval")
-        ? cloneApprovalRequest(input.pendingApproval)
-        : cloneApprovalRequest(previous?.pendingApproval),
-      conversationMessages: cloneConversationMessages(
-        Array.isArray(input.conversationMessages) ? input.conversationMessages : previous?.conversationMessages || []
-      ),
-      contextUsedPct: Object.prototype.hasOwnProperty.call(input, "contextUsedPct")
-        ? normalizeContextUsedPct(input.contextUsedPct)
-        : previous?.contextUsedPct ?? null,
+      events: eventsChanged ? cloneRuntimeEvents(events) : previous?.events || [],
+      pendingApproval: pendingApproval !== previous?.pendingApproval
+        ? cloneApprovalRequest(pendingApproval) : previous?.pendingApproval || null,
+      conversationMessages: messagesChanged ? cloneConversationMessages(messages) : previous?.conversationMessages || [],
+      contextUsedPct,
       isResponding: nextIsResponding,
       selectedThreadStatusType,
       request: nextRequest,
@@ -353,8 +380,11 @@ export function useConversationRuntimeStoreController() {
       ...runtimeBySessionIdRef.current,
       [sessionId]: next,
     };
-    revisionRef.current += 1;
-    listenersRef.current.forEach((listener) => listener());
+    // Request timestamps still advance storage/race guards without invalidating display readers.
+    if (displayChanged) {
+      revisionsRef.current[sessionId] = (revisionsRef.current[sessionId] || 0) + 1;
+      listenersRef.current.get(sessionId)?.forEach((listener) => listener());
+    }
     return {
       ...next,
       events: cloneRuntimeEvents(next.events),

@@ -23,6 +23,7 @@ import {
 } from "./useSkiaMiniChatSessions";
 import { IDLE_DIRECTORY_SESSION_SYNC } from "../types/directorySessions";
 import { SkiaBoardProvider, useSkiaBoard } from "../contexts/SkiaBoardContext";
+import { buildPanelRuntimeSnapshot } from "../utils/panelRuntimeSnapshot";
 import { useConversationRuntimeStoreController } from "./useConversationRuntimeStoreController";
 import type { PanelRuntimeSnapshot } from "../contexts/PanelRuntimeStoreContext";
 import type { SkiaBoardCard, SkiaBoardState } from "../utils/skiaBoardState";
@@ -268,8 +269,11 @@ describe("useSkiaMiniChatSessions", () => {
             conversationMessages: runtime?.conversationMessages ?? [],
           } as PanelRuntimeSnapshot;
         }, []);
+        const base = React.useMemo(() => ({ selectedSessionId: "session-1" } as PanelRuntimeSnapshot), []);
         const value = React.useMemo(() => ({
-          getSnapshot: getter,
+          getBaseSnapshot: () => base,
+          projectSnapshot: getter,
+          createEmptySnapshot: getter,
           getKnownPanelIds: () => ["skia_mini_preview_session-1"],
           subscribe: store.subscribeConversationRuntime,
           getRevision: store.getConversationRuntimeRevision,
@@ -309,6 +313,86 @@ describe("useSkiaMiniChatSessions", () => {
       });
     }
   );
+
+  it("avoids unrelated/no-op work and only reprojects the changed card among 24 histories", async () => {
+    const count = 24;
+    seedRunnerBoard(Array.from({ length: count }, (_, i) => sessionCard(`session-${i + 1}`, i, 0)));
+    mockConversation(Array.from({ length: count }, (_, i) => session(i + 1)));
+    mockUsePanelRuntimeStore.mockImplementation(
+      jest.requireActual("../contexts/PanelRuntimeStoreContext").usePanelRuntimeStore
+    );
+    let store!: ReturnType<typeof useConversationRuntimeStoreController>;
+    const bases = new Map(Array.from({ length: count }, (_, i) => {
+      const panelId = `skia_mini_preview_session-${i + 1}`;
+      return [panelId, buildPanelRuntimeSnapshot({
+        panelId, base: {} as PanelRuntimeSnapshot,
+        patch: { selectedSessionId: `session-${i + 1}`, conversationMessages: [] }, isCompactRunning: () => false,
+      })];
+    }));
+    const projectSnapshot = jest.fn((panelId: string, base: PanelRuntimeSnapshot) => {
+      const runtime = store.getConversationRuntimeSnapshot(base.selectedSessionId)!;
+      return buildPanelRuntimeSnapshot({
+        panelId, base, isCompactRunning: () => false,
+        patch: {
+          conversationMessages: runtime.conversationMessages,
+          isResponding: runtime.isResponding,
+          selectedThreadStatusType: runtime.selectedThreadStatusType,
+          runtimeActivityTrail: runtime.activityTrail,
+        },
+      });
+    });
+    function RuntimeWrapper({ children }: PropsWithChildren) {
+      store = useConversationRuntimeStoreController();
+      const seeded = React.useRef(false);
+      if (!seeded.current) {
+        seeded.current = true;
+        for (let i = 1; i <= count; i += 1) {
+          store.upsertConversationRuntimeSnapshot({
+            sessionId: `session-${i}`,
+            conversationMessages: Array.from({ length: 200 }, (_, j) => ({
+              id: `message-${i}-${j}`, role: "assistant", content: `message ${j}`,
+            })),
+          });
+        }
+      }
+      const value = React.useMemo(() => ({
+        getBaseSnapshot: (panelId: string) => bases.get(panelId), projectSnapshot,
+        createEmptySnapshot: (panelId: string) => ({ panelId } as PanelRuntimeSnapshot),
+        getKnownPanelIds: () => [...bases.keys()],
+        subscribe: store.subscribeConversationRuntime, getRevision: store.getConversationRuntimeRevision,
+      }), []);
+      return <PanelRuntimeStoreProvider value={value}><BoardWrapper>{children}</BoardWrapper></PanelRuntimeStoreProvider>;
+    }
+    const { result } = await renderHook(useSkiaMiniChatSessions, { wrapper: RuntimeWrapper });
+    await flush();
+    expect(result.current.sessions).toHaveLength(count);
+    const before = result.current.sessions;
+    projectSnapshot.mockClear();
+    await act(() => {
+      store.upsertConversationRuntimeSnapshot({ sessionId: "unrelated", isResponding: true });
+      store.upsertConversationRuntimeSnapshot({ sessionId: "session-1" });
+    });
+    expect(projectSnapshot).not.toHaveBeenCalled();
+    expect(result.current.sessions).toBe(before);
+    const request = {
+      requestId: "request-1", requestSeq: 1, sessionId: "session-1", sourcePanelId: "panel-1",
+      lifecycle: "active" as const, status: "model_processing", startedAtMs: 100,
+    };
+    await act(() => { store.upsertConversationRuntimeSnapshot({ sessionId: "session-1", request }); });
+    expect(projectSnapshot.mock.calls.map(([panelId]) => panelId)).toEqual(["skia_mini_preview_session-1"]);
+    expect(result.current.sessions[0].isResponding).toBe(true);
+    expect(result.current.sessions.slice(1).every((item, i) => item === before[i + 1])).toBe(true);
+    projectSnapshot.mockClear();
+    await act(() => {
+      store.upsertConversationRuntimeSnapshot({
+        sessionId: "session-1", request: { ...request, lifecycle: "completed", status: "completed" },
+      });
+    });
+    expect(projectSnapshot).toHaveBeenCalledTimes(1);
+    expect(result.current.sessions[0]).toMatchObject({
+      isResponding: false, activityTrail: [{ kind: "thinking", active: false }],
+    });
+  });
 
   it("formats recent updates in minutes without a seconds label", () => {
     const now = new Date("2026-06-23T00:01:30.000Z").getTime();

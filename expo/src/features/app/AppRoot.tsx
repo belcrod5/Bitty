@@ -5753,10 +5753,12 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     return {
       subscribe: subscribeConversationRuntime,
       getRevision: getConversationRuntimeRevision,
-      getSnapshot: resolvePanelSnapshotForDisplay,
+      getBaseSnapshot: (panelId) => panelRuntimeEntriesById[normalizeRuntimePanelId(panelId)]?.snapshot,
+      projectSnapshot: projectConversationRuntimeToPanelSnapshot,
+      createEmptySnapshot: createEmptyPanelRuntimeSnapshot,
       getKnownPanelIds: () => Object.keys(panelRuntimeEntriesById),
     };
-  }, [getConversationRuntimeRevision, panelRuntimeEntriesById, resolvePanelSnapshotForDisplay, subscribeConversationRuntime]);
+  }, [createEmptyPanelRuntimeSnapshot, getConversationRuntimeRevision, panelRuntimeEntriesById, projectConversationRuntimeToPanelSnapshot, subscribeConversationRuntime]);
   const panelRuntimeControllerContextValue = useMemo<PanelRuntimeControllerContextValue>(() => ({
     clearPanelSnapshot,
     copyPanelSnapshot,
