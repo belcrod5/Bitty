@@ -569,7 +569,7 @@ function VoiceConversationSession({
                           ) : null}
                         </View>
                         <Text style={{ color: textColor, fontSize: 15, lineHeight: 21 }}>{message.text}</Text>
-                        {!user ? <AnswerLearningDetails orchestratorId={orchestrator.id} operationId={message.clientOperationId} color={textColor} paused={paused} /> : null}
+                        {!user ? <AnswerLearningDetails orchestratorId={orchestrator.id} operationId={message.clientOperationId} paused={paused || !historyExpanded} /> : null}
                       </View>
                     );
                   })}
