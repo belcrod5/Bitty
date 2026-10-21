@@ -1855,13 +1855,13 @@ test.each(["standard", "cyberpunk"] as const)("uses %s accent for the static run
   globals.__skiaBoardRRectPaints = [];
   const screen = await render(tree());
   expect(screen.getAllByTestId("skia-icon-path")[0].props.accessibilityLabel).toBe(activityColor);
-  expect(globals.__skiaBoardRRectPaints).toContainEqual({ color: effectColor, alpha: 0.09 });
+  expect(globals.__skiaBoardRRectPaints).toContainEqual({ color: effectColor, alpha: 0.16 });
 
   globals.__skiaBoardRRectPaints = [];
   mockSessions = [{ ...mockSessions[0], isResponding: false, activityTrail: [{ kind: "reading", active: false }] }];
   await screen.rerender(tree());
   expect(screen.getAllByTestId("skia-icon-path")[0].props.accessibilityLabel).toBe(inactiveColor);
-  expect(globals.__skiaBoardRRectPaints).not.toContainEqual({ color: effectColor, alpha: 0.09 });
+  expect(globals.__skiaBoardRRectPaints).not.toContainEqual({ color: effectColor, alpha: 0.16 });
 });
 
 test("shows a moved-or-deleted message instead of file actions for an unavailable card", async () => {

@@ -469,6 +469,7 @@ const BoardCard = memo(function BoardCard({
   const footer = item.kind === "session" ? item.updatedAtLabel : "";
   const isSession = item.kind === "session";
   const isResponding = isSession && item.isResponding;
+  const cardMutedTextColor = isResponding ? theme.colors.textSecondary : theme.board.textMuted;
   const markerFill = isSession
     ? DIRECTORY_MARKER_COLORS[item.markerColor] ?? theme.colors.border
     : theme.colors.accent;
@@ -524,7 +525,11 @@ const BoardCard = memo(function BoardCard({
           drawCardRect(2, 4, fillPaint(theme.colors.shadow, 0.16));
           drawCardRect(0, 0, fillPaint(theme.board.cardSurface));
           if (isResponding) {
-            drawCardRect(0, 0, fillPaint(theme.colors.accent, 0.09));
+            drawCardRect(0, 0, fillPaint(theme.colors.accent, 0.16));
+            canvas.drawRRect(
+              Skia.RRectXY(Skia.XYWHRect(5, 36, 3, 40), 1.5, 1.5),
+              fillPaint(theme.colors.accent, 0.85),
+            );
           }
           drawCardRect(0, 0, strokePaint(theme.board.cardBorder, theme.borders.thin));
           if (!isSession) {
@@ -583,7 +588,7 @@ const BoardCard = memo(function BoardCard({
           canvas.drawCircle(18, 21, 5, fillPaint(markerFill));
           drawText(header, 31, 14, Math.max(30, cardWidth - 53 - activityBadges.length * 52), {
             fontSize: bodyFontSize,
-            color: theme.board.textMuted,
+            color: cardMutedTextColor,
           });
           drawText(title, 16, 34, contentWidth, {
             fontSize: titleFontSize,
@@ -593,13 +598,13 @@ const BoardCard = memo(function BoardCard({
           messageLines.forEach((line, lineIndex) => {
             drawText(line, 16, messageFirstBaseline + lineIndex * messageLineHeight - bodyFontSize, contentWidth, {
               fontSize: bodyFontSize,
-              color: theme.board.textMuted,
+              color: cardMutedTextColor,
             });
           });
           canvas.drawLine(16, 88, cardWidth - 16, 88, strokePaint(theme.colors.borderSubtle, theme.borders.thin));
           drawText(footer, 16, 100 - bodyFontSize, Math.max(20, footerRightStart - 24), {
             fontSize: bodyFontSize,
-            color: theme.board.textMuted,
+            color: cardMutedTextColor,
           });
           activityTrail.forEach((activity, iconIndex) => {
             drawFooterIcon(
@@ -608,10 +613,10 @@ const BoardCard = memo(function BoardCard({
               activity.active ? theme.colors.activityActive : theme.colors.borderStrong,
             );
           });
-          drawFooterIcon("subagent", subagentIconX, theme.board.textMuted);
+          drawFooterIcon("subagent", subagentIconX, cardMutedTextColor);
           drawText(subagentText, cardWidth - 16 - subagentTextWidth, 100 - bodyFontSize, subagentTextWidth + 1, {
             fontSize: bodyFontSize,
-            color: theme.board.textMuted,
+            color: cardMutedTextColor,
           });
           canvas.restore();
           activityBadges.forEach((badge, badgeIndex) => {
@@ -652,6 +657,7 @@ const BoardCard = memo(function BoardCard({
       bodyFontSize,
       boardImage,
       cardHeight,
+      cardMutedTextColor,
       cardWidth,
       contentWidth,
       detail,
