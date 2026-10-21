@@ -393,7 +393,7 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
     async manageLearning(operation, payload) {
       await exclusive(load);
       if (!learning) throw failure("Learning storage is unavailable", "learning_store_unavailable");
-      const methods = { decide: "decide", change: "requestChange", correct: "correctEvaluation", forget: "forget", proposal: "proposalDecision", retry: "retry" };
+      const methods = { decide: "decide", change: "requestChange", correct: "correctEvaluation", cancel: "cancelEvaluationCorrections", forget: "forget", proposal: "proposalDecision", retry: "retry" };
       if (!methods[operation]) throw failure("Unknown learning operation", "learning_request_invalid");
       await learning[methods[operation]](payload);
       return learning.status();
