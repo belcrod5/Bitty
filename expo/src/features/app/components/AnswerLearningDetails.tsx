@@ -62,8 +62,7 @@ export function AnswerLearningDetails({ orchestratorId, operationId, paused = fa
       accessibilityHint="知識とスキルの参照記録を開閉します"
       accessibilityState={{ expanded: open && !paused, disabled: paused, busy: current?.status === "loading" }}
       disabled={paused} onPress={() => setOpen((value) => !value)}
-      style={({ pressed }) => [styles.trigger, { backgroundColor: active || open ? tone.background : colors.surface,
-        borderColor: active || open ? tone.border : colors.borderSubtle, opacity: pressed || paused ? 0.6 : 1 }]}>
+      style={({ pressed }) => [styles.trigger, { opacity: pressed || paused ? 0.6 : 1 }]}>
       {current?.status === "loading" ? <ActivityIndicator size="small" color={foreground} />
         : <Ionicons name="sparkles-outline" size={17} color={foreground} />}
       {active ? <View style={[styles.badge, { backgroundColor: tone.foreground }]}>
@@ -113,7 +112,7 @@ export function AnswerLearningDetails({ orchestratorId, operationId, paused = fa
 const styles = StyleSheet.create({
   root: { marginTop: 8, gap: 8 },
   trigger: { alignSelf: "flex-start", flexDirection: "row", alignItems: "center", justifyContent: "center",
-    minHeight: 44, minWidth: 64, paddingHorizontal: 12, gap: 7, borderRadius: 22, borderWidth: 1 },
+    minHeight: 44, minWidth: 64, paddingHorizontal: 12, gap: 7 },
   badge: { minWidth: 20, height: 20, paddingHorizontal: 5, borderRadius: 10, alignItems: "center", justifyContent: "center" },
   badgeText: { fontSize: 11, fontWeight: "700", fontVariant: ["tabular-nums"] },
   unknown: { fontSize: 12, fontWeight: "600" },

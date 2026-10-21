@@ -25,6 +25,8 @@ const mockRequest = jest.fn(async (message: { op: string; payload?: { orchestrat
     payload: { orchestrators: [{ id: "main", name: "メイン", icon: "", ...mockMainTts },
       { id: "other", name: "調査", icon: "" }], selectedId: message.payload?.orchestratorId } };
   if (message.op === "voice.userInput.respond") return { op: "voice.userInput.respond.result", payload: {} };
+  if (message.op === "voice.learning.delivery") return { op: "voice.learning.delivery.result",
+    payload: { delivery: { items: [], reads: [], inheritedReads: [], readsVerified: true } } };
   throw new Error(`unexpected ${message.op}`);
 });
 const mockQuestionHandlers = new Map<string, Set<(message: RunnerWsMessage) => void>>();
@@ -942,22 +944,79 @@ test("new history content keeps the position while older messages are being read
   const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
   await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
   const history = screen.getByTestId("voice-history-messages");
-  await act(async () => { history.props.onContentSizeChange(); });
+  expect(history.props.onContentSizeChange).toBeUndefined();
   expect(scrollToEnd).toHaveBeenCalledTimes(1);
   await act(async () => { history.props.onScroll({ nativeEvent: {
     contentOffset: { y: 80 }, contentSize: { height: 800 }, layoutMeasurement: { height: 300 },
   } }); });
-  await act(async () => { history.props.onContentSizeChange(); });
+  mockVoice.history = [{ role: "user", text: "追加の質問", clientOperationId: "operation-2" }];
+  mockVoice.reply = { text: "新しい返答", operationId: "operation-2" };
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
   expect(scrollToEnd).toHaveBeenCalledTimes(1);
   mockVoice.logicalConversationId = "conversation-two";
   await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
-  await act(async () => { history.props.onContentSizeChange(); });
   expect(scrollToEnd).toHaveBeenCalledTimes(2);
   await act(async () => { history.props.onScroll({ nativeEvent: {
     contentOffset: { y: 500 }, contentSize: { height: 800 }, layoutMeasurement: { height: 300 },
   } }); });
-  await act(async () => { history.props.onContentSizeChange(); });
+  mockVoice.reply = { text: "更新中の返答", operationId: "operation-2" };
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
   expect(scrollToEnd).toHaveBeenCalledTimes(3);
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(scrollToEnd).toHaveBeenCalledTimes(3);
+  await act(async () => { fireEvent.press(screen.getByTestId("voice-history-close")); });
+  await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  expect(scrollToEnd).toHaveBeenCalledTimes(4);
+  scrollToEnd.mockRestore();
+  await screen.unmount();
+});
+
+test("expanding learning details and loading their metadata keep the message anchored at the tail", async () => {
+  const scrollToEnd = jest.spyOn(ScrollView.prototype, "scrollToEnd").mockImplementation(() => undefined);
+  const scrollTo = jest.spyOn(ScrollView.prototype, "scrollTo").mockImplementation(() => undefined);
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  let finishDelivery!: () => void;
+  mockRequest.mockImplementationOnce(async () => {
+    await new Promise<void>((resolve) => { finishDelivery = resolve; });
+    return { op: "voice.learning.delivery.result",
+      payload: { delivery: { items: [], reads: [], inheritedReads: [], readsVerified: true } } };
+  });
+  await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  const history = screen.getByTestId("voice-history-messages");
+  expect(history.props.onContentSizeChange).toBeUndefined();
+  expect(scrollToEnd).toHaveBeenCalledTimes(1);
+  await act(async () => { history.props.onScroll({ nativeEvent: {
+    contentOffset: { y: 500 }, contentSize: { height: 800 }, layoutMeasurement: { height: 300 },
+  } }); });
+  mockVoice.reply = { ...mockVoice.reply, text: "同じ高さの返答本文" };
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(scrollToEnd).toHaveBeenCalledTimes(2);
+  expect(history.props.onContentSizeChange).toBeUndefined();
+  await fireEvent.press(screen.getByRole("button", { name: /^回答の学習・参照詳細/ }));
+  expect(screen.getByText("参照記録を確認中…")).toBeTruthy();
+  expect(scrollToEnd).toHaveBeenCalledTimes(2);
+  await act(async () => { finishDelivery(); });
+  expect(screen.getByText("0件の知識・スキル · 重複を除く")).toBeTruthy();
+  await fireEvent.press(screen.getByRole("button", { name: /^回答の学習・参照詳細/ }));
+  expect(scrollToEnd).toHaveBeenCalledTimes(2);
+  expect(scrollTo).not.toHaveBeenCalled();
+  scrollToEnd.mockRestore();
+  scrollTo.mockRestore();
+  await screen.unmount();
+});
+
+test("hidden and loading history wait until a visible ready history can follow its content", async () => {
+  const scrollToEnd = jest.spyOn(ScrollView.prototype, "scrollToEnd").mockImplementation(() => undefined);
+  mockVoice.ready = false;
+  mockVoice.reply = { text: "", operationId: "" };
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(scrollToEnd).not.toHaveBeenCalled();
+  await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  expect(scrollToEnd).not.toHaveBeenCalled();
+  expect(screen.getByTestId("voice-history-messages").props.onContentSizeChange).toBeUndefined();
+  mockVoice.ready = true;
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(scrollToEnd).toHaveBeenCalledTimes(1);
   scrollToEnd.mockRestore();
   await screen.unmount();
 });

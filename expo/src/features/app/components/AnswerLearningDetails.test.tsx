@@ -1,4 +1,5 @@
 import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
+import { StyleSheet } from "react-native";
 import { AnswerLearningDetails } from "./AnswerLearningDetails";
 import { VisualThemeProvider } from "../theme/VisualThemeContext";
 import { VISUAL_THEMES } from "../theme/visualThemes";
@@ -136,8 +137,13 @@ test.each(["standard", "cyberpunk"] as const)("expanded card uses %s theme color
   </VisualThemeProvider>);
   await waitFor(() => screen.getByLabelText("回答の学習・参照詳細、参照なし"));
   expect(detailsButton(screen)).toHaveStyle({ minHeight: 44, minWidth: 64 });
+  expect(detailsButton(screen)).not.toHaveStyle({ borderWidth: 1 });
+  expect(StyleSheet.flatten(detailsButton(screen).props.style).backgroundColor).toBeUndefined();
   await fireEvent.press(detailsButton(screen));
   const header = screen.getByText("学習コンテキスト");
   expect(header).toHaveStyle({ color: VISUAL_THEMES[themeId].tones.info.foreground });
-  expect(detailsButton(screen)).toHaveStyle({ backgroundColor: VISUAL_THEMES[themeId].tones.info.background });
+  expect(detailsButton(screen)).not.toHaveStyle({ borderWidth: 1 });
+  expect(StyleSheet.flatten(detailsButton(screen).props.style).backgroundColor).toBeUndefined();
+  expect(screen.getByText("学習コンテキスト").parent?.parent?.parent)
+    .toHaveStyle({ backgroundColor: VISUAL_THEMES[themeId].tones.info.background });
 });
