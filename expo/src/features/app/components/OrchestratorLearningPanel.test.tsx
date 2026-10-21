@@ -17,6 +17,9 @@ jest.mock("./SettingsSelect", () => ({
   },
 }));
 
+beforeEach(() => { jest.spyOn(Date, "now").mockReturnValue(Date.parse("2026-10-21T12:00:00Z")); });
+afterEach(() => { jest.restoreAllMocks(); });
+
 const models = [
   { modelId: "model-a", label: "Model A", effortOptions: ["low"] },
   { modelId: "model-b", label: "Model B", effortOptions: ["medium", "high"] },
@@ -42,6 +45,7 @@ const orchestrators = [{ id: "main", name: "メイン", icon: "" }];
 function mockApi(status = initialStatus()) {
   return jest.fn(async (op: string, payload?: Record<string, unknown>): Promise<Record<string, unknown>> => {
     if (op === "voice.settings") return { models };
+    if (op === "voice.learning.usage") return { calls: [], days: {}, retention: { createdAt: null }, aggregateGranularity: "UTC-day" };
     if (op === "voice.learning.status") return status;
     if (op === "voice.learning.configure") return { ...status,
       settings: { model: payload?.model, effort: payload?.effort, settingsRevision: 5 } };
@@ -52,12 +56,15 @@ function mockApi(status = initialStatus()) {
 test("shows observed candidates, evidence, excluded input and missing usage without inventing zero", async () => {
   const request = mockApi();
   const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  await fireEvent.press(screen.getByLabelText("学習の設定"));
   await waitFor(() => screen.getByText("報告を短くする"));
   expect(screen.getByText("学習・評価用モデルは全オーケストレータ共通")).toBeTruthy();
-  expect(screen.queryByText("根拠: #8")).toBeNull();
+  expect(screen.queryByText("根拠：1件のやりとり")).toBeNull();
   await fireEvent.press(screen.getByLabelText("詳細・管理: 報告を短くする"));
-  expect(screen.getByText("根拠: #8")).toBeTruthy();
+  expect(screen.getByText("根拠：1件のやりとり")).toBeTruthy();
+  await fireEvent.press(screen.getByLabelText("データの管理・診断"));
   expect(screen.getByText("#1〜2: ログ保持期間外")).toBeTruthy();
+  await fireEvent.press(screen.getByLabelText("今日の予算と計測の詳細"));
   expect(screen.getByTestId("learning-input-tokens")).toHaveTextContent("取得済み入力: 未取得");
   expect(screen.getByText("料金算定不能（単価未設定）")).toBeTruthy();
   expect(screen.getByTestId("select-学習・評価用モデル").props.accessibilityValue.text).toBe("");
@@ -69,6 +76,7 @@ test("shows observed candidates, evidence, excluded input and missing usage with
 test("saves independent shared model and effort with the settings revision", async () => {
   const request = mockApi();
   const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  await fireEvent.press(screen.getByLabelText("学習の設定"));
   await waitFor(() => screen.getByText("報告を短くする"));
   await fireEvent.press(screen.getByTestId("select-学習・評価用モデル"));
   await fireEvent.press(screen.getByTestId("select-学習・評価用エフォート"));
@@ -85,6 +93,7 @@ test("unavailable stored model remains visible and cannot silently fall back", a
   status.settings = { model: "retired-model", effort: "high", settingsRevision: 4 };
   const request = mockApi(status);
   const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  await fireEvent.press(screen.getByLabelText("学習の設定"));
   await waitFor(() => screen.getByText("選択中のモデル・エフォートは現在利用できません。別の設定を選んでください。"));
   expect(screen.getByTestId("select-学習・評価用モデル").props.accessibilityValue.text).toBe("retired-model");
   expect(screen.getByTestId("learning-settings-save")).toBeDisabled();
@@ -94,6 +103,7 @@ test("unavailable stored model remains visible and cannot silently fall back", a
 test("failed configuration stays unsaved and the user can refresh a conflicting revision", async () => {
   const request = mockApi();
   const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  await fireEvent.press(screen.getByLabelText("学習の設定"));
   await waitFor(() => screen.getByText("報告を短くする"));
   await fireEvent.press(screen.getByTestId("select-学習・評価用モデル"));
   request.mockRejectedValueOnce(new Error("設定が更新されています。再読み込みしてください。"));
@@ -110,6 +120,7 @@ test("a failed load is reported and can be retried", async () => {
   const request = mockApi();
   request.mockRejectedValueOnce(new Error("接続を確認してください"));
   const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  await fireEvent.press(screen.getByLabelText("学習の設定"));
   await waitFor(() => screen.getByText("接続を確認してください"));
   await fireEvent.press(screen.getByTestId("learning-status-refresh"));
   await waitFor(() => screen.getByText("報告を短くする"));
@@ -123,6 +134,9 @@ test("partial measurements and estimated costs stay separate by currency", async
     inputTokens: 0, outputTokens: 120,
     estimatedCosts: [{ currency: "USD", amount: 0.01 }, { currency: "JPY", amount: 2 }] };
   const screen = await render(<OrchestratorLearningPanel request={mockApi(status)} orchestrators={orchestrators} />);
+  await fireEvent.press(screen.getByLabelText("学習の設定"));
+  await waitFor(() => screen.getByLabelText("今日の予算と計測の詳細"));
+  await fireEvent.press(screen.getByLabelText("今日の予算と計測の詳細"));
   await waitFor(() => screen.getByText("取得済み入力: 0 tokens"));
   expect(screen.getByText("実測 0 · 一部取得 1 · 欠測 0 回")).toBeTruthy();
   expect(screen.getByText("算定料金（算定できた分）: 0.01 USD")).toBeTruthy();
@@ -137,6 +151,7 @@ test("clearing the selected model stops analysis without silently selecting a re
   status.enabled = true;
   const request = mockApi(status);
   const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  await fireEvent.press(screen.getByLabelText("学習の設定"));
   await waitFor(() => screen.getByText("報告を短くする"));
   await fireEvent(screen.getByTestId("select-学習・評価用モデル"), "longPress");
   expect(screen.getByTestId("select-学習・評価用モデル").props.accessibilityValue.text).toBe("");
@@ -159,8 +174,9 @@ test("a failed model catalog preserves status and lets the user stop analysis", 
     return api(op, payload);
   });
   const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  await fireEvent.press(screen.getByLabelText("学習の設定"));
   await waitFor(() => screen.getByText("モデル一覧を取得できません。"));
-  expect(screen.getByText("会話を観測中")).toBeTruthy();
+  expect(screen.getByText("会話を学習中")).toBeTruthy();
   expect(screen.getByText("報告を短くする")).toBeTruthy();
   expect(screen.getByTestId("select-学習・評価用モデル").props.accessibilityValue.text).toBe("model-b");
   expect(screen.getByTestId("learning-settings-save")).toBeDisabled();
@@ -179,6 +195,7 @@ test("persisted learning errors remain visible when usage cannot be loaded", asy
     ? { models } : { ...initialStatus(), status: "paused", usage: null,
       error: { code: "learning_state_invalid", message: "学習データを読み込めません。" } });
   const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  await fireEvent.press(screen.getByLabelText("学習の設定"));
   await waitFor(() => screen.getByText("学習データを読み込めません。"));
   expect(screen.getByText("利用量を取得できません。")).toBeTruthy();
   expect(screen.queryByText("呼び出し 0 / 12 回")).toBeNull();
@@ -189,11 +206,13 @@ test("bulk adoption sends exact item versions and failures keep decisions unsave
   const status = initialStatus();
   const request = jest.fn(async (op: string, payload?: Record<string, unknown>): Promise<Record<string, unknown>> => {
     if (op === "voice.settings") return { models };
+    if (op === "voice.learning.usage") return { calls: [], days: {}, retention: { createdAt: null }, aggregateGranularity: "UTC-day" };
     if (op === "voice.learning.status") return status;
     if (op === "voice.learning.decide") throw new Error("版が変更されています");
     throw new Error(`unexpected ${op}`);
   });
   const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  await fireEvent.press(screen.getByLabelText("学習の設定"));
   await waitFor(() => screen.getByLabelText("まとめて操作"));
   await fireEvent.press(screen.getByLabelText("まとめて操作"));
   await fireEvent.press(screen.getByLabelText("一括操作の対象に選択: 報告を短くする"));
@@ -210,6 +229,9 @@ test("provisional score and user corrections are distinct; an empty optional rea
     scope: { orchestratorId: "main" }, corrections: [] }] };
   const request = jest.fn(async (op: string): Promise<Record<string, unknown>> => op === "voice.settings" ? { models } : status);
   const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  await fireEvent.press(screen.getByLabelText("学習の設定"));
+  await waitFor(() => screen.getByLabelText("評価の一覧を表示"));
+  await fireEvent.press(screen.getByLabelText("評価の一覧を表示"));
   await waitFor(() => expect(screen.getByText("短い報告")).toBeTruthy());
   await fireEvent.press(screen.getByLabelText("評価を変更"));
   await fireEvent.changeText(screen.getByLabelText("訂正点数: 短い報告"), "55");
@@ -223,6 +245,9 @@ test("all-learning forgetting is available with no candidates and requires the e
   const request = jest.fn(async (op: string): Promise<Record<string, unknown>> => op === "voice.settings" ? { models } : status);
   const alert = jest.spyOn(Alert, "alert").mockImplementation(() => {});
   const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  await fireEvent.press(screen.getByLabelText("学習の設定"));
+  await waitFor(() => screen.getByLabelText("データの管理・診断"));
+  await fireEvent.press(screen.getByLabelText("データの管理・診断"));
   await waitFor(() => screen.getByLabelText("全学習を忘却"));
   await fireEvent.press(screen.getByLabelText("全学習を忘却"));
   expect(request).not.toHaveBeenCalledWith("voice.learning.forget", expect.anything());
@@ -237,6 +262,7 @@ test("exhausted analysis retry uses the exact batch and settings revision withou
     retry: { batchId: "batch-exhausted", settingsRevision: 4, attempts: 3, ceiling: 3 } };
   const request = jest.fn(async (op: string): Promise<Record<string, unknown>> => op === "voice.settings" ? { models } : status);
   const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  await fireEvent.press(screen.getByLabelText("学習の設定"));
   await waitFor(() => screen.getByLabelText("保留した分析を1回再試行"));
   await fireEvent.press(screen.getByLabelText("保留した分析を1回再試行"));
   await waitFor(() => expect(request).toHaveBeenCalledWith("voice.learning.retry", { batchId: "batch-exhausted", settingsRevision: 4 }));
@@ -246,13 +272,14 @@ test("exhausted analysis retry uses the exact batch and settings revision withou
 test("default view has no bulk checkboxes or change form; selecting alone never writes", async () => {
   const request = mockApi();
   const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  await fireEvent.press(screen.getByLabelText("学習の設定"));
   await waitFor(() => screen.getByText("報告を短くする"));
   expect(screen.queryByRole("checkbox")).toBeNull();
   expect(screen.queryByLabelText("学習の編集・統合・廃止の希望")).toBeNull();
   await fireEvent.press(screen.getByLabelText("まとめて操作"));
   await fireEvent.press(screen.getByRole("checkbox"));
   expect(screen.getByText("1件を選択")).toBeTruthy();
-  expect(request.mock.calls.map(([op]) => op)).toEqual(["voice.learning.status", "voice.settings"]);
+  expect(request.mock.calls.map(([op]) => op)).toEqual(["voice.learning.status", "voice.settings", "voice.learning.usage"]);
   await fireEvent.press(screen.getByLabelText("一括操作を終了"));
   expect(screen.queryByRole("checkbox")).toBeNull();
   await screen.unmount();
@@ -272,14 +299,18 @@ test.each([
     status: active && i === 0 ? "active" : "candidate", scope: { orchestratorId: mixedChats && i === 0 ? "other" : "main" } }));
   const request = mockApi(status);
   const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  await fireEvent.press(screen.getByLabelText("学習の設定"));
   await waitFor(() => screen.getByLabelText("まとめて操作"));
   await fireEvent.press(screen.getByLabelText("まとめて操作"));
-  for (const checkbox of screen.getAllByRole("checkbox")) await fireEvent.press(checkbox);
+  for (let selectedCount = 0; selectedCount < count;) {
+    for (const checkbox of screen.getAllByRole("checkbox")) { await fireEvent.press(checkbox); selectedCount += 1; }
+    if (selectedCount < count) await fireEvent.press(screen.getByLabelText("学習の次のページ"));
+  }
   expect(screen.getByText(`${count}件を選択`)).toBeTruthy();
   expect(screen.getByLabelText("選んだ候補を採用").props.accessibilityState.disabled).toBe(!canDecide);
   expect(screen.getByLabelText("選んだ候補を見送る").props.accessibilityState.disabled).toBe(!canDecide);
   expect(screen.getByLabelText("選んだ学習の修正案を依頼").props.accessibilityState.disabled).toBe(!canChange);
-  expect(request.mock.calls).toHaveLength(2);
+  expect(request.mock.calls).toHaveLength(3);
   await screen.unmount();
 });
 
@@ -288,10 +319,12 @@ test("failed change request preserves selection and draft; success clears mode a
   let fail = true;
   const request = jest.fn(async (op: string): Promise<Record<string, unknown>> => {
     if (op === "voice.settings") return { models };
+    if (op === "voice.learning.usage") return { calls: [], days: {}, retention: { createdAt: null }, aggregateGranularity: "UTC-day" };
     if (op === "voice.learning.change" && fail) throw new Error("通信に失敗しました");
     return status;
   });
   const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  await fireEvent.press(screen.getByLabelText("学習の設定"));
   await waitFor(() => screen.getByLabelText("まとめて操作"));
   await fireEvent.press(screen.getByLabelText("まとめて操作"));
   await fireEvent.press(screen.getByRole("checkbox"));
@@ -313,6 +346,7 @@ test("failed change request preserves selection and draft; success clears mode a
 test("refresh with removed items clears stale bulk selection and draft", async () => {
   const status = initialStatus(); const request = mockApi(status);
   const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  await fireEvent.press(screen.getByLabelText("学習の設定"));
   await waitFor(() => screen.getByLabelText("まとめて操作"));
   await fireEvent.press(screen.getByLabelText("まとめて操作")); await fireEvent.press(screen.getByRole("checkbox"));
   await fireEvent.press(screen.getByLabelText("選んだ学習の修正案を依頼"));
