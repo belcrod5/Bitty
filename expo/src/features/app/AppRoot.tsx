@@ -1898,6 +1898,8 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     conversationMessages,
   ]);
   const {
+    subscribeConversationRuntime,
+    getConversationRuntimeRevision,
     getConversationRuntimeSnapshot,
     finalizeConversationRuntimeAfterRelayLoss,
     ensureConversationRuntimeRequestForRelay,
@@ -5749,10 +5751,12 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   hydratePanelFromSessionHistoryRef.current = hydratePanelFromSessionHistory;
   const panelRuntimeStoreContextValue = useMemo<PanelRuntimeStoreContextValue>(() => {
     return {
+      subscribe: subscribeConversationRuntime,
+      getRevision: getConversationRuntimeRevision,
       getSnapshot: resolvePanelSnapshotForDisplay,
       getKnownPanelIds: () => Object.keys(panelRuntimeEntriesById),
     };
-  }, [panelRuntimeEntriesById, resolvePanelSnapshotForDisplay]);
+  }, [getConversationRuntimeRevision, panelRuntimeEntriesById, resolvePanelSnapshotForDisplay, subscribeConversationRuntime]);
   const panelRuntimeControllerContextValue = useMemo<PanelRuntimeControllerContextValue>(() => ({
     clearPanelSnapshot,
     copyPanelSnapshot,

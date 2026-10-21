@@ -223,6 +223,13 @@ function normalizeRequestSnapshot(
 
 export function useConversationRuntimeStoreController() {
   const runtimeBySessionIdRef = useRef<Record<string, ConversationRuntimeSnapshot>>({});
+  const revisionRef = useRef(0);
+  const listenersRef = useRef(new Set<() => void>());
+  const subscribeConversationRuntime = useCallback((listener: () => void) => {
+    listenersRef.current.add(listener);
+    return () => { listenersRef.current.delete(listener); };
+  }, []);
+  const getConversationRuntimeRevision = useCallback(() => revisionRef.current, []);
 
   const getConversationRuntimeSnapshot = useCallback((sessionIdRaw: unknown) => {
     const sessionId = normalizeSessionId(sessionIdRaw);
@@ -346,6 +353,8 @@ export function useConversationRuntimeStoreController() {
       ...runtimeBySessionIdRef.current,
       [sessionId]: next,
     };
+    revisionRef.current += 1;
+    listenersRef.current.forEach((listener) => listener());
     return {
       ...next,
       events: cloneRuntimeEvents(next.events),
@@ -463,6 +472,8 @@ export function useConversationRuntimeStoreController() {
   }, [upsertConversationRuntimeSnapshot]);
 
   return {
+    subscribeConversationRuntime,
+    getConversationRuntimeRevision,
     getConversationRuntimeSnapshot,
     finalizeConversationRuntimeAfterRelayLoss,
     ensureConversationRuntimeRequestForRelay,

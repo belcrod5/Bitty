@@ -3,7 +3,7 @@ import { act, renderHook } from "@testing-library/react-native";
 import type { DirectorySessionTreeState } from "../components/AppDrawer";
 import { useConversation } from "../contexts/ConversationContext";
 import { usePanelRuntimeController } from "../contexts/PanelRuntimeControllerContext";
-import { usePanelRuntimeStore } from "../contexts/PanelRuntimeStoreContext";
+import { PanelRuntimeStoreProvider, usePanelRuntimeStore } from "../contexts/PanelRuntimeStoreContext";
 import {
   mutatePersistedSettings,
   readPersistedSettingsField,
@@ -23,6 +23,8 @@ import {
 } from "./useSkiaMiniChatSessions";
 import { IDLE_DIRECTORY_SESSION_SYNC } from "../types/directorySessions";
 import { SkiaBoardProvider, useSkiaBoard } from "../contexts/SkiaBoardContext";
+import { useConversationRuntimeStoreController } from "./useConversationRuntimeStoreController";
+import type { PanelRuntimeSnapshot } from "../contexts/PanelRuntimeStoreContext";
 import type { SkiaBoardCard, SkiaBoardState } from "../utils/skiaBoardState";
 
 jest.mock("../contexts/ConversationContext", () => ({
@@ -32,6 +34,7 @@ jest.mock("../contexts/PanelRuntimeControllerContext", () => ({
   usePanelRuntimeController: jest.fn(),
 }));
 jest.mock("../contexts/PanelRuntimeStoreContext", () => ({
+  ...jest.requireActual("../contexts/PanelRuntimeStoreContext"),
   usePanelRuntimeStore: jest.fn(),
 }));
 let mockRunnerAuth = { runnerUrl: "http://runner", runnerToken: "runner-token" };
@@ -243,6 +246,70 @@ function BoardWrapper({ children }: PropsWithChildren) {
 }
 
 describe("useSkiaMiniChatSessions", () => {
+  it.each(["completed", "cancelled", "interrupted", "error"] as const)(
+    "publishes %s from the shared runtime without replacing getters or waiting for a board tick",
+    async (lifecycle) => {
+      seedRunnerBoard([sessionCard("session-1", 0, 0)]);
+      mockConversation([session(1)]);
+      mockUsePanelRuntimeStore.mockImplementation(
+        jest.requireActual("../contexts/PanelRuntimeStoreContext").usePanelRuntimeStore
+      );
+      let store!: ReturnType<typeof useConversationRuntimeStoreController>;
+      let getter!: (panelId: string) => PanelRuntimeSnapshot;
+      function RuntimeWrapper({ children }: PropsWithChildren) {
+        store = useConversationRuntimeStoreController();
+        getter = React.useCallback((panelId: string) => {
+          const runtime = store.getConversationRuntimeSnapshot("session-1");
+          return {
+            panelId,
+            selectedSessionId: "session-1",
+            isResponding: runtime?.isResponding ?? false,
+            runtimeActivityTrail: runtime?.activityTrail ?? [],
+            conversationMessages: runtime?.conversationMessages ?? [],
+          } as PanelRuntimeSnapshot;
+        }, []);
+        const value = React.useMemo(() => ({
+          getSnapshot: getter,
+          getKnownPanelIds: () => ["skia_mini_preview_session-1"],
+          subscribe: store.subscribeConversationRuntime,
+          getRevision: store.getConversationRuntimeRevision,
+        }), []);
+        return <PanelRuntimeStoreProvider value={value}><BoardWrapper>{children}</BoardWrapper></PanelRuntimeStoreProvider>;
+      }
+      const { result, rerender } = await renderHook(useSkiaMiniChatSessions, { wrapper: RuntimeWrapper });
+      await flush();
+      const originalGetter = getter;
+      const request = {
+        requestId: "request-1", requestSeq: 1, sessionId: "session-1",
+        sourcePanelId: "panel-1", lifecycle: "active" as const,
+        status: "tool_running", statusDetail: "tool start: file_open", startedAtMs: 100,
+      };
+      await act(() => {
+        store.upsertConversationRuntimeSnapshot({ sessionId: "session-1", request });
+      });
+      // A normal parent render can expose the running state even without notification.
+      // The terminal transition below must reach the memo with no further render or tick.
+      await rerender(undefined);
+      expect(result.current.sessions[0]).toMatchObject({
+        isResponding: true,
+        activityTrail: [{ kind: "reading", active: true }],
+      });
+      await act(() => {
+        store.upsertConversationRuntimeSnapshot({
+          sessionId: "session-1",
+          conversationMessages: [{ id: "response", role: "assistant", content: "Finished" }],
+          request: { ...request, lifecycle, status: lifecycle, completedAtMs: 200 },
+        });
+      });
+      expect(getter).toBe(originalGetter);
+      expect(result.current.sessions[0]).toMatchObject({
+        isResponding: false,
+        lastMessageContent: "Finished",
+        activityTrail: [{ kind: "reading", active: false }],
+      });
+    }
+  );
+
   it("formats recent updates in minutes without a seconds label", () => {
     const now = new Date("2026-06-23T00:01:30.000Z").getTime();
     // 秒表示はラベルが毎秒変わりカードの再レンダリングを誘発するため分単位に丸める。

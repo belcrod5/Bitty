@@ -42,6 +42,7 @@ export type SkiaMiniChatSession = {
   lastMessageContent: string;
   updatedAtLabel: string;
   unread: boolean;
+  isResponding: boolean;
   activityTrail: Array<{ kind: SessionActivity; active: boolean }>;
   subagentLoading: boolean;
   subagentRunningCount: number;
@@ -118,7 +119,7 @@ export function useSkiaMiniChatSessions() {
     ensureRegisteredDirectorySessions,
     loadSessionChildrenBatch,
   } = useConversation();
-  const { getSnapshot } = usePanelRuntimeStore();
+  const { getSnapshot, revision: runtimeRevision } = usePanelRuntimeStore();
   const { clearPanelSnapshot, hydratePanelFromSessionHistory } = usePanelRuntimeController();
   const {
     state: boardState,
@@ -434,6 +435,7 @@ export function useSkiaMiniChatSessions() {
           : "",
         updatedAtLabel: formatSkiaMiniChatUpdatedAt(candidate.updatedAt, nowMs),
         unread: isLlmSessionUnread(candidate),
+        isResponding: snapshot.isResponding,
         activityTrail: runtimeActivityTrail.map((kind, index) => ({
           kind,
           active: snapshot.isResponding && index === runtimeActivityTrail.length - 1,
@@ -461,6 +463,7 @@ export function useSkiaMiniChatSessions() {
     assignedSessions,
     childStateByParentId,
     getSnapshot,
+    runtimeRevision,
     nowMs,
     sessionMarkerColorsById,
   ]);

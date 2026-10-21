@@ -21,13 +21,16 @@ import {
   createPicture,
   FontWeight,
   Group,
+  LinearGradient,
   PaintStyle,
   Path,
   Picture,
+  Rect,
   RoundedRect,
   Skia,
   StrokeCap,
   StrokeJoin,
+  vec,
   type SkImage,
   type SkPaint,
 } from "@shopify/react-native-skia";
@@ -44,6 +47,7 @@ import {
   withDecay,
   withTiming,
   withSequence,
+  withRepeat,
   type SharedValue,
 } from "react-native-reanimated";
 import { useRunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketContext";
@@ -393,6 +397,7 @@ type BoardCardProps = {
   theme: VisualTheme;
   selected: boolean;
   selectionOpacity: SharedValue<number>;
+  runningScanTransform: SharedValue<Array<{ translateY: number }>>;
   titleFontSize: number;
   bodyFontSize: number;
   runnerUrl: string;
@@ -410,6 +415,7 @@ const BoardCard = memo(function BoardCard({
   theme,
   selected,
   selectionOpacity,
+  runningScanTransform,
   titleFontSize,
   bodyFontSize,
   runnerUrl,
@@ -468,6 +474,7 @@ const BoardCard = memo(function BoardCard({
   const detail = item.kind === "session" ? "" : skiaBoardCardDirectory(item);
   const footer = item.kind === "session" ? item.updatedAtLabel : "";
   const isSession = item.kind === "session";
+  const isResponding = isSession && item.isResponding;
   const markerFill = isSession
     ? DIRECTORY_MARKER_COLORS[item.markerColor] ?? theme.colors.border
     : theme.colors.accent;
@@ -522,6 +529,9 @@ const BoardCard = memo(function BoardCard({
 
           drawCardRect(2, 4, fillPaint(theme.colors.shadow, 0.16));
           drawCardRect(0, 0, fillPaint(theme.board.cardSurface));
+          if (isResponding) {
+            drawCardRect(0, 0, fillPaint(theme.colors.activityActive, 0.09));
+          }
           drawCardRect(0, 0, strokePaint(theme.board.cardBorder, theme.borders.thin));
           if (!isSession) {
             if (boardImage) {
@@ -655,6 +665,7 @@ const BoardCard = memo(function BoardCard({
       footerRightStart,
       header,
       isSession,
+      isResponding,
       markerFill,
       messageFirstBaseline,
       messageLineHeight,
@@ -672,6 +683,18 @@ const BoardCard = memo(function BoardCard({
   return (
     <Group transform={transform}>
       <Picture picture={picture} />
+      {isResponding ? (
+        <Group clip={Skia.RRectXY(Skia.XYWHRect(1, 1, cardWidth - 2, cardHeight - 2), 13, 13)} opacity={0.16}>
+          <Group transform={runningScanTransform}>
+            <Rect x={1} y={0} width={cardWidth - 2} height={30}>
+              <LinearGradient
+                start={vec(0, 0)} end={vec(0, 30)}
+                colors={["transparent", theme.colors.activityActive, "transparent"]}
+              />
+            </Rect>
+          </Group>
+        </Group>
+      ) : null}
       {selected ? (
         <RoundedRect
           x={0} y={0} width={cardWidth} height={cardHeight} r={14}
@@ -711,6 +734,10 @@ export function SkiaMiniBoardScreen({
   const reduceMotion = useReduceMotionEnabled();
   const canvasHostRef = useRef<View | null>(null);
   const selectionOpacity = useSharedValue(1);
+  const runningProgress = useSharedValue(0);
+  const runningScanTransform = useDerivedValue(() => [
+    { translateY: runningProgress.value * (CARD_HEIGHT + 60) - 30 },
+  ]);
   const { width: windowWidth } = useWindowDimensions();
   const { activeScreen, openDrawer, unreadCount } = useAppShell();
   const unreadBadgeOpacity = useRef(new Animated.Value(1)).current;
@@ -791,6 +818,25 @@ export function SkiaMiniBoardScreen({
     updateBoardCardAppearance,
     tidyBoard,
   } = useSkiaMiniChatSessions();
+  const hasRunningSessions = items.some((item) => item.kind === "session" && item.isResponding);
+  useEffect(() => {
+    if (!hasRunningSessions || activeScreen !== "skia_board" || reduceMotion !== false) return;
+    const updateAnimation = () => {
+      cancelAnimation(runningProgress);
+      runningProgress.value = 0;
+      if (AppState.currentState === "active") {
+        // One UI-thread clock drives every running card; text pictures stay cached.
+        runningProgress.value = withRepeat(withTiming(1, { duration: 3600, easing: Easing.linear }), -1, false);
+      }
+    };
+    updateAnimation();
+    const subscription = AppState.addEventListener("change", updateAnimation);
+    return () => {
+      subscription.remove();
+      cancelAnimation(runningProgress);
+      runningProgress.value = 0;
+    };
+  }, [activeScreen, hasRunningSessions, reduceMotion, runningProgress]);
   const activityImages = useRef(new Map<string, { image: SkImage | null; version: number }>());
   const activityImageVersion = useRef(0);
   const activityPlacement = useMemo(() => {
@@ -2068,6 +2114,7 @@ export function SkiaMiniBoardScreen({
                     theme={theme}
                     selected={item.cardId === selectedCardId}
                     selectionOpacity={selectionOpacity}
+                    runningScanTransform={runningScanTransform}
                     titleFontSize={titleFontSize}
                     bodyFontSize={bodyFontSize}
                     runnerUrl={runnerUrl}

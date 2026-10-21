@@ -1,4 +1,4 @@
-import { createContext, useContext, type ReactNode } from "react";
+import { createContext, useContext, useSyncExternalStore, type ReactNode } from "react";
 import type { ConversationMessage } from "../types/appTypes";
 import type { SessionActivity } from "../utils/statusIcons";
 
@@ -34,6 +34,8 @@ export type PanelRuntimeSnapshot = {
 };
 
 export type PanelRuntimeStoreContextValue = {
+  subscribe: (listener: () => void) => () => void;
+  getRevision: () => number;
   getSnapshot: (panelId: string) => PanelRuntimeSnapshot;
   getKnownPanelIds: () => string[];
 };
@@ -61,5 +63,6 @@ export function usePanelRuntimeStore() {
   if (!context) {
     throw new Error("usePanelRuntimeStore must be used within PanelRuntimeStoreProvider");
   }
-  return context;
+  const revision = useSyncExternalStore(context.subscribe, context.getRevision, context.getRevision);
+  return { ...context, revision };
 }
