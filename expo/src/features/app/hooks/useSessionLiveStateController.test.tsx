@@ -137,7 +137,7 @@ it("applies late running state to active and panel runtimes and attaches the pan
     snapshot: result.current.entries["panel-1"].snapshot,
     panelId: "panel-1",
     directory: "/workspace",
-    requestStartedAtMsAtHydrationStart: null,
+    requestStartedAtMsAtHydrationApply: null,
     executionGenerationAtHydrationApply: 0,
     isCurrent: () => true,
   });
@@ -257,7 +257,7 @@ describe("onLiveStateNotRunning", () => {
       snapshot: snapshot(),
       panelId: "panel-1",
       directory: "/workspace",
-      requestStartedAtMsAtHydrationStart: null,
+      requestStartedAtMsAtHydrationApply: null,
       executionGenerationAtHydrationApply: 0,
       isCurrent: () => true,
     });
@@ -294,7 +294,7 @@ describe("onLiveStateNotRunning", () => {
 });
 
 describe("confirmed terminal live-state reconciliation", () => {
-  async function buildReconciliationHarness(probeOptions = disabledProbeOptions) {
+  async function buildReconciliationHarness(probeOptions = disabledProbeOptions, hasOwnedRequest = () => false) {
     const setActiveResponding = jest.fn();
     const setActiveThreadStatus = jest.fn();
     const log = jest.fn();
@@ -329,6 +329,7 @@ describe("confirmed terminal live-state reconciliation", () => {
         ]),
         panelEntriesRef,
         applyRestoredRuntime: jest.fn(),
+        hasOwnedRequest,
         getRuntime: runtimeStore.getConversationRuntimeSnapshot,
         upsertRuntime: runtimeStore.upsertConversationRuntimeSnapshot,
         setPanelEntries: setEntries,
@@ -342,6 +343,57 @@ describe("confirmed terminal live-state reconciliation", () => {
     });
     return { ...rendered, setActiveResponding, setActiveThreadStatus, log };
   }
+
+  it.each([false, true])("reconciles first-restore late idle with its captured identity (relay attached=%s)", async (relayAttached) => {
+    const harness = await buildReconciliationHarness();
+    await act(() => {
+      harness.result.current.runtimeStore.upsertConversationRuntimeSnapshot({
+        sessionId: "thread-1", isResponding: true, selectedThreadStatusType: "active",
+      });
+      if (relayAttached) harness.result.current.runtimeStore.ensureConversationRuntimeRequestForRelay({
+        sessionId: "thread-1", startedAtMs: 500, reason: "session_restored_running_turn",
+      });
+    });
+    const captured = harness.result.current.runtimeStore.getConversationRuntimeSnapshot("thread-1")!;
+    let resolve!: (state: RunnerSessionLiveState) => void;
+    const promise = new Promise<RunnerSessionLiveState>((done) => { resolve = done; });
+    harness.result.current.controller.applyPanel({
+      restored: restored(promise), snapshot: harness.result.current.entries["panel-1"].snapshot,
+      panelId: "panel-1", directory: "/workspace",
+      requestStartedAtMsAtHydrationApply: captured.request?.startedAtMs ?? null,
+      executionGenerationAtHydrationApply: captured.executionGeneration, isCurrent: () => true,
+    });
+    await act(async () => { resolve({ threadId: "thread-1", threadStatusType: "idle", hasRunningTurn: false, runningTurn: null }); await promise; });
+    expect(harness.result.current.runtimeStore.getConversationRuntimePreview("thread-1")?.isResponding).toBe(false);
+    expect(harness.result.current.entries["panel-1"].snapshot.isResponding).toBe(false);
+  });
+
+  it.each(["started_during_fetch", "started_after_registration"] as const)("does not clear a newer owned turn %s with late hydration idle", async (timing) => {
+    let owned = timing === "started_during_fetch";
+    const harness = await buildReconciliationHarness(disabledProbeOptions, () => owned);
+    await act(() => {
+      harness.result.current.runtimeStore.upsertConversationRuntimeSnapshot({
+        sessionId: "thread-1", request: activeRequest(500),
+      });
+    });
+    const captured = harness.result.current.runtimeStore.getConversationRuntimeSnapshot("thread-1")!;
+    let resolve!: (state: RunnerSessionLiveState) => void;
+    const promise = new Promise<RunnerSessionLiveState>((done) => { resolve = done; });
+    harness.result.current.controller.applyPanel({
+      restored: restored(promise), snapshot: harness.result.current.entries["panel-1"].snapshot,
+      panelId: "panel-1", directory: "/workspace", requestStartedAtMsAtHydrationApply: 500,
+      executionGenerationAtHydrationApply: captured.executionGeneration, isCurrent: () => true,
+    });
+    if (timing === "started_after_registration") {
+      await act(() => { harness.result.current.runtimeStore.upsertConversationRuntimeSnapshot({ sessionId: "thread-1", request: activeRequest(600) }); });
+      // Exercise identity/generation guard independently of the owned-transport guard.
+      owned = false;
+    }
+    await act(async () => { resolve({ threadId: "thread-1", threadStatusType: "idle", hasRunningTurn: false, runningTurn: null }); await promise; });
+    expect(harness.result.current.runtimeStore.getConversationRuntimeSnapshot("thread-1")).toMatchObject({
+      isResponding: true, request: { startedAtMs: timing === "started_during_fetch" ? 500 : 600 },
+    });
+  });
 
   it("settles a restored running belief when the later probe confirms completion", async () => {
     const harness = await buildReconciliationHarness();

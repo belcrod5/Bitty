@@ -525,11 +525,7 @@ const BoardCard = memo(function BoardCard({
           drawCardRect(2, 4, fillPaint(theme.colors.shadow, 0.16));
           drawCardRect(0, 0, fillPaint(theme.board.cardSurface));
           if (isResponding) {
-            drawCardRect(0, 0, fillPaint(theme.colors.accent, 0.16));
-            canvas.drawRRect(
-              Skia.RRectXY(Skia.XYWHRect(5, 36, 3, 40), 1.5, 1.5),
-              fillPaint(theme.colors.accent, 0.85),
-            );
+            drawCardRect(0, 0, fillPaint(theme.tones.progress.border, 0.24));
           }
           drawCardRect(0, 0, strokePaint(theme.board.cardBorder, theme.borders.thin));
           if (!isSession) {

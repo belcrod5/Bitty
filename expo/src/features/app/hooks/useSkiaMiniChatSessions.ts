@@ -305,15 +305,15 @@ export function useSkiaMiniChatSessions() {
     });
   }, [boardState, sessionCandidates, sessionTitleOverridesById, summaryCandidates]);
 
-  const { getSnapshot, revision: runtimeRevision } = usePanelRuntimeStore(
+  const { getPreview, revision: runtimeRevision } = usePanelRuntimeStore(
     assignedSessions.map(({ panelId }) => panelId)
   );
-  const getSnapshotRef = useRef(getSnapshot);
+  const getPreviewRef = useRef(getPreview);
   useEffect(() => {
     clearPanelSnapshotRef.current = clearPanelSnapshot;
     hydratePanelFromSessionHistoryRef.current = hydratePanelFromSessionHistory;
-    getSnapshotRef.current = getSnapshot;
-  }, [clearPanelSnapshot, getSnapshot, hydratePanelFromSessionHistory]);
+    getPreviewRef.current = getPreview;
+  }, [clearPanelSnapshot, getPreview, hydratePanelFromSessionHistory]);
 
   const childStateByParentId = useMemo(() => new Map(
     Object.values(directorySessionsById).flatMap((state) => (
@@ -342,7 +342,7 @@ export function useSkiaMiniChatSessions() {
     for (const panelId of assignedPanelIdsRef.current) {
       if (nextAssignedPanelIds.has(panelId)) continue;
       delete lastRequestedHydrationByPanelRef.current[panelId];
-      if (!String(getSnapshotRef.current(panelId).selectedSessionId || "").trim()) continue;
+      if (!String(getPreviewRef.current(panelId).selectedSessionId || "").trim()) continue;
       clearPanelSnapshotRef.current(panelId);
     }
     assignedPanelIdsRef.current = nextAssignedPanelIds;
@@ -358,7 +358,7 @@ export function useSkiaMiniChatSessions() {
         panelId,
         candidate,
         lastRequested: lastRequestedHydrationByPanelRef.current[panelId] || null,
-        snapshot: getSnapshotRef.current(panelId),
+        snapshot: getPreviewRef.current(panelId),
       }).action === "hydrate");
     if (hydrateTargets.length <= 0) {
       setHydratingPanelCount(0);
@@ -415,13 +415,11 @@ export function useSkiaMiniChatSessions() {
     const previous = sessionReuseRef.current;
     const nextByCardId = new Map<string, SkiaMiniChatSession>();
     const list = assignedSessions.map(({ card, candidate, panelId, title }) => {
-      const snapshot = getSnapshot(panelId);
-      const messages = snapshot.selectedSessionId === candidate.sessionId
-        ? snapshot.conversationMessages
-        : [];
-      const lastMessage = messages[messages.length - 1];
+      const snapshot = getPreview(panelId);
       const childState = childStateByParentId.get(candidate.sessionId);
-      const runtimeActivityTrail = snapshot.runtimeActivityTrail || [];
+      const holdsSession = snapshot.selectedSessionId === candidate.sessionId;
+      const isResponding = holdsSession && snapshot.isResponding;
+      const runtimeActivityTrail = holdsSession ? snapshot.runtimeActivityTrail || [] : [];
       const built: SkiaMiniChatSession = {
         kind: "session",
         backendId: candidate.backendId,
@@ -432,15 +430,15 @@ export function useSkiaMiniChatSessions() {
         source: candidate.source,
         title,
         directoryName: candidate.directoryDisplayName,
-        lastMessageContent: snapshot.selectedSessionId === candidate.sessionId
-          ? String(lastMessage?.content || "メッセージなし").replace(/\s+/g, " ").trim()
+        lastMessageContent: holdsSession
+          ? String(snapshot.lastMessageContent || "メッセージなし").replace(/\s+/g, " ").trim()
           : "",
         updatedAtLabel: formatSkiaMiniChatUpdatedAt(candidate.updatedAt, nowMs),
         unread: isLlmSessionUnread(candidate),
-        isResponding: snapshot.isResponding,
+        isResponding,
         activityTrail: runtimeActivityTrail.map((kind, index) => ({
           kind,
-          active: snapshot.isResponding && index === runtimeActivityTrail.length - 1,
+          active: isResponding && index === runtimeActivityTrail.length - 1,
         })),
         subagentLoading: !childState?.loaded,
         subagentRunningCount: (childState?.entries || []).filter(
@@ -464,7 +462,7 @@ export function useSkiaMiniChatSessions() {
   }, [
     assignedSessions,
     childStateByParentId,
-    getSnapshot,
+    getPreview,
     runtimeRevision,
     nowMs,
     sessionMarkerColorsById,

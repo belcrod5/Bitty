@@ -72,6 +72,7 @@ export type RuntimeConversationFreshnessInput = {
   runtimeMessageCount: number;
   runtimeUpdatedAtMs: number;
   runtimeIsResponding: boolean;
+  hasOwnedRequest: boolean;
   runtimeRequestStartedAtMs: number | null;
   requestStartedAtMsAtHydrationStart: number | null;
   requestCompletedAtMs: number | null;
@@ -95,6 +96,7 @@ export function shouldPreserveRuntimeConversationOnHydrate(
     return (
       input.runtimeMessageCount > 0 &&
       input.runtimeIsResponding &&
+      input.hasOwnedRequest &&
       input.runtimeRequestStartedAtMs !== null &&
       input.nowMs - input.runtimeRequestStartedAtMs <= RUNTIME_CONVERSATION_FRESHNESS_GRACE_MS
     );
@@ -178,6 +180,7 @@ function reconcileRestoredPanelConversation(params: {
 }
 
 export function resolvePanelConversationAfterHydration(params: {
+  hasOwnedRequest: boolean;
   runtime: {
     conversationMessages: ConversationMessage[];
     updatedAtMs: number;
@@ -200,6 +203,7 @@ export function resolvePanelConversationAfterHydration(params: {
     runtimeMessageCount: params.runtime?.conversationMessages.length ?? 0,
     runtimeUpdatedAtMs: params.runtime?.updatedAtMs ?? 0,
     runtimeIsResponding: params.runtime?.isResponding ?? false,
+    hasOwnedRequest: params.hasOwnedRequest,
     runtimeRequestStartedAtMs: params.runtime?.requestStartedAtMs ?? null,
     requestStartedAtMsAtHydrationStart: params.requestStartedAtMsAtHydrationStart,
     requestCompletedAtMs: params.runtime?.requestCompletedAtMs ?? null,

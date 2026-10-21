@@ -271,6 +271,21 @@ beforeEach(() => {
 });
 
 describe("useCodexReplyRequest onAgentMessageCompleted", () => {
+  test("reports actual transport ownership through a queued turn and releases it after completion", async () => {
+    const harness = createHarness();
+    const { result, sendPromise } = await startRequest(harness, { sessionId: "thread-1", threadId: "thread-1" });
+    await act(() => { harness.getTurnOptions().onThreadIdResolved("thread-1"); });
+    expect(result.current.hasInFlightReplyRequestForThread("thread-1")).toBe(true);
+    expect(result.current.hasInFlightReplyRequestForThread("relay-only-session")).toBe(false);
+    await act(() => { harness.getTurnOptions().onTurnAccepted({ runId: "queued", queued: true }); });
+    expect(result.current.hasInFlightReplyRequestForThread("thread-1")).toBe(true);
+    await act(async () => {
+      harness.resolveTurn({ threadId: "thread-1", turnId: "turn-1", reply: "done", contextUsage: null });
+      await sendPromise;
+    });
+    expect(result.current.hasInFlightReplyRequestForThread("thread-1")).toBe(false);
+  });
+
   test("keeps measured output usage on the completed assistant message", async () => {
     const harness = createHarness();
     const { sendPromise } = await startRequest(harness);

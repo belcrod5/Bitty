@@ -544,6 +544,23 @@ describe("useReadyDrivenResumeSyncController", () => {
     });
   });
 
+  it("keeps owned transports out of direct completion resync and recovers an orphan relay panel", async () => {
+    const owned = jest.fn(() => true);
+    const args = baseArgs({
+      panelRuntimeEntriesByIdRef: { current: { "panel-a": panelEntry("session-5", "/repo", true) } },
+      hasActiveClientTurnForSession: owned,
+    });
+    const { result } = await renderHook(() => useReadyDrivenResumeSyncController(args));
+    let accepted = true;
+    await act(() => { accepted = result.current.requestSessionResync("session-5", { reason: "turn_completed_notification" }); });
+    expect(accepted).toBe(false);
+    expect(args.hydratePanelFromSessionHistoryRef.current).not.toHaveBeenCalled();
+    owned.mockReturnValue(false);
+    await act(() => { accepted = result.current.requestSessionResync("session-5", { reason: "turn_completed_notification" }); });
+    expect(accepted).toBe(true);
+    expect(args.hydratePanelFromSessionHistoryRef.current).toHaveBeenCalledWith(expect.objectContaining({ panelId: "panel-a", sessionId: "session-5" }));
+  });
+
   it("requestSessionResync refetches the selected session under the shared rate limit", async () => {
     const args = baseArgs();
     const { result } = await renderHook(() => useReadyDrivenResumeSyncController(args));

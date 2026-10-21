@@ -1843,8 +1843,8 @@ test("renders the four retained vector activities and an ASCII subagent count", 
   expect(screen.queryByTestId("skia-text:× 1/2")).toBeNull();
 });
 
-test.each(["standard", "cyberpunk"] as const)("uses %s accent for the static running tint while retaining activity icon color and clears both on completion", async (themeId) => {
-  const effectColor = VISUAL_THEMES[themeId].colors.accent;
+test.each(["standard", "cyberpunk"] as const)("uses %s progress color for the static running tint while retaining activity icon color and clears both on completion", async (themeId) => {
+  const effectColor = VISUAL_THEMES[themeId].tones.progress.border;
   const activityColor = VISUAL_THEMES[themeId].colors.activityActive;
   const inactiveColor = VISUAL_THEMES[themeId].colors.borderStrong;
   mockSessions = [{ ...mockDefaultSession, isResponding: true, activityTrail: [{ kind: "reading", active: true }] }];
@@ -1855,13 +1855,13 @@ test.each(["standard", "cyberpunk"] as const)("uses %s accent for the static run
   globals.__skiaBoardRRectPaints = [];
   const screen = await render(tree());
   expect(screen.getAllByTestId("skia-icon-path")[0].props.accessibilityLabel).toBe(activityColor);
-  expect(globals.__skiaBoardRRectPaints).toContainEqual({ color: effectColor, alpha: 0.16 });
+  expect(globals.__skiaBoardRRectPaints).toContainEqual({ color: effectColor, alpha: 0.24 });
 
   globals.__skiaBoardRRectPaints = [];
   mockSessions = [{ ...mockSessions[0], isResponding: false, activityTrail: [{ kind: "reading", active: false }] }];
   await screen.rerender(tree());
   expect(screen.getAllByTestId("skia-icon-path")[0].props.accessibilityLabel).toBe(inactiveColor);
-  expect(globals.__skiaBoardRRectPaints).not.toContainEqual({ color: effectColor, alpha: 0.16 });
+  expect(globals.__skiaBoardRRectPaints).not.toContainEqual({ color: effectColor, alpha: 0.24 });
 });
 
 test("shows a moved-or-deleted message instead of file actions for an unavailable card", async () => {

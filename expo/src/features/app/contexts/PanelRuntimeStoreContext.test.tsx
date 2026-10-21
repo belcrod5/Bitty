@@ -14,7 +14,7 @@ function panel(panelId: string, modelRef: string): PanelRuntimeSnapshot {
   };
 }
 
-test("caches each panel independently and follows reassignment, local settings, and compact projection changes", async () => {
+test("follows reassignment, local panel settings, and compact projection changes without a shared cache", async () => {
   let runtime!: ReturnType<typeof useConversationRuntimeStoreController>;
   let setBases!: React.Dispatch<React.SetStateAction<Record<string, PanelRuntimeSnapshot>>>;
   let setCompact!: React.Dispatch<React.SetStateAction<boolean>>;
@@ -39,8 +39,12 @@ test("caches each panel independently and follows reassignment, local settings, 
       });
     }, [compact]);
     const value = React.useMemo(() => ({
-      getBaseSnapshot: (panelId: string) => bases[panelId as keyof typeof bases], projectSnapshot,
-      createEmptySnapshot: (panelId: string) => panel(panelId, ""),
+      getBaseSnapshot: (panelId: string) => bases[panelId],
+      getSnapshot: (panelId: string) => projectSnapshot(panelId, bases[panelId]),
+      getPreview: (panelId: string) => ({
+        selectedSessionId: bases[panelId].selectedSessionId, selectedSessionUpdatedAt: "",
+        isResponding: false, lastMessageContent: "", messageCount: 0,
+      }),
       getKnownPanelIds: () => Object.keys(bases),
       subscribe: runtime.subscribeConversationRuntime, getRevision: runtime.getConversationRuntimeRevision,
     }), [bases, projectSnapshot]);
@@ -59,14 +63,13 @@ test("caches each panel independently and follows reassignment, local settings, 
   expect(runtime.getConversationRuntimeRevision("session-a")).toBe(runtime.getConversationRuntimeRevision("session-b"));
   expect(result.current.left.modelRef).toBe("model-a");
   expect(result.current.right?.modelRef).toBe("model-b");
-  const rightBefore = result.current.right;
   projected.mockClear();
   await act(() => {
     setBases((bases) => ({ ...bases, left: { ...bases.left, selectedSessionId: "session-b", selectedSessionTitle: "New assignment" } }));
   });
   expect(result.current.left).toMatchObject({ selectedSessionId: "session-b", selectedSessionTitle: "New assignment", contextUsedPct: 20 });
-  expect(result.current.right).toBe(rightBefore);
-  expect(projected.mock.calls.map(([panelId]) => panelId)).toEqual(["left"]);
+  expect(result.current.right?.modelRef).toBe("model-b");
+  expect(projected.mock.calls.map(([panelId]) => panelId)).toEqual(["left", "right"]);
   await act(() => { result.current.setPanelIds(["left"]); });
   const afterAssignment = renders;
   projected.mockClear();

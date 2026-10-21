@@ -45,6 +45,54 @@ function panelSnapshot(
 }
 
 describe("useConversationRuntimeStoreController conditional terminal update", () => {
+  it("accepts a newer owned execution after a relay counter has advanced, including its completion", async () => {
+    const { result } = await renderHook(useConversationRuntimeStoreController);
+    await act(() => {
+      result.current.ensureConversationRuntimeRequestForRelay({ sessionId: "session-1", startedAtMs: 100, reason: "restore" });
+      result.current.finalizeConversationRuntimeAfterRelayLoss("session-1", "reconnect");
+      result.current.ensureConversationRuntimeRequestForRelay({ sessionId: "session-1", startedAtMs: 100, reason: "reconnect" });
+    });
+    expect(result.current.getConversationRuntimeSnapshot("session-1")?.request?.requestSeq).toBe(2);
+    const owned = { ...activeRequest(200), requestId: "owned", requestSeq: 1 };
+    await act(() => { result.current.upsertConversationRuntimeSnapshot({ sessionId: "session-1", request: owned }); });
+    expect(result.current.getConversationRuntimeSnapshot("session-1")?.request?.requestId).toBe("owned");
+    expect(result.current.getConversationRuntimePreview("session-1")?.isResponding).toBe(true);
+    await act(() => {
+      result.current.upsertConversationRuntimeSnapshot({
+        sessionId: "session-1", request: { ...owned, lifecycle: "completed", status: "completed" },
+      });
+    });
+    expect(result.current.getConversationRuntimePreview("session-1")?.isResponding).toBe(false);
+  });
+
+  it("rejects an older terminal execution even when its independent counter is higher", async () => {
+    const { result } = await renderHook(useConversationRuntimeStoreController);
+    await act(() => {
+      result.current.upsertConversationRuntimeSnapshot({ sessionId: "session-1", request: { ...activeRequest(200), requestSeq: 1 } });
+      result.current.upsertConversationRuntimeSnapshot({
+        sessionId: "session-1", request: { ...activeRequest(100), requestSeq: 9, lifecycle: "completed", status: "completed" },
+      });
+    });
+    expect(result.current.getConversationRuntimeSnapshot("session-1")).toMatchObject({
+      isResponding: true, request: { startedAtMs: 200, requestSeq: 1 },
+    });
+  });
+
+  it("returns a bounded preview without retaining history or waveform arrays", async () => {
+    const { result } = await renderHook(useConversationRuntimeStoreController);
+    await act(() => {
+      result.current.upsertConversationRuntimeSnapshot({
+        sessionId: "session-1", conversationMessages: Array.from({ length: 200 }, (_, i) => ({
+          id: String(i), role: "assistant", content: `message ${i}`, ttsWaveform: Array(192).fill(0.5),
+        })),
+      });
+    });
+    const preview = result.current.getConversationRuntimePreview("session-1")!;
+    expect(preview).toEqual({ isResponding: false, lastMessageContent: "message 199", messageCount: 200, activityTrail: [] });
+    preview.activityTrail.push("writing");
+    expect(result.current.getConversationRuntimePreview("session-1")?.activityTrail).toEqual([]);
+  });
+
   it("only publishes relevant display changes while preserving request freshness", async () => {
     const { result } = await renderHook(useConversationRuntimeStoreController);
     const listener = jest.fn();

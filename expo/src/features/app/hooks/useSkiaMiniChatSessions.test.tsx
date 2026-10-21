@@ -25,7 +25,7 @@ import { IDLE_DIRECTORY_SESSION_SYNC } from "../types/directorySessions";
 import { SkiaBoardProvider, useSkiaBoard } from "../contexts/SkiaBoardContext";
 import { buildPanelRuntimeSnapshot } from "../utils/panelRuntimeSnapshot";
 import { useConversationRuntimeStoreController } from "./useConversationRuntimeStoreController";
-import type { PanelRuntimeSnapshot } from "../contexts/PanelRuntimeStoreContext";
+import type { PanelRuntimePreview, PanelRuntimeSnapshot } from "../contexts/PanelRuntimeStoreContext";
 import type { SkiaBoardCard, SkiaBoardState } from "../utils/skiaBoardState";
 
 jest.mock("../contexts/ConversationContext", () => ({
@@ -164,11 +164,13 @@ beforeEach(() => {
     hydratePanelFromSessionHistory: jest.fn().mockResolvedValue("applied"),
   } as unknown as ReturnType<typeof usePanelRuntimeController>);
   mockUsePanelRuntimeStore.mockReturnValue({
-    getSnapshot: (panelId: string) => {
+    getPreview: (panelId: string) => {
       const sessionId = panelId.replace("skia_mini_preview_", "");
       return {
         selectedSessionId: sessionId,
-        conversationMessages: [{ content: `Last message ${sessionId.replace("session-", "")}` }],
+        lastMessageContent: `Last message ${sessionId.replace("session-", "")}`,
+        messageCount: 1,
+        isResponding: false,
       };
     },
     getKnownPanelIds: () => [],
@@ -256,24 +258,27 @@ describe("useSkiaMiniChatSessions", () => {
         jest.requireActual("../contexts/PanelRuntimeStoreContext").usePanelRuntimeStore
       );
       let store!: ReturnType<typeof useConversationRuntimeStoreController>;
-      let getter!: (panelId: string) => PanelRuntimeSnapshot;
+      let getter!: (panelId: string) => PanelRuntimePreview;
       function RuntimeWrapper({ children }: PropsWithChildren) {
         store = useConversationRuntimeStoreController();
         getter = React.useCallback((panelId: string) => {
-          const runtime = store.getConversationRuntimeSnapshot("session-1");
+          const runtime = store.getConversationRuntimePreview("session-1");
           return {
             panelId,
             selectedSessionId: "session-1",
             isResponding: runtime?.isResponding ?? false,
             runtimeActivityTrail: runtime?.activityTrail ?? [],
-            conversationMessages: runtime?.conversationMessages ?? [],
-          } as PanelRuntimeSnapshot;
+            lastMessageContent: runtime?.lastMessageContent ?? "",
+            messageCount: runtime?.messageCount ?? 0,
+            selectedSessionUpdatedAt: "",
+          };
+
         }, []);
         const base = React.useMemo(() => ({ selectedSessionId: "session-1" } as PanelRuntimeSnapshot), []);
         const value = React.useMemo(() => ({
           getBaseSnapshot: () => base,
-          projectSnapshot: getter,
-          createEmptySnapshot: getter,
+          getPreview: getter,
+          getSnapshot: jest.fn(),
           getKnownPanelIds: () => ["skia_mini_preview_session-1"],
           subscribe: store.subscribeConversationRuntime,
           getRevision: store.getConversationRuntimeRevision,
@@ -314,7 +319,7 @@ describe("useSkiaMiniChatSessions", () => {
     }
   );
 
-  it("avoids unrelated/no-op work and only reprojects the changed card among 24 histories", async () => {
+  it("reads bounded previews without projecting or copying any of 24 full histories", async () => {
     const count = 24;
     seedRunnerBoard(Array.from({ length: count }, (_, i) => sessionCard(`session-${i + 1}`, i, 0)));
     mockConversation(Array.from({ length: count }, (_, i) => session(i + 1)));
@@ -356,8 +361,17 @@ describe("useSkiaMiniChatSessions", () => {
         }
       }
       const value = React.useMemo(() => ({
-        getBaseSnapshot: (panelId: string) => bases.get(panelId), projectSnapshot,
-        createEmptySnapshot: (panelId: string) => ({ panelId } as PanelRuntimeSnapshot),
+        getBaseSnapshot: (panelId: string) => bases.get(panelId),
+        getSnapshot: (panelId: string) => projectSnapshot(panelId, bases.get(panelId)!),
+        getPreview: (panelId: string) => {
+          const sessionId = bases.get(panelId)!.selectedSessionId;
+          const runtime = store.getConversationRuntimePreview(sessionId)!;
+          return {
+            selectedSessionId: sessionId, selectedSessionUpdatedAt: "",
+            isResponding: runtime.isResponding, runtimeActivityTrail: runtime.activityTrail,
+            lastMessageContent: runtime.lastMessageContent, messageCount: runtime.messageCount,
+          };
+        },
         getKnownPanelIds: () => [...bases.keys()],
         subscribe: store.subscribeConversationRuntime, getRevision: store.getConversationRuntimeRevision,
       }), []);
@@ -379,7 +393,7 @@ describe("useSkiaMiniChatSessions", () => {
       lifecycle: "active" as const, status: "model_processing", startedAtMs: 100,
     };
     await act(() => { store.upsertConversationRuntimeSnapshot({ sessionId: "session-1", request }); });
-    expect(projectSnapshot.mock.calls.map(([panelId]) => panelId)).toEqual(["skia_mini_preview_session-1"]);
+    expect(projectSnapshot).not.toHaveBeenCalled();
     expect(result.current.sessions[0].isResponding).toBe(true);
     expect(result.current.sessions.slice(1).every((item, i) => item === before[i + 1])).toBe(true);
     projectSnapshot.mockClear();
@@ -388,7 +402,7 @@ describe("useSkiaMiniChatSessions", () => {
         sessionId: "session-1", request: { ...request, lifecycle: "completed", status: "completed" },
       });
     });
-    expect(projectSnapshot).toHaveBeenCalledTimes(1);
+    expect(projectSnapshot).not.toHaveBeenCalled();
     expect(result.current.sessions[0]).toMatchObject({
       isResponding: false, activityTrail: [{ kind: "thinking", active: false }],
     });
@@ -520,18 +534,13 @@ describe("useSkiaMiniChatSessions", () => {
       ],
     };
     mockUsePanelRuntimeStore.mockReturnValue({
-      getSnapshot: () => ({
+      getPreview: () => ({
         selectedSessionId: parent.sessionId,
         isResponding: true,
         runtimeStatus: "tool_running",
         runtimeStatusDetail: "tool start: web_search",
         runtimeActivityTrail: ["thinking", "reading", "web"],
-        conversationMessages: [{
-          role: "assistant",
-          content: "searching",
-          llmStatus: "tool_running",
-          llmStatusDetail: "tool start: file_edit",
-        }],
+        lastMessageContent: "searching", messageCount: 1,
       }),
       getKnownPanelIds: () => [],
     } as unknown as ReturnType<typeof usePanelRuntimeStore>);
@@ -564,18 +573,13 @@ describe("useSkiaMiniChatSessions", () => {
   it("prefers the shared post-message runtime thinking status over stale message activity", async () => {
     const parent = session(1);
     mockUsePanelRuntimeStore.mockReturnValue({
-      getSnapshot: () => ({
+      getPreview: () => ({
         selectedSessionId: parent.sessionId,
         isResponding: true,
         runtimeStatus: "model_processing",
         runtimeStatusDetail: "agent message completed",
         runtimeActivityTrail: ["web", "thinking"],
-        conversationMessages: [{
-          role: "assistant",
-          content: "intermediate answer",
-          llmStatus: "tool_running",
-          llmStatusDetail: "tool start: web_search",
-        }],
+        lastMessageContent: "intermediate answer", messageCount: 1,
       }),
       getKnownPanelIds: () => [],
     } as unknown as ReturnType<typeof usePanelRuntimeStore>);
@@ -600,14 +604,28 @@ describe("useSkiaMiniChatSessions", () => {
     ]);
   });
 
+  it("does not bind a prior panel assignment's running state to the current card", async () => {
+    seedRunnerBoard([sessionCard("session-1", 0, 0)]);
+    mockConversation([session(1)]);
+    mockUsePanelRuntimeStore.mockReturnValue({
+      getPreview: () => ({
+        selectedSessionId: "prior-session", isResponding: true,
+        runtimeActivityTrail: ["web"], lastMessageContent: "prior response", messageCount: 1,
+      }), getKnownPanelIds: () => [],
+    } as unknown as ReturnType<typeof usePanelRuntimeStore>);
+    const { result } = await renderHook(useSkiaMiniChatSessions, { wrapper: BoardWrapper });
+    await flush();
+    expect(result.current.sessions[0]).toMatchObject({ isResponding: false, activityTrail: [], lastMessageContent: "" });
+  });
+
   it("marks every retained activity as completed when the turn is idle", async () => {
     const parent = session(1);
     mockUsePanelRuntimeStore.mockReturnValue({
-      getSnapshot: () => ({
+      getPreview: () => ({
         selectedSessionId: parent.sessionId,
         isResponding: false,
         runtimeActivityTrail: ["reading", "writing", "web", "thinking"],
-        conversationMessages: [],
+        lastMessageContent: "", messageCount: 0,
       }),
       getKnownPanelIds: () => [],
     } as unknown as ReturnType<typeof usePanelRuntimeStore>);
@@ -899,16 +917,16 @@ describe("useSkiaMiniChatSessions", () => {
       hydratePanelFromSessionHistory,
     } as unknown as ReturnType<typeof usePanelRuntimeController>);
     mockUsePanelRuntimeStore.mockReturnValue({
-      getSnapshot: (panelId: string) => (
+      getPreview: (panelId: string) => (
         panelId === "skia_mini_preview_session-1"
           ? {
             selectedSessionId: "session-1",
             selectedSessionUpdatedAt: session(1).updatedAt,
             isResponding: false,
             isHydrating: false,
-            conversationMessages: [{ content: "kept" }],
+            lastMessageContent: "kept", messageCount: 1,
           }
-          : { selectedSessionId: "", conversationMessages: [] }
+          : { selectedSessionId: "", lastMessageContent: "", messageCount: 0 }
       ),
       getKnownPanelIds: () => [],
     } as unknown as ReturnType<typeof usePanelRuntimeStore>);
@@ -930,16 +948,16 @@ describe("useSkiaMiniChatSessions", () => {
       hydratePanelFromSessionHistory,
     } as unknown as ReturnType<typeof usePanelRuntimeController>);
     mockUsePanelRuntimeStore.mockReturnValue({
-      getSnapshot: (panelId: string) => (
+      getPreview: (panelId: string) => (
         panelId === "skia_mini_preview_session-2"
           ? {
             selectedSessionId: "session-2",
             selectedSessionUpdatedAt: session(1).updatedAt,
             isResponding: true,
             isHydrating: false,
-            conversationMessages: [{ content: "live" }],
+            lastMessageContent: "live", messageCount: 1,
           }
-          : { selectedSessionId: "", conversationMessages: [] }
+          : { selectedSessionId: "", lastMessageContent: "", messageCount: 0 }
       ),
       getKnownPanelIds: () => [],
     } as unknown as ReturnType<typeof usePanelRuntimeStore>);

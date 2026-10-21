@@ -105,6 +105,7 @@ function shouldKeepPreviousRequestSnapshot(
   next: ConversationRuntimeRequestSnapshot | null | undefined
 ) {
   if (!previous || !next) return false;
+  if (previous.startedAtMs !== next.startedAtMs) return previous.startedAtMs > next.startedAtMs;
   if (previous.requestSeq > next.requestSeq) return true;
   return (
     previous.requestSeq === next.requestSeq &&
@@ -255,6 +256,17 @@ export function useConversationRuntimeStoreController() {
       pendingApproval: cloneApprovalRequest(snapshot.pendingApproval),
       conversationMessages: cloneConversationMessages(snapshot.conversationMessages),
       request: cloneRequestSnapshot(snapshot.request),
+      activityTrail: [...snapshot.activityTrail],
+    };
+  }, []);
+
+  const getConversationRuntimePreview = useCallback((sessionIdRaw: unknown) => {
+    const snapshot = runtimeBySessionIdRef.current[normalizeSessionId(sessionIdRaw)];
+    if (!snapshot) return null;
+    return {
+      isResponding: snapshot.isResponding,
+      lastMessageContent: snapshot.conversationMessages[snapshot.conversationMessages.length - 1]?.content || "",
+      messageCount: snapshot.conversationMessages.length,
       activityTrail: [...snapshot.activityTrail],
     };
   }, []);
@@ -505,6 +517,7 @@ export function useConversationRuntimeStoreController() {
     subscribeConversationRuntime,
     getConversationRuntimeRevision,
     getConversationRuntimeSnapshot,
+    getConversationRuntimePreview,
     finalizeConversationRuntimeAfterRelayLoss,
     ensureConversationRuntimeRequestForRelay,
     upsertConversationRuntimeSnapshot,

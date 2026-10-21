@@ -16,6 +16,7 @@ function buildInput(overrides: Partial<Parameters<typeof shouldPreserveRuntimeCo
     runtimeMessageCount: 3,
     runtimeUpdatedAtMs: NOW_MS,
     runtimeIsResponding: false,
+    hasOwnedRequest: true,
     runtimeRequestStartedAtMs: 100,
     requestStartedAtMsAtHydrationStart: 100,
     requestCompletedAtMs: null,
@@ -108,6 +109,7 @@ describe("applyPanelHydrationStart", () => {
     expect(started.other).toBe(other);
 
     const terminal = resolvePanelConversationAfterHydration({
+      hasOwnedRequest: false,
       runtime: null,
       requestStartedAtMsAtHydrationStart: 100,
       restoredConversation: [message({ id: "playing-id", role: "assistant", content: "done" })],
@@ -317,9 +319,35 @@ describe("shouldPreserveRuntimeConversationOnHydrate", () => {
 });
 
 describe("resolvePanelConversationAfterHydration", () => {
+  it.each([false, true])("reconciles recent relay runtime with immediate idle history unless a client request is owned (%s)", (hasOwnedRequest) => {
+    const result = resolvePanelConversationAfterHydration({
+      hasOwnedRequest,
+      runtime: {
+        conversationMessages: [message({ id: "relay", role: "assistant", content: "partial" })],
+        updatedAtMs: NOW_MS,
+        isResponding: true,
+        requestStartedAtMs: NOW_MS - 1_000,
+        requestCompletedAtMs: null,
+        selectedThreadStatusType: "active",
+      },
+      requestStartedAtMsAtHydrationStart: NOW_MS - 1_000,
+      restoredConversation: [message({ id: "done", role: "assistant", content: "completed" })],
+      restoredHasRunningTurn: false,
+      restoredThreadStatusType: "idle",
+      restoredUpdatedAtMs: NOW_MS,
+      restoredMessageCount: 1,
+      panelConversation: [],
+      ttsPlaybackMessageId: "",
+      nowMs: NOW_MS,
+    });
+    expect(result.isResponding).toBe(hasOwnedRequest);
+    expect(result.preserveRuntimeConversation).toBe(hasOwnedRequest);
+  });
+
   it("keeps live runtime while the server still reports a running turn", () => {
     const runtimeMessage = message({ id: "runtime", role: "assistant", content: "streaming" });
     const result = resolvePanelConversationAfterHydration({
+      hasOwnedRequest: false,
       runtime: {
         conversationMessages: [runtimeMessage],
         updatedAtMs: NOW_MS,
@@ -351,6 +379,7 @@ describe("resolvePanelConversationAfterHydration", () => {
   it("uses running server history when no live runtime exists", () => {
     const restoredMessage = message({ id: "restored", role: "assistant", content: "working" });
     const result = resolvePanelConversationAfterHydration({
+      hasOwnedRequest: false,
       runtime: null,
       requestStartedAtMsAtHydrationStart: null,
       restoredConversation: [restoredMessage],
@@ -375,6 +404,7 @@ describe("resolvePanelConversationAfterHydration", () => {
     const liveContent = "line one\n\ndone";
     const restoredContent = "line one  \n\n\n\n{youtube:dQw4w9WgXcQ}\n\ndone\n";
     const result = resolvePanelConversationAfterHydration({
+      hasOwnedRequest: false,
       runtime: null,
       requestStartedAtMsAtHydrationStart: 100,
       restoredConversation: [
@@ -402,6 +432,7 @@ describe("resolvePanelConversationAfterHydration", () => {
 
   it("keeps the playback target while the server still reports a running turn", () => {
     const result = resolvePanelConversationAfterHydration({
+      hasOwnedRequest: false,
       runtime: null,
       requestStartedAtMsAtHydrationStart: 100,
       restoredConversation: [
@@ -426,6 +457,7 @@ describe("resolvePanelConversationAfterHydration", () => {
 
   it("drops local placeholders and playback targets that no longer exist in server history", () => {
     const result = resolvePanelConversationAfterHydration({
+      hasOwnedRequest: false,
       runtime: null,
       requestStartedAtMsAtHydrationStart: 100,
       restoredConversation: [
@@ -449,6 +481,7 @@ describe("resolvePanelConversationAfterHydration", () => {
 
   it("adopts the server command result for a force-settled command row with the same id", () => {
     const result = resolvePanelConversationAfterHydration({
+      hasOwnedRequest: false,
       runtime: null,
       requestStartedAtMsAtHydrationStart: 100,
       restoredConversation: [
@@ -512,6 +545,7 @@ describe("preserveTtsPlaybackMessageOnRestore", () => {
       ttsPlaybackMessageId: params.ttsPlaybackMessageId,
     });
     return resolvePanelConversationAfterHydration({
+      hasOwnedRequest: false,
       runtime: {
         conversationMessages: params.storeConversation,
         updatedAtMs: NOW_MS - 5_000,
