@@ -136,7 +136,7 @@ test.each(["standard", "cyberpunk"] as const)("expanded card uses %s theme color
     <AnswerLearningDetails {...props} />
   </VisualThemeProvider>);
   await waitFor(() => screen.getByLabelText("回答の学習・参照詳細、参照なし"));
-  expect(detailsButton(screen)).toHaveStyle({ minHeight: 44, minWidth: 64 });
+  expect(detailsButton(screen)).toHaveStyle({ minHeight: 44, minWidth: 44, paddingHorizontal: 4, gap: 4 });
   expect(detailsButton(screen)).not.toHaveStyle({ borderWidth: 1 });
   expect(StyleSheet.flatten(detailsButton(screen).props.style).backgroundColor).toBeUndefined();
   await fireEvent.press(detailsButton(screen));

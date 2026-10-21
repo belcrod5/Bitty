@@ -64,17 +64,17 @@ export function AnswerLearningDetails({ orchestratorId, operationId, paused = fa
       disabled={paused} onPress={() => setOpen((value) => !value)}
       style={({ pressed }) => [styles.trigger, { opacity: pressed || paused ? 0.6 : 1 }]}>
       {current?.status === "loading" ? <ActivityIndicator size="small" color={foreground} />
-        : <Ionicons name="sparkles-outline" size={17} color={foreground} />}
+        : <Ionicons name="library-outline" size={15} color={foreground} />}
       {active ? <View style={[styles.badge, { backgroundColor: tone.foreground }]}>
         <Text testID="answer-learning-count" style={[styles.badgeText, { color: tone.background }]}>{count}{partial ? "+" : ""}</Text>
       </View> : (count === null || partial) && current?.status !== "loading"
         ? <Text style={[styles.unknown, { color: foreground }]}>?</Text> : null}
-      <Ionicons name={open && !paused ? "chevron-up" : "chevron-down"} size={12} color={foreground} />
+      <Ionicons name={open && !paused ? "chevron-up" : "chevron-down"} size={10} color={foreground} />
     </Pressable>
     {open && !paused ? <View style={[styles.card, { backgroundColor: tone.background, borderColor: tone.border }]}>
       <View style={styles.header}>
         <View style={[styles.headerIcon, { backgroundColor: colors.surface }]}>
-          <Ionicons name="sparkles-outline" size={16} color={tone.foreground} />
+          <Ionicons name="library-outline" size={16} color={tone.foreground} />
         </View>
         <View style={styles.headerText}>
           <Text style={[styles.title, { color: tone.foreground }]}>学習コンテキスト</Text>
@@ -110,11 +110,11 @@ export function AnswerLearningDetails({ orchestratorId, operationId, paused = fa
 }
 
 const styles = StyleSheet.create({
-  root: { marginTop: 8, gap: 8 },
+  root: { marginTop: 4, gap: 8 },
   trigger: { alignSelf: "flex-start", flexDirection: "row", alignItems: "center", justifyContent: "center",
-    minHeight: 44, minWidth: 64, paddingHorizontal: 12, gap: 7 },
-  badge: { minWidth: 20, height: 20, paddingHorizontal: 5, borderRadius: 10, alignItems: "center", justifyContent: "center" },
-  badgeText: { fontSize: 11, fontWeight: "700", fontVariant: ["tabular-nums"] },
+    minHeight: 44, minWidth: 44, paddingHorizontal: 4, gap: 4 },
+  badge: { minWidth: 18, height: 18, paddingHorizontal: 5, borderRadius: 9, alignItems: "center", justifyContent: "center" },
+  badgeText: { fontSize: 10, fontWeight: "700", fontVariant: ["tabular-nums"] },
   unknown: { fontSize: 12, fontWeight: "600" },
   card: { borderRadius: 16, borderWidth: 1, borderLeftWidth: 3, padding: 14, gap: 12 },
   header: { flexDirection: "row", alignItems: "center", gap: 10 },
