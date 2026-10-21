@@ -17,6 +17,8 @@ const mockMeasureInWindow = jest.fn((callback: (x: number, y: number, width: num
   callback(50, 80, 800, 1000);
 });
 let mockReduceMotion: boolean | null = true;
+const mockLogSessionDiag = jest.fn();
+let mockRunOnJsQueue: Array<() => void> | null = null;
 jest.mock("../hooks/useReduceMotionEnabled", () => ({ useReduceMotionEnabled: () => mockReduceMotion }));
 jest.mock("../hooks/useRegisteredDirectoryActiveSessionCount", () => ({
   useRegisteredDirectoryActiveSessionCount: () => mockRunningSessionCount,
@@ -259,6 +261,10 @@ jest.mock("react-native-reanimated", () => {
   const ReactModule = require("react");
   return {
     ...actualMock,
+    runOnJS: (callback: (...args: unknown[]) => void) => (...args: unknown[]) => {
+      if (mockRunOnJsQueue) mockRunOnJsQueue.push(() => callback(...args));
+      else callback(...args);
+    },
     useSharedValue: (init: unknown) => ReactModule.useRef({
       value: init,
       modify(modifier: (value: unknown) => unknown) {
@@ -350,6 +356,7 @@ jest.mock("../contexts/ChatScreenContext", () => ({
 jest.mock("../contexts/ConversationContext", () => ({
   useConversation: () => ({
     registeredDirectories: [{ path: "/workspace", displayName: "Workspace" }],
+    logSessionDiag: mockLogSessionDiag,
   }),
 }));
 jest.mock("../contexts/SkiaBoardContext", () => ({
@@ -468,6 +475,8 @@ jest.mock("../hooks/useSkiaMiniChatSessions", () => ({
 }));
 
 beforeEach(() => {
+  mockLogSessionDiag.mockClear();
+  mockRunOnJsQueue = null;
   (globalThis as Record<string, unknown>).__skiaBoardFrameCallback = null;
   mockRunningSessionCount = 0;
   mockActiveScreen = "skia_board";
@@ -737,6 +746,61 @@ function fireCardTap() {
   // カード0は col=0,row=0 → (18, 18) 起点なので (30, 30) のタップで命中する。
   gestureRegistry().Tap.onEnd({ x: 30, y: 30 }, true);
 }
+
+test("records tap routing and UI-to-JS delay without card identity or text", async () => {
+  const now = jest.spyOn(Date, "now").mockReturnValue(1000);
+  try {
+    await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
+    const pending: Array<() => void> = [];
+    mockRunOnJsQueue = pending;
+    gestureRegistry().Tap.onEnd({ x: 30, y: 30 }, true);
+    now.mockReturnValue(1250);
+    await act(async () => { pending.splice(0).forEach((callback) => callback()); });
+    expect(mockLogSessionDiag).toHaveBeenCalledWith("skia_board_tap", {
+      reason: "card_select", dispatchDelayMs: 250,
+    }, { throttleMs: 0 });
+  } finally {
+    mockRunOnJsQueue = null;
+    now.mockRestore();
+  }
+});
+
+test("records cancelled and multi-pointer tap rejection without opening a card", async () => {
+  const open = jest.fn();
+  await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={open} />);
+  gestureRegistry().Tap.onEnd({ x: 30, y: 30 }, false);
+  gestureRegistry().Tap.onFinalize({ x: 30, y: 30 }, false);
+  gestureRegistry().Pan.onTouchesDown({ numberOfTouches: 2 });
+  gestureRegistry().Tap.onEnd({ x: 30, y: 30 }, true);
+  expect(mockLogSessionDiag.mock.calls.filter(([event]) => event === "skia_board_tap").map(([, payload]) => payload.reason))
+    .toEqual(["cancelled", "multiple_pointers"]);
+  expect(open).not.toHaveBeenCalled();
+});
+
+test("reports slow fit and Picture measurements after commit using counts only", async () => {
+  let elapsed = 0;
+  const clock = jest.spyOn(performance, "now").mockImplementation(() => { elapsed += 40; return elapsed; });
+  try {
+    await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
+    const logs = mockLogSessionDiag.mock.calls.filter(([event]) => event === "skia_board_slow_render");
+    expect(logs.map(([, payload]) => payload.stage)).toEqual(expect.arrayContaining(["fit", "picture"]));
+    for (const [, payload, options] of logs) {
+      expect(payload.elapsedMs).toBeGreaterThanOrEqual(32);
+      expect(Object.keys(payload).sort()).toEqual((payload.stage === "fit"
+        ? ["stage", "elapsedMs", "characters", "measurements"]
+        : ["stage", "elapsedMs", "characters", "paragraphs"]).sort());
+      expect(options).toEqual({ throttleMs: 1000, throttleKey: `skia_board_slow_render:${payload.stage}` });
+    }
+  } finally { clock.mockRestore(); }
+});
+
+test("does not emit rendering diagnostics for fast fit and Picture creation", async () => {
+  const clock = jest.spyOn(performance, "now").mockReturnValue(0);
+  try {
+    await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
+    expect(mockLogSessionDiag.mock.calls.filter(([event]) => event === "skia_board_slow_render")).toEqual([]);
+  } finally { clock.mockRestore(); }
+});
 
 test("animates mouse-wheel zoom but keeps two-pointer pinch direct", async () => {
   const platformDescriptor = Object.getOwnPropertyDescriptor(Platform, "OS");
