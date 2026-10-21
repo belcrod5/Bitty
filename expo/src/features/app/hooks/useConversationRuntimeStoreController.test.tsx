@@ -128,6 +128,32 @@ describe("useConversationRuntimeStoreController conditional terminal update", ()
     expect(listener).not.toHaveBeenCalled();
   });
 
+  it("stores event, approval, and request detail updates without notifying display readers", async () => {
+    const { result } = await renderHook(useConversationRuntimeStoreController);
+    const request = { ...activeRequest(100), statusDetail: "detail one" };
+    await act(() => { result.current.upsertConversationRuntimeSnapshot({ sessionId: "session-1", request }); });
+    const listener = jest.fn();
+    result.current.subscribeConversationRuntime(["session-1"], listener);
+    const event = { kind: "text" as const, sessionId: "session-1", seq: 1, text: "event", atMs: 100 };
+    const approval = {
+      requestId: "approval", source: "codex-app-server" as const, command: "command", args: [],
+      reason: "reason", approvalKey: "key", message: "approval", threadId: "session-1", turnId: "turn",
+    };
+    await act(() => {
+      result.current.upsertConversationRuntimeSnapshot({ sessionId: "session-1", events: [event] });
+      result.current.upsertConversationRuntimeSnapshot({ sessionId: "session-1", pendingApproval: approval });
+      result.current.upsertConversationRuntimeSnapshot({ sessionId: "session-1", request: { ...request, statusDetail: "detail two" } });
+    });
+    expect(listener).not.toHaveBeenCalled();
+    expect(result.current.getConversationRuntimeSnapshot("session-1")).toMatchObject({
+      events: [event], pendingApproval: approval, request: { statusDetail: "detail two" },
+    });
+    await act(() => {
+      result.current.upsertConversationRuntimeSnapshot({ sessionId: "session-1", request: { ...request, startedAtMs: 200 } });
+    });
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps defensive copies when omitted collections are reused internally", async () => {
     const { result } = await renderHook(useConversationRuntimeStoreController);
     const input = [{ ...message("owned", "original"), youtubeVideoIds: ["original-id"] }];

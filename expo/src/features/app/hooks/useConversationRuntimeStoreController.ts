@@ -364,16 +364,12 @@ export function useConversationRuntimeStoreController() {
       ? normalizeContextUsedPct(input.contextUsedPct) : previous?.contextUsedPct ?? null;
     const eventsChanged = events !== previous?.events && (events.length > 0 || !!previous?.events.length);
     const messagesChanged = messages !== previous?.conversationMessages && (messages.length > 0 || !!previous?.conversationMessages.length);
-    const requestChangedForDisplay = !!previous?.request !== !!nextRequest || (
-      !!previous?.request && !!nextRequest && (Object.keys(nextRequest) as Array<keyof ConversationRuntimeRequestSnapshot>)
-        .some((key) => key !== "updatedAtMs" && key !== "completedAtMs" && nextRequest[key] !== previous.request![key])
-    );
-    const displayChanged = !previous || eventsChanged || messagesChanged
-      || pendingApproval !== previous.pendingApproval
+    const displayChanged = !previous || messagesChanged
       || contextUsedPct !== previous.contextUsedPct
       || nextIsResponding !== previous.isResponding
       || selectedThreadStatusType !== previous.selectedThreadStatusType
-      || activityTrail !== previous.activityTrail || requestChangedForDisplay;
+      || activityTrail !== previous.activityTrail
+      || (nextIsResponding ? nextTurnStartedAtMs : null) !== (previous.isResponding ? previousTurnStartedAtMs : null);
     const next: ConversationRuntimeSnapshot = {
       sessionId,
       events: eventsChanged ? cloneRuntimeEvents(events) : previous?.events || [],
@@ -392,7 +388,7 @@ export function useConversationRuntimeStoreController() {
       ...runtimeBySessionIdRef.current,
       [sessionId]: next,
     };
-    // Request timestamps still advance storage/race guards without invalidating display readers.
+    // Storage and execution guards advance even when panel display fields are unchanged.
     if (displayChanged) {
       revisionsRef.current[sessionId] = (revisionsRef.current[sessionId] || 0) + 1;
       listenersRef.current.get(sessionId)?.forEach((listener) => listener());

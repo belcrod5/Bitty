@@ -52,6 +52,8 @@ jest.mock("@shopify/react-native-skia", () => {
   // NativeのCanvasはchildrenを別React rootで描画し、外側Contextを継承しない。
   // standardのProviderを挟んで同じ境界を再現し、Canvas外で解決したthemeだけを検証する。
   const CanvasStub = ({ children }: { children?: React.ReactNode }) => {
+    const target = globalThis as Record<string, unknown>;
+    target.__skiaBoardCanvasRenderCount = Number(target.__skiaBoardCanvasRenderCount || 0) + 1;
     const { VisualThemeProvider: DefaultThemeProvider } = require("../theme/VisualThemeContext");
     return ReactModule.createElement(
       DefaultThemeProvider,
@@ -264,6 +266,11 @@ jest.mock("react-native-reanimated", () => {
     runOnJS: (callback: (...args: unknown[]) => void) => (...args: unknown[]) => {
       if (mockRunOnJsQueue) mockRunOnJsQueue.push(() => callback(...args));
       else callback(...args);
+    },
+    useDerivedValue: (updater: () => unknown) => {
+      const shared = ReactModule.useRef({ value: updater() }).current;
+      shared.value = updater();
+      return shared;
     },
     useSharedValue: (init: unknown) => ReactModule.useRef({
       value: init,
@@ -800,6 +807,24 @@ test("does not emit rendering diagnostics for fast fit and Picture creation", as
     await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
     expect(mockLogSessionDiag.mock.calls.filter(([event]) => event === "skia_board_slow_render")).toEqual([]);
   } finally { clock.mockRestore(); }
+});
+
+test("keeps the Canvas mounted without rerendering for the same preview, but updates text and execution changes", async () => {
+  const props = { onStartNewSessionInDirectory: jest.fn(), openSessionHistoryPopup: jest.fn() };
+  const screen = await render(<SkiaMiniBoardScreen {...props} />);
+  await act(async () => {});
+  const target = globalThis as Record<string, unknown>;
+  const before = Number(target.__skiaBoardCanvasRenderCount);
+  await screen.rerender(<SkiaMiniBoardScreen {...props} />);
+  expect(target.__skiaBoardCanvasRenderCount).toBe(before);
+  mockSessions = [{ ...mockSessions[0], lastMessageContent: "updated preview", isResponding: true }];
+  await screen.rerender(<SkiaMiniBoardScreen {...props} />);
+  expect(Number(target.__skiaBoardCanvasRenderCount)).toBeGreaterThan(before);
+  expect(screen.getByTestId("skia-text:updated preview")).toBeTruthy();
+  const during = Number(target.__skiaBoardCanvasRenderCount);
+  mockSessions = [{ ...mockSessions[0], isResponding: false }];
+  await screen.rerender(<SkiaMiniBoardScreen {...props} />);
+  expect(Number(target.__skiaBoardCanvasRenderCount)).toBeGreaterThan(during);
 });
 
 test("animates mouse-wheel zoom but keeps two-pointer pinch direct", async () => {

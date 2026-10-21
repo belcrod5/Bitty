@@ -441,6 +441,18 @@ describe("useSkiaMiniChatSessions", () => {
     }
   });
 
+  it("keeps the items array when context refreshes without changing card previews", async () => {
+    seedRunnerBoard([sessionCard("session-1", 0, 0)]);
+    const entries = [session(1)];
+    mockConversation(entries);
+    const { result, rerender } = await renderHook(useSkiaMiniChatSessions, { wrapper: BoardWrapper });
+    await flush();
+    const before = result.current.items;
+    mockConversation(entries);
+    await rerender(undefined);
+    expect(result.current.items).toBe(before);
+  });
+
   it("displays the runner board on first connect without touching import", async () => {
     // 正本はランナーのみ。端末ローカルの引き継ぎ(import)は行わない。
     seedRunnerBoard(

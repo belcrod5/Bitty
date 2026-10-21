@@ -469,10 +469,10 @@ export function useSkiaMiniChatSessions() {
   ]);
 
   // file/directoryカードも、元のboardStateカードが同一参照なら同じitemを使い回す。
-  const boardItemReuseRef = useRef(new Map<
+  const boardItemReuseRef = useRef<{ byCardId: Map<
     string,
     { source: unknown; name: string; item: SkiaMiniBoardItem }
-  >());
+  >; list: SkiaMiniBoardItem[] }>({ byCardId: new Map(), list: [] });
   const items = useMemo<SkiaMiniBoardItem[]>(() => {
     const sessionsByCardId = new Map(sessions.map((session) => [session.cardId, session]));
     const previous = boardItemReuseRef.current;
@@ -484,15 +484,17 @@ export function useSkiaMiniChatSessions() {
         return item ? [item] : [];
       }
       const name = skiaBoardCardDisplayName(card, registeredDirectories);
-      const cached = previous.get(cardId);
+      const cached = previous.byCardId.get(cardId);
       const item: SkiaMiniBoardItem = cached && cached.source === card && cached.name === name
         ? cached.item
         : { ...card, cardId, name };
       next.set(cardId, { source: card, name, item });
       return [item];
     });
-    boardItemReuseRef.current = next;
-    return list;
+    const result = previous.list.length === list.length && list.every((item, index) => item === previous.list[index])
+      ? previous.list : list;
+    boardItemReuseRef.current = { byCardId: next, list: result };
+    return result;
   }, [boardState, registeredDirectories, sessions]);
   const tidyBoard = useCallback(() => {
     tidyCards(items.map((item) => item.cardId));

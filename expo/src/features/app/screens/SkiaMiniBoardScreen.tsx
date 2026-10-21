@@ -2058,6 +2058,93 @@ export function SkiaMiniBoardScreen({
     </View>
   );
 
+  const boardCanvas = useMemo(() => (
+    <Canvas style={StyleSheet.absoluteFill}>
+      <Group transform={boardTranslate}>
+        <Group transform={boardScale}>
+          <Path
+            path={gridPath}
+            color={theme.board.grid}
+            style="stroke"
+            strokeWidth={theme.borders.thin}
+          />
+          {sections.map((section, index) => (
+            <SkiaBoardSectionRegion
+              key={section.id}
+              index={index}
+              sections={sectionRects}
+              section={section}
+              initialRect={renderedSectionRects[index]}
+              theme={theme}
+              selected={section.id === selectedSectionId}
+            />
+          ))}
+          <SkiaBoardSectionDraft
+            draft={draftSection}
+            color={DEFAULT_SECTION_COLOR}
+            theme={theme}
+          />
+        </Group>
+      </Group>
+      {sections.map((section, index) => (
+        <SkiaBoardSectionOverlay
+          key={section.id}
+          index={index}
+          sections={sectionRects}
+          initialRect={renderedSectionRects[index]}
+          selected={section.id === selectedSectionId}
+          boardX={boardX}
+          boardY={boardY}
+          scale={scale}
+          labelParagraph={sectionLabelParagraphs[index]}
+          theme={theme}
+        />
+      ))}
+      <Group transform={boardTranslate}>
+        <Group transform={boardScale}>
+          {items.map((item, index) => (
+            <BoardCard
+              key={item.cardId}
+              cardWidth={cardWidth}
+              index={index}
+              positions={positions}
+              item={item}
+              theme={theme}
+              selected={item.cardId === selectedCardId}
+              selectionOpacity={selectionOpacity}
+              titleFontSize={titleFontSize}
+              bodyFontSize={bodyFontSize}
+              runnerUrl={runnerUrl}
+              runnerToken={runnerToken}
+              activityBadges={activityPlacement.cards.get(item.cardId) || EMPTY_ACTIVITY_BADGES}
+              logSessionDiag={logSessionDiag}
+            />
+          ))}
+        </Group>
+      </Group>
+    </Canvas>
+  ), [
+    activityPlacement, boardScale, boardTranslate, boardX, boardY, bodyFontSize, cardWidth,
+    draftSection, gridPath, items, logSessionDiag, positions, renderedSectionRects,
+    runnerToken, runnerUrl, scale, sectionLabelParagraphs, sectionRects, sections,
+    selectedCardId, selectedSectionId, selectionOpacity, theme, titleFontSize,
+  ]);
+  const activityFrame = useMemo(() => (
+    <SkiaBoardActivityFrame
+      badges={[...activityPlacement.global, ...Array.from(activityPlacement.cards.values()).flat()]}
+      theme={theme}
+      targets={items.flatMap((item, index) => {
+        const cardBadges = activityPlacement.cards.get(item.cardId) || [];
+        return cardBadges.map((_, badgeIndex) => ({ index, badgeIndex, badgeCount: cardBadges.length }));
+      })}
+      positions={positions}
+      boardX={boardX}
+      boardY={boardY}
+      scale={scale}
+      cardWidth={cardWidth}
+    />
+  ), [activityPlacement, boardX, boardY, cardWidth, items, positions, scale, theme]);
+
   return (
     <View style={screenStyles.screen}>
       <GestureDetector gesture={gestures}>
@@ -2070,86 +2157,11 @@ export function SkiaMiniBoardScreen({
             setViewportWidth(event.nativeEvent.layout.width);
           }}
         >
-          <Canvas style={StyleSheet.absoluteFill}>
-            <Group transform={boardTranslate}>
-              <Group transform={boardScale}>
-                <Path
-                  path={gridPath}
-                  color={theme.board.grid}
-                  style="stroke"
-                  strokeWidth={theme.borders.thin}
-                />
-                {sections.map((section, index) => (
-                  <SkiaBoardSectionRegion
-                    key={section.id}
-                    index={index}
-                    sections={sectionRects}
-                    section={section}
-                    initialRect={renderedSectionRects[index]}
-                    theme={theme}
-                    selected={section.id === selectedSectionId}
-                  />
-                ))}
-                <SkiaBoardSectionDraft
-                  draft={draftSection}
-                  color={DEFAULT_SECTION_COLOR}
-                  theme={theme}
-                />
-              </Group>
-            </Group>
-            {sections.map((section, index) => (
-              <SkiaBoardSectionOverlay
-                key={section.id}
-                index={index}
-                sections={sectionRects}
-                initialRect={renderedSectionRects[index]}
-                selected={section.id === selectedSectionId}
-                boardX={boardX}
-                boardY={boardY}
-                scale={scale}
-                labelParagraph={sectionLabelParagraphs[index]}
-                theme={theme}
-              />
-            ))}
-            <Group transform={boardTranslate}>
-              <Group transform={boardScale}>
-                {items.map((item, index) => (
-                  <BoardCard
-                    key={item.cardId}
-                    cardWidth={cardWidth}
-                    index={index}
-                    positions={positions}
-                    item={item}
-                    theme={theme}
-                    selected={item.cardId === selectedCardId}
-                    selectionOpacity={selectionOpacity}
-                    titleFontSize={titleFontSize}
-                    bodyFontSize={bodyFontSize}
-                    runnerUrl={runnerUrl}
-                    runnerToken={runnerToken}
-                    activityBadges={activityPlacement.cards.get(item.cardId) || EMPTY_ACTIVITY_BADGES}
-                    logSessionDiag={logSessionDiag}
-                  />
-                ))}
-              </Group>
-            </Group>
-          </Canvas>
+          {boardCanvas}
         </View>
       </GestureDetector>
 
-      <SkiaBoardActivityFrame
-        badges={[...activityPlacement.global, ...Array.from(activityPlacement.cards.values()).flat()]}
-        theme={theme}
-        targets={items.flatMap((item, index) => {
-          const cardBadges = activityPlacement.cards.get(item.cardId) || [];
-          return cardBadges.map((_, badgeIndex) => ({ index, badgeIndex, badgeCount: cardBadges.length }));
-        })}
-        positions={positions}
-        boardX={boardX}
-        boardY={boardY}
-        scale={scale}
-        cardWidth={cardWidth}
-      />
+      {activityFrame}
 
       <SafeAreaView
         pointerEvents="box-none"
