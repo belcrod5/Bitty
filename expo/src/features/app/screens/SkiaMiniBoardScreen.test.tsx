@@ -140,10 +140,6 @@ jest.mock("@shopify/react-native-skia", () => {
     vec: (x: number, y: number) => ({ x, y }),
     useImage: () => (globalThis as Record<string, unknown>).__skiaBoardTestImage || null,
     RoundedRect: Stub,
-    Rect: Stub,
-    LinearGradient: ({ colors }: { colors: string[] }) => ReactModule.createElement(View, {
-      testID: "skia-running-scan", accessibilityLabel: colors[1],
-    }),
     FontWeight: { Bold: 700 },
     PaintStyle: { Fill: 0, Stroke: 1 },
     StrokeCap: { Butt: 0, Round: 1, Square: 2 },
@@ -270,7 +266,6 @@ jest.mock("react-native-reanimated", () => {
       },
     }).current,
     withTiming: jest.fn(actualMock.withTiming),
-    withRepeat: jest.fn(actualMock.withRepeat),
     // 実mockのwithDecayは即座にcallback(true)で完了扱いになるため、
     // 「減衰中に新しいタッチで止める」流れを検証できるよう完了させない。
     withDecay: jest.fn(() => 0),
@@ -1848,7 +1843,7 @@ test("renders the four retained vector activities and an ASCII subagent count", 
   expect(screen.queryByTestId("skia-text:× 1/2")).toBeNull();
 });
 
-test.each(["standard", "cyberpunk"] as const)("uses %s accent for the running effect while retaining activity icon color and clears both on completion", async (themeId) => {
+test.each(["standard", "cyberpunk"] as const)("uses %s accent for the static running tint while retaining activity icon color and clears both on completion", async (themeId) => {
   const effectColor = VISUAL_THEMES[themeId].colors.accent;
   const activityColor = VISUAL_THEMES[themeId].colors.activityActive;
   const inactiveColor = VISUAL_THEMES[themeId].colors.borderStrong;
@@ -1859,79 +1854,14 @@ test.each(["standard", "cyberpunk"] as const)("uses %s accent for the running ef
   const globals = globalThis as Record<string, unknown>;
   globals.__skiaBoardRRectPaints = [];
   const screen = await render(tree());
-  expect(screen.getByTestId("skia-running-scan").props.accessibilityLabel).toBe(effectColor);
   expect(screen.getAllByTestId("skia-icon-path")[0].props.accessibilityLabel).toBe(activityColor);
   expect(globals.__skiaBoardRRectPaints).toContainEqual({ color: effectColor, alpha: 0.09 });
 
   globals.__skiaBoardRRectPaints = [];
   mockSessions = [{ ...mockSessions[0], isResponding: false, activityTrail: [{ kind: "reading", active: false }] }];
   await screen.rerender(tree());
-  expect(screen.queryByTestId("skia-running-scan")).toBeNull();
   expect(screen.getAllByTestId("skia-icon-path")[0].props.accessibilityLabel).toBe(inactiveColor);
   expect(globals.__skiaBoardRRectPaints).not.toContainEqual({ color: effectColor, alpha: 0.09 });
-});
-
-test("shares one running animation and stops it for background, hidden screen, reduced motion, and completion", async () => {
-  const originalAppState = Object.getOwnPropertyDescriptor(AppState, "currentState");
-  const listeners = new Set<(state: string) => void>();
-  const originalAddEventListener = AppState.addEventListener;
-  AppState.addEventListener = jest.fn((_, listener) => {
-    const callback = listener as (state: string) => void;
-    listeners.add(callback);
-    return { remove: () => listeners.delete(callback) };
-  });
-  const { withRepeat, cancelAnimation } = require("react-native-reanimated") as {
-    withRepeat: jest.Mock; cancelAnimation: jest.Mock;
-  };
-  withRepeat.mockClear();
-  mockReduceMotion = false;
-  mockSessions = [
-    { ...mockDefaultSession, isResponding: true },
-    { ...mockDefaultSession, cardId: "session:second", sessionId: "second", col: 1, isResponding: true },
-  ];
-  const tree = () => <SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />;
-  try {
-    Object.defineProperty(AppState, "currentState", { configurable: true, writable: true, value: "active" });
-    const screen = await render(tree());
-    expect(screen.getAllByTestId("skia-running-scan")).toHaveLength(2);
-    expect(withRepeat).toHaveBeenCalledTimes(1);
-    const clock = cancelAnimation.mock.calls.at(-1)![0];
-    for (const state of ["background", "inactive"]) {
-      await act(() => {
-        Object.defineProperty(AppState, "currentState", { configurable: true, writable: true, value: state });
-        listeners.forEach((listener) => listener(state));
-      });
-      expect(clock.value).toBe(0);
-      expect(withRepeat).toHaveBeenCalledTimes(1);
-    }
-    await act(() => {
-      Object.defineProperty(AppState, "currentState", { configurable: true, writable: true, value: "active" });
-      listeners.forEach((listener) => listener("active"));
-    });
-    expect(withRepeat).toHaveBeenCalledTimes(2);
-    mockReduceMotion = true;
-    await screen.rerender(tree());
-    expect(clock.value).toBe(0);
-    expect(withRepeat).toHaveBeenCalledTimes(2);
-    expect(screen.getAllByTestId("skia-running-scan")).toHaveLength(2);
-    mockActiveScreen = "settings";
-    mockReduceMotion = false;
-    await screen.rerender(tree());
-    expect(withRepeat).toHaveBeenCalledTimes(2);
-    mockActiveScreen = "skia_board";
-    await screen.rerender(tree());
-    expect(withRepeat).toHaveBeenCalledTimes(3);
-    mockSessions = mockSessions.map((item) => ({ ...item, isResponding: false }));
-    await screen.rerender(tree());
-    expect(clock.value).toBe(0);
-    expect(screen.queryByTestId("skia-running-scan")).toBeNull();
-    expect(withRepeat).toHaveBeenCalledTimes(3);
-    await screen.unmount();
-    expect(listeners.size).toBe(0);
-  } finally {
-    AppState.addEventListener = originalAddEventListener;
-    if (originalAppState) Object.defineProperty(AppState, "currentState", originalAppState);
-  }
 });
 
 test("shows a moved-or-deleted message instead of file actions for an unavailable card", async () => {
