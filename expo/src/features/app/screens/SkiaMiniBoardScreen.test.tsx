@@ -1848,7 +1848,8 @@ test("renders the four retained vector activities and an ASCII subagent count", 
   expect(screen.queryByTestId("skia-text:× 1/2")).toBeNull();
 });
 
-test.each(["standard", "cyberpunk"] as const)("uses %s activity color across the running card and removes it on completion", async (themeId) => {
+test.each(["standard", "cyberpunk"] as const)("uses %s accent for the running effect while retaining activity icon color and clears both on completion", async (themeId) => {
+  const effectColor = VISUAL_THEMES[themeId].colors.accent;
   const activityColor = VISUAL_THEMES[themeId].colors.activityActive;
   const inactiveColor = VISUAL_THEMES[themeId].colors.borderStrong;
   mockSessions = [{ ...mockDefaultSession, isResponding: true, activityTrail: [{ kind: "reading", active: true }] }];
@@ -1858,16 +1859,16 @@ test.each(["standard", "cyberpunk"] as const)("uses %s activity color across the
   const globals = globalThis as Record<string, unknown>;
   globals.__skiaBoardRRectPaints = [];
   const screen = await render(tree());
-  expect(screen.getByTestId("skia-running-scan").props.accessibilityLabel).toBe(activityColor);
+  expect(screen.getByTestId("skia-running-scan").props.accessibilityLabel).toBe(effectColor);
   expect(screen.getAllByTestId("skia-icon-path")[0].props.accessibilityLabel).toBe(activityColor);
-  expect(globals.__skiaBoardRRectPaints).toContainEqual({ color: activityColor, alpha: 0.09 });
+  expect(globals.__skiaBoardRRectPaints).toContainEqual({ color: effectColor, alpha: 0.09 });
 
   globals.__skiaBoardRRectPaints = [];
   mockSessions = [{ ...mockSessions[0], isResponding: false, activityTrail: [{ kind: "reading", active: false }] }];
   await screen.rerender(tree());
   expect(screen.queryByTestId("skia-running-scan")).toBeNull();
   expect(screen.getAllByTestId("skia-icon-path")[0].props.accessibilityLabel).toBe(inactiveColor);
-  expect(globals.__skiaBoardRRectPaints).not.toContainEqual({ color: activityColor, alpha: 0.09 });
+  expect(globals.__skiaBoardRRectPaints).not.toContainEqual({ color: effectColor, alpha: 0.09 });
 });
 
 test("shares one running animation and stops it for background, hidden screen, reduced motion, and completion", async () => {

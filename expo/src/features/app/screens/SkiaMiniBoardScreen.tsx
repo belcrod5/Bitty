@@ -530,7 +530,7 @@ const BoardCard = memo(function BoardCard({
           drawCardRect(2, 4, fillPaint(theme.colors.shadow, 0.16));
           drawCardRect(0, 0, fillPaint(theme.board.cardSurface));
           if (isResponding) {
-            drawCardRect(0, 0, fillPaint(theme.colors.activityActive, 0.09));
+            drawCardRect(0, 0, fillPaint(theme.colors.accent, 0.09));
           }
           drawCardRect(0, 0, strokePaint(theme.board.cardBorder, theme.borders.thin));
           if (!isSession) {
@@ -689,7 +689,7 @@ const BoardCard = memo(function BoardCard({
             <Rect x={1} y={0} width={cardWidth - 2} height={30}>
               <LinearGradient
                 start={vec(0, 0)} end={vec(0, 30)}
-                colors={["transparent", theme.colors.activityActive, "transparent"]}
+                colors={["transparent", theme.colors.accent, "transparent"]}
               />
             </Rect>
           </Group>
