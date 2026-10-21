@@ -1,3 +1,4 @@
+jest.mock("../keyboardController", () => ({ KeyboardAwareScrollView: require("react-native").ScrollView, KeyboardAvoidingView: require("react-native").KeyboardAvoidingView }));
 jest.mock("@expo/vector-icons", () => ({ Ionicons: () => null }));
 import { Alert } from "react-native";
 import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
@@ -356,4 +357,25 @@ test("refresh with removed items clears stale bulk selection and draft", async (
   await waitFor(() => screen.getByText("学習はまだありません。"));
   expect(screen.queryByText("1件を選択")).toBeNull(); expect(screen.queryByLabelText("学習の編集・統合・廃止の希望")).toBeNull();
   await screen.unmount();
+});
+
+test("closing details while an evaluation save is pending keeps the parent write and its saved result", async () => {
+  const evaluation = { id: "evaluation-pending", version: 1, goal: "短い報告", score: 90, reason: "簡潔な報告", unknowns: "", at: "2026-10-21T10:00:00Z", period: { from: null, until: null }, scope: { orchestratorId: "main" }, corrections: [] as { id: string; score: number; reason: string; at: string }[] };
+  const status = { ...initialStatus(), evaluations: [evaluation] };
+  let complete!: (value: Record<string, unknown>) => void;
+  const pending = new Promise<Record<string, unknown>>((resolve) => { complete = resolve; });
+  const request = jest.fn(async (op: string): Promise<Record<string, unknown>> => {
+    if (op === "voice.settings") return { models };
+    if (op === "voice.learning.usage") return { calls: [], days: {}, retention: { createdAt: null }, aggregateGranularity: "UTC-day" };
+    if (op === "voice.learning.correct") return pending;
+    return status;
+  });
+  const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  await waitFor(() => screen.getByLabelText("評価の一覧を表示")); await fireEvent.press(screen.getByLabelText("評価の一覧を表示")); await fireEvent.press(screen.getByLabelText("評価を変更"));
+  await fireEvent.changeText(screen.getByLabelText("訂正点数: 短い報告"), "55"); await fireEvent.press(screen.getByLabelText("評価を保存"));
+  await waitFor(() => expect(request).toHaveBeenCalledWith("voice.learning.correct", { evaluationId: "evaluation-pending", version: 1, score: 55, reason: "" }));
+  await fireEvent.press(screen.getByLabelText("会話のふりかえりを閉じる")); expect(screen.queryByText("短い報告")).toBeNull();
+  await act(async () => { complete({ ...status, evaluations: [{ ...evaluation, corrections: [{ id: "correction-saved", score: 55, reason: "", at: "2026-10-21T12:00:00Z" }] }] }); await pending; });
+  await fireEvent.press(screen.getByLabelText("評価の一覧を表示")); expect(screen.getByText("55 / 100")).toBeTruthy();
+  expect(request.mock.calls.filter(([op]) => op === "voice.learning.correct")).toHaveLength(1); await screen.unmount();
 });
