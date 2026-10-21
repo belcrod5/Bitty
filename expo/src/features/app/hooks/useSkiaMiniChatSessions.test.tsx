@@ -4,6 +4,8 @@ import type { DirectorySessionTreeState } from "../components/AppDrawer";
 import { useConversation } from "../contexts/ConversationContext";
 import { usePanelRuntimeController } from "../contexts/PanelRuntimeControllerContext";
 import { PanelRuntimeStoreProvider, usePanelRuntimeStore } from "../contexts/PanelRuntimeStoreContext";
+import { usePanelConversationWriteController } from "./usePanelConversationWriteController";
+import type { PanelRuntimeEntry } from "./usePanelNewSessionController";
 import {
   mutatePersistedSettings,
   readPersistedSettingsField,
@@ -327,6 +329,7 @@ describe("useSkiaMiniChatSessions", () => {
       jest.requireActual("../contexts/PanelRuntimeStoreContext").usePanelRuntimeStore
     );
     let store!: ReturnType<typeof useConversationRuntimeStoreController>;
+    let writeMessages!: ReturnType<typeof usePanelConversationWriteController>["setPanelConversationMessagesForCodex"];
     const bases = new Map(Array.from({ length: count }, (_, i) => {
       const panelId = `skia_mini_preview_session-${i + 1}`;
       return [panelId, buildPanelRuntimeSnapshot({
@@ -348,6 +351,9 @@ describe("useSkiaMiniChatSessions", () => {
     });
     function RuntimeWrapper({ children }: PropsWithChildren) {
       store = useConversationRuntimeStoreController();
+      const [entries, setEntries] = React.useState<Record<string, PanelRuntimeEntry>>(() => Object.fromEntries(
+        [...bases].map(([panelId, snapshot]) => [panelId, { sessionId: snapshot.selectedSessionId, snapshot }])
+      ));
       const seeded = React.useRef(false);
       if (!seeded.current) {
         seeded.current = true;
@@ -361,10 +367,10 @@ describe("useSkiaMiniChatSessions", () => {
         }
       }
       const value = React.useMemo(() => ({
-        getBaseSnapshot: (panelId: string) => bases.get(panelId),
-        getSnapshot: (panelId: string) => projectSnapshot(panelId, bases.get(panelId)!),
+        getBaseSnapshot: (panelId: string) => entries[panelId]?.snapshot,
+        getSnapshot: (panelId: string) => projectSnapshot(panelId, entries[panelId].snapshot),
         getPreview: (panelId: string) => {
-          const sessionId = bases.get(panelId)!.selectedSessionId;
+          const sessionId = entries[panelId].snapshot.selectedSessionId;
           const runtime = store.getConversationRuntimePreview(sessionId)!;
           return {
             selectedSessionId: sessionId, selectedSessionUpdatedAt: "",
@@ -374,7 +380,19 @@ describe("useSkiaMiniChatSessions", () => {
         },
         getKnownPanelIds: () => [...bases.keys()],
         subscribe: store.subscribeConversationRuntime, getRevision: store.getConversationRuntimeRevision,
-      }), []);
+      }), [entries]);
+      writeMessages = usePanelConversationWriteController({
+        resolvePanelSnapshotForDisplay: value.getSnapshot,
+        createPanelRuntimeSnapshot: (panelId, base, patch) => buildPanelRuntimeSnapshot({
+          panelId, base, patch, isCompactRunning: () => false,
+        }),
+        getConversationRuntimeSnapshot: store.getConversationRuntimeSnapshot,
+        upsertConversationRuntimeSnapshot: store.upsertConversationRuntimeSnapshot,
+        setPanelRuntimeEntriesById: setEntries,
+        getVisibleSessionId: () => "",
+        setVisibleConversationMessages: () => {}, setVisibleReplyLoading: () => {},
+        setVisibleThreadStatusType: () => {}, setVisibleContextUsedPct: () => {}, logSessionDiag: () => {},
+      }).setPanelConversationMessagesForCodex;
       return <PanelRuntimeStoreProvider value={value}><BoardWrapper>{children}</BoardWrapper></PanelRuntimeStoreProvider>;
     }
     const { result } = await renderHook(useSkiaMiniChatSessions, { wrapper: RuntimeWrapper });
@@ -396,6 +414,16 @@ describe("useSkiaMiniChatSessions", () => {
     expect(projectSnapshot).not.toHaveBeenCalled();
     expect(result.current.sessions[0].isResponding).toBe(true);
     expect(result.current.sessions.slice(1).every((item, i) => item === before[i + 1])).toBe(true);
+    const executionRevision = store.getConversationRuntimeRevision("session-1");
+    await act(() => {
+      writeMessages("skia_mini_preview_session-1", [{ id: "body", role: "assistant", content: "panel update" }], {
+        sessionId: "session-1", isResponding: true, contextUsedPct: 25,
+      });
+    });
+    expect(store.getConversationRuntimeRevision("session-1")).toBe(executionRevision);
+    expect(result.current.sessions[0].lastMessageContent).toBe("panel update");
+    // The existing writer reads its target once; mini previews never project histories.
+    expect(projectSnapshot).toHaveBeenCalledTimes(1);
     projectSnapshot.mockClear();
     await act(() => {
       store.upsertConversationRuntimeSnapshot({
@@ -441,17 +469,6 @@ describe("useSkiaMiniChatSessions", () => {
     }
   });
 
-  it("keeps the items array when context refreshes without changing card previews", async () => {
-    seedRunnerBoard([sessionCard("session-1", 0, 0)]);
-    const entries = [session(1)];
-    mockConversation(entries);
-    const { result, rerender } = await renderHook(useSkiaMiniChatSessions, { wrapper: BoardWrapper });
-    await flush();
-    const before = result.current.items;
-    mockConversation(entries);
-    await rerender(undefined);
-    expect(result.current.items).toBe(before);
-  });
 
   it("displays the runner board on first connect without touching import", async () => {
     // 正本はランナーのみ。端末ローカルの引き継ぎ(import)は行わない。

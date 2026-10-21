@@ -3808,18 +3808,20 @@ function AppContent({ onReady }: { onReady?: () => void }) {
       const completedSessionId = parseOptionalSessionId(message.threadId || message.sessionId || payload.threadId || payload.sessionId);
       if (completedSessionId) {
         void refreshSessionChildTreesAtBoundary(completedSessionId, "child_completed");
-        if (AppState.currentState === "active") {
-          requestSessionResync(completedSessionId, {
-            backendId: String(payload.backendId || "").trim() || undefined,
-            reason: "turn_completed_notification",
-          });
-        } else {
-          markSessionRespondingForResync(completedSessionId);
+        if (getConversationRuntimePreview(completedSessionId)?.isResponding) {
+          if (AppState.currentState === "active") {
+            requestSessionResync(completedSessionId, {
+              backendId: String(payload.backendId || "").trim() || undefined,
+              reason: "turn_completed_notification",
+            });
+          } else {
+            markSessionRespondingForResync(completedSessionId);
+          }
         }
       }
       if (AppState.currentState === "active") refreshDirectorySessionsAfterCompletion(payload.directory);
     }
-  ), [markSessionRespondingForResync, refreshDirectorySessionsAfterCompletion, refreshSessionChildTreesAtBoundary, requestSessionResync, runnerWebSocketManager]);
+  ), [getConversationRuntimePreview, markSessionRespondingForResync, refreshDirectorySessionsAfterCompletion, refreshSessionChildTreesAtBoundary, requestSessionResync, runnerWebSocketManager]);
 
   observerPreemptedHandlerRef.current = markSessionRespondingForResync;
   // relay watermark gap(relay作り直し検出)の穴埋め: observer存命中の即時resyncは
@@ -5691,13 +5693,13 @@ function AppContent({ onReady }: { onReady?: () => void }) {
           selectedThreadStatusType: snapshot.selectedThreadStatusType,
         }, { throttleMs: 0 });
       }
-      const runtimeAtHydrationApply = getConversationRuntimeSnapshot(snapshot.selectedSessionId);
+      const runtimeAtHydrationApply = getConversationRuntimePreview(snapshot.selectedSessionId);
       applyLatePanelSessionLiveState({
         restored,
         snapshot,
         panelId,
         directory: restoredDirectory,
-        requestStartedAtMsAtHydrationApply: Number(runtimeAtHydrationApply?.request?.startedAtMs) || null,
+        requestStartedAtMsAtHydrationApply: runtimeAtHydrationApply?.requestStartedAtMs ?? null,
         executionGenerationAtHydrationApply: Number(runtimeAtHydrationApply?.executionGeneration) || 0,
         isCurrent: isCurrentHydration,
       });
@@ -5748,6 +5750,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     createEmptyPanelRuntimeSnapshot,
     createPanelRuntimeSnapshot,
     fetchRunnerSessionMessagesCached,
+    getConversationRuntimePreview,
     getConversationRuntimeSnapshot,
     logSessionDiag,
     registerSessionHistoryPage,

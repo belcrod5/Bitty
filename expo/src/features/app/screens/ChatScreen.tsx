@@ -166,7 +166,7 @@ export function ChatScreen({
     ? [styles.chatHeader, styles.chatHeaderPopup]
     : styles.chatHeader;
   const isPanelRuntimeView = isPanelScopedChatView(mode, panelId);
-  const { getSnapshot } = usePanelRuntimeStore(isPanelRuntimeView ? [panelId] : []);
+  const { getSnapshot } = usePanelRuntimeStore();
   const {
     startNewPanelSession,
     updatePanelSettings,

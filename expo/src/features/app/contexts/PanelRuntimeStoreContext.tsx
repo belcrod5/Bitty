@@ -41,6 +41,7 @@ export type PanelRuntimePreview = Readonly<Pick<PanelRuntimeSnapshot,
 }>;
 
 export type PanelRuntimeStoreContextValue = {
+  // Message/context updates follow panel state; this subscription only reports execution changes.
   subscribe: (sessionIds: readonly string[], listener: () => void) => () => void;
   getRevision: (sessionId: string) => number;
   getBaseSnapshot: (panelId: string) => PanelRuntimeSnapshot | undefined;
@@ -67,7 +68,7 @@ export function PanelRuntimeStoreProvider({
   );
 }
 
-export function usePanelRuntimeStore(panelIds: readonly string[]) {
+export function usePanelRuntimeStore(panelIds: readonly string[] = []) {
   const context = useContext(PanelRuntimeStoreContext);
   if (!context) {
     throw new Error("usePanelRuntimeStore must be used within PanelRuntimeStoreProvider");

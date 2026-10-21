@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Animated, SafeAreaView, StyleSheet, Text, View } from "react-native";
 import { BlurMask, Canvas, Circle, Group, Line, Path, Skia, SweepGradient, vec } from "@shopify/react-native-skia";
 import { useDerivedValue, useFrameCallback, useSharedValue, type SharedValue } from "react-native-reanimated";
@@ -131,8 +131,7 @@ export function SkiaBoardActivityFrame({ badges, theme, targets, positions, boar
   const glowOpacity = useSharedValue(0.75);
   const pulseTime = useSharedValue(0);
   const travel = useSharedValue(0);
-  const rotateGlow = useCallback((frame: { timeSincePreviousFrame: number | null }) => {
-    "worklet";
+  const rotation = useFrameCallback((frame) => {
     const elapsed = Math.min(frame?.timeSincePreviousFrame ?? 0, 50);
     const start = (gradientStart.value + elapsed * 0.72) % 360;
     gradientStart.value = start;
@@ -143,8 +142,7 @@ export function SkiaBoardActivityFrame({ badges, theme, targets, positions, boar
     glowBlur.value = 6 + pulse * 7;
     glowOpacity.value = 0.55 + pulse * 0.4;
     travel.value += elapsed * 0.14;
-  }, [gradientStart, gradientEnd, pulseTime, glowWidth, glowBlur, glowOpacity, travel]);
-  const rotation = useFrameCallback(rotateGlow, false);
+  }, false);
   useEffect(() => {
     rotation.setActive((active || present) && reduceMotion === false);
     return () => rotation.setActive(false);

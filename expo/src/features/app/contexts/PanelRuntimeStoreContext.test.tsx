@@ -76,9 +76,10 @@ test("follows reassignment, local panel settings, and compact projection changes
   await act(() => { runtime.upsertConversationRuntimeSnapshot({ sessionId: "session-a", contextUsedPct: 30 }); });
   expect(renders).toBe(afterAssignment);
   expect(projected).not.toHaveBeenCalled();
-  await act(() => { runtime.upsertConversationRuntimeSnapshot({ sessionId: "session-b", contextUsedPct: 40 }); });
+  await act(() => { runtime.upsertConversationRuntimeSnapshot({ sessionId: "session-b", contextUsedPct: 40, isResponding: true }); });
   expect(result.current.left.contextUsedPct).toBe(40);
   expect(projected.mock.calls.map(([panelId]) => panelId)).toEqual(["left"]);
+  await act(() => { runtime.upsertConversationRuntimeSnapshot({ sessionId: "session-b", isResponding: false, selectedThreadStatusType: "idle" }); });
   await act(() => { setBases((bases) => ({ ...bases, left: { ...bases.left, reasoningEffort: "high" } })); });
   expect(result.current.left.reasoningEffort).toBe("high");
   expect(result.current.left.selectedThreadStatusType).toBe("idle");

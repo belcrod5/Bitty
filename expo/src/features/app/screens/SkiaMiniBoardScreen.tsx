@@ -398,7 +398,6 @@ type BoardCardProps = {
   runnerUrl: string;
   runnerToken: string;
   activityBadges: ActivityBadge[];
-  logSessionDiag: ReturnType<typeof useConversation>["logSessionDiag"];
 };
 
 // item(内容が変わった時だけidentityが変わる)以外のpropsは安定しているため、
@@ -416,9 +415,7 @@ const BoardCard = memo(function BoardCard({
   runnerUrl,
   runnerToken,
   activityBadges,
-  logSessionDiag,
 }: BoardCardProps) {
-  const slowRenderRef = useRef<Record<string, Record<string, number>>>({});
   const transform = useDerivedValue(() => {
     const position = positions.value[index] || { x: 0, y: 0 };
     return [{ translateX: position.x }, { translateY: position.y }];
@@ -434,16 +431,13 @@ const BoardCard = memo(function BoardCard({
     item.kind === "session" ? item.lastMessageContent.replace(/\s+/g, " ").trim() || "メッセージを読み込み中…" : "";
   const messageLines = useMemo(() => {
     if (!messageContent) return [];
-    const startedAt = performance.now();
-    let measurements = 0;
     const widths = new Map<string, number>();
-    const lines = fitTailTextLines(
+    return fitTailTextLines(
       messageContent,
       {
         getTextWidth: (text) => {
           const cached = widths.get(text);
           if (cached !== undefined) return cached;
-          measurements += 1;
           const width = paragraphTextWidth(text, bodyFontSize);
           widths.set(text, width);
           return width;
@@ -451,9 +445,6 @@ const BoardCard = memo(function BoardCard({
       },
       contentWidth,
     );
-    const elapsedMs = performance.now() - startedAt;
-    if (elapsedMs >= 32) slowRenderRef.current.fit = { elapsedMs, characters: messageContent.length, measurements };
-    return lines;
   }, [bodyFontSize, contentWidth, messageContent]);
   const messageLineHeight = bodyFontSize * 1.25;
   const messageFirstBaseline = messageLines.length === 1 ? 69 : 69 - messageLineHeight / 2;
@@ -494,11 +485,8 @@ const BoardCard = memo(function BoardCard({
   // 毎フレーム再生がカード1枚あたり save/concat/drawPicture の約3コマンドに減り、
   // ベクタ再生なのでズームしても劣化しない。選択枠は外で描画し、選択や点滅で本文を再生成しない。
   const picture = useMemo(
-    () => {
-      const startedAt = performance.now();
-      let characters = 0;
-      let paragraphs = 0;
-      const picture = createPicture(
+    () =>
+      createPicture(
         (canvas) => {
           const fillPaint = (color: string, alpha?: number) => {
             const paint = Skia.Paint();
@@ -517,8 +505,6 @@ const BoardCard = memo(function BoardCard({
             canvas.drawRRect(Skia.RRectXY(Skia.XYWHRect(x, y, cardWidth, cardHeight), 14, 14), paint);
           };
           const drawText = (text: string, x: number, y: number, width: number, style: BoardTextStyle) => {
-            characters += text.length;
-            paragraphs += 1;
             const paragraph = createBoardParagraph(text, width, style);
             paragraph.paint(canvas, x, y);
             paragraph.dispose();
@@ -659,11 +645,7 @@ const BoardCard = memo(function BoardCard({
         activityBadges.length
           ? Skia.XYWHRect(-24, -24, cardWidth + 58, cardHeight + 34)
           : Skia.XYWHRect(-2, -2, cardWidth + 8, cardHeight + 10),
-      );
-      const elapsedMs = performance.now() - startedAt;
-      if (elapsedMs >= 32) slowRenderRef.current.picture = { elapsedMs, characters, paragraphs };
-      return picture;
-    },
+      ),
     [
       // activityTrailは内容ベースのactivityTrailKeyで代表する(参照は毎回変わるため)。
       activityTrailKey,
@@ -693,15 +675,6 @@ const BoardCard = memo(function BoardCard({
       theme,
     ],
   );
-  useEffect(() => {
-    const slow = slowRenderRef.current;
-    slowRenderRef.current = {};
-    for (const [stage, measurement] of Object.entries(slow)) {
-      logSessionDiag("skia_board_slow_render", { stage, ...measurement }, {
-        throttleMs: 1000, throttleKey: `skia_board_slow_render:${stage}`,
-      });
-    }
-  });
 
   return (
     <Group transform={transform}>
@@ -808,7 +781,7 @@ export function SkiaMiniBoardScreen({
   const runningSessionCount = useRegisteredDirectoryActiveSessionCount();
   const voiceUnreadCount = hasVoicePlayback && !voiceOpen
     ? orchestrators.reduce((sum, item) => sum + (item.id === selectedId ? 0 : item.unreadCount || 0), 0) : 0;
-  const { registeredDirectories, logSessionDiag } = useConversation();
+  const { registeredDirectories } = useConversation();
   const {
     items,
     sections,
@@ -1210,26 +1183,15 @@ export function SkiaMiniBoardScreen({
     [openAppearanceEditor, removeBoardFile],
   );
 
-  const logBoardTap = useCallback((reason: string, dispatchedAtMs: number) => {
-    logSessionDiag("skia_board_tap", {
-      reason, dispatchDelayMs: Math.max(0, Date.now() - dispatchedAtMs),
-    }, { throttleMs: 0 });
-  }, [logSessionDiag]);
-
   const handleCardTap = useCallback(
-    (index: number, dispatchedAtMs: number) => {
+    (index: number) => {
       if (index < 0) {
-        logBoardTap("background", dispatchedAtMs);
         selectedCardIndex.value = -1;
         setSelectedCardId("");
         return;
       }
       const item = itemsRef.current[index];
-      if (!item) {
-        logBoardTap("missing_card", dispatchedAtMs);
-        return;
-      }
-      logBoardTap(selectedCardId === item.cardId ? "card_open" : "card_select", dispatchedAtMs);
+      if (!item) return;
       selectedSectionIndex.value = -1;
       setSelectedSectionId("");
       if (item.kind === "file") {
@@ -1272,7 +1234,6 @@ export function SkiaMiniBoardScreen({
     },
     [
       onStartNewSessionInDirectory,
-      logBoardTap,
       openSessionHistoryPopup,
       selectedCardId,
       selectedCardIndex,
@@ -1282,14 +1243,13 @@ export function SkiaMiniBoardScreen({
   );
 
   const handleSectionTap = useCallback(
-    (index: number, dispatchedAtMs?: number) => {
-      if (dispatchedAtMs !== undefined) logBoardTap("section_select", dispatchedAtMs);
+    (index: number) => {
       selectedCardIndex.value = -1;
       setSelectedCardId("");
       selectedSectionIndex.value = index;
       setSelectedSectionId(sections[index]?.id || "");
     },
-    [logBoardTap, sections, selectedCardIndex, selectedSectionIndex],
+    [sections, selectedCardIndex, selectedSectionIndex],
   );
 
   // ドラッグ終了時に画面座標をグリッド単位へ戻してボードステートへ保存する。
@@ -1753,33 +1713,26 @@ export function SkiaMiniBoardScreen({
     const tap = Gesture.Tap()
       .maxDistance(8)
       .onEnd((event, success) => {
-        if (!success) return;
-        const dispatchedAtMs = Date.now();
-        if (touchSequenceHadMultiplePointers.value || toolMode.value === "section") {
-          runOnJS(logBoardTap)(touchSequenceHadMultiplePointers.value ? "multiple_pointers" : "section_tool", dispatchedAtMs);
-          return;
-        }
+        if (!success || touchSequenceHadMultiplePointers.value) return;
+        if (toolMode.value === "section") return;
         const x = (event.x - boardX.value) / scale.value;
         const y = (event.y - boardY.value) / scale.value;
         for (let index = cardIds.length - 1; index >= 0; index -= 1) {
           const position = positions.value[index];
           if (pointIsInsideCard(position, cardWidth, cardHeights[index], x, y)) {
-            runOnJS(handleCardTap)(index, dispatchedAtMs);
+            runOnJS(handleCardTap)(index);
             return;
           }
         }
         for (let index = sectionRects.value.length - 1; index >= 0; index -= 1) {
           const section = sectionRects.value[index];
           if (section && pointIsInsideSection(section, x, y)) {
-            runOnJS(handleSectionTap)(index, dispatchedAtMs);
+            runOnJS(handleSectionTap)(index);
             return;
           }
         }
         runOnJS(handleSectionTap)(-1);
-        runOnJS(handleCardTap)(-1, dispatchedAtMs);
-      })
-      .onFinalize((_event, success) => {
-        if (!success) runOnJS(logBoardTap)("cancelled", Date.now());
+        runOnJS(handleCardTap)(-1);
       });
 
     // 長押しの移動許容内ではpanがactiveにならないため、選択状態に関係なく
@@ -1928,7 +1881,6 @@ export function SkiaMiniBoardScreen({
     releaseGestureFrameLoop,
     requestGestureFrameLoop,
     handleCardTap,
-    logBoardTap,
     handleSectionTap,
     markViewportInteraction,
     openCardContextMenu,
@@ -2058,93 +2010,6 @@ export function SkiaMiniBoardScreen({
     </View>
   );
 
-  const boardCanvas = useMemo(() => (
-    <Canvas style={StyleSheet.absoluteFill}>
-      <Group transform={boardTranslate}>
-        <Group transform={boardScale}>
-          <Path
-            path={gridPath}
-            color={theme.board.grid}
-            style="stroke"
-            strokeWidth={theme.borders.thin}
-          />
-          {sections.map((section, index) => (
-            <SkiaBoardSectionRegion
-              key={section.id}
-              index={index}
-              sections={sectionRects}
-              section={section}
-              initialRect={renderedSectionRects[index]}
-              theme={theme}
-              selected={section.id === selectedSectionId}
-            />
-          ))}
-          <SkiaBoardSectionDraft
-            draft={draftSection}
-            color={DEFAULT_SECTION_COLOR}
-            theme={theme}
-          />
-        </Group>
-      </Group>
-      {sections.map((section, index) => (
-        <SkiaBoardSectionOverlay
-          key={section.id}
-          index={index}
-          sections={sectionRects}
-          initialRect={renderedSectionRects[index]}
-          selected={section.id === selectedSectionId}
-          boardX={boardX}
-          boardY={boardY}
-          scale={scale}
-          labelParagraph={sectionLabelParagraphs[index]}
-          theme={theme}
-        />
-      ))}
-      <Group transform={boardTranslate}>
-        <Group transform={boardScale}>
-          {items.map((item, index) => (
-            <BoardCard
-              key={item.cardId}
-              cardWidth={cardWidth}
-              index={index}
-              positions={positions}
-              item={item}
-              theme={theme}
-              selected={item.cardId === selectedCardId}
-              selectionOpacity={selectionOpacity}
-              titleFontSize={titleFontSize}
-              bodyFontSize={bodyFontSize}
-              runnerUrl={runnerUrl}
-              runnerToken={runnerToken}
-              activityBadges={activityPlacement.cards.get(item.cardId) || EMPTY_ACTIVITY_BADGES}
-              logSessionDiag={logSessionDiag}
-            />
-          ))}
-        </Group>
-      </Group>
-    </Canvas>
-  ), [
-    activityPlacement, boardScale, boardTranslate, boardX, boardY, bodyFontSize, cardWidth,
-    draftSection, gridPath, items, logSessionDiag, positions, renderedSectionRects,
-    runnerToken, runnerUrl, scale, sectionLabelParagraphs, sectionRects, sections,
-    selectedCardId, selectedSectionId, selectionOpacity, theme, titleFontSize,
-  ]);
-  const activityFrame = useMemo(() => (
-    <SkiaBoardActivityFrame
-      badges={[...activityPlacement.global, ...Array.from(activityPlacement.cards.values()).flat()]}
-      theme={theme}
-      targets={items.flatMap((item, index) => {
-        const cardBadges = activityPlacement.cards.get(item.cardId) || [];
-        return cardBadges.map((_, badgeIndex) => ({ index, badgeIndex, badgeCount: cardBadges.length }));
-      })}
-      positions={positions}
-      boardX={boardX}
-      boardY={boardY}
-      scale={scale}
-      cardWidth={cardWidth}
-    />
-  ), [activityPlacement, boardX, boardY, cardWidth, items, positions, scale, theme]);
-
   return (
     <View style={screenStyles.screen}>
       <GestureDetector gesture={gestures}>
@@ -2157,11 +2022,85 @@ export function SkiaMiniBoardScreen({
             setViewportWidth(event.nativeEvent.layout.width);
           }}
         >
-          {boardCanvas}
+          <Canvas style={StyleSheet.absoluteFill}>
+            <Group transform={boardTranslate}>
+              <Group transform={boardScale}>
+                <Path
+                  path={gridPath}
+                  color={theme.board.grid}
+                  style="stroke"
+                  strokeWidth={theme.borders.thin}
+                />
+                {sections.map((section, index) => (
+                  <SkiaBoardSectionRegion
+                    key={section.id}
+                    index={index}
+                    sections={sectionRects}
+                    section={section}
+                    initialRect={renderedSectionRects[index]}
+                    theme={theme}
+                    selected={section.id === selectedSectionId}
+                  />
+                ))}
+                <SkiaBoardSectionDraft
+                  draft={draftSection}
+                  color={DEFAULT_SECTION_COLOR}
+                  theme={theme}
+                />
+              </Group>
+            </Group>
+            {sections.map((section, index) => (
+              <SkiaBoardSectionOverlay
+                key={section.id}
+                index={index}
+                sections={sectionRects}
+                initialRect={renderedSectionRects[index]}
+                selected={section.id === selectedSectionId}
+                boardX={boardX}
+                boardY={boardY}
+                scale={scale}
+                labelParagraph={sectionLabelParagraphs[index]}
+                theme={theme}
+              />
+            ))}
+            <Group transform={boardTranslate}>
+              <Group transform={boardScale}>
+                {items.map((item, index) => (
+                  <BoardCard
+                    key={item.cardId}
+                    cardWidth={cardWidth}
+                    index={index}
+                    positions={positions}
+                    item={item}
+                    theme={theme}
+                    selected={item.cardId === selectedCardId}
+                    selectionOpacity={selectionOpacity}
+                    titleFontSize={titleFontSize}
+                    bodyFontSize={bodyFontSize}
+                    runnerUrl={runnerUrl}
+                    runnerToken={runnerToken}
+                    activityBadges={activityPlacement.cards.get(item.cardId) || EMPTY_ACTIVITY_BADGES}
+                  />
+                ))}
+              </Group>
+            </Group>
+          </Canvas>
         </View>
       </GestureDetector>
 
-      {activityFrame}
+      <SkiaBoardActivityFrame
+        badges={[...activityPlacement.global, ...Array.from(activityPlacement.cards.values()).flat()]}
+        theme={theme}
+        targets={items.flatMap((item, index) => {
+          const cardBadges = activityPlacement.cards.get(item.cardId) || [];
+          return cardBadges.map((_, badgeIndex) => ({ index, badgeIndex, badgeCount: cardBadges.length }));
+        })}
+        positions={positions}
+        boardX={boardX}
+        boardY={boardY}
+        scale={scale}
+        cardWidth={cardWidth}
+      />
 
       <SafeAreaView
         pointerEvents="box-none"

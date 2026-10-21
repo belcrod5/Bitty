@@ -268,6 +268,8 @@ export function useConversationRuntimeStoreController() {
       lastMessageContent: snapshot.conversationMessages[snapshot.conversationMessages.length - 1]?.content || "",
       messageCount: snapshot.conversationMessages.length,
       activityTrail: [...snapshot.activityTrail],
+      requestStartedAtMs: normalizeStartedAtMs(snapshot.request?.startedAtMs),
+      executionGeneration: snapshot.executionGeneration,
     };
   }, []);
 
@@ -364,12 +366,9 @@ export function useConversationRuntimeStoreController() {
       ? normalizeContextUsedPct(input.contextUsedPct) : previous?.contextUsedPct ?? null;
     const eventsChanged = events !== previous?.events && (events.length > 0 || !!previous?.events.length);
     const messagesChanged = messages !== previous?.conversationMessages && (messages.length > 0 || !!previous?.conversationMessages.length);
-    const displayChanged = !previous || messagesChanged
-      || contextUsedPct !== previous.contextUsedPct
-      || nextIsResponding !== previous.isResponding
-      || selectedThreadStatusType !== previous.selectedThreadStatusType
-      || activityTrail !== previous.activityTrail
-      || (nextIsResponding ? nextTurnStartedAtMs : null) !== (previous.isResponding ? previousTurnStartedAtMs : null);
+    const executionDisplayChanged = nextIsResponding !== Boolean(previous?.isResponding)
+      || activityTrail.length !== (previous?.activityTrail.length || 0)
+      || activityTrail.some((activity, index) => activity !== previous?.activityTrail[index]);
     const next: ConversationRuntimeSnapshot = {
       sessionId,
       events: eventsChanged ? cloneRuntimeEvents(events) : previous?.events || [],
@@ -389,7 +388,7 @@ export function useConversationRuntimeStoreController() {
       [sessionId]: next,
     };
     // Storage and execution guards advance even when panel display fields are unchanged.
-    if (displayChanged) {
+    if (executionDisplayChanged) {
       revisionsRef.current[sessionId] = (revisionsRef.current[sessionId] || 0) + 1;
       listenersRef.current.get(sessionId)?.forEach((listener) => listener());
     }

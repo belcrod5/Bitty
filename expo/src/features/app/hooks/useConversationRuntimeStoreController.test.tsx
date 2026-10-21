@@ -88,7 +88,10 @@ describe("useConversationRuntimeStoreController conditional terminal update", ()
       });
     });
     const preview = result.current.getConversationRuntimePreview("session-1")!;
-    expect(preview).toEqual({ isResponding: false, lastMessageContent: "message 199", messageCount: 200, activityTrail: [] });
+    expect(preview).toEqual({
+      isResponding: false, lastMessageContent: "message 199", messageCount: 200,
+      activityTrail: [], requestStartedAtMs: null, executionGeneration: 0,
+    });
     preview.activityTrail.push("writing");
     expect(result.current.getConversationRuntimePreview("session-1")?.activityTrail).toEqual([]);
   });
@@ -128,7 +131,7 @@ describe("useConversationRuntimeStoreController conditional terminal update", ()
     expect(listener).not.toHaveBeenCalled();
   });
 
-  it("stores event, approval, and request detail updates without notifying display readers", async () => {
+  it("stores ordinary panel data and request metadata without notifying execution readers", async () => {
     const { result } = await renderHook(useConversationRuntimeStoreController);
     const request = { ...activeRequest(100), statusDetail: "detail one" };
     await act(() => { result.current.upsertConversationRuntimeSnapshot({ sessionId: "session-1", request }); });
@@ -143,13 +146,23 @@ describe("useConversationRuntimeStoreController conditional terminal update", ()
       result.current.upsertConversationRuntimeSnapshot({ sessionId: "session-1", events: [event] });
       result.current.upsertConversationRuntimeSnapshot({ sessionId: "session-1", pendingApproval: approval });
       result.current.upsertConversationRuntimeSnapshot({ sessionId: "session-1", request: { ...request, statusDetail: "detail two" } });
+      result.current.upsertConversationRuntimeSnapshot({
+        sessionId: "session-1", conversationMessages: [message("body", "updated")], contextUsedPct: 25,
+        selectedThreadStatusType: "waiting_approval",
+      });
     });
     expect(listener).not.toHaveBeenCalled();
     expect(result.current.getConversationRuntimeSnapshot("session-1")).toMatchObject({
       events: [event], pendingApproval: approval, request: { statusDetail: "detail two" },
+      conversationMessages: [message("body", "updated")], contextUsedPct: 25,
     });
     await act(() => {
       result.current.upsertConversationRuntimeSnapshot({ sessionId: "session-1", request: { ...request, startedAtMs: 200 } });
+    });
+    expect(listener).not.toHaveBeenCalled();
+    expect(result.current.getConversationRuntimePreview("session-1")?.requestStartedAtMs).toBe(200);
+    await act(() => {
+      result.current.updateConversationRuntimeRequestStatus("session-1", "tool_running", "tool start: web_search");
     });
     expect(listener).toHaveBeenCalledTimes(1);
   });

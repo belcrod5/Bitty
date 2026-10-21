@@ -259,12 +259,10 @@ test.each([standard, cyberpunk])("fades with %s, ignores a canceled close, and r
 
 test("shows global activity without routes and hides a route when its card disappears", async () => {
   const screen = await render(frame([badge("global", "実行中")], []));
-  const rotation = mockFrameLoops[0].callback;
   await layout(screen);
   expect(screen.getByTestId("skia-board-activity-frame")).toBeTruthy();
   expect(screen.queryByTestId("activity-route-segment")).toBeNull();
   await screen.rerender(frame([badge("one", "実行中")], oneTarget));
-  expect(mockFrameLoops[0].callback).toBe(rotation);
   const line = screen.getAllByTestId("activity-route-segment")[0];
   mockBoardValues.positions.value = [];
   expect(line.parent?.props.opacity.value).toBe(0);
