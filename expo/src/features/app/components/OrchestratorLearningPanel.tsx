@@ -3,25 +3,22 @@ import { Alert, Text, TextInput, TouchableOpacity, View } from "react-native";
 import { useAppStyles } from "../styles";
 import { isReasoningEffort, type ReasoningEffort } from "../utils/settingsParsers";
 import { LearningEvaluationCard, type LearningEvaluation } from "./LearningEvaluationCard";
+import { LearningKnowledgeCard, learningSkillText, type LearningKnowledge } from "./LearningKnowledgeCard";
 import { SettingsSelect } from "./SettingsSelect";
 import type { VoiceOrchestrator } from "./VoiceOrchestratorIcon";
 
 type Model = { modelId: string; label: string; effortOptions: ReasoningEffort[] };
-type Candidate = {
-  id: string; version: number; status: string; updatedAt?: string; kind: string; content: string; conditions: string; reason: string;
-  scope: { orchestratorId: string; shared?: boolean }; matchTerms?: string[]; targetConstraints?: string[]; skill?: Record<string, string>; published?: { version: number; hash: string }; evidence: { pairSeq: number }[];
-};
 type LearningStatus = {
   settings: { model: string; effort: string; settingsRevision: number };
   status: string; enabled: boolean; observedThrough: number; processedThrough: number;
-  pendingCount: number; candidates: Candidate[];
+  pendingCount: number; candidates: LearningKnowledge[];
   gaps: { from: number; through: number; reason: string }[];
   error: { code: string; message: string } | null;
   outputLimitEnforced: boolean;
   retry?: { batchId: string; settingsRevision: number; attempts: number; ceiling: number } | null;
   evaluations?: LearningEvaluation[];
   changes?: { id: string; at: string; action: string; actor: string; reason: string;
-    before: Candidate | null; after: Candidate | null }[];
+    before: LearningKnowledge | null; after: LearningKnowledge | null }[];
   requests?: { id: string; instruction: string; resolution?: { reason: string } }[];
   proposals?: { id: string; status: string; targets: string[]; count: number; operation: string; exclusions: string; order: string; onFailure: string;
     feedback?: { action: string; pairSeq: number; userQuote: string }[]; outcome?: { status: string } }[];
@@ -41,9 +38,6 @@ const EFFORT_LABELS: Record<ReasoningEffort, string> = {
 const STATUS_LABELS: Record<string, string> = {
   unconfigured: "モデル未設定", observing: "会話を観測中", analyzing: "分析中",
   paused: "保留中", retry_exhausted: "再試行の上限に達したため保留中",
-};
-const KIND_LABELS: Record<string, string> = {
-  preference: "好み・応答方針", procedure: "反復手順", batch_proposal: "一括提案のパターン",
 };
 
 function readStatus(value: Record<string, unknown>): LearningStatus {
@@ -78,6 +72,8 @@ export function OrchestratorLearningPanel({ request, orchestrators }: {
   const [saved, setSaved] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
   const [instruction, setInstruction] = useState("");
+  const [selecting, setSelecting] = useState(false);
+  const [requestingChange, setRequestingChange] = useState(false);
   const managing = useRef(false);
   const requestId = useRef(0);
 
@@ -91,7 +87,7 @@ export function OrchestratorLearningPanel({ request, orchestrators }: {
       if (id !== requestId.current) return;
       if (state.status === "rejected") throw state.reason;
       const value = readStatus(state.value);
-      setStatus(value);
+      setStatus(value); setSelected([]); setInstruction(""); setSelecting(false); setRequestingChange(false);
       setModel(value.settings.model || ""); setEffort(value.settings.effort || "");
       if (catalog.status === "rejected" || !Array.isArray(catalog.value.models)) {
         setModels([]); setCatalogError("モデル一覧を取得できません。"); return;
@@ -140,7 +136,7 @@ export function OrchestratorLearningPanel({ request, orchestrators }: {
     try {
       const value = readStatus(await request(`voice.learning.${op}`, payload));
       if (id !== requestId.current) return "画面が更新されました。状態を確認してください。";
-      setStatus(value); setSelected([]); setInstruction("");
+      setStatus(value); setSelected([]); setInstruction(""); setSelecting(false); setRequestingChange(false);
       return null;
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : "変更を保存できません。";
@@ -148,18 +144,19 @@ export function OrchestratorLearningPanel({ request, orchestrators }: {
       return message;
     } finally { managing.current = false; if (id === requestId.current) setBusy(false); }
   };
-  const references = (status?.candidates || []).filter((item) => selected.includes(item.id)).map(({ id, version }) => ({ id, version }));
+  const selectedItems = (status?.candidates || []).filter((item) => selected.includes(item.id));
+  const references = selectedItems.map(({ id, version }) => ({ id, version }));
+  const canDecide = references.length > 0 && references.length <= 50 && selectedItems.every((item) => item.status === "candidate");
+  const canChange = references.length > 0 && references.length <= 5
+    && new Set(selectedItems.map((item) => item.scope.orchestratorId)).size === 1;
   const button = (label: string, op: string, payload: Record<string, unknown>, disabled = false) => (
     <TouchableOpacity key={label} accessibilityRole="button" accessibilityLabel={label} disabled={busy || disabled}
       onPress={() => void manage(op, payload)} style={[styles.settingsBackButton, { opacity: busy || disabled ? 0.5 : 1 }]}>
       <Text style={styles.settingsActionText}>{label}</Text>
     </TouchableOpacity>);
-  const skillText = (skill?: Record<string, string>) => skill ? Object.entries({ purpose: "目的", triggers: "発動条件", inputs: "入力",
-    steps: "手順", outputs: "出力", exceptions: "例外", approvals: "必要な承認" }).map(([key, label]) => `${label}: ${skill[key] || "未設定"}`).join("\n") : "なし";
-  const itemStatus: Record<string, string> = { candidate: "候補", active: "有効", retired: "廃止", rejected: "却下" };
   return <>
     <Text style={styles.settingsFooterText}>学習・評価用モデルは全オーケストレータ共通</Text>
-    <Text style={styles.settingsFooterText}>採用した方針を次の応答から、進行中の作業に影響しない時点で反映します。現在の依頼・手動設定・承認規則が優先されます。スキルは専用領域に保存し、自動公開しません。メッセージクリアでは学習を忘却しません。「忘却」は選択した学習と編集・統合で関連する保存版も削除します。</Text>
+    <Text style={styles.settingsFooterText}>採用した学習を、関連する回答で使います。</Text>
     <View style={styles.settingsSection}>
       <View style={styles.settingsGroup}>
         <SettingsSelect icon="bulb-outline" label="学習・評価用モデル"
@@ -177,7 +174,7 @@ export function OrchestratorLearningPanel({ request, orchestrators }: {
           selectedValue={effort} placeholder="モデルを選択してください"
           onSelect={(value) => { if (!busy) { setEffort(value); setSaved(false); } }} />
       </View>
-      <Text style={styles.settingsFooterText}>保存した設定は次の分析バッチから適用されます。未設定の間は会話の観測だけを行います。実行中の分析は完了まで継続し、利用量の記録を残します。</Text>
+      <Text style={styles.settingsFooterText}>未設定で新しい分析を停止します。採用済みの学習は引き続き回答で使います。</Text>
       {catalogError ? <Text accessibilityRole="alert" style={styles.settingsErrorText}>{catalogError}</Text> : null}
       {model && !validSelection && !catalogError ? <Text style={styles.settingsErrorText}>選択中のモデル・エフォートは現在利用できません。別の設定を選んでください。</Text> : null}
       <TouchableOpacity testID="learning-settings-save" accessibilityRole="button"
@@ -234,41 +231,48 @@ export function OrchestratorLearningPanel({ request, orchestrators }: {
       </View>
       <View style={styles.settingsSection}>
         <Text style={styles.settingsSectionTitle}>学習・専用スキル · {status.candidates.length} 件</Text>
-        <Text style={styles.settingsFooterText}>選択した候補をまとめて採用・却下できます。共有化は全チャットへの明示採用です。公開や提案の採用で外部操作が許可されることはありません。</Text>
-        <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
-          {button("選択候補を採用", "decide", { items: references, action: "adopt" }, !references.length)}
-          {button("選択候補を却下", "decide", { items: references, action: "reject" }, !references.length)}
+        <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
+          <Text style={styles.settingsFooterText}>候補は採用するまで回答に使いません。</Text>
+          <TouchableOpacity accessibilityRole="button" accessibilityLabel={selecting ? "一括操作を終了" : "まとめて操作"}
+            disabled={busy} onPress={() => { setSelecting((value) => !value); setSelected([]); setInstruction(""); setRequestingChange(false); }}
+            style={styles.settingsBackButton}>
+            <Text style={styles.settingsActionText}>{selecting ? "選択を終了" : "まとめて操作"}</Text>
+          </TouchableOpacity>
         </View>
-        <TextInput accessibilityLabel="学習の編集・統合・廃止の希望" placeholder="選択した学習の編集・統合・廃止の希望"
-          value={instruction} onChangeText={setInstruction} multiline maxLength={1000} style={styles.settingsRowDescription} />
-        {button("選択学習の修正案を依頼", "change", { items: references, instruction }, !references.length || !instruction.trim())}
-        {status.candidates.length ? <View style={styles.settingsGroup}>{status.candidates.map((item) => (
-          <View key={item.id} style={[styles.settingsRow, styles.settingsRowDivider, { flexDirection: "column", alignItems: "stretch" }]}>
-            <TouchableOpacity accessibilityRole="checkbox" accessibilityState={{ checked: selected.includes(item.id) }}
-              accessibilityLabel={`学習を選択: ${item.content}`} disabled={busy}
-              onPress={() => setSelected((current) => current.includes(item.id) ? current.filter((id) => id !== item.id) : [...current, item.id])}>
-              <Text style={styles.settingsRowDescription}>{selected.includes(item.id) ? "☑" : "□"}</Text><Text style={styles.settingsRowLabel}>{item.content}</Text>
+        {selecting ? <View style={[styles.settingsGroup, { padding: 12, gap: 8 }]}>
+          <Text style={styles.settingsRowLabel}>{references.length}件を選択</Text>
+          <Text style={styles.settingsFooterText}>チェックは一括操作の対象選びです。使用状態は変わりません。</Text>
+          <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
+            {button("選んだ候補を採用", "decide", { items: references, action: "adopt" }, !canDecide)}
+            {button("選んだ候補を見送る", "decide", { items: references, action: "reject" }, !canDecide)}
+            <TouchableOpacity accessibilityRole="button" accessibilityLabel="選んだ学習の修正案を依頼" disabled={busy || !canChange}
+              onPress={() => setRequestingChange((value) => !value)} style={[styles.settingsBackButton, { opacity: busy || !canChange ? 0.5 : 1 }]}>
+              <Text style={styles.settingsActionText}>修正案を依頼</Text>
             </TouchableOpacity>
-            <Text style={styles.settingsRowDescription}>{KIND_LABELS[item.kind] || item.kind} · {orchestrators.find((entry) => entry.id === item.scope.orchestratorId)?.name || item.scope.orchestratorId} · {item.scope.shared ? "全チャット共通" : "このチャット限定"} · {itemStatus[item.status] || item.status || "候補"} · v{item.version || 1}</Text>
-            <Text style={styles.settingsRowDescription}>適用条件: {item.conditions}</Text>
-            {item.matchTerms?.length ? <Text style={styles.settingsRowDescription}>発動語: {item.matchTerms.join("、")}</Text> : null}
-            {item.targetConstraints?.length ? <Text style={styles.settingsRowDescription}>ツールで確認が必要な対象: {item.targetConstraints.join("、")}</Text> : null}
-            <Text style={styles.settingsRowDescription}>作成理由: {item.reason}</Text>
-            <Text style={styles.settingsRowDescription}>根拠: {item.evidence.map((source) => `#${source.pairSeq}`).join("、")}</Text>
-            {item.updatedAt ? <Text style={styles.settingsRowDescription}>更新: {item.updatedAt}</Text> : null}
-            {item.skill ? <Text style={styles.settingsRowDescription}>専用スキル案{`\n${skillText(item.skill)}`}</Text> : null}
-            {item.published ? <Text style={styles.settingsRowDescription}>公開版 v{item.published.version} · {item.published.hash.slice(0, 12)}</Text> : null}
-            <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
-              {item.status === "active" ? <>
-                {button(`廃止: ${item.content}`, "decide", { items: [{ id: item.id, version: item.version }], action: "retire" })}
-                {!item.scope.shared ? button(`全チャットへ採用: ${item.content}`, "decide", { items: [{ id: item.id, version: item.version }], action: "share" }) : null}
-                {item.skill && !item.published ? button(`専用スキルを公開: ${item.content}`, "decide", { items: [{ id: item.id, version: item.version }], action: "publish" }) : null}
-              </> : null}
-              {item.status === "retired" ? button(`直前の方針を復元: ${item.content}`, "decide", { items: [{ id: item.id, version: item.version }], action: "restore" }) : null}
-              {button(`学習と保存版を忘却: ${item.content}`, "forget", { items: [{ id: item.id, version: item.version }] })}
-            </View>
           </View>
-        ))}</View> : <Text style={styles.settingsFooterText}>候補はまだありません。</Text>}
+          {references.length > 0 && !canDecide ? <Text style={styles.settingsFooterText}>まとめて採用・見送りできるのは候補50件までです。</Text> : null}
+          {references.length > 0 && !canChange ? <Text style={styles.settingsFooterText}>修正案は同じチャットの学習を5件まで選んで依頼できます。</Text> : null}
+          {requestingChange ? <>
+            <Text style={styles.settingsFooterText}>次回の分析で変更候補を作成します。採用するまで回答には反映しません。</Text>
+            {!status.settings.model ? <Text style={styles.settingsFooterText}>作成には学習・評価用モデルの設定が必要です。</Text> : null}
+            <TextInput accessibilityLabel="学習の編集・統合・廃止の希望" placeholder="変えたい内容や、まとめたい方針"
+              value={instruction} onChangeText={setInstruction} editable={!busy} multiline maxLength={1000}
+              style={[styles.settingsRowDescription, { minHeight: 72, padding: 12 }]} />
+            <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
+              {button("修正案の作成を依頼", "change", { items: references, instruction }, !canChange || !instruction.trim())}
+              <TouchableOpacity accessibilityRole="button" accessibilityLabel="修正案の依頼をキャンセル" disabled={busy}
+                onPress={() => { setRequestingChange(false); setInstruction(""); }} style={styles.settingsBackButton}>
+                <Text style={styles.settingsActionText}>キャンセル</Text>
+              </TouchableOpacity>
+            </View>
+          </> : null}
+        </View> : null}
+        {status.candidates.length ? <View style={{ gap: 10 }}>{status.candidates.map((item) => (
+          <LearningKnowledgeCard key={item.id} item={item}
+            chatName={orchestrators.find((entry) => entry.id === item.scope.orchestratorId)?.name || item.scope.orchestratorId}
+            selecting={selecting} selected={selected.includes(item.id)} busy={busy} manage={manage}
+            onSelect={() => setSelected((current) => current.includes(item.id) ? current.filter((id) => id !== item.id) : [...current, item.id])} />
+        ))}</View> : <Text style={styles.settingsFooterText}>学習はまだありません。</Text>}
       </View>
       <View style={styles.settingsSection}>
         <Text style={styles.settingsSectionTitle}>AIによる暫定評価</Text>
@@ -298,8 +302,8 @@ export function OrchestratorLearningPanel({ request, orchestrators }: {
         {(status.changes || []).slice().reverse().map((entry) => <View key={entry.id} style={[styles.settingsGroup, { padding: 12 }]}>
           <Text style={styles.settingsRowLabel}>{entry.actor === "ai" ? "裏側AI" : "ユーザー"} · {entry.action} · {entry.at}</Text>
           <Text style={styles.settingsRowDescription}>理由: {entry.reason || "指定なし"}</Text>
-          <Text style={styles.settingsRowDescription}>前: {entry.before ? `${entry.before.status} v${entry.before.version} ${entry.before.content} ${skillText(entry.before.skill)}` : "なし"}</Text>
-          <Text style={styles.settingsRowDescription}>後: {entry.after ? `${entry.after.status} v${entry.after.version} ${entry.after.content} ${skillText(entry.after.skill)}` : "なし"}</Text>
+          <Text style={styles.settingsRowDescription}>前: {entry.before ? `${entry.before.status} v${entry.before.version} ${entry.before.content} ${learningSkillText(entry.before.skill)}` : "なし"}</Text>
+          <Text style={styles.settingsRowDescription}>後: {entry.after ? `${entry.after.status} v${entry.after.version} ${entry.after.content} ${learningSkillText(entry.after.skill)}` : "なし"}</Text>
         </View>)}
       </View>
       <View style={styles.settingsSection}>
