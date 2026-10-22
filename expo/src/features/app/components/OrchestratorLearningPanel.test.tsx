@@ -1,6 +1,7 @@
 jest.mock("@expo/vector-icons", () => ({ Ionicons: () => null }));
 import { Alert } from "react-native";
 import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
+import type { LearningKnowledge } from "./LearningKnowledgeCard";
 import { OrchestratorLearningPanel } from "./OrchestratorLearningPanel";
 
 jest.mock("./SettingsSelect", () => ({
@@ -25,7 +26,7 @@ const initialStatus = () => ({
   observedThrough: 10, processedThrough: 8, pendingCount: 2,
   candidates: [{ id: "candidate-1", version: 1, status: "candidate", kind: "preference", content: "報告を短くする",
     conditions: "作業完了の報告", reason: "短い報告を明示的に希望",
-    scope: { orchestratorId: "main" }, evidence: [{ pairSeq: 8 }] }],
+    scope: { orchestratorId: "main" }, evidence: [{ pairSeq: 8 }] }] as LearningKnowledge[],
   gaps: [{ from: 1, through: 2, reason: "ログ保持期間外" }], error: null,
   outputLimitEnforced: false,
   usage: { blockedReason: null,
@@ -53,6 +54,8 @@ test("shows observed candidates, evidence, excluded input and missing usage with
   const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
   await waitFor(() => screen.getByText("報告を短くする"));
   expect(screen.getByText("学習・評価用モデルは全オーケストレータ共通")).toBeTruthy();
+  expect(screen.queryByText("根拠: #8")).toBeNull();
+  await fireEvent.press(screen.getByLabelText("詳細・管理: 報告を短くする"));
   expect(screen.getByText("根拠: #8")).toBeTruthy();
   expect(screen.getByText("#1〜2: ログ保持期間外")).toBeTruthy();
   expect(screen.getByTestId("learning-input-tokens")).toHaveTextContent("取得済み入力: 未取得");
@@ -191,12 +194,13 @@ test("bulk adoption sends exact item versions and failures keep decisions unsave
     throw new Error(`unexpected ${op}`);
   });
   const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
-  await waitFor(() => screen.getByLabelText("学習を選択: 報告を短くする"));
-  await fireEvent.press(screen.getByLabelText("学習を選択: 報告を短くする"));
-  await fireEvent.press(screen.getByLabelText("選択候補を採用"));
+  await waitFor(() => screen.getByLabelText("まとめて操作"));
+  await fireEvent.press(screen.getByLabelText("まとめて操作"));
+  await fireEvent.press(screen.getByLabelText("一括操作の対象に選択: 報告を短くする"));
+  await fireEvent.press(screen.getByLabelText("選んだ候補を採用"));
   await waitFor(() => expect(screen.getByText("版が変更されています")).toBeTruthy());
   expect(request).toHaveBeenCalledWith("voice.learning.decide", { items: [{ id: "candidate-1", version: 1 }], action: "adopt" });
-  expect(screen.getByLabelText("学習を選択: 報告を短くする").props.accessibilityState.checked).toBe(true);
+  expect(screen.getByLabelText("一括操作の対象に選択: 報告を短くする").props.accessibilityState.checked).toBe(true);
   await screen.unmount();
 });
 
@@ -236,5 +240,86 @@ test("exhausted analysis retry uses the exact batch and settings revision withou
   await waitFor(() => screen.getByLabelText("保留した分析を1回再試行"));
   await fireEvent.press(screen.getByLabelText("保留した分析を1回再試行"));
   await waitFor(() => expect(request).toHaveBeenCalledWith("voice.learning.retry", { batchId: "batch-exhausted", settingsRevision: 4 }));
+  await screen.unmount();
+});
+
+test("default view has no bulk checkboxes or change form; selecting alone never writes", async () => {
+  const request = mockApi();
+  const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  await waitFor(() => screen.getByText("報告を短くする"));
+  expect(screen.queryByRole("checkbox")).toBeNull();
+  expect(screen.queryByLabelText("学習の編集・統合・廃止の希望")).toBeNull();
+  await fireEvent.press(screen.getByLabelText("まとめて操作"));
+  await fireEvent.press(screen.getByRole("checkbox"));
+  expect(screen.getByText("1件を選択")).toBeTruthy();
+  expect(request.mock.calls.map(([op]) => op)).toEqual(["voice.learning.status", "voice.settings"]);
+  await fireEvent.press(screen.getByLabelText("一括操作を終了"));
+  expect(screen.queryByRole("checkbox")).toBeNull();
+  await screen.unmount();
+});
+
+test.each([
+  [6, false, false, true, false],
+  [2, true, false, true, false],
+  [51, false, false, false, false],
+  [50, false, false, true, false],
+  [5, false, false, true, true],
+  [2, false, true, false, true],
+  [2, false, false, true, true],
+])("bulk contracts with %i items, mixed chats %s, active item %s", async (count, mixedChats, active, canDecide, canChange) => {
+  const status = initialStatus(); const template = status.candidates[0];
+  status.candidates = Array.from({ length: count }, (_, i) => ({ ...template, id: `item-${i}`, content: `方針${i}`,
+    status: active && i === 0 ? "active" : "candidate", scope: { orchestratorId: mixedChats && i === 0 ? "other" : "main" } }));
+  const request = mockApi(status);
+  const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  await waitFor(() => screen.getByLabelText("まとめて操作"));
+  await fireEvent.press(screen.getByLabelText("まとめて操作"));
+  for (const checkbox of screen.getAllByRole("checkbox")) await fireEvent.press(checkbox);
+  expect(screen.getByText(`${count}件を選択`)).toBeTruthy();
+  expect(screen.getByLabelText("選んだ候補を採用").props.accessibilityState.disabled).toBe(!canDecide);
+  expect(screen.getByLabelText("選んだ候補を見送る").props.accessibilityState.disabled).toBe(!canDecide);
+  expect(screen.getByLabelText("選んだ学習の修正案を依頼").props.accessibilityState.disabled).toBe(!canChange);
+  expect(request.mock.calls).toHaveLength(2);
+  await screen.unmount();
+});
+
+test("failed change request preserves selection and draft; success clears mode and exact versions are sent", async () => {
+  const status = initialStatus();
+  let fail = true;
+  const request = jest.fn(async (op: string): Promise<Record<string, unknown>> => {
+    if (op === "voice.settings") return { models };
+    if (op === "voice.learning.change" && fail) throw new Error("通信に失敗しました");
+    return status;
+  });
+  const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  await waitFor(() => screen.getByLabelText("まとめて操作"));
+  await fireEvent.press(screen.getByLabelText("まとめて操作"));
+  await fireEvent.press(screen.getByRole("checkbox"));
+  await fireEvent.press(screen.getByLabelText("選んだ学習の修正案を依頼"));
+  expect(screen.getByLabelText("修正案の作成を依頼")).toBeDisabled();
+  await fireEvent.changeText(screen.getByLabelText("学習の編集・統合・廃止の希望"), "3行以内に変更");
+  await fireEvent.press(screen.getByLabelText("修正案の作成を依頼"));
+  await waitFor(() => screen.getByText("通信に失敗しました"));
+  expect(screen.getByRole("checkbox").props.accessibilityState.checked).toBe(true);
+  expect(screen.getByLabelText("学習の編集・統合・廃止の希望").props.value).toBe("3行以内に変更");
+  expect(request).toHaveBeenCalledWith("voice.learning.change", { items: [{ id: "candidate-1", version: 1 }], instruction: "3行以内に変更" });
+  fail = false;
+  await fireEvent.press(screen.getByLabelText("修正案の作成を依頼"));
+  await waitFor(() => expect(screen.queryByRole("checkbox")).toBeNull());
+  expect(screen.queryByLabelText("学習の編集・統合・廃止の希望")).toBeNull();
+  await screen.unmount();
+});
+
+test("refresh with removed items clears stale bulk selection and draft", async () => {
+  const status = initialStatus(); const request = mockApi(status);
+  const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  await waitFor(() => screen.getByLabelText("まとめて操作"));
+  await fireEvent.press(screen.getByLabelText("まとめて操作")); await fireEvent.press(screen.getByRole("checkbox"));
+  await fireEvent.press(screen.getByLabelText("選んだ学習の修正案を依頼"));
+  await fireEvent.changeText(screen.getByLabelText("学習の編集・統合・廃止の希望"), "まとめる");
+  status.candidates = [];
+  await fireEvent.press(screen.getByLabelText("学習状態を更新"));
+  await waitFor(() => screen.getByText("学習はまだありません。"));
+  expect(screen.queryByText("1件を選択")).toBeNull(); expect(screen.queryByLabelText("学習の編集・統合・廃止の希望")).toBeNull();
   await screen.unmount();
 });

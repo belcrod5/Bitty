@@ -47,6 +47,7 @@ export function LearningEvaluationCard({ evaluation, busy, manage }: { evaluatio
       }); } },
     ]);
   };
+  const openEditor = () => { setDraft({ score: baseline.score === null ? "" : String(baseline.score), reason: baseline.reason }); setError(""); setEditing(true); };
   const link = (label: string, onPress: () => void, options: { disabled?: boolean; icon?: "chevron-down" | "chevron-up" | "create-outline" } = {}) =>
     <Pressable accessibilityRole="button" accessibilityLabel={label} disabled={busy || options.disabled}
       onPress={onPress} style={({ pressed }) => [styles.link, { opacity: busy || options.disabled ? 0.4 : pressed ? 0.6 : 1 }]}>
@@ -56,13 +57,20 @@ export function LearningEvaluationCard({ evaluation, busy, manage }: { evaluatio
   return <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.borderSubtle }]}>
     <Text style={[styles.goal, { color: colors.textPrimary }]}>{evaluation.goal}</Text>
     <View style={styles.ratings}>
-      <View style={[styles.rating, { backgroundColor: colors.surfaceMuted }]}>
-        <Text style={[styles.caption, { color: colors.textSecondary }]}>AIの暫定評価</Text>
+      <View style={styles.rating}>
+        <View style={styles.ratingHeader}><Text style={[styles.caption, { color: colors.textSecondary }]}>AIの暫定評価</Text></View>
         <Text style={[styles.score, { color: colors.textPrimary }]}>{scoreText(evaluation.score)}</Text>
       </View>
-      <View style={[styles.rating, { backgroundColor: latest ? tones.info.background : colors.surfaceMuted }]}>
-        <Text style={[styles.caption, { color: latest ? tones.info.foreground : colors.textSecondary }]}>あなたの評価</Text>
-        <Text style={[styles.score, { color: latest ? tones.info.foreground : colors.textMuted }]}>{latest ? scoreText(latest.score) : "未設定"}</Text>
+      <View style={styles.rating}>
+        <View style={styles.userRating}>
+          <Text style={[styles.caption, { color: colors.textSecondary }]}>あなたの評価</Text>
+          {!editing ? <Pressable accessibilityRole="button" accessibilityLabel="評価を変更" disabled={busy}
+            onPress={openEditor} style={styles.editButton}>
+            <Ionicons name="create-outline" size={15} color={colors.accent} />
+            <Text style={[styles.linkText, { color: colors.accent }]}>変更</Text>
+          </Pressable> : null}
+        </View>
+        <Text style={[styles.score, { color: latest ? colors.accent : colors.textMuted }]}>{latest ? scoreText(latest.score) : "未設定"}</Text>
         {latest ? <Text style={[styles.caption, { color: colors.textSecondary }]}>{latest.resolution ? "分析に反映済み" : "次回の分析待ち"}</Text> : null}
       </View>
     </View>
@@ -90,7 +98,7 @@ export function LearningEvaluationCard({ evaluation, busy, manage }: { evaluatio
         {link("キャンセル", () => { setEditing(false); setError(""); setDraft({ score: "", reason: "" }); })}
       </View>
       {error ? <Text accessibilityRole="alert" style={{ color: tones.danger.foreground }}>{error}</Text> : null}
-    </View> : link("評価を変更", () => { setDraft({ score: baseline.score === null ? "" : String(baseline.score), reason: baseline.reason }); setError(""); setEditing(true); }, { icon: "create-outline" })}
+    </View> : null}
     <View style={styles.disclosures}>
       {link(details ? "根拠を閉じる" : "評価の根拠", () => setDetails((value) => !value), { icon: details ? "chevron-up" : "chevron-down" })}
       {evaluation.corrections.length ? link(`訂正履歴 · ${evaluation.corrections.length}`, () => setHistory((value) => !value), { icon: history ? "chevron-up" : "chevron-down" }) : null}
@@ -123,9 +131,12 @@ export function LearningEvaluationCard({ evaluation, busy, manage }: { evaluatio
 const styles = StyleSheet.create({
   card: { borderWidth: 1, borderRadius: 16, padding: 16, gap: 12 },
   goal: { fontSize: 15, fontWeight: "600", lineHeight: 22 },
-  ratings: { flexDirection: "row", gap: 10 }, rating: { flex: 1, padding: 12, borderRadius: 12, gap: 4 },
-  caption: { fontSize: 12, lineHeight: 18 }, score: { fontSize: 21, fontWeight: "700", fontVariant: ["tabular-nums"] },
-  link: { flexDirection: "row", alignItems: "center", gap: 5, minHeight: 36 }, linkText: { fontSize: 13, fontWeight: "500" },
+  ratings: { flexDirection: "row", flexWrap: "wrap", columnGap: 24, rowGap: 8 }, rating: { flexGrow: 1, flexBasis: 120, gap: 3 },
+  ratingHeader: { minHeight: 44, justifyContent: "center" },
+  userRating: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 },
+  editButton: { minHeight: 44, minWidth: 44, flexDirection: "row", alignItems: "center", gap: 4 },
+  caption: { fontSize: 12, lineHeight: 18 }, score: { fontSize: 19, fontWeight: "700", fontVariant: ["tabular-nums"] },
+  link: { flexDirection: "row", alignItems: "center", gap: 5, minHeight: 44 }, linkText: { fontSize: 13, fontWeight: "500" },
   disclosures: { flexDirection: "row", flexWrap: "wrap", columnGap: 18 },
   detail: { borderTopWidth: StyleSheet.hairlineWidth, paddingTop: 12, gap: 8 }, body: { fontSize: 13, lineHeight: 20 },
   editor: { borderWidth: 1, borderRadius: 12, padding: 12, gap: 10 }, editorTitle: { fontSize: 13, fontWeight: "600" },
