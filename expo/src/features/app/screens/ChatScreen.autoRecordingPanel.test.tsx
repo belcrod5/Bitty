@@ -723,6 +723,21 @@ describe("ChatScreen voice input", () => {
     await screen.unmount();
   });
 
+  it("keeps note creation disabled until the session has a materialized identity", async () => {
+    mockPanelSessionMaterialized = false;
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    await fireEvent.press(screen.getByLabelText("チャットタイトルメニューを開く"));
+    expect(screen.getByText("最初のメッセージ送信後に利用できます")).toBeTruthy();
+    await fireEvent.press(screen.getByLabelText("メモを開く"));
+    expect(screen.queryByLabelText("セッションメモ")).toBeNull();
+    expect(mockSaveSessionNote).not.toHaveBeenCalled();
+    mockPanelSessionMaterialized = true;
+    await screen.rerender(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    await fireEvent.press(screen.getByLabelText("メモを開く"));
+    expect(screen.getByLabelText("セッションメモ")).toBeTruthy();
+    await screen.unmount();
+  });
+
   it("passes the current panel ID from a panel runtime view", async () => {
     const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
 

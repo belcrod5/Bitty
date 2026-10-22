@@ -2878,12 +2878,13 @@ export function ChatScreen({
                       <TouchableOpacity
                         style={[styles.settingsRow, styles.settingsRowDivider]}
                         onPress={() => setDirectoryMenuMode("edit_note")}
-                        disabled={!selectedSessionIdForView || !composerDraftsLoaded}
+                        disabled={!selectedSessionIdForView || !selectedSessionMaterializedForView || !composerDraftsLoaded}
                         accessibilityRole="button"
                         accessibilityLabel="メモを開く"
                       >
                         <View style={styles.settingsRowLabelWrap}>
                           <Text style={styles.settingsRowLabel}>メモ</Text>
+                          {!selectedSessionMaterializedForView ? <Text style={styles.settingsRowDescription}>最初のメッセージ送信後に利用できます</Text> : null}
                         </View>
                         {sessionNoteForView ? <Ionicons name="document-text-outline" size={18} color={theme.colors.controlAccent} /> : null}
                         <Ionicons name="chevron-forward" size={18} color={theme.colors.disclosure} />
