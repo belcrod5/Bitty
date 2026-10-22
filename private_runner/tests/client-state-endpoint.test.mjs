@@ -29,6 +29,7 @@ test("client state is authenticated, durable, provider-aware, and merges field o
     assert.equal((await post({ type: "migrate", directories: [directory] })).status, 400);
     assert.equal((await post({ type: "directory.upsert", directory })).status, 200);
     assert.equal((await post({ type: "session.set", backendId: "codex", sessionId: "same-session", title: "Original", markerColor: "red" })).status, 200);
+    assert.equal((await post({ type: "session.set", backendId: "codex", sessionId: "same-session", note: "Private reminder", expectedNote: "" })).status, 200);
     assert.equal((await post({ type: "composer.append", text: "first" })).status, 200);
     assert.equal((await post({ type: "draft.set", backendId: "codex", sessionId: "same-session", text: "unsent" })).status, 200);
     const responses = await Promise.all([
@@ -41,6 +42,8 @@ test("client state is authenticated, durable, provider-aware, and merges field o
     const snapshot = (await (await get()).json()).snapshot;
     assert.deepEqual(snapshot.directories, [directory]);
     assert.equal(snapshot.sessions[codexKey].title, "Renamed");
+    assert.equal(snapshot.sessions[codexKey].note, "Private reminder");
+    assert.equal((await post({ type: "session.set", backendId: "codex", sessionId: "same-session", note: "Stale", expectedNote: "" })).status, 400);
     assert.equal(snapshot.sessions[claudeKey].markerColor, "yellow");
     assert.deepEqual(snapshot.composerHistory, ["second", "first"]);
     assert.equal(snapshot.drafts[codexKey].text, "unsent");
@@ -48,6 +51,7 @@ test("client state is authenticated, durable, provider-aware, and merges field o
     assert.equal(JSON.parse(await fs.readFile(process.env.CLIENT_STATE_STORE_PATH, "utf8")).revision, snapshot.revision);
     const restarted = await createClientStateStore(process.env.CLIENT_STATE_STORE_PATH).snapshot();
     assert.equal(restarted.sessions[codexKey].title, "Renamed");
+    assert.equal(restarted.sessions[codexKey].note, "Private reminder");
     assert.equal(restarted.revision, snapshot.revision);
   } finally {
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));

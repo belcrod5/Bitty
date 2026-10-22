@@ -35,6 +35,8 @@ export type ConversationContextValue = {
   directorySessionsById: Record<string, DirectorySessionTreeState>;
   directorySessionSync: DirectorySessionSyncState;
   sessionTitleOverridesById: Record<string, string>;
+  sessionNotesById: Record<string, string>;
+  saveSessionNote: (backendId: string, sessionId: string, note: string, expectedNote: string, scopeId: string) => Promise<void>;
   sessionMarkerColorsById: Record<string, DirectoryMarkerColor>;
   selectedLlmSessionId: string;
   selectedLlmSessionMaterialized: boolean;

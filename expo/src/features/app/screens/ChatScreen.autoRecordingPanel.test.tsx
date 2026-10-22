@@ -49,8 +49,12 @@ const mockChatSessionSubagentProps: { current: Record<string, any> | null } = { 
 const mockRunnerWsConnectionStatusProps: { current: Record<string, any> | null } = { current: null };
 const mockSetStringAsync = jest.fn(async (_text: string) => {});
 let mockPanelBackendId = "codex";
+let mockPanelSessionId = "session-1";
 let mockPanelSessionMaterialized: boolean | undefined = true;
 let mockSelectedLlmSessionMaterialized = true;
+let mockSessionNotesById: Record<string, string> = {};
+const mockSaveSessionNote = jest.fn(async () => {});
+const mockSendReplyTranscript = jest.fn();
 let mockRunnerUrl = "http://runner.test";
 let mockRunnerClientStateScopeId = "runner-a";
 let mockComposerDraftsLoaded = true;
@@ -271,7 +275,7 @@ jest.mock("../contexts/PanelRuntimeStoreContext", () => ({
   usePanelRuntimeStore: () => ({
     getSnapshot: (panelId: string) => ({
       panelId,
-      selectedSessionId: "session-1",
+      selectedSessionId: mockPanelSessionId,
       selectedDirectoryPath: "/workspace",
       selectedDirectoryDisplayName: "Workspace",
       selectedSessionTitle: "Session",
@@ -456,6 +460,8 @@ jest.mock("../contexts/ConversationContext", () => ({
     registeredDirectories: [],
     directorySessionsById: {},
     sessionTitleOverridesById: {},
+    sessionNotesById: mockSessionNotesById,
+    saveSessionNote: mockSaveSessionNote,
     formatSessionUpdatedAt: jest.fn(),
     loadSessionChildren: jest.fn(),
     openSessionHistoryEntry: jest.fn(),
@@ -463,7 +469,7 @@ jest.mock("../contexts/ConversationContext", () => ({
     markSessionUnread: mockMarkSessionUnread,
     showChatBottomToast: jest.fn(),
     setTranscript: jest.fn(),
-    sendReplyTranscript: jest.fn(),
+    sendReplyTranscript: mockSendReplyTranscript,
     sendReplyRequestForPanelWithTranscript: jest.fn(),
     sendReplyTranscriptForPanel: mockSendReplyTranscriptForPanel,
     cancelReplyRequestForPanel: jest.fn(),
@@ -477,6 +483,8 @@ jest.mock("../contexts/ConversationContext", () => ({
 describe("ChatScreen voice input", () => {
   beforeEach(() => {
     mockUseActualStreamingStt = false;
+    mockSessionNotesById = {};
+    mockSaveSessionNote.mockReset().mockResolvedValue(undefined);
     mockSttSessions.length = 0;
     mockStreamingSttPhase = "idle";
     mockCancelCorrection.mockReturnValue(true);
@@ -488,6 +496,7 @@ describe("ChatScreen voice input", () => {
     mockGitDiffPanelProps.current = null;
     mockRunnerWsConnectionStatusProps.current = null;
     mockPanelBackendId = "codex";
+    mockPanelSessionId = "session-1";
     mockPanelSessionMaterialized = true;
     mockSelectedLlmSessionMaterialized = true;
     configureCloudflareAccessFetch({ runnerUrl: "", credentials: { clientId: "", clientSecret: "" } });
@@ -640,6 +649,106 @@ describe("ChatScreen voice input", () => {
     expect(mockPushStreamingSample).toHaveBeenCalledWith(0.6);
     expect(onRender).toHaveBeenCalledTimes(commits);
     expect(mockRunnerStatusRenderCount).toBe(statusRenders);
+    await screen.unmount();
+  });
+
+  it("adds private notes from the title menu with no header indicator before saving", async () => {
+    const screen = await render(<ChatScreen />);
+    expect(screen.queryByLabelText("保存済みのメモを編集")).toBeNull();
+    await fireEvent.press(screen.getByLabelText("チャットタイトルメニューを開く"));
+    await fireEvent.press(screen.getByLabelText("メモを開く"));
+    await fireEvent.changeText(screen.getByLabelText("セッションメモ"), "明日検証する");
+    expect(mockSaveSessionNote).not.toHaveBeenCalled();
+    await fireEvent.press(screen.getByLabelText("メモを保存"));
+    expect(mockSaveSessionNote).toHaveBeenCalledWith("claude", "session-1", "明日検証する", "", "runner-a");
+    expect(mockSendReplyTranscript).not.toHaveBeenCalled();
+    expect(mockSendReplyTranscriptForPanel).not.toHaveBeenCalled();
+    await screen.unmount();
+  });
+
+  it("opens the title menu from either header row while keeping note editing separate", async () => {
+    mockSessionNotesById = { [JSON.stringify(["claude", "session-1"])]: "Saved reminder" };
+    const screen = await render(<ChatScreen />);
+    await fireEvent.press(screen.getByLabelText("ディレクトリー名からチャットタイトルメニューを開く"));
+    await fireEvent.press(screen.getByLabelText("メモを開く"));
+    expect(screen.getByLabelText("セッションメモ").props.value).toBe("Saved reminder");
+    await fireEvent.press(screen.getByLabelText("メモ編集をキャンセル"));
+    await fireEvent.press(screen.getByLabelText("チャットタイトルメニューを開く"));
+    expect(screen.getByLabelText("メモを開く")).toBeTruthy();
+    expect(screen.queryByLabelText("セッションメモ")).toBeNull();
+    expect(mockSaveSessionNote).not.toHaveBeenCalled();
+    await screen.unmount();
+  });
+
+  it("opens saved notes directly from a compact icon and supports clearing", async () => {
+    mockSessionNotesById = { [JSON.stringify(["claude", "session-1"])]: "Saved reminder" };
+    const screen = await render(<ChatScreen />);
+    await fireEvent.press(screen.getByLabelText("保存済みのメモを編集"));
+    expect(screen.getByLabelText("セッションメモ").props.value).toBe("Saved reminder");
+    await fireEvent.changeText(screen.getByLabelText("セッションメモ"), "");
+    await fireEvent.press(screen.getByLabelText("メモを保存"));
+    expect(mockSaveSessionNote).toHaveBeenCalledWith("claude", "session-1", "", "Saved reminder", "runner-a");
+    mockSessionNotesById = {};
+    await screen.rerender(<ChatScreen />);
+    expect(screen.queryByLabelText("保存済みのメモを編集")).toBeNull();
+    await screen.unmount();
+  });
+
+  it("keeps a failed note edit open and closes it when Runner or panel backend changes", async () => {
+    mockSessionNotesById = { [JSON.stringify(["codex", "session-1"])]: "Saved reminder" };
+    mockSaveSessionNote.mockRejectedValue(new Error("Cannot save"));
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    await fireEvent.press(screen.getByLabelText("保存済みのメモを編集"));
+    await fireEvent.changeText(screen.getByLabelText("セッションメモ"), "Keep draft");
+    await fireEvent.press(screen.getByLabelText("メモを保存"));
+    expect(screen.getByText("Cannot save")).toBeTruthy();
+    expect(screen.getByLabelText("セッションメモ").props.value).toBe("Keep draft");
+    mockPanelBackendId = "claude";
+    await screen.rerender(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    expect(screen.queryByLabelText("セッションメモ")).toBeNull();
+    expect(screen.queryByLabelText("保存済みのメモを編集")).toBeNull();
+    mockPanelBackendId = "codex";
+    await screen.rerender(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    await fireEvent.press(screen.getByLabelText("保存済みのメモを編集"));
+    mockRunnerClientStateScopeId = "runner-b";
+    await screen.rerender(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    expect(screen.queryByLabelText("セッションメモ")).toBeNull();
+    await screen.unmount();
+  });
+
+  it("does not let a pending save dismiss the editor for a different session", async () => {
+    let finishSave!: () => void;
+    mockSaveSessionNote.mockImplementationOnce(() => new Promise<void>((resolve) => { finishSave = resolve; }));
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    await fireEvent.press(screen.getByLabelText("チャットタイトルメニューを開く"));
+    await fireEvent.press(screen.getByLabelText("メモを開く"));
+    await fireEvent.changeText(screen.getByLabelText("セッションメモ"), "Old panel note");
+    await fireEvent.press(screen.getByLabelText("メモを保存"));
+    mockPanelSessionId = "session-2";
+    await screen.rerender(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    await fireEvent.press(screen.getByLabelText("チャットタイトルメニューを開く"));
+    await fireEvent.press(screen.getByLabelText("メモを開く"));
+    await fireEvent.changeText(screen.getByLabelText("セッションメモ"), "New panel draft");
+    await act(async () => { finishSave(); });
+    expect(screen.getByLabelText("セッションメモ").props.value).toBe("New panel draft");
+    expect(mockSaveSessionNote).toHaveBeenCalledWith("codex", "session-1", "Old panel note", "", "runner-a");
+    await fireEvent.press(screen.getByLabelText("メモ編集をキャンセル"));
+    expect(mockSaveSessionNote).toHaveBeenCalledTimes(1);
+    await screen.unmount();
+  });
+
+  it("keeps note creation disabled until the session has a materialized identity", async () => {
+    mockPanelSessionMaterialized = false;
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    await fireEvent.press(screen.getByLabelText("チャットタイトルメニューを開く"));
+    expect(screen.getByText("最初のメッセージ送信後に利用できます")).toBeTruthy();
+    await fireEvent.press(screen.getByLabelText("メモを開く"));
+    expect(screen.queryByLabelText("セッションメモ")).toBeNull();
+    expect(mockSaveSessionNote).not.toHaveBeenCalled();
+    mockPanelSessionMaterialized = true;
+    await screen.rerender(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    await fireEvent.press(screen.getByLabelText("メモを開く"));
+    expect(screen.getByLabelText("セッションメモ")).toBeTruthy();
     await screen.unmount();
   });
 

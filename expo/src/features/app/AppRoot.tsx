@@ -673,7 +673,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   const [waitingApprovalResumeLoading, setWaitingApprovalResumeLoading] = useState(false);
   const [waitingApprovalResumeStatusText, setWaitingApprovalResumeStatusText] = useState("");
   const [transcript, setTranscript] = useState("");
-  const { mutate: mutateRunnerClientState,
+  const { mutate: mutateRunnerClientState, sessionNotesById, saveSessionNote,
     titleModelId, titleReasoningEffort, changeTitleSettings,
     messages: composerMessageHistory, recordMessage: recordComposerMessageHistory,
     drafts: composerDrafts, draftsLoaded: composerDraftsLoaded, setDraft: setComposerDraft, clearDraft: clearComposerDraft,
@@ -4757,6 +4757,8 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     directorySessionsById,
     directorySessionSync,
     sessionTitleOverridesById,
+    sessionNotesById,
+    saveSessionNote,
     sessionMarkerColorsById,
     selectedLlmSessionId,
     selectedLlmSessionMaterialized,

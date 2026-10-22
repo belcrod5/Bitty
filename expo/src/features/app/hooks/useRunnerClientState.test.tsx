@@ -8,7 +8,7 @@ let server: {
   titleModelId: string;
   titleReasoningEffort: string;
   directories: typeof directory[];
-  sessions: Record<string, { title: string; markerColor: string }>;
+  sessions: Record<string, { title: string; markerColor: string; note?: string }>;
   composerHistory: string[];
   drafts: Record<string, { text: string; updatedAt: number }>;
 };
@@ -31,6 +31,10 @@ beforeEach(() => {
         server.titleModelId = operation.modelId;
         server.titleReasoningEffort = operation.reasoningEffort;
         server.revision++;
+      } else if (operation.type === "session.set") {
+        const key = JSON.stringify([operation.backendId, operation.sessionId]);
+        server.sessions[key] = { ...(server.sessions[key] || { title: "", markerColor: "none" }), note: operation.note };
+        server.revision++;
       } else if (operation.type === "draft.set") {
         const key = JSON.stringify([operation.backendId, operation.sessionId]);
         if (operation.text) server.drafts[key] = { text: operation.text, updatedAt: Date.now() };
@@ -38,7 +42,7 @@ beforeEach(() => {
         server.revision++;
       }
     }
-    return { ok: true, status: 200, json: async () => ({ snapshot: server }) } as Response;
+    return { ok: true, status: 200, json: async () => ({ snapshot: JSON.parse(JSON.stringify(server)) }) } as Response;
   }) as typeof fetch;
 });
 
@@ -274,4 +278,54 @@ test("a failed draft write is retried when the same Runner changes route", async
   await rerender({ ...props, runnerUrl: "https://cloudflare.test" });
   await waitFor(() => expect(server.drafts[sessionKey]?.text).toBe("offline text"));
   expect(requests).toEqual(["http://local.test/client-state", "https://cloudflare.test/client-state"]);
+});
+
+test("notes are awaited metadata-only saves with provider isolation and blank clearing", async () => {
+  server.sessions[sessionKey] = { title: "Old data", markerColor: "red" };
+  const { result } = await renderState();
+  await waitFor(() => expect(result.current.draftsLoaded).toBe(true));
+  expect(result.current.sessionNotesById[sessionKey]).toBe("");
+  const claudeKey = JSON.stringify(["claude", "session-1"]);
+  await act(async () => { await result.current.saveSessionNote("claude", "session-1", "Reminder", "", result.current.scopeId); });
+  expect(result.current.sessionNotesById[claudeKey]).toBe("Reminder");
+  expect(result.current.sessionNotesById[sessionKey]).toBe("");
+  expect(result.current.messages).toEqual([]);
+  expect(result.current.drafts).toEqual([]);
+  expect(operations).toEqual([{ type: "session.set", backendId: "claude", sessionId: "session-1", note: "Reminder", expectedNote: "" }]);
+  await act(async () => { await result.current.saveSessionNote("claude", "session-1", "", "Reminder", result.current.scopeId); });
+  expect(result.current.sessionNotesById[claudeKey]).toBe("");
+});
+
+test("failed note saves reject and retain the last saved note", async () => {
+  server.sessions[sessionKey] = { title: "", markerColor: "none", note: "Saved" };
+  const { result } = await renderState();
+  await waitFor(() => expect(result.current.draftsLoaded).toBe(true));
+  const oldFetch = global.fetch;
+  global.fetch = jest.fn((url, init) => init?.body ? Promise.reject(new Error("offline")) : oldFetch(url, init)) as typeof fetch;
+  await act(async () => {
+    await expect(result.current.saveSessionNote("codex", "session-1", "Unsaved", "Saved", result.current.scopeId)).rejects.toThrow("offline");
+  });
+  expect(result.current.sessionNotesById[sessionKey]).toBe("Saved");
+});
+
+test("notes clear when Runner changes and stale editor scope cannot write to the new Runner", async () => {
+  server.sessions[sessionKey] = { title: "", markerColor: "none", note: "Old Runner" };
+  const props = {
+    settingsLoaded: true, runnerUrl: "http://runner.test", localRunnerUrl: "", cloudflareRunnerUrl: "",
+    runnerToken: "token", backendId: "codex",
+    setRegisteredDirectories: jest.fn(), setSessionTitleOverridesById: jest.fn(), setSessionMarkerColorsById: jest.fn(),
+  };
+  const { result, rerender } = await renderHook((options: typeof props) => useRunnerClientState(options), { initialProps: props });
+  await waitFor(() => expect(result.current.sessionNotesById[sessionKey]).toBe("Old Runner"));
+  const oldScope = result.current.scopeId;
+  const oldFetch = global.fetch;
+  global.fetch = jest.fn((url, init) => String(url).startsWith("http://new-runner.test/")
+    ? Promise.reject(new Error("offline")) : oldFetch(url, init)) as typeof fetch;
+  jest.spyOn(console, "warn").mockImplementation(() => {});
+  await rerender({ ...props, runnerUrl: "http://new-runner.test" });
+  expect(result.current.sessionNotesById).toEqual({});
+  await act(async () => {
+    await expect(result.current.saveSessionNote("codex", "session-1", "Wrong Runner", "Old Runner", oldScope)).rejects.toThrow("Runner が切り替わりました");
+  });
+  expect(operations).toEqual([]);
 });

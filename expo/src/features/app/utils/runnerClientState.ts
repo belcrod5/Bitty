@@ -15,7 +15,7 @@ export type RunnerClientState = {
   titleModelId: string;
   titleReasoningEffort: ReasoningEffort;
   directories: RegisteredDirectoryEntry[];
-  sessions: Record<string, { title: string; markerColor: RegisteredDirectoryEntry["markerColor"] }>;
+  sessions: Record<string, { title: string; markerColor: RegisteredDirectoryEntry["markerColor"]; note?: string }>;
   composerHistory: string[];
   drafts: Record<string, { text: string; updatedAt: number }>;
 };
