@@ -1,9 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { Alert, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
 import { useAppStyles } from "../styles";
 import { isReasoningEffort, type ReasoningEffort } from "../utils/settingsParsers";
-import { LearningEvaluationCard, type LearningEvaluation } from "./LearningEvaluationCard";
-import { LearningKnowledgeCard, learningSkillText, type LearningKnowledge } from "./LearningKnowledgeCard";
+import { type LearningEvaluation } from "./LearningEvaluationCard";
+import { LearningKnowledgeCard, type LearningKnowledge } from "./LearningKnowledgeCard";
+import { LearningEvaluationOverview } from "./LearningEvaluationOverview";
+import { LearningUsageOverview } from "./LearningUsageOverview";
+import { LearningChangeHistory } from "./LearningChangeHistory";
+import { LearningDisclosure, LearningPager } from "./LearningTimeline";
+import { useVisualTheme } from "../theme/VisualThemeContext";
 import { SettingsSelect } from "./SettingsSelect";
 import type { VoiceOrchestrator } from "./VoiceOrchestratorIcon";
 
@@ -36,7 +41,7 @@ const EFFORT_LABELS: Record<ReasoningEffort, string> = {
   low: "低", medium: "中", high: "高", xhigh: "非常に高い", max: "最大", ultra: "Ultra",
 };
 const STATUS_LABELS: Record<string, string> = {
-  unconfigured: "モデル未設定", observing: "会話を観測中", analyzing: "分析中",
+  unconfigured: "新しい学習を停止中", observing: "会話を学習中", analyzing: "会話を分析中",
   paused: "保留中", retry_exhausted: "再試行の上限に達したため保留中",
 };
 
@@ -62,6 +67,10 @@ export function OrchestratorLearningPanel({ request, orchestrators }: {
   request: Request; orchestrators: VoiceOrchestrator[];
 }) {
   const styles = useAppStyles();
+  const { theme: { colors, tones } } = useVisualTheme();
+  const [knowledgeFilter, setKnowledgeFilter] = useState("all");
+  const [knowledgePage, setKnowledgePage] = useState(0);
+  const [usageRefresh, setUsageRefresh] = useState(0);
   const [status, setStatus] = useState<LearningStatus | null>(null);
   const [models, setModels] = useState<Model[]>([]);
   const [model, setModel] = useState("");
@@ -87,6 +96,7 @@ export function OrchestratorLearningPanel({ request, orchestrators }: {
       if (id !== requestId.current) return;
       if (state.status === "rejected") throw state.reason;
       const value = readStatus(state.value);
+      setUsageRefresh((current) => current + 1);
       setStatus(value); setSelected([]); setInstruction(""); setSelecting(false); setRequestingChange(false);
       setModel(value.settings.model || ""); setEffort(value.settings.effort || "");
       if (catalog.status === "rejected" || !Array.isArray(catalog.value.models)) {
@@ -136,6 +146,7 @@ export function OrchestratorLearningPanel({ request, orchestrators }: {
     try {
       const value = readStatus(await request(`voice.learning.${op}`, payload));
       if (id !== requestId.current) return "画面が更新されました。状態を確認してください。";
+      setUsageRefresh((current) => current + 1);
       setStatus(value); setSelected([]); setInstruction(""); setSelecting(false); setRequestingChange(false);
       return null;
     } catch (cause) {
@@ -154,87 +165,47 @@ export function OrchestratorLearningPanel({ request, orchestrators }: {
       onPress={() => void manage(op, payload)} style={[styles.settingsBackButton, { opacity: busy || disabled ? 0.5 : 1 }]}>
       <Text style={styles.settingsActionText}>{label}</Text>
     </TouchableOpacity>);
-  return <>
-    <Text style={styles.settingsFooterText}>学習・評価用モデルは全オーケストレータ共通</Text>
-    <Text style={styles.settingsFooterText}>採用した学習を、関連する回答で使います。</Text>
-    <View style={styles.settingsSection}>
-      <View style={styles.settingsGroup}>
-        <SettingsSelect icon="bulb-outline" label="学習・評価用モデル"
-          options={[{ value: "", label: "未設定（分析を停止）" }, ...models.map((item) => ({ value: item.modelId, label: item.label }))]}
-          selectedValue={model} placeholder="未設定" loading={!status && busy}
-          onSelect={(value) => {
-            if (busy) return;
-            if (!value) { setModel(""); setEffort(""); setSaved(false); return; }
-            const option = models.find((item) => item.modelId === value);
-            if (option) { setModel(value); setEffort(option.effortOptions.includes(effort as ReasoningEffort)
-              ? effort : option.effortOptions[0]); setSaved(false); }
-          }} />
-        <SettingsSelect icon="options-outline" label="学習・評価用エフォート"
-          options={(selectedModel?.effortOptions || []).map((value) => ({ value, label: EFFORT_LABELS[value] }))}
-          selectedValue={effort} placeholder="モデルを選択してください"
-          onSelect={(value) => { if (!busy) { setEffort(value); setSaved(false); } }} />
-      </View>
-      <Text style={styles.settingsFooterText}>未設定で新しい分析を停止します。採用済みの学習は引き続き回答で使います。</Text>
-      {catalogError ? <Text accessibilityRole="alert" style={styles.settingsErrorText}>{catalogError}</Text> : null}
-      {model && !validSelection && !catalogError ? <Text style={styles.settingsErrorText}>選択中のモデル・エフォートは現在利用できません。別の設定を選んでください。</Text> : null}
-      <TouchableOpacity testID="learning-settings-save" accessibilityRole="button"
-        accessibilityLabel="学習・評価用設定を保存" disabled={busy || !status || !validSelection || !selectionChanged}
-        style={[styles.settingsPrimaryButton, { minHeight: 48, opacity: busy || !status || !validSelection || !selectionChanged ? 0.5 : 1 }]}
-        onPress={() => void save()}>
-        <Text style={styles.settingsPrimaryButtonText}>{busy ? "処理中…" : "設定を保存"}</Text>
-      </TouchableOpacity>
-      {saved ? <Text accessibilityRole="alert" style={styles.settingsSuccessText}>設定を保存しました。</Text> : null}
-    </View>
+  const filteredKnowledge = (status?.candidates || []).filter((item) => {
+    if (knowledgeFilter === "all") return true;
+    if (knowledgeFilter === "inactive") return item.status === "retired" || item.status === "rejected";
+    return item.status === knowledgeFilter;
+  });
+  const knowledgeCurrentPage = Math.min(knowledgePage, Math.max(0, Math.ceil(filteredKnowledge.length / 5) - 1));
+  return <View style={dashboard.page}>
     {error ? <Text accessibilityRole="alert" style={styles.settingsErrorText}>{error}</Text> : null}
-    <TouchableOpacity testID="learning-status-refresh" accessibilityRole="button" accessibilityLabel="学習状態を更新"
-      disabled={busy} onPress={() => void load()} style={styles.settingsBackButton}>
-      <Text style={styles.settingsActionText}>状態を更新</Text>
-    </TouchableOpacity>
+    <View style={dashboard.top}>
+      <View style={dashboard.topCopy}><Text style={[dashboard.eyebrow, { color: colors.textMuted }]}>会話から育つアシスタント</Text>
+        <Text accessibilityRole="header" style={[dashboard.pageTitle, { color: colors.textPrimary }]}>あなたに合わせて</Text></View>
+      <TouchableOpacity testID="learning-status-refresh" accessibilityRole="button" accessibilityLabel="学習状態を更新"
+        disabled={busy} onPress={() => void load()} style={styles.settingsBackButton}>
+        <Text style={styles.settingsActionText}>{busy ? "更新中…" : "更新"}</Text>
+      </TouchableOpacity>
+    </View>
     {status ? <>
-      <View style={styles.settingsSection}>
-        <Text style={styles.settingsSectionTitle}>学習状態</Text>
-        <View style={styles.settingsGroup}>
-          <View style={[styles.settingsRow, styles.settingsRowDivider]}>
-            <Text style={styles.settingsRowLabel}>分析</Text>
-            <Text style={[styles.settingsRowValue, { flex: 1 }]}>{STATUS_LABELS[status.status] || status.status}</Text>
-          </View>
-          <View style={styles.settingsRow}>
-            <Text style={styles.settingsRowDescription}>観測済み {status.observedThrough} · 分析済み {status.processedThrough} · 未処理 {status.pendingCount} 件</Text>
-          </View>
-        </View>
-        {status.error ? <Text accessibilityRole="alert" style={styles.settingsErrorText}>{status.error.message}</Text> : null}
-        {status.status === "retry_exhausted" && status.retry ? <>
-          <Text style={styles.settingsFooterText}>元入力の試行回数と当日予算を維持し、現在のモデル設定で1回だけ再試行します。</Text>
-          {button("保留した分析を1回再試行", "retry", { batchId: status.retry.batchId, settingsRevision: status.retry.settingsRevision }, !status.settings.model)}
-        </> : null}
+      <View style={[dashboard.state, { backgroundColor: colors.surfaceMuted }]}>
+        <View style={[dashboard.dot, { backgroundColor: status.enabled ? colors.accent : colors.textMuted }]} />
+        <View style={dashboard.topCopy}><Text style={[dashboard.stateTitle, { color: colors.textPrimary }]}>{STATUS_LABELS[status.status] || "学習状態を確認してください"}</Text>
+          <Text style={[dashboard.caption, { color: colors.textMuted }]}>{status.pendingCount}件の会話が分析待ち</Text></View>
       </View>
-      <View style={styles.settingsSection}>
-        <Text style={styles.settingsSectionTitle}>本日の利用量・予算（UTC）</Text>
-        {status.usage ? <><View style={[styles.settingsGroup, { paddingVertical: 12, gap: 6 }]}>
-          <Text style={styles.settingsRowLabel}>{status.usage.budget.day}</Text>
-          <Text style={styles.settingsRowDescription}>呼び出し {status.usage.budget.calls} / {status.usage.budget.maxCalls} 回</Text>
-          <Text style={styles.settingsRowDescription}>予算消費 {status.usage.budget.tokens} / {status.usage.budget.maxTokens} tokens（予約・欠測分を含む）</Text>
-          <Text testID="learning-input-tokens" style={styles.settingsRowDescription}>取得済み入力: {status.usage.today.inputTokens === null ? "未取得" : `${status.usage.today.inputTokens} tokens`}</Text>
-          <Text style={styles.settingsRowDescription}>取得済み出力: {status.usage.today.outputTokens === null ? "未取得" : `${status.usage.today.outputTokens} tokens`}</Text>
-          <Text style={styles.settingsRowDescription}>実測 {status.usage.today.measuredCalls} · 一部取得 {status.usage.today.partialCalls} · 欠測 {status.usage.today.missingCalls} 回</Text>
-          {status.usage.today.anonymousCalls > 0 ? <Text style={styles.settingsRowDescription}>削除後の匿名集計: {status.usage.today.anonymousCalls} 回</Text> : null}
-          {status.usage.today.estimatedCosts.length ? status.usage.today.estimatedCosts.map((cost) => (
-            <Text key={cost.currency} style={styles.settingsRowDescription}>算定料金（算定できた分）: {cost.amount} {cost.currency}</Text>
-          )) : <Text style={styles.settingsRowDescription}>{status.usage.priceSnapshot
-            ? "料金算定不能（算定に必要な利用量が未取得）" : "料金算定不能（単価未設定）"}</Text>}
-          {status.usage.today.unpricedCalls > 0 ? <Text style={styles.settingsRowDescription}>料金を算定できない呼び出し: {status.usage.today.unpricedCalls} 回</Text> : null}
-          {status.usage.blockedReason ? <Text accessibilityRole="alert" style={styles.settingsErrorText}>利用量記録による保留: {status.usage.blockedReason}</Text> : null}
-        </View>
-        <Text style={styles.settingsFooterText}>失敗・再試行も利用量に含みます。取得済みトークンと算定料金は、取得できた分の合計です。</Text>
-        {!status.outputLimitEnforced ? <Text style={styles.settingsFooterText}>トークン数の上限は目安です。呼び出し回数にも上限を設けています。</Text> : null}
-        </> : <Text style={styles.settingsFooterText}>利用量を取得できません。</Text>}
-      </View>
-      <View style={styles.settingsSection}>
-        <Text style={styles.settingsSectionTitle}>学習・専用スキル · {status.candidates.length} 件</Text>
+      {status.error ? <Text accessibilityRole="alert" style={styles.settingsErrorText}>{status.error.message}</Text> : null}
+      {status.status === "retry_exhausted" && status.retry ? <>
+        <Text style={styles.settingsFooterText}>当日の予算を維持し、現在のモデル設定でもう一度だけ試します。</Text>
+        {button("保留した分析を1回再試行", "retry", { batchId: status.retry.batchId, settingsRevision: status.retry.settingsRevision }, !status.settings.model)}
+      </> : null}
+      <View style={[dashboard.section, { borderColor: colors.borderSubtle }]}><LearningEvaluationOverview evaluations={status.evaluations || []} busy={busy} manage={manage} /></View>
+      <View style={[dashboard.section, { borderColor: colors.borderSubtle }]}>
+        <Text accessibilityRole="header" style={[dashboard.sectionTitle, { color: colors.textPrimary }]}>学んだこと <Text style={[dashboard.count, { color: colors.textMuted }]}>{status.candidates.length}</Text></Text>
+        <Text style={[dashboard.caption, { color: colors.textSecondary }]}>応答の好み {status.candidates.filter((item) => item.kind === "preference" && !item.skill).length} · 作業の手順 {status.candidates.filter((item) => item.kind === "procedure" && !item.skill).length} · 一括作業の方針 {status.candidates.filter((item) => item.kind === "batch_proposal" && !item.skill).length} · 専用スキル {status.candidates.filter((item) => Boolean(item.published)).length}</Text>
+        {status.candidates.some((item) => item.skill && !item.published) ? <Text style={[dashboard.caption, { color: colors.textMuted }]}>専用スキル案 {status.candidates.filter((item) => item.skill && !item.published).length}件は保存前です。</Text> : null}
+        <View style={dashboard.filters}>{[["all", "すべて"], ["candidate", "確認待ち"], ["active", "使用中"], ["inactive", "停止・見送り"]].map(([value, label]) =>
+          <TouchableOpacity key={value} accessibilityRole="tab" accessibilityLabel={`学習: ${label}`} accessibilityState={{ selected: knowledgeFilter === value }}
+            onPress={() => { setKnowledgeFilter(value); setKnowledgePage(0); }} style={[dashboard.filter, { backgroundColor: knowledgeFilter === value ? tones.info.background : colors.surfaceMuted }]}>
+            <Text style={[dashboard.filterText, { color: knowledgeFilter === value ? tones.info.foreground : colors.textMuted }]}>{label}</Text>
+          </TouchableOpacity>)}</View>
         <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
-          <Text style={styles.settingsFooterText}>候補は採用するまで回答に使いません。</Text>
+          <Text style={styles.settingsFooterText}>学んだ内容を、使うかどうか選べます。</Text>
           <TouchableOpacity accessibilityRole="button" accessibilityLabel={selecting ? "一括操作を終了" : "まとめて操作"}
-            disabled={busy} onPress={() => { setSelecting((value) => !value); setSelected([]); setInstruction(""); setRequestingChange(false); }}
+            disabled={busy} onPress={() => { setSelecting((value) => !value); setKnowledgeFilter("all"); setKnowledgePage(0); setSelected([]); setInstruction(""); setRequestingChange(false); }}
             style={styles.settingsBackButton}>
             <Text style={styles.settingsActionText}>{selecting ? "選択を終了" : "まとめて操作"}</Text>
           </TouchableOpacity>
@@ -267,45 +238,63 @@ export function OrchestratorLearningPanel({ request, orchestrators }: {
             </View>
           </> : null}
         </View> : null}
-        {status.candidates.length ? <View style={{ gap: 10 }}>{status.candidates.map((item) => (
+        {filteredKnowledge.length ? <View style={{ gap: 12 }}>{filteredKnowledge.slice(knowledgeCurrentPage * 5, knowledgeCurrentPage * 5 + 5).map((item) => (
           <LearningKnowledgeCard key={item.id} item={item}
-            chatName={orchestrators.find((entry) => entry.id === item.scope.orchestratorId)?.name || item.scope.orchestratorId}
+            chatName={orchestrators.find((entry) => entry.id === item.scope.orchestratorId)?.name || "元のチャット"}
             selecting={selecting} selected={selected.includes(item.id)} busy={busy} manage={manage}
             onSelect={() => setSelected((current) => current.includes(item.id) ? current.filter((id) => id !== item.id) : [...current, item.id])} />
-        ))}</View> : <Text style={styles.settingsFooterText}>学習はまだありません。</Text>}
+        ))}</View> : <Text style={styles.settingsFooterText}>{status.candidates.length ? "この状態の学習はありません。" : "学習はまだありません。"}</Text>}
+        <LearningPager page={knowledgeCurrentPage} total={filteredKnowledge.length} onPage={setKnowledgePage} label="学習" />
       </View>
+      <View style={[dashboard.section, { borderColor: colors.borderSubtle }]}><LearningUsageOverview request={request} usage={status.usage} refreshKey={usageRefresh} outputLimitEnforced={status.outputLimitEnforced} /></View>
+      <View style={[dashboard.section, { borderColor: colors.borderSubtle }]}><LearningChangeHistory changes={status.changes || []} requests={status.requests || []} /></View>
       <View style={styles.settingsSection}>
-        <Text style={styles.settingsSectionTitle}>AIによる暫定評価</Text>
-        <Text style={styles.settingsFooterText}>AIの評価とあなたの評価を分けて記録します。</Text>
-        <View style={{ gap: 12 }}>
-          {(status.evaluations || []).map((evaluation) => <LearningEvaluationCard key={evaluation.id}
-            evaluation={evaluation} busy={busy} manage={manage} />)}
-        </View>
-      </View>
-      <View style={styles.settingsSection}>
-        <Text style={styles.settingsSectionTitle}>一括提案の記録</Text>
+        <LearningDisclosure title={`まとめて行う作業の提案 · ${(status.proposals || []).length}件`}>
         {(status.proposals || []).map((proposal) => <View key={proposal.id} style={[styles.settingsGroup, { padding: 12 }]}>
-          <Text style={styles.settingsRowLabel}>{proposal.operation} · {proposal.count} 件 · {proposal.status}</Text>
+          <Text style={styles.settingsRowLabel}>{proposal.operation} · {proposal.count} 件 · {{ offered: "確認待ち", accepted: "採用", declined: "見送り" }[proposal.status] || "記録済み"}</Text>
           <Text style={styles.settingsRowDescription}>対象: {proposal.targets.join("、")} · 除外: {proposal.exclusions} · 順序: {proposal.order} · 失敗時: {proposal.onFailure}</Text>
-          {(proposal.feedback || []).map((feedback, index) => <Text key={index} style={styles.settingsRowDescription}>会話の根拠 #{feedback.pairSeq}: {feedback.userQuote} · {feedback.action}</Text>)}
-          {proposal.outcome ? <Text style={styles.settingsRowDescription}>ユーザーが確認した結果: {proposal.outcome.status}</Text> : null}
+          {(proposal.feedback || []).map((feedback, index) => <Text key={index} style={styles.settingsRowDescription}>会話での反応：{feedback.userQuote} · {{ accepted: "採用", declined: "見送り", outcome_confirmed: "結果を確認", outcome_failed: "うまくいかなかった" }[feedback.action] || "記録済み"}</Text>)}
+          {proposal.outcome ? <Text style={styles.settingsRowDescription}>ユーザーが確認した結果: {{ outcome_confirmed: "確認できた", outcome_failed: "うまくいかなかった" }[proposal.outcome.status] || "記録済み"}</Text> : null}
           {proposal.status === "offered" ? <View style={{ flexDirection: "row" }}>
             {button(`提案を採用（実行許可は別）: ${proposal.operation}`, "proposal", { id: proposal.id, decision: "accepted" })}
             {button(`提案を断る: ${proposal.operation}`, "proposal", { id: proposal.id, decision: "declined" })}
           </View> : null}
         </View>)}
+        </LearningDisclosure>
       </View>
-      <View style={styles.settingsSection}>
-        <Text style={styles.settingsSectionTitle}>確定した変更履歴</Text>
-        <Text style={styles.settingsFooterText}>保持範囲は各100件・90日です。整理済みの履歴は表示できません。</Text>
-        {(status.requests || []).map((entry) => <Text key={entry.id} style={styles.settingsRowDescription}>修正依頼: {entry.instruction} · {entry.resolution?.reason || "分析待ち"}</Text>)}
-        {(status.changes || []).slice().reverse().map((entry) => <View key={entry.id} style={[styles.settingsGroup, { padding: 12 }]}>
-          <Text style={styles.settingsRowLabel}>{entry.actor === "ai" ? "裏側AI" : "ユーザー"} · {entry.action} · {entry.at}</Text>
-          <Text style={styles.settingsRowDescription}>理由: {entry.reason || "指定なし"}</Text>
-          <Text style={styles.settingsRowDescription}>前: {entry.before ? `${entry.before.status} v${entry.before.version} ${entry.before.content} ${learningSkillText(entry.before.skill)}` : "なし"}</Text>
-          <Text style={styles.settingsRowDescription}>後: {entry.after ? `${entry.after.status} v${entry.after.version} ${entry.after.content} ${learningSkillText(entry.after.skill)}` : "なし"}</Text>
-        </View>)}
+    </> : null}
+    <View style={[dashboard.section, { borderColor: colors.borderSubtle }]}><LearningDisclosure title="学習の設定">
+    <Text style={styles.settingsFooterText}>学習・評価用モデルは全オーケストレータ共通</Text>
+    <View style={styles.settingsSection}>
+      <View style={styles.settingsGroup}>
+        <SettingsSelect icon="bulb-outline" label="学習・評価用モデル"
+          options={[{ value: "", label: "未設定（分析を停止）" }, ...models.map((item) => ({ value: item.modelId, label: item.label }))]}
+          selectedValue={model} placeholder="未設定" loading={!status && busy}
+          onSelect={(value) => {
+            if (busy) return;
+            if (!value) { setModel(""); setEffort(""); setSaved(false); return; }
+            const option = models.find((item) => item.modelId === value);
+            if (option) { setModel(value); setEffort(option.effortOptions.includes(effort as ReasoningEffort)
+              ? effort : option.effortOptions[0]); setSaved(false); }
+          }} />
+        <SettingsSelect icon="options-outline" label="学習・評価用エフォート"
+          options={(selectedModel?.effortOptions || []).map((value) => ({ value, label: EFFORT_LABELS[value] }))}
+          selectedValue={effort} placeholder="モデルを選択してください"
+          onSelect={(value) => { if (!busy) { setEffort(value); setSaved(false); } }} />
       </View>
+      <Text style={styles.settingsFooterText}>未設定で新しい分析を停止します。採用済みの学習は引き続き回答で使います。</Text>
+      {catalogError ? <Text accessibilityRole="alert" style={styles.settingsErrorText}>{catalogError}</Text> : null}
+      {model && !validSelection && !catalogError ? <Text style={styles.settingsErrorText}>選択中のモデル・エフォートは現在利用できません。別の設定を選んでください。</Text> : null}
+      <TouchableOpacity testID="learning-settings-save" accessibilityRole="button"
+        accessibilityLabel="学習・評価用設定を保存" disabled={busy || !status || !validSelection || !selectionChanged}
+        style={[styles.settingsPrimaryButton, { minHeight: 48, opacity: busy || !status || !validSelection || !selectionChanged ? 0.5 : 1 }]}
+        onPress={() => void save()}>
+        <Text style={styles.settingsPrimaryButtonText}>{busy ? "処理中…" : "設定を保存"}</Text>
+      </TouchableOpacity>
+      {saved ? <Text accessibilityRole="alert" style={styles.settingsSuccessText}>設定を保存しました。</Text> : null}
+    </View>
+    </LearningDisclosure></View>
+    {status ? <View style={[dashboard.section, { borderColor: colors.borderSubtle }]}><LearningDisclosure title="データの管理・診断">
       <View style={styles.settingsSection}>
         <Text style={styles.settingsSectionTitle}>学習の忘却</Text>
         <Text style={styles.settingsFooterText}>全学習・専用スキルと保存版・評価・訂正・変更/参照履歴を削除します。会話原本と既存メモリーは別です。利用量・料金の台帳と当日予算は保持します。</Text>
@@ -322,6 +311,13 @@ export function OrchestratorLearningPanel({ request, orchestrators }: {
           <Text key={index} style={styles.settingsRowDescription}>#{item.from}〜{item.through}: {item.reason}</Text>
         ))}</View> : <Text style={styles.settingsFooterText}>記録された欠損・除外はありません。</Text>}
       </View>
-    </> : null}
-  </>;
+    </LearningDisclosure></View> : null}
+  </View>;
 }
+const dashboard = StyleSheet.create({
+  page: { gap: 22, paddingBottom: 24 }, top: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 16 }, topCopy: { flex: 1, gap: 5 },
+  eyebrow: { fontSize: 11, fontWeight: "500" }, pageTitle: { fontSize: 25, fontWeight: "700" },
+  state: { flexDirection: "row", alignItems: "center", gap: 12, borderRadius: 14, padding: 15 }, dot: { width: 7, height: 7, borderRadius: 4 }, stateTitle: { fontSize: 13, fontWeight: "600" },
+  caption: { fontSize: 11, lineHeight: 17 }, section: { gap: 12, borderTopWidth: StyleSheet.hairlineWidth, paddingTop: 22 }, sectionTitle: { fontSize: 19, fontWeight: "700" }, count: { fontSize: 16 },
+  filters: { flexDirection: "row", flexWrap: "wrap", gap: 6 }, filter: { paddingHorizontal: 11, minHeight: 44, borderRadius: 9, justifyContent: "center" }, filterText: { fontSize: 12, fontWeight: "500" },
+});

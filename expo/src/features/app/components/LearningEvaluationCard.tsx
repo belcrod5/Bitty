@@ -58,7 +58,7 @@ export function LearningEvaluationCard({ evaluation, busy, manage }: { evaluatio
     <Text style={[styles.goal, { color: colors.textPrimary }]}>{evaluation.goal}</Text>
     <View style={styles.ratings}>
       <View style={styles.rating}>
-        <View style={styles.ratingHeader}><Text style={[styles.caption, { color: colors.textSecondary }]}>AIの暫定評価</Text></View>
+        <View style={styles.ratingHeader}><Text style={[styles.caption, { color: colors.textSecondary }]}>AIの見立て</Text></View>
         <Text style={[styles.score, { color: colors.textPrimary }]}>{scoreText(evaluation.score)}</Text>
       </View>
       <View style={styles.rating}>
