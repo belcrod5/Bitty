@@ -1,5 +1,6 @@
+jest.mock("@expo/vector-icons", () => ({ Ionicons: () => null }));
 import { Alert } from "react-native";
-import { fireEvent, render, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
 import { OrchestratorLearningPanel } from "./OrchestratorLearningPanel";
 
 jest.mock("./SettingsSelect", () => ({
@@ -205,9 +206,10 @@ test("provisional score and user corrections are distinct; an empty optional rea
     scope: { orchestratorId: "main" }, corrections: [] }] };
   const request = jest.fn(async (op: string): Promise<Record<string, unknown>> => op === "voice.settings" ? { models } : status);
   const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
-  await waitFor(() => expect(screen.getByText("短い報告 · 未評価")).toBeTruthy());
+  await waitFor(() => expect(screen.getByText("短い報告")).toBeTruthy());
+  await fireEvent.press(screen.getByLabelText("評価を変更"));
   await fireEvent.changeText(screen.getByLabelText("訂正点数: 短い報告"), "55");
-  await fireEvent.press(screen.getByLabelText("評価を訂正: 短い報告"));
+  await fireEvent.press(screen.getByLabelText("評価を保存"));
   await waitFor(() => expect(request).toHaveBeenCalledWith("voice.learning.correct", { evaluationId: "evaluation-1", version: 1, score: 55, reason: "" }));
   await screen.unmount();
 });
@@ -221,7 +223,7 @@ test("all-learning forgetting is available with no candidates and requires the e
   await fireEvent.press(screen.getByLabelText("全学習を忘却"));
   expect(request).not.toHaveBeenCalledWith("voice.learning.forget", expect.anything());
   expect(alert).toHaveBeenCalled();
-  await alert.mock.calls[0][2]?.find((entry) => entry.style === "destructive")?.onPress?.();
+  await act(async () => { alert.mock.calls[0][2]?.find((entry) => entry.style === "destructive")?.onPress?.(); });
   await waitFor(() => expect(request).toHaveBeenCalledWith("voice.learning.forget", { all: true }));
   alert.mockRestore(); await screen.unmount();
 });

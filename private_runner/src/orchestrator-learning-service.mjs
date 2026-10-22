@@ -128,7 +128,14 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
     || ["evaluations", "corrections", "changes", "uses", "proposals", "excluded", "requests"].some((key) => state[key].some((entry) => !record(entry))))
     throw fail("learning_store_invalid", "Invalid learning lifecycle metadata");
   const changedAt = () => new Date(now()).toISOString();
-  const unhandled = (value = state) => [...value.corrections, ...value.requests].filter((item) => !item.resolution);
+  const activeCorrection = (item) => !item.cancelledAt && (item.score !== null || Boolean(item.reason?.trim()));
+  const pendingCorrection = (item) => activeCorrection(item) && !item.resolution;
+  const unhandled = (value = state) => [...value.corrections.filter(pendingCorrection), ...value.requests.filter((item) => !item.resolution)];
+  // A restored batch must not reintroduce cancelled or legacy empty corrections.
+  if (state.batch?.feedback?.some((item) => item.evaluationId
+    && !state.corrections.some((entry) => entry.id === item.id && pendingCorrection(entry)))) {
+    invalidate(state); await save(state);
+  }
   function history(next, action, before, after, reason, actor = "user") {
     const snapshot = (item) => item ? Object.fromEntries(["id", "version", "status", "kind", "content", "conditions", "scope", "skill", "published", "matchTerms", "targetConstraints"]
       .filter((key) => item[key] !== undefined).map((key) => [key, structuredClone(item[key])])) : null;
@@ -250,10 +257,10 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
     for (const key of ["changes", "evaluations"]) {
       // Never discard an evaluation with a correction still awaiting the next batch.
       next[key] = next[key].filter((entry) => Date.parse(entry.at || entry.createdAt) >= now() - 90 * 86400_000
-        || key === "evaluations" && next.corrections.some((correction) => correction.evaluationId === entry.id && !correction.resolution));
+        || key === "evaluations" && next.corrections.some((correction) => correction.evaluationId === entry.id && pendingCorrection(correction)));
       while (next[key].length > 100) {
         const index = next[key].findIndex((entry) => key !== "evaluations"
-          || !next.corrections.some((correction) => correction.evaluationId === entry.id && !correction.resolution));
+          || !next.corrections.some((correction) => correction.evaluationId === entry.id && pendingCorrection(correction)));
         if (index < 0) throw fail("learning_capacity", "Unprocessed evaluation corrections exceed capacity");
         next[key].splice(index, 1);
       }
@@ -262,7 +269,7 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
     for (const use of expiredUses) if (use.pairSeq && !next.excluded.some((entry) => entry.pairSeq === use.pairSeq)) next.excluded.push({ pairSeq: use.pairSeq });
     next.uses = next.uses.filter((entry) => !expiredUses.includes(entry)).slice(-500);
     next.proposals = next.proposals.slice(-100);
-    next.corrections = next.corrections.filter((entry) => !entry.resolution || Date.parse(entry.at) >= now() - 90 * 86400_000);
+    next.corrections = next.corrections.filter((entry) => pendingCorrection(entry) || Date.parse(entry.at) >= now() - 90 * 86400_000);
     next.requests = next.requests.filter((entry) => !entry.resolution || Date.parse(entry.at) >= now() - 90 * 86400_000);
   }
   function report(cause) {
@@ -627,12 +634,38 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
     async correctEvaluation({ evaluationId, version, score: userScore, reason = "" }) {
       return exclusive(async () => {
         const evaluation = state.evaluations.find((entry) => entry.id === evaluationId && entry.version === version);
-        if (!evaluation || !score(userScore) || typeof reason !== "string" || bytes(reason) > 1000)
-          throw fail("learning_request_invalid", "Invalid evaluation correction");
+        if (!evaluation || !score(userScore) || typeof reason !== "string" || bytes(reason) > 1000
+          || userScore === null && !reason.trim())
+          throw fail("learning_request_invalid", "Enter a score from 0 to 100 or a reason");
+        reason = reason.trim();
+        const latest = state.corrections.findLast((entry) => entry.evaluationId === evaluationId
+          && entry.evaluationVersion === version && activeCorrection(entry));
+        if (latest ? latest.score === userScore && latest.reason.trim() === reason
+          : evaluation.score === userScore && !reason) return;
         const next = structuredClone(state);
         next.corrections.push({ id: randomUUID(), evaluationId, evaluationVersion: version, score: userScore,
           reason, at: changedAt(), scope: { ...evaluation.scope } });
         invalidate(next); trim(next); await save(next); task?.controller.abort(); schedule();
+      });
+    },
+    async cancelEvaluationCorrections({ evaluationId, version, correctionIds }) {
+      return exclusive(async () => {
+        if (!state.evaluations.some((entry) => entry.id === evaluationId && entry.version === version)
+          || !Array.isArray(correctionIds) || !correctionIds.length || correctionIds.length > 100
+          || correctionIds.some((id) => typeof id !== "string") || new Set(correctionIds).size !== correctionIds.length)
+          throw fail("learning_request_invalid", "Select corrections from one current evaluation");
+        const selected = correctionIds.map((id) => state.corrections.find((entry) => entry.id === id
+          && entry.evaluationId === evaluationId && entry.evaluationVersion === version));
+        if (selected.some((entry) => !entry || entry.resolution && (entry.score !== null || entry.reason?.trim() || entry.resolution.itemId !== null)))
+          throw fail("learning_conflict", "Only pending corrections or empty feedback without linked learning can be cancelled; refresh the evaluation");
+        if (selected.every((entry) => entry.cancelledAt)) return;
+        const next = structuredClone(state);
+        for (const entry of next.corrections) if (correctionIds.includes(entry.id) && !entry.cancelledAt) entry.cancelledAt = changedAt();
+        const affectsBatch = next.batch?.feedback?.some((entry) => correctionIds.includes(entry.id));
+        if (affectsBatch) invalidate(next);
+        trim(next); await save(next);
+        if (affectsBatch) task?.controller.abort();
+        schedule();
       });
     },
     async retrieve({ orchestratorId, input, targets = [] }) {

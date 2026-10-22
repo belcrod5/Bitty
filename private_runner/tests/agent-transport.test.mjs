@@ -480,3 +480,12 @@ test("agent WebSocket passes authenticated ownership and subscription claim to r
   assert.equal(calls[3].context.subjectId, "subject");
   assert.ok(calls[3].context.actionConsumerId);
 });
+
+test("agent handshake advertises evaluation correction cancellation", async () => {
+  const sent = [];
+  const connection = createAgentWsConnection({ service: { getStatuses: async () => [] },
+    ws: {}, subjectId: "subject", workspaceAdmission: {}, sendEnvelope: (_ws, message) => sent.push(message) });
+  assert.equal(connection.handleMessage({ channel: "agent", op: "agent.hello", requestId: "hello" }), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(sent.at(-1).payload.operations.includes("voice.learning.correction.cancel"));
+});

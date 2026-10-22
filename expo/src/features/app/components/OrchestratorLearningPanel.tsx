@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Text, TextInput, TouchableOpacity, View } from "react-native";
 import { useAppStyles } from "../styles";
 import { isReasoningEffort, type ReasoningEffort } from "../utils/settingsParsers";
+import { LearningEvaluationCard, type LearningEvaluation } from "./LearningEvaluationCard";
 import { SettingsSelect } from "./SettingsSelect";
 import type { VoiceOrchestrator } from "./VoiceOrchestratorIcon";
 
@@ -18,9 +19,7 @@ type LearningStatus = {
   error: { code: string; message: string } | null;
   outputLimitEnforced: boolean;
   retry?: { batchId: string; settingsRevision: number; attempts: number; ceiling: number } | null;
-  evaluations?: { id: string; version: number; goal: string; score: number | null; reason: string; unknowns: string;
-    at: string; period: { from: string | null; until: string | null }; scope: { orchestratorId: string };
-    corrections: { id: string; score: number | null; reason: string; at: string; resolution?: { reason: string; itemId: string | null } }[] }[];
+  evaluations?: LearningEvaluation[];
   changes?: { id: string; at: string; action: string; actor: string; reason: string;
     before: Candidate | null; after: Candidate | null }[];
   requests?: { id: string; instruction: string; resolution?: { reason: string } }[];
@@ -79,8 +78,7 @@ export function OrchestratorLearningPanel({ request, orchestrators }: {
   const [saved, setSaved] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
   const [instruction, setInstruction] = useState("");
-  const [scores, setScores] = useState<Record<string, string>>({});
-  const [reasons, setReasons] = useState<Record<string, string>>({});
+  const managing = useRef(false);
   const requestId = useRef(0);
 
   const load = useCallback(async () => {
@@ -135,14 +133,20 @@ export function OrchestratorLearningPanel({ request, orchestrators }: {
     } finally { if (id === requestId.current) setBusy(false); }
   };
 
-  const manage = async (op: string, payload: Record<string, unknown>) => {
-    if (busy) return;
+  const manage = async (op: string, payload: Record<string, unknown>, reportError = true): Promise<string | null> => {
+    if (busy || managing.current) return "処理中です。少し待ってからお試しください。";
+    managing.current = true;
     const id = ++requestId.current; setBusy(true); setError("");
     try {
       const value = readStatus(await request(`voice.learning.${op}`, payload));
-      if (id === requestId.current) { setStatus(value); setSelected([]); setInstruction(""); }
-    } catch (cause) { if (id === requestId.current) setError(cause instanceof Error ? cause.message : "変更を保存できません。"); }
-    finally { if (id === requestId.current) setBusy(false); }
+      if (id !== requestId.current) return "画面が更新されました。状態を確認してください。";
+      setStatus(value); setSelected([]); setInstruction("");
+      return null;
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : "変更を保存できません。";
+      if (reportError && id === requestId.current) setError(message);
+      return message;
+    } finally { managing.current = false; if (id === requestId.current) setBusy(false); }
   };
   const references = (status?.candidates || []).filter((item) => selected.includes(item.id)).map(({ id, version }) => ({ id, version }));
   const button = (label: string, op: string, payload: Record<string, unknown>, disabled = false) => (
@@ -268,23 +272,11 @@ export function OrchestratorLearningPanel({ request, orchestrators }: {
       </View>
       <View style={styles.settingsSection}>
         <Text style={styles.settingsSectionTitle}>AIによる暫定評価</Text>
-        <Text style={styles.settingsFooterText}>観測できた希望への適合度です。無反応は満足を意味しません。点数は全人格の満足度や客観的品質の保証ではありません。</Text>
-        {(status.evaluations || []).map((evaluation) => <View key={evaluation.id} style={[styles.settingsGroup, { padding: 12, gap: 6 }]}>
-          <Text style={styles.settingsRowLabel}>{evaluation.goal} · {evaluation.score === null ? "未評価" : `${evaluation.score} / 100`}</Text>
-          <Text style={styles.settingsRowDescription}>{evaluation.period.from || evaluation.at} 〜 {evaluation.period.until || evaluation.at}</Text>
-          <Text style={styles.settingsRowDescription}>{evaluation.reason} · 未確認: {evaluation.unknowns || "なし"}</Text>
-          {evaluation.corrections.map((correction) => <Text key={correction.id} style={styles.settingsRowDescription}>
-            ユーザー訂正: {correction.score === null ? "未評価" : `${correction.score} / 100`} {correction.reason}
-            {correction.resolution ? ` · 反映: ${correction.resolution.reason}` : " · 次回分析待ち"}</Text>)}
-          <TextInput accessibilityLabel={`訂正点数: ${evaluation.goal}`} value={scores[evaluation.id] ?? ""}
-            placeholder="0〜100（空欄は未評価）" keyboardType="numeric" maxLength={3}
-            onChangeText={(value) => setScores((current) => ({ ...current, [evaluation.id]: value }))} style={styles.settingsRowDescription} />
-          <TextInput accessibilityLabel={`訂正理由: ${evaluation.goal}`} value={reasons[evaluation.id] ?? ""} placeholder="理由（任意）"
-            onChangeText={(value) => setReasons((current) => ({ ...current, [evaluation.id]: value }))} maxLength={1000} style={styles.settingsRowDescription} />
-          {button(`評価を訂正: ${evaluation.goal}`, "correct", { evaluationId: evaluation.id, version: evaluation.version,
-            score: scores[evaluation.id]?.trim() ? Number(scores[evaluation.id]) : null, reason: reasons[evaluation.id] || "" },
-          Boolean(scores[evaluation.id]?.trim()) && (!/^\d{1,3}$/.test(scores[evaluation.id]) || Number(scores[evaluation.id]) > 100))}
-        </View>)}
+        <Text style={styles.settingsFooterText}>AIの評価とあなたの評価を分けて記録します。</Text>
+        <View style={{ gap: 12 }}>
+          {(status.evaluations || []).map((evaluation) => <LearningEvaluationCard key={evaluation.id}
+            evaluation={evaluation} busy={busy} manage={manage} />)}
+        </View>
       </View>
       <View style={styles.settingsSection}>
         <Text style={styles.settingsSectionTitle}>一括提案の記録</Text>

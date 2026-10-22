@@ -499,3 +499,192 @@ test("evaluation period follows its cited pairs instead of unrelated pairs in th
   const evaluation = (await f.service.status()).evaluations[0];
   assert.deepEqual(evaluation.period, { from: first.completedAt, until: first.completedAt });
 });
+
+async function evaluationFixture(t, options = {}) {
+  const f = await fixture(t, { analyze: async ({ input }) => {
+    const value = JSON.parse(input);
+    return { text: JSON.stringify({ candidates: [], evaluations: value.pairs.length ? [{ orchestratorId: "main", goal: "Short reports",
+      score: 100, reason: "Explicit feedback", unknowns: "", evidence: [1] }] : [],
+      corrections: value.feedback.map((entry) => ({ id: entry.id, reason: "Acknowledged", candidateIndex: null })) }) };
+  }, ...options });
+  await configure(f.service); await f.service.observe([f.pair(1)]); await f.service.runDue();
+  await configure(f.service, "", "", 2);
+  const evaluation = (await f.service.status()).evaluations[0];
+  return { ...f, evaluation, reference: { evaluationId: evaluation.id, version: evaluation.version }, file: path.join(f.workspace, "orchestrator-learning/state.json") };
+}
+
+test("evaluation corrections reject empty values; trimmed identical latest feedback and AI no-op do not create work", async (t) => {
+  const f = await evaluationFixture(t);
+  const before = await fs.readFile(f.file, "utf8");
+  for (const input of [{ score: null, reason: "" }, { score: null, reason: "  \n " }, { score: 101 }, { score: -1 }, { score: 1.5 }])
+    await assert.rejects(f.service.correctEvaluation({ ...f.reference, ...input }), { code: "learning_request_invalid" });
+  await f.service.correctEvaluation({ ...f.reference, score: 100 });
+  assert.equal(await fs.readFile(f.file, "utf8"), before);
+  await f.service.correctEvaluation({ ...f.reference, score: 0, reason: "  Too long  " });
+  let status = await f.service.status();
+  assert.equal(status.evaluations[0].corrections[0].score, 0); assert.equal(status.evaluations[0].corrections[0].reason, "Too long");
+  const saved = await fs.readFile(f.file, "utf8");
+  await f.service.correctEvaluation({ ...f.reference, score: 0, reason: "Too long " });
+  assert.equal(await fs.readFile(f.file, "utf8"), saved); assert.equal(f.calls.length, 1);
+  await f.service.correctEvaluation({ ...f.reference, score: null, reason: "  Keep exceptions  " });
+  status = await f.service.status(); assert.equal(status.evaluations[0].score, 100);
+  assert.equal(status.evaluations[0].corrections.length, 2); assert.equal(status.evaluations[0].corrections[1].reason, "Keep exceptions");
+});
+
+test("pending cancellation validates the whole selection, keeps audit and context, and survives restart", async (t) => {
+  const f = await evaluationFixture(t);
+  await f.service.correctEvaluation({ ...f.reference, score: 30 });
+  await f.service.correctEvaluation({ ...f.reference, score: 40 });
+  const status = await f.service.status(); const ids = status.evaluations[0].corrections.map((entry) => entry.id);
+  const before = JSON.parse(await fs.readFile(f.file, "utf8"));
+  for (const payload of [{ correctionIds: [ids[0], randomUUID()] }, { correctionIds: [ids[0], ids[0]] },
+    { correctionIds: ids, version: 9 }, { correctionIds: ids, evaluationId: randomUUID() }]) {
+    await assert.rejects(f.service.cancelEvaluationCorrections({ ...f.reference, ...payload }));
+    assert.deepEqual(JSON.parse(await fs.readFile(f.file, "utf8")), before);
+  }
+  await f.service.cancelEvaluationCorrections({ ...f.reference, correctionIds: [ids[1]] });
+  let after = JSON.parse(await fs.readFile(f.file, "utf8"));
+  assert.equal(after.contextRevision, before.contextRevision); assert.equal(after.corrections[0].cancelledAt, undefined);
+  assert.ok(after.corrections[1].cancelledAt); assert.equal(after.evaluations[0].score, 100);
+  const once = await fs.readFile(f.file, "utf8");
+  await f.service.cancelEvaluationCorrections({ ...f.reference, correctionIds: [ids[1]] });
+  assert.equal(await fs.readFile(f.file, "utf8"), once);
+  await f.service.close(); const restarted = await f.open();
+  assert.ok((await restarted.status()).evaluations[0].corrections[1].cancelledAt);
+  await restarted.cancelEvaluationCorrections({ ...f.reference, correctionIds: ids });
+  await configure(restarted, "model-a", "low", 3); await restarted.runDue();
+  assert.equal(f.calls.length, 1); assert.equal((await restarted.status()).evaluations[0].corrections.length, 2);
+});
+
+test("applied feedback cannot be cancelled and mixed selection is atomic", async (t) => {
+  const f = await evaluationFixture(t);
+  await f.service.correctEvaluation({ ...f.reference, score: 40 });
+  await configure(f.service, "model-a", "low", 3); await f.service.runDue();
+  await configure(f.service, "", "", 4); await f.service.correctEvaluation({ ...f.reference, score: 50 });
+  const corrections = (await f.service.status()).evaluations[0].corrections;
+  assert.ok(corrections[0].resolution); const before = await fs.readFile(f.file, "utf8");
+  await assert.rejects(f.service.cancelEvaluationCorrections({ ...f.reference, correctionIds: corrections.map((entry) => entry.id) }), { code: "learning_conflict" });
+  assert.equal(await fs.readFile(f.file, "utf8"), before);
+  await f.service.correctEvaluation({ ...f.reference, score: 50 });
+  assert.equal((await f.service.status()).evaluations[0].corrections.length, 2);
+});
+
+test("cancelling in-flight feedback discards its result but preserves pending pairs and measured usage", async (t) => {
+  let number = 0, started, release, aborted;
+  const began = new Promise((resolve) => { started = resolve; });
+  const f = await evaluationFixture(t, { analyze: async ({ input, signal, onLearningUsage }) => {
+    const value = JSON.parse(input); number += 1;
+    onLearningUsage({ inputTokens: 100, outputTokens: 20 });
+    if (number === 2) { signal.addEventListener("abort", () => { aborted = true; }); started(); await new Promise((resolve) => { release = resolve; }); }
+    return { text: JSON.stringify({ candidates: [], evaluations: number === 1 ? [{ orchestratorId: "main", goal: "Short reports", score: 100,
+      reason: "Explicit", unknowns: "", evidence: [1] }] : [],
+      corrections: value.feedback.map((entry) => ({ id: entry.id, reason: "Late result", candidateIndex: null })) }),
+      usage: { inputTokens: 100, outputTokens: 20 } };
+  } });
+  await f.service.correctEvaluation({ ...f.reference, score: 30 });
+  const id = (await f.service.status()).evaluations[0].corrections[0].id;
+  await f.service.observe([f.pair(2)]); await configure(f.service, "model-a", "low", 3);
+  const running = f.service.runDue(); await began;
+  const before = JSON.parse(await fs.readFile(f.file, "utf8"));
+  await f.service.cancelEvaluationCorrections({ ...f.reference, correctionIds: [id] });
+  await configure(f.service, "", "", 4); release(); await running;
+  const status = await f.service.status();
+  assert.equal(aborted, true); assert.equal(status.pendingCount, 1); assert.equal(status.processedThrough, 1);
+  assert.ok(status.evaluations[0].corrections[0].cancelledAt); assert.equal(status.evaluations[0].corrections[0].resolution, undefined);
+  assert.equal(JSON.parse(await fs.readFile(f.file, "utf8")).contextRevision, before.contextRevision);
+  assert.equal(f.calls.length, 2); assert.ok(f.settlements.some((entry) => entry.reasonCode === "learning_result_stale" && entry.inputTokens === 100 && entry.outputTokens === 20));
+});
+
+test("legacy empty pending feedback is not analyzed and stale restored batches are invalidated", async (t) => {
+  const seen = [];
+  const f = await evaluationFixture(t);
+  await f.service.close();
+  const saved = JSON.parse(await fs.readFile(f.file, "utf8"));
+  const legacy = { id: randomUUID(), ...f.reference, evaluationVersion: 1, score: null, reason: "  ", at: new Date().toISOString(), scope: { orchestratorId: "main" } };
+  saved.corrections.push(legacy);
+  saved.batch = { id: randomUUID(), epoch: saved.epoch, pairs: [], sources: [], items: [], feedback: [legacy], evaluations: saved.evaluations,
+    attempts: 1, settings: saved.settings, sourceHash: "old", retryAt: 0 };
+  await fs.writeFile(f.file, JSON.stringify(saved));
+  f.args.analyze = async ({ input }) => { seen.push(JSON.parse(input)); return { text: '{"candidates":[]}' }; };
+  const restarted = await f.open();
+  assert.equal(JSON.parse(await fs.readFile(f.file, "utf8")).batch, null);
+  await configure(restarted, "model-a", "low", 3); await restarted.runDue();
+  assert.equal(seen.length, 0); assert.equal(f.calls.length, 1);
+  await restarted.cancelEvaluationCorrections({ ...f.reference, correctionIds: [legacy.id] });
+  assert.ok((await restarted.status()).evaluations[0].corrections[0].cancelledAt);
+});
+
+test("unrelated pair analysis continues when cancelling a legacy empty correction", async (t) => {
+  let number = 0, started, release, signal;
+  const began = new Promise((resolve) => { started = resolve; });
+  const f = await evaluationFixture(t, { analyze: async ({ input, signal: runningSignal }) => {
+    const value = JSON.parse(input); number += 1;
+    if (number === 2) { signal = runningSignal; started(); await new Promise((resolve) => { release = resolve; }); }
+    return { text: JSON.stringify({ candidates: [], evaluations: number === 1 ? [{ orchestratorId: "main", goal: "Short reports", score: 100,
+      reason: "Explicit", unknowns: "", evidence: [1] }] : [], corrections: value.feedback.map((entry) => ({ id: entry.id, reason: "Ack", candidateIndex: null })) }) };
+  } });
+  await f.service.close(); const saved = JSON.parse(await fs.readFile(f.file, "utf8"));
+  const id = randomUUID(); saved.corrections.push({ id, evaluationId: f.evaluation.id, evaluationVersion: 1,
+    score: null, reason: "", at: new Date().toISOString(), scope: { orchestratorId: "main" } });
+  await fs.writeFile(f.file, JSON.stringify(saved)); const restarted = await f.open();
+  await restarted.observe([f.pair(2)]); await configure(restarted, "model-a", "low", 3);
+  const running = restarted.runDue(); await began;
+  await restarted.cancelEvaluationCorrections({ ...f.reference, correctionIds: [id] });
+  assert.equal(signal.aborted, false); release(); await running;
+  const status = await restarted.status(); assert.equal(status.processedThrough, 2);
+  assert.ok(status.evaluations[0].corrections[0].cancelledAt); assert.equal(f.calls.length, 2);
+});
+
+test("cancelled and legacy empty corrections expire normally without pinning old evaluations", async (t) => {
+  const f = await evaluationFixture(t);
+  await f.service.correctEvaluation({ ...f.reference, score: 40 });
+  const id = (await f.service.status()).evaluations[0].corrections[0].id;
+  await f.service.cancelEvaluationCorrections({ ...f.reference, correctionIds: [id] });
+  f.advance(91 * 86400_000);
+  await f.service.observe([f.pair(2)]);
+  const status = await f.service.status(); assert.equal(status.evaluations.length, 0);
+  assert.equal(JSON.parse(await fs.readFile(f.file, "utf8")).corrections.length, 0);
+});
+
+test("cancelling a correction belonging to a different evaluation never partially cancels the local selection", async (t) => {
+  const f = await evaluationFixture(t);
+  await f.service.correctEvaluation({ ...f.reference, score: 30 }); await f.service.close();
+  const saved = JSON.parse(await fs.readFile(f.file, "utf8"));
+  const otherId = randomUUID(), foreignCorrection = randomUUID();
+  saved.evaluations.push({ ...saved.evaluations[0], id: otherId, goal: "Another goal" });
+  saved.corrections.push({ ...saved.corrections[0], id: foreignCorrection, evaluationId: otherId });
+  await fs.writeFile(f.file, JSON.stringify(saved)); const restarted = await f.open();
+  const before = await fs.readFile(f.file, "utf8");
+  await assert.rejects(restarted.cancelEvaluationCorrections({ ...f.reference, correctionIds: [saved.corrections[0].id, foreignCorrection] }), { code: "learning_conflict" });
+  assert.equal(await fs.readFile(f.file, "utf8"), before);
+});
+
+test("resolved empty legacy feedback with no linked learning can be cancelled without rewriting its audit", async (t) => {
+  const f = await evaluationFixture(t); await f.service.close();
+  const saved = JSON.parse(await fs.readFile(f.file, "utf8"));
+  const legacy = [null, null, null].map((itemId) => ({ id: randomUUID(), evaluationId: f.evaluation.id, evaluationVersion: 1,
+    score: null, reason: "", at: new Date().toISOString(), scope: { orchestratorId: "main" }, resolution: { reason: "No meaningful input", itemId } }));
+  const meaningful = { ...legacy[0], id: randomUUID(), score: 30 };
+  const linked = { ...legacy[0], id: randomUUID(), resolution: { reason: "Created learning", itemId: randomUUID() } };
+  const unknown = { ...legacy[0], id: randomUUID(), resolution: { reason: "Missing outcome link" } };
+  saved.corrections.push(...legacy, meaningful, linked, unknown);
+  await fs.writeFile(f.file, JSON.stringify(saved)); const restarted = await f.open();
+  for (const protectedEntry of [meaningful, linked, unknown]) {
+    const before = await fs.readFile(f.file, "utf8");
+    await assert.rejects(restarted.cancelEvaluationCorrections({ ...f.reference, correctionIds: [legacy[0].id, protectedEntry.id] }), { code: "learning_conflict" });
+    assert.equal(await fs.readFile(f.file, "utf8"), before);
+  }
+  await restarted.cancelEvaluationCorrections({ ...f.reference, correctionIds: [legacy[0].id] });
+  await restarted.cancelEvaluationCorrections({ ...f.reference, correctionIds: legacy.map((entry) => entry.id) });
+  let status = await restarted.status();
+  for (let i = 0; i < 3; i++) {
+    assert.ok(status.evaluations[0].corrections[i].cancelledAt);
+    assert.equal(status.evaluations[0].corrections[i].resolution.reason, "No meaningful input");
+  }
+  assert.equal(JSON.parse(await fs.readFile(f.file, "utf8")).contextRevision, saved.contextRevision);
+  assert.equal(status.evaluations[0].corrections[3].cancelledAt, undefined);
+  assert.equal(status.evaluations[0].corrections[4].cancelledAt, undefined);
+  await restarted.close(); const recovered = await f.open(); status = await recovered.status();
+  assert.ok(status.evaluations[0].corrections.slice(0, 3).every((entry) => entry.cancelledAt));
+  assert.equal(status.evaluations[0].score, 100); assert.equal(f.calls.length, 1);
+});

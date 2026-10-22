@@ -1044,6 +1044,9 @@ test("learning management facade connects bulk adoption, publication, response d
     reason: "Synthetic explicit procedure", scope: { orchestratorId: "main" }, evidence: [{ ...saved.pending[0], user: undefined, assistant: undefined }],
     createdAt: new Date().toISOString(), skill: { purpose: "Check reports", triggers: "Report checks", inputs: "Current report", steps: "Read and check",
       outputs: "Findings", exceptions: "Only requested report", approvals: "Current approval path" } });
+  const evaluationId = randomUUID();
+  saved.evaluations.push({ id: evaluationId, version: 1, goal: "Short reports", score: 100, reason: "Explicit", unknowns: "",
+    at: new Date().toISOString(), period: { from: null, until: null }, scope: { orchestratorId: "main" }, evidence: [1] });
   await fs.writeFile(file, JSON.stringify(saved));
   const restarted = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
   let status = await restarted.manageLearning("decide", { items: [{ id, version: 1 }], action: "adopt" });
@@ -1056,6 +1059,11 @@ test("learning management facade connects bulk adoption, publication, response d
   assert.equal(proof.delivery.items[0].id, id); assert.equal(proof.delivery.readsVerified, true);
   status = await restarted.manageLearning("change", { items: [{ id, version: 3 }], instruction: "Make findings shorter" });
   assert.equal(status.requests[0].instruction, "Make findings shorter");
+  status = await restarted.manageLearning("correct", { evaluationId, version: 1, score: 20, reason: "Too long" });
+  const correctionId = status.evaluations[0].corrections[0].id;
+  status = await restarted.manageLearning("cancel", { evaluationId, version: 1, correctionIds: [correctionId] });
+  assert.ok(status.evaluations[0].corrections[0].cancelledAt);
+  assert.equal(status.evaluations[0].score, 100);
   status = await restarted.manageLearning("forget", { items: [{ id, version: 3 }] });
   assert.equal(status.candidates.length, 0);
   assert.equal((await restarted.learningDelivery({ orchestratorId: "main", operationId: completed.clientOperationId })).delivery, null);
