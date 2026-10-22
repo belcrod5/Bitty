@@ -633,6 +633,7 @@ describe("useCodexRelayObserverStartController message ids", () => {
       ttsPlaybackMessageId: ttsTargetId,
     });
     const rehydrated = resolvePanelConversationAfterHydration({
+      hasOwnedRequest: false,
       runtime: null,
       requestStartedAtMsAtHydrationStart: null,
       restoredConversation: preserved,

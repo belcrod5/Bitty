@@ -1740,6 +1740,15 @@ export function useCodexReplyRequest<
     return true;
   }, [resolveRequestControlTarget]);
 
+  const hasInFlightReplyRequestForThread = useCallback((threadIdRaw: unknown) => {
+    const threadId = String(threadIdRaw || "").trim();
+    return !!threadId && Object.values(panelRequestStateByIdRef.current).some((panel) => (
+      Object.values(panel.inFlightTurnRequestBySeq).some((request) => (
+        request.threadId === threadId && panel.ownedRequestSeqs.has(request.requestSeq)
+      ))
+    ));
+  }, []);
+
   const restoreReplyRequestForThread = useCallback((threadIdRaw: unknown, options?: { panelId?: string }) => {
     const current = optionsRef.current;
     const threadId = String(threadIdRaw || "").trim();
@@ -1801,5 +1810,6 @@ export function useCodexReplyRequest<
     cancelReplyRequest,
     suspendReplyRequest,
     restoreReplyRequestForThread,
+    hasInFlightReplyRequestForThread,
   };
 }

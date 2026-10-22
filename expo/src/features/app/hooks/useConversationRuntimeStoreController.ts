@@ -105,6 +105,7 @@ function shouldKeepPreviousRequestSnapshot(
   next: ConversationRuntimeRequestSnapshot | null | undefined
 ) {
   if (!previous || !next) return false;
+  if (previous.startedAtMs !== next.startedAtMs) return previous.startedAtMs > next.startedAtMs;
   if (previous.requestSeq > next.requestSeq) return true;
   return (
     previous.requestSeq === next.requestSeq &&
@@ -223,6 +224,26 @@ function normalizeRequestSnapshot(
 
 export function useConversationRuntimeStoreController() {
   const runtimeBySessionIdRef = useRef<Record<string, ConversationRuntimeSnapshot>>({});
+  const revisionsRef = useRef<Record<string, number>>({});
+  const listenersRef = useRef(new Map<string, Set<() => void>>());
+  const subscribeConversationRuntime = useCallback((sessionIds: readonly string[], listener: () => void) => {
+    const ids = [...new Set(sessionIds.map(normalizeSessionId).filter(Boolean))];
+    for (const id of ids) {
+      const listeners = listenersRef.current.get(id) || new Set<() => void>();
+      listeners.add(listener);
+      listenersRef.current.set(id, listeners);
+    }
+    return () => {
+      for (const id of ids) {
+        const listeners = listenersRef.current.get(id);
+        listeners?.delete(listener);
+        if (!listeners?.size) listenersRef.current.delete(id);
+      }
+    };
+  }, []);
+  const getConversationRuntimeRevision = useCallback((sessionId: string) => (
+    revisionsRef.current[normalizeSessionId(sessionId)] || 0
+  ), []);
 
   const getConversationRuntimeSnapshot = useCallback((sessionIdRaw: unknown) => {
     const sessionId = normalizeSessionId(sessionIdRaw);
@@ -236,6 +257,19 @@ export function useConversationRuntimeStoreController() {
       conversationMessages: cloneConversationMessages(snapshot.conversationMessages),
       request: cloneRequestSnapshot(snapshot.request),
       activityTrail: [...snapshot.activityTrail],
+    };
+  }, []);
+
+  const getConversationRuntimePreview = useCallback((sessionIdRaw: unknown) => {
+    const snapshot = runtimeBySessionIdRef.current[normalizeSessionId(sessionIdRaw)];
+    if (!snapshot) return null;
+    return {
+      isResponding: snapshot.isResponding,
+      lastMessageContent: snapshot.conversationMessages[snapshot.conversationMessages.length - 1]?.content || "",
+      messageCount: snapshot.conversationMessages.length,
+      activityTrail: [...snapshot.activityTrail],
+      requestStartedAtMs: normalizeStartedAtMs(snapshot.request?.startedAtMs),
+      executionGeneration: snapshot.executionGeneration,
     };
   }, []);
 
@@ -267,7 +301,7 @@ export function useConversationRuntimeStoreController() {
       ? (keepPreviousRequest ? cloneRequestSnapshot(previous?.request) : normalizedRequestInput)
       : shouldClearRespondingRequest
       ? null
-      : cloneRequestSnapshot(previous?.request);
+      : previous?.request ?? null;
     const inputIsResponding = keepPreviousRequest
       ? (previous?.isResponding ?? false)
       : (
@@ -289,7 +323,7 @@ export function useConversationRuntimeStoreController() {
     const nextTurnStartedAtMs = normalizeStartedAtMs(nextRequest?.startedAtMs);
     let activityTrail = nextTurnStartedAtMs !== null && nextTurnStartedAtMs !== previousTurnStartedAtMs
       ? []
-      : [...(previous?.activityTrail || [])];
+      : previous?.activityTrail || [];
     const nextActivity = nextRequest && isConversationRuntimeRequestResponding(nextRequest)
       ? resolveSessionActivity(nextRequest.status, nextRequest.statusDetail)
       : null;
@@ -321,20 +355,27 @@ export function useConversationRuntimeStoreController() {
       || previous.isResponding !== nextIsResponding
       || previous.selectedThreadStatusType !== selectedThreadStatusType
     );
+    const events = Object.prototype.hasOwnProperty.call(input, "events")
+      ? (Array.isArray(input.events) ? input.events : [])
+      : previous?.events || [];
+    const messages = Array.isArray(input.conversationMessages)
+      ? input.conversationMessages : previous?.conversationMessages || [];
+    const pendingApproval = Object.prototype.hasOwnProperty.call(input, "pendingApproval")
+      ? input.pendingApproval ?? null : previous?.pendingApproval ?? null;
+    const contextUsedPct = Object.prototype.hasOwnProperty.call(input, "contextUsedPct")
+      ? normalizeContextUsedPct(input.contextUsedPct) : previous?.contextUsedPct ?? null;
+    const eventsChanged = events !== previous?.events && (events.length > 0 || !!previous?.events.length);
+    const messagesChanged = messages !== previous?.conversationMessages && (messages.length > 0 || !!previous?.conversationMessages.length);
+    const executionDisplayChanged = nextIsResponding !== Boolean(previous?.isResponding)
+      || activityTrail.length !== (previous?.activityTrail.length || 0)
+      || activityTrail.some((activity, index) => activity !== previous?.activityTrail[index]);
     const next: ConversationRuntimeSnapshot = {
       sessionId,
-      events: Object.prototype.hasOwnProperty.call(input, "events")
-        ? cloneRuntimeEvents(Array.isArray(input.events) ? input.events : [])
-        : cloneRuntimeEvents(previous?.events || []),
-      pendingApproval: Object.prototype.hasOwnProperty.call(input, "pendingApproval")
-        ? cloneApprovalRequest(input.pendingApproval)
-        : cloneApprovalRequest(previous?.pendingApproval),
-      conversationMessages: cloneConversationMessages(
-        Array.isArray(input.conversationMessages) ? input.conversationMessages : previous?.conversationMessages || []
-      ),
-      contextUsedPct: Object.prototype.hasOwnProperty.call(input, "contextUsedPct")
-        ? normalizeContextUsedPct(input.contextUsedPct)
-        : previous?.contextUsedPct ?? null,
+      events: eventsChanged ? cloneRuntimeEvents(events) : previous?.events || [],
+      pendingApproval: pendingApproval !== previous?.pendingApproval
+        ? cloneApprovalRequest(pendingApproval) : previous?.pendingApproval || null,
+      conversationMessages: messagesChanged ? cloneConversationMessages(messages) : previous?.conversationMessages || [],
+      contextUsedPct,
       isResponding: nextIsResponding,
       selectedThreadStatusType,
       request: nextRequest,
@@ -346,6 +387,11 @@ export function useConversationRuntimeStoreController() {
       ...runtimeBySessionIdRef.current,
       [sessionId]: next,
     };
+    // Storage and execution guards advance even when panel display fields are unchanged.
+    if (executionDisplayChanged) {
+      revisionsRef.current[sessionId] = (revisionsRef.current[sessionId] || 0) + 1;
+      listenersRef.current.get(sessionId)?.forEach((listener) => listener());
+    }
     return {
       ...next,
       events: cloneRuntimeEvents(next.events),
@@ -463,7 +509,10 @@ export function useConversationRuntimeStoreController() {
   }, [upsertConversationRuntimeSnapshot]);
 
   return {
+    subscribeConversationRuntime,
+    getConversationRuntimeRevision,
     getConversationRuntimeSnapshot,
+    getConversationRuntimePreview,
     finalizeConversationRuntimeAfterRelayLoss,
     ensureConversationRuntimeRequestForRelay,
     upsertConversationRuntimeSnapshot,

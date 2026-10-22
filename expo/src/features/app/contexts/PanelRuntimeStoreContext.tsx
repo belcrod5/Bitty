@@ -1,4 +1,4 @@
-import { createContext, useContext, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useMemo, useSyncExternalStore, type ReactNode } from "react";
 import type { ConversationMessage } from "../types/appTypes";
 import type { SessionActivity } from "../utils/statusIcons";
 
@@ -33,8 +33,20 @@ export type PanelRuntimeSnapshot = {
   ttsPlaybackMessageId?: string;
 };
 
+export type PanelRuntimePreview = Readonly<Pick<PanelRuntimeSnapshot,
+  "selectedSessionId" | "selectedSessionUpdatedAt" | "isResponding" | "isHydrating" | "runtimeActivityTrail"
+> & {
+  lastMessageContent: string;
+  messageCount: number;
+}>;
+
 export type PanelRuntimeStoreContextValue = {
+  // Message/context updates follow panel state; this subscription only reports execution changes.
+  subscribe: (sessionIds: readonly string[], listener: () => void) => () => void;
+  getRevision: (sessionId: string) => number;
+  getBaseSnapshot: (panelId: string) => PanelRuntimeSnapshot | undefined;
   getSnapshot: (panelId: string) => PanelRuntimeSnapshot;
+  getPreview: (panelId: string) => PanelRuntimePreview;
   getKnownPanelIds: () => string[];
 };
 
@@ -56,10 +68,22 @@ export function PanelRuntimeStoreProvider({
   );
 }
 
-export function usePanelRuntimeStore() {
+export function usePanelRuntimeStore(panelIds: readonly string[] = []) {
   const context = useContext(PanelRuntimeStoreContext);
   if (!context) {
     throw new Error("usePanelRuntimeStore must be used within PanelRuntimeStoreProvider");
   }
-  return context;
+  const { subscribe: subscribeToSessions, getRevision: readRevision } = context;
+  const sessionKey = JSON.stringify([...new Set(panelIds.map((panelId) => (
+    String(context.getBaseSnapshot(panelId)?.selectedSessionId || "").trim()
+  )).filter(Boolean))].sort());
+  const sessionIds = useMemo<string[]>(() => JSON.parse(sessionKey), [sessionKey]);
+  const subscribe = useCallback((listener: () => void) => (
+    subscribeToSessions(sessionIds, listener)
+  ), [subscribeToSessions, sessionIds]);
+  const getRevision = useCallback(() => (
+    sessionIds.map((sessionId) => readRevision(sessionId)).join(":")
+  ), [readRevision, sessionIds]);
+  const revision = useSyncExternalStore(subscribe, getRevision, getRevision);
+  return { getSnapshot: context.getSnapshot, getPreview: context.getPreview, getKnownPanelIds: context.getKnownPanelIds, revision };
 }

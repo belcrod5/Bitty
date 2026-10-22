@@ -42,6 +42,7 @@ export type SkiaMiniChatSession = {
   lastMessageContent: string;
   updatedAtLabel: string;
   unread: boolean;
+  isResponding: boolean;
   activityTrail: Array<{ kind: SessionActivity; active: boolean }>;
   subagentLoading: boolean;
   subagentRunningCount: number;
@@ -118,7 +119,6 @@ export function useSkiaMiniChatSessions() {
     ensureRegisteredDirectorySessions,
     loadSessionChildrenBatch,
   } = useConversation();
-  const { getSnapshot } = usePanelRuntimeStore();
   const { clearPanelSnapshot, hydratePanelFromSessionHistory } = usePanelRuntimeController();
   const {
     state: boardState,
@@ -136,7 +136,6 @@ export function useSkiaMiniChatSessions() {
   } = useSkiaBoard();
   const clearPanelSnapshotRef = useRef(clearPanelSnapshot);
   const hydratePanelFromSessionHistoryRef = useRef(hydratePanelFromSessionHistory);
-  const getSnapshotRef = useRef(getSnapshot);
   // 同一マウント内で発行済みのhydrate要求(進行中含む)のパネル別記録。
   const lastRequestedHydrationByPanelRef = useRef<Record<string, PanelHydrationRequestMark>>({});
   // 直近まで割当があったパネルの記録。割当が外れたパネルのsnapshotだけを破棄する。
@@ -145,12 +144,6 @@ export function useSkiaMiniChatSessions() {
   const [hydratingPanelCount, setHydratingPanelCount] = useState(0);
   const [panelHydrationErrorCount, setPanelHydrationErrorCount] = useState(0);
   const [nowMs, setNowMs] = useState(Date.now());
-
-  useEffect(() => {
-    clearPanelSnapshotRef.current = clearPanelSnapshot;
-    hydratePanelFromSessionHistoryRef.current = hydratePanelFromSessionHistory;
-    getSnapshotRef.current = getSnapshot;
-  }, [clearPanelSnapshot, getSnapshot, hydratePanelFromSessionHistory]);
 
   useEffect(() => {
     void ensureRegisteredDirectorySessions("screen_mount");
@@ -312,6 +305,16 @@ export function useSkiaMiniChatSessions() {
     });
   }, [boardState, sessionCandidates, sessionTitleOverridesById, summaryCandidates]);
 
+  const { getPreview, revision: runtimeRevision } = usePanelRuntimeStore(
+    assignedSessions.map(({ panelId }) => panelId)
+  );
+  const getPreviewRef = useRef(getPreview);
+  useEffect(() => {
+    clearPanelSnapshotRef.current = clearPanelSnapshot;
+    hydratePanelFromSessionHistoryRef.current = hydratePanelFromSessionHistory;
+    getPreviewRef.current = getPreview;
+  }, [clearPanelSnapshot, getPreview, hydratePanelFromSessionHistory]);
+
   const childStateByParentId = useMemo(() => new Map(
     Object.values(directorySessionsById).flatMap((state) => (
       Object.entries(state.childrenByParentId)
@@ -339,7 +342,7 @@ export function useSkiaMiniChatSessions() {
     for (const panelId of assignedPanelIdsRef.current) {
       if (nextAssignedPanelIds.has(panelId)) continue;
       delete lastRequestedHydrationByPanelRef.current[panelId];
-      if (!String(getSnapshotRef.current(panelId).selectedSessionId || "").trim()) continue;
+      if (!String(getPreviewRef.current(panelId).selectedSessionId || "").trim()) continue;
       clearPanelSnapshotRef.current(panelId);
     }
     assignedPanelIdsRef.current = nextAssignedPanelIds;
@@ -355,7 +358,7 @@ export function useSkiaMiniChatSessions() {
         panelId,
         candidate,
         lastRequested: lastRequestedHydrationByPanelRef.current[panelId] || null,
-        snapshot: getSnapshotRef.current(panelId),
+        snapshot: getPreviewRef.current(panelId),
       }).action === "hydrate");
     if (hydrateTargets.length <= 0) {
       setHydratingPanelCount(0);
@@ -412,13 +415,11 @@ export function useSkiaMiniChatSessions() {
     const previous = sessionReuseRef.current;
     const nextByCardId = new Map<string, SkiaMiniChatSession>();
     const list = assignedSessions.map(({ card, candidate, panelId, title }) => {
-      const snapshot = getSnapshot(panelId);
-      const messages = snapshot.selectedSessionId === candidate.sessionId
-        ? snapshot.conversationMessages
-        : [];
-      const lastMessage = messages[messages.length - 1];
+      const snapshot = getPreview(panelId);
       const childState = childStateByParentId.get(candidate.sessionId);
-      const runtimeActivityTrail = snapshot.runtimeActivityTrail || [];
+      const holdsSession = snapshot.selectedSessionId === candidate.sessionId;
+      const isResponding = holdsSession && snapshot.isResponding;
+      const runtimeActivityTrail = holdsSession ? snapshot.runtimeActivityTrail || [] : [];
       const built: SkiaMiniChatSession = {
         kind: "session",
         backendId: candidate.backendId,
@@ -429,14 +430,15 @@ export function useSkiaMiniChatSessions() {
         source: candidate.source,
         title,
         directoryName: candidate.directoryDisplayName,
-        lastMessageContent: snapshot.selectedSessionId === candidate.sessionId
-          ? String(lastMessage?.content || "メッセージなし").replace(/\s+/g, " ").trim()
+        lastMessageContent: holdsSession
+          ? String(snapshot.lastMessageContent || "メッセージなし").replace(/\s+/g, " ").trim()
           : "",
         updatedAtLabel: formatSkiaMiniChatUpdatedAt(candidate.updatedAt, nowMs),
         unread: isLlmSessionUnread(candidate),
+        isResponding,
         activityTrail: runtimeActivityTrail.map((kind, index) => ({
           kind,
-          active: snapshot.isResponding && index === runtimeActivityTrail.length - 1,
+          active: isResponding && index === runtimeActivityTrail.length - 1,
         })),
         subagentLoading: !childState?.loaded,
         subagentRunningCount: (childState?.entries || []).filter(
@@ -460,7 +462,8 @@ export function useSkiaMiniChatSessions() {
   }, [
     assignedSessions,
     childStateByParentId,
-    getSnapshot,
+    getPreview,
+    runtimeRevision,
     nowMs,
     sessionMarkerColorsById,
   ]);

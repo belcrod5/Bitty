@@ -54,6 +54,7 @@ export function useSessionLiveStateController(options: {
   conversationMessagesRef: MutableRefObject<ConversationMessage[]>;
   panelEntriesRef: MutableRefObject<Record<string, PanelRuntimeEntry>>;
   applyRestoredRuntime: ApplyRestoredRuntime;
+  hasOwnedRequest?: (sessionId: string) => boolean;
   getRuntime: (sessionId: string) => {
     conversationMessages: ConversationMessage[];
     request?: { startedAtMs?: number } | null;
@@ -105,6 +106,7 @@ export function useSessionLiveStateController(options: {
       hasRunningTurn: boolean;
     };
     probeStartedAtMs: number;
+    expectedExecution?: { requestStartedAtMs: number | null; generation: number };
   }) => {
     const currentOptions = optionsRef.current;
     const selectedThreadStatusType = String(
@@ -124,10 +126,14 @@ export function useSessionLiveStateController(options: {
     ) ? selectedThreadStatusType : "idle";
     const currentRuntime = currentOptions.getRuntime(params.sessionId);
     const currentRequestStartedAtMs = Number(currentRuntime?.request?.startedAtMs) || null;
+    if (params.expectedExecution && (
+      currentRequestStartedAtMs !== params.expectedExecution.requestStartedAtMs
+      || (Number(currentRuntime?.executionGeneration) || 0) !== params.expectedExecution.generation
+    )) return false;
     // A request created after this probe began was not represented by its result.
     // A responding runtime without a request identity is equally unsafe to clear.
     if (
-      currentRuntime?.isResponding
+      currentRuntime?.isResponding && !params.expectedExecution
       && (
         currentRequestStartedAtMs === null
         || currentRequestStartedAtMs >= params.probeStartedAtMs
@@ -274,6 +280,15 @@ export function useSessionLiveStateController(options: {
       const currentOptions = optionsRef.current;
       if (!params.isCurrent()) return;
       if (!liveState || !shouldApplyLateLiveState(liveState)) {
+        if (liveState && isConfirmedTerminalLiveState(liveState)
+          && !currentOptions.hasOwnedRequest?.(params.nextSessionId)
+          && applyProbe({
+            sessionId: params.nextSessionId, liveState, probeStartedAtMs: Date.now(),
+            expectedExecution: {
+              requestStartedAtMs: params.requestStartedAtMsAtRestoreApply,
+              generation: params.executionGenerationAtRestoreApply,
+            },
+          })) return;
         currentOptions.onLiveStateNotRunning?.({
           sessionId: params.nextSessionId,
           panelId: "",
@@ -315,14 +330,14 @@ export function useSessionLiveStateController(options: {
         hasRunningTurn: restored.hasRunningTurn,
       }, { throttleMs: 0 });
     });
-  }, []);
+  }, [applyProbe]);
 
   const applyPanel = useCallback((params: {
     restored: RunnerSessionMessagesResult;
     snapshot: PanelRuntimeSnapshot;
     panelId: string;
     directory: string;
-    requestStartedAtMsAtHydrationStart: number | null;
+    requestStartedAtMsAtHydrationApply: number | null;
     executionGenerationAtHydrationApply: number;
     isCurrent: () => boolean;
   }) => {
@@ -330,17 +345,26 @@ export function useSessionLiveStateController(options: {
     void params.restored.liveStatePromise.then((liveState) => {
       const currentOptions = optionsRef.current;
       if (!params.isCurrent()) return;
+      const currentEntry = currentOptions.panelEntriesRef.current[params.panelId];
+      if (currentEntry?.snapshot.selectedSessionId !== params.snapshot.selectedSessionId) return;
       if (!liveState || !shouldApplyLateLiveState(liveState)) {
+        if (liveState && isConfirmedTerminalLiveState(liveState)
+          && !currentOptions.hasOwnedRequest?.(params.snapshot.selectedSessionId)
+          && applyProbe({
+            sessionId: params.snapshot.selectedSessionId, liveState, probeStartedAtMs: Date.now(),
+            expectedExecution: {
+              requestStartedAtMs: params.requestStartedAtMsAtHydrationApply,
+              generation: params.executionGenerationAtHydrationApply,
+            },
+          })) return;
         currentOptions.onLiveStateNotRunning?.({
           sessionId: params.snapshot.selectedSessionId,
           panelId: params.panelId,
-          hadRunningBelief: params.requestStartedAtMsAtHydrationStart !== null,
+          hadRunningBelief: params.snapshot.isResponding || params.requestStartedAtMsAtHydrationApply !== null,
           reason: liveState ? "idle" : "unavailable",
         });
         return;
       }
-      const currentEntry = currentOptions.panelEntriesRef.current[params.panelId];
-      if (currentEntry?.snapshot.selectedSessionId !== params.snapshot.selectedSessionId) return;
       const restored = { ...params.restored, ...liveState, liveStatePromise: undefined };
       const selectedThreadStatusType = deriveRestoredSessionThreadStatusType(restored);
       const currentRuntime = currentOptions.getRuntime(params.snapshot.selectedSessionId);
@@ -352,8 +376,8 @@ export function useSessionLiveStateController(options: {
         conversationMessages: currentRuntime?.conversationMessages ?? params.snapshot.conversationMessages,
         isResponding: restored.hasRunningTurn,
         selectedThreadStatusType,
-        expectedRequestStartedAtMs: params.requestStartedAtMsAtHydrationStart,
-        clearRespondingRequestStartedAtMs: params.requestStartedAtMsAtHydrationStart,
+        expectedRequestStartedAtMs: params.requestStartedAtMsAtHydrationApply,
+        clearRespondingRequestStartedAtMs: params.requestStartedAtMsAtHydrationApply,
       });
       if (!runtime) return;
       currentOptions.setPanelEntries((entries) => {
@@ -387,7 +411,7 @@ export function useSessionLiveStateController(options: {
         hasRunningTurn: restored.hasRunningTurn,
       }, { throttleMs: 0 });
     });
-  }, []);
+  }, [applyProbe]);
 
   return { applyActive, applyPanel, applyProbe };
 }

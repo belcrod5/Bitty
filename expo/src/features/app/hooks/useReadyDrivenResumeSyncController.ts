@@ -130,10 +130,10 @@ export function useReadyDrivenResumeSyncController({
   logSessionDiag,
 }: UseReadyDrivenResumeSyncControllerArgs) {
   // 購読コールバック(React外)から最新値を読むためのref群。
-  const inputsRef = useRef({ settingsLoaded, activeScreen, codexWsUrl, drawerSessionPopupPanelId });
+  const inputsRef = useRef({ settingsLoaded, activeScreen, codexWsUrl, drawerSessionPopupPanelId, hasActiveClientTurnForSession });
   useEffect(() => {
-    inputsRef.current = { settingsLoaded, activeScreen, codexWsUrl, drawerSessionPopupPanelId };
-  }, [settingsLoaded, activeScreen, codexWsUrl, drawerSessionPopupPanelId]);
+    inputsRef.current = { settingsLoaded, activeScreen, codexWsUrl, drawerSessionPopupPanelId, hasActiveClientTurnForSession };
+  }, [settingsLoaded, activeScreen, codexWsUrl, drawerSessionPopupPanelId, hasActiveClientTurnForSession]);
 
   const respondingAtBackgroundAtMsBySessionIdRef = useRef<Record<string, number>>({});
   const lastHandledGenerationRef = useRef<number>(Number.NaN);
@@ -579,6 +579,7 @@ export function useReadyDrivenResumeSyncController({
   }) => {
     const sessionId = parseOptionalSessionId(sessionIdRaw);
     if (!sessionId) return false;
+    if (inputsRef.current.hasActiveClientTurnForSession(sessionId)) return false;
     const reason = String(opts?.reason || "session_resync").trim() || "session_resync";
     const attempt = Math.max(0, Math.floor(Number(opts?.attempt) || 0));
     const panelIdHint = String(opts?.panelId || "").trim();

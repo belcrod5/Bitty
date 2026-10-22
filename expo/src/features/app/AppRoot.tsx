@@ -1898,7 +1898,10 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     conversationMessages,
   ]);
   const {
+    subscribeConversationRuntime,
+    getConversationRuntimeRevision,
     getConversationRuntimeSnapshot,
+    getConversationRuntimePreview,
     finalizeConversationRuntimeAfterRelayLoss,
     ensureConversationRuntimeRequestForRelay,
     upsertConversationRuntimeSnapshot,
@@ -2122,16 +2125,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     refreshDirectorySessionTree,
     registeredDirectories,
   ]);
-
-  useEffect(() => runnerWebSocketManager.subscribe(
-    { channel: "llm", op: "turn_completed_notification" },
-    (message) => {
-      const payload = message.payload && typeof message.payload === "object" ? message.payload as Record<string, unknown> : {};
-      const completedSessionId = parseOptionalSessionId(message.threadId || message.sessionId || payload.threadId || payload.sessionId);
-      if (completedSessionId) void refreshSessionChildTreesAtBoundary(completedSessionId, "child_completed");
-      if (AppState.currentState === "active") refreshDirectorySessionsAfterCompletion(payload.directory);
-    }
-  ), [refreshDirectorySessionsAfterCompletion, refreshSessionChildTreesAtBoundary, runnerWebSocketManager]);
 
   const {
     queueSendReplyAfterSessionRestore,
@@ -3779,9 +3772,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   // 旧AppState "active"駆動のresumeLatestSessionOnActiveを置き換える。
   // このクライアントのreply request(turn.ts)がin-flightなセッションはturn.ts自身の
   // seq resumeがライブ復旧を担うため、ready駆動のパネル再hydrateから外す。
-  const hasActiveClientTurnForSession = useCallback((sessionId: string) => (
-    isConversationRuntimeRequestResponding(getConversationRuntimeSnapshot(sessionId)?.request)
-  ), [getConversationRuntimeSnapshot]);
   const {
     requestSessionResync,
     wasRespondingAtBackground,
@@ -3804,13 +3794,35 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     llmSessionRestoreLoadingRef,
     startupSessionRestoreAttemptedRef,
     normalizedLlmDirectoryForRequest,
-    hasActiveClientTurnForSession,
+    hasActiveClientTurnForSession: (sessionId) => hasInFlightReplyRequestForThread(sessionId),
     selectSpecificLlmSession,
     hydratePanelFromSessionHistoryRef,
     fetchLatestSessionForDirectory,
     markSessionReadAsync,
     logSessionDiag,
   });
+  useEffect(() => runnerWebSocketManager.subscribe(
+    { channel: "llm", op: "turn_completed_notification" },
+    (message) => {
+      const payload = message.payload && typeof message.payload === "object" ? message.payload as Record<string, unknown> : {};
+      const completedSessionId = parseOptionalSessionId(message.threadId || message.sessionId || payload.threadId || payload.sessionId);
+      if (completedSessionId) {
+        void refreshSessionChildTreesAtBoundary(completedSessionId, "child_completed");
+        if (getConversationRuntimePreview(completedSessionId)?.isResponding) {
+          if (AppState.currentState === "active") {
+            requestSessionResync(completedSessionId, {
+              backendId: String(payload.backendId || "").trim() || undefined,
+              reason: "turn_completed_notification",
+            });
+          } else {
+            markSessionRespondingForResync(completedSessionId);
+          }
+        }
+      }
+      if (AppState.currentState === "active") refreshDirectorySessionsAfterCompletion(payload.directory);
+    }
+  ), [getConversationRuntimePreview, markSessionRespondingForResync, refreshDirectorySessionsAfterCompletion, refreshSessionChildTreesAtBoundary, requestSessionResync, runnerWebSocketManager]);
+
   observerPreemptedHandlerRef.current = markSessionRespondingForResync;
   // relay watermark gap(relay作り直し検出)の穴埋め: observer存命中の即時resyncは
   // freshness判定(実行中turnの取得結果破棄)でno-opになりrate limiter枠だけ消費する
@@ -4197,6 +4209,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     cancelReplyRequest: cancelReplyRequestFromCodex,
     suspendReplyRequest: suspendReplyRequestFromCodex,
     restoreReplyRequestForThread,
+    hasInFlightReplyRequestForThread,
   } = useCodexReplyRequest<
     ConversationMessage,
     SttMessageMeta,
@@ -4885,6 +4898,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     conversationMessagesRef,
     panelEntriesRef: panelRuntimeEntriesByIdRef,
     applyRestoredRuntime: applyRestoredSessionRuntimeFromMessages,
+    hasOwnedRequest: hasInFlightReplyRequestForThread,
     getRuntime: getConversationRuntimeSnapshot,
     upsertRuntime: upsertConversationRuntimeSnapshot,
     setPanelEntries: setPanelRuntimeEntriesById,
@@ -5060,6 +5074,20 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     }
     return createEmptyPanelRuntimeSnapshot(panelId);
   }, [createEmptyPanelRuntimeSnapshot, panelRuntimeEntriesById, projectConversationRuntimeToPanelSnapshot]);
+  const getPanelRuntimePreview = useCallback((panelIdRaw: string) => {
+    const base = panelRuntimeEntriesById[normalizeRuntimePanelId(panelIdRaw)]?.snapshot;
+    const runtime = getConversationRuntimePreview(base?.selectedSessionId);
+    return {
+      selectedSessionId: base?.selectedSessionId || "",
+      selectedSessionUpdatedAt: base?.selectedSessionUpdatedAt || "",
+      isHydrating: base?.isHydrating || false,
+      isResponding: runtime?.isResponding ?? base?.isResponding ?? false,
+      lastMessageContent: runtime?.lastMessageContent
+        ?? base?.conversationMessages[base.conversationMessages.length - 1]?.content ?? "",
+      messageCount: runtime?.messageCount ?? base?.conversationMessages.length ?? 0,
+      runtimeActivityTrail: runtime?.activityTrail ?? [...(base?.runtimeActivityTrail || [])],
+    };
+  }, [getConversationRuntimePreview, panelRuntimeEntriesById]);
   const startNewPanelSession = usePanelNewSessionController({
     registeredDirectories,
     normalizedLlmDirectoryForRequest,
@@ -5567,6 +5595,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
         ? latestPanelSnapshot
         : createEmptyPanelRuntimeSnapshot(panelId);
       const hydrationConversation = resolvePanelConversationAfterHydration({
+        hasOwnedRequest: hasInFlightReplyRequestForThread(resolvedSessionId || sessionId),
         runtime: runtimeForFreshness ? {
           conversationMessages: runtimeForFreshness.conversationMessages,
           updatedAtMs: runtimeForFreshness.updatedAtMs,
@@ -5664,13 +5693,14 @@ function AppContent({ onReady }: { onReady?: () => void }) {
           selectedThreadStatusType: snapshot.selectedThreadStatusType,
         }, { throttleMs: 0 });
       }
+      const runtimeAtHydrationApply = getConversationRuntimePreview(snapshot.selectedSessionId);
       applyLatePanelSessionLiveState({
         restored,
         snapshot,
         panelId,
         directory: restoredDirectory,
-        requestStartedAtMsAtHydrationStart,
-        executionGenerationAtHydrationApply: Number(runtimeAfterHydration.executionGeneration) || 0,
+        requestStartedAtMsAtHydrationApply: runtimeAtHydrationApply?.requestStartedAtMs ?? null,
+        executionGenerationAtHydrationApply: Number(runtimeAtHydrationApply?.executionGeneration) || 0,
         isCurrent: isCurrentHydration,
       });
       return "applied" as const;
@@ -5720,6 +5750,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     createEmptyPanelRuntimeSnapshot,
     createPanelRuntimeSnapshot,
     fetchRunnerSessionMessagesCached,
+    getConversationRuntimePreview,
     getConversationRuntimeSnapshot,
     logSessionDiag,
     registerSessionHistoryPage,
@@ -5749,10 +5780,14 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   hydratePanelFromSessionHistoryRef.current = hydratePanelFromSessionHistory;
   const panelRuntimeStoreContextValue = useMemo<PanelRuntimeStoreContextValue>(() => {
     return {
+      subscribe: subscribeConversationRuntime,
+      getRevision: getConversationRuntimeRevision,
+      getBaseSnapshot: (panelId) => panelRuntimeEntriesById[normalizeRuntimePanelId(panelId)]?.snapshot,
       getSnapshot: resolvePanelSnapshotForDisplay,
+      getPreview: getPanelRuntimePreview,
       getKnownPanelIds: () => Object.keys(panelRuntimeEntriesById),
     };
-  }, [panelRuntimeEntriesById, resolvePanelSnapshotForDisplay]);
+  }, [getConversationRuntimeRevision, getPanelRuntimePreview, panelRuntimeEntriesById, resolvePanelSnapshotForDisplay, subscribeConversationRuntime]);
   const panelRuntimeControllerContextValue = useMemo<PanelRuntimeControllerContextValue>(() => ({
     clearPanelSnapshot,
     copyPanelSnapshot,

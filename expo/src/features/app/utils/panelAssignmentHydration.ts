@@ -22,6 +22,7 @@ export type PanelSnapshotForHydration = {
   isResponding?: boolean;
   isHydrating?: boolean;
   conversationMessages?: readonly unknown[];
+  messageCount?: number;
 } | null | undefined;
 
 // 同一マウント内で発行済みのhydrate要求(進行中含む)の記録。
@@ -101,9 +102,9 @@ export function decidePanelHydration(params: {
     };
   }
   const knownUpdatedAtMs = parsePanelUpdatedAtMs(snapshot?.selectedSessionUpdatedAt);
-  const messageCount = Array.isArray(snapshot?.conversationMessages)
-    ? snapshot.conversationMessages.length
-    : 0;
+  const messageCount = snapshot?.messageCount ?? (
+    Array.isArray(snapshot?.conversationMessages) ? snapshot.conversationMessages.length : 0
+  );
   // hydrate完了済み(非hydrating・本文あり)かつ既知updatedAt以上 → 鮮度十分でスキップ。
   if (!snapshot?.isHydrating && messageCount > 0 && knownUpdatedAtMs > 0 && candidateUpdatedAtMs <= knownUpdatedAtMs) {
     return { action: "skip", reason: "snapshot_fresh" };

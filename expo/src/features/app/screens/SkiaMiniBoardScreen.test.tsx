@@ -86,10 +86,12 @@ jest.mock("@shopify/react-native-skia", () => {
       translate: () => undefined,
       clipRect: () => undefined,
       clipRRect: () => undefined,
-      drawRRect: (_rect: unknown, paint: { color?: string }) => {
+      drawRRect: (_rect: unknown, paint: { color?: string; alpha?: number }) => {
         const target = globalThis as Record<string, unknown>;
         const colors = target.__skiaBoardRRectColors as string[] | undefined;
         target.__skiaBoardRRectColors = [...(colors || []), String(paint.color)];
+        const paints = target.__skiaBoardRRectPaints as unknown[] | undefined;
+        target.__skiaBoardRRectPaints = [...(paints || []), { color: paint.color, alpha: paint.alpha }];
       },
       drawCircle: (x: number, y: number) => {
         const target = globalThis as Record<string, unknown>;
@@ -159,8 +161,9 @@ jest.mock("@shopify/react-native-skia", () => {
       Paint: () => {
         const paint = {
           color: undefined as string | undefined,
+          alpha: undefined as number | undefined,
           setColor: (color: string) => { paint.color = color; },
-          setAlphaf: () => undefined,
+          setAlphaf: (alpha: number) => { paint.alpha = alpha; },
           setAntiAlias: () => undefined,
           setStyle: () => undefined,
           setStrokeWidth: () => undefined,
@@ -403,6 +406,7 @@ const mockDefaultSession = {
   updatedAtLabel: "1分前",
   markerColor: "none" as const,
   unread: false,
+  isResponding: false,
   activityTrail: [] as Array<{
     kind: "reading" | "writing" | "thinking" | "web";
     active: boolean;
@@ -1837,6 +1841,27 @@ test("renders the four retained vector activities and an ASCII subagent count", 
   ]);
   expect(screen.getByTestId("skia-text:1/2")).toBeTruthy();
   expect(screen.queryByTestId("skia-text:× 1/2")).toBeNull();
+});
+
+test.each(["standard", "cyberpunk"] as const)("uses %s progress color for the static running tint while retaining activity icon color and clears both on completion", async (themeId) => {
+  const effectColor = VISUAL_THEMES[themeId].tones.progress.border;
+  const activityColor = VISUAL_THEMES[themeId].colors.activityActive;
+  const inactiveColor = VISUAL_THEMES[themeId].colors.borderStrong;
+  mockSessions = [{ ...mockDefaultSession, isResponding: true, activityTrail: [{ kind: "reading", active: true }] }];
+  const tree = () => <VisualThemeProvider themeId={themeId} onSelectTheme={() => undefined}>
+    <SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />
+  </VisualThemeProvider>;
+  const globals = globalThis as Record<string, unknown>;
+  globals.__skiaBoardRRectPaints = [];
+  const screen = await render(tree());
+  expect(screen.getAllByTestId("skia-icon-path")[0].props.accessibilityLabel).toBe(activityColor);
+  expect(globals.__skiaBoardRRectPaints).toContainEqual({ color: effectColor, alpha: 0.24 });
+
+  globals.__skiaBoardRRectPaints = [];
+  mockSessions = [{ ...mockSessions[0], isResponding: false, activityTrail: [{ kind: "reading", active: false }] }];
+  await screen.rerender(tree());
+  expect(screen.getAllByTestId("skia-icon-path")[0].props.accessibilityLabel).toBe(inactiveColor);
+  expect(globals.__skiaBoardRRectPaints).not.toContainEqual({ color: effectColor, alpha: 0.24 });
 });
 
 test("shows a moved-or-deleted message instead of file actions for an unavailable card", async () => {
