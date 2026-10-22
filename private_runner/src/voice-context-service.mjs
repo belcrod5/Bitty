@@ -212,6 +212,7 @@ function readEvents(buffer, prunedThroughPairSeq = 0, allowPairGaps = false) {
 function snapshots(events) {
   const byId = new Map();
   const pairs = [];
+  let previousThreadId;
   for (const event of events) {
     if (event.type === "accepted") {
       byId.set(event.clientOperationId, { clientOperationId: event.clientOperationId,
@@ -220,9 +221,13 @@ function snapshots(events) {
     }
     const state = byId.get(event.clientOperationId);
     if (event.type === "dispatching" || event.type === "native_started") state.status = "running";
-    if (event.type === "native_started") {
+    if (event.threadId && event.turnId) {
       state.threadId = event.threadId;
       state.turnId = event.turnId;
+      // Older journals already identify native parents, but did not store the boundary explicitly.
+      state.sessionSwitched ||= event.sessionSwitched === true
+        || event.sessionSwitched === undefined && Boolean(previousThreadId && previousThreadId !== event.threadId);
+      previousThreadId = event.threadId;
     }
     if (["unknown", "preflight_failed", "failed", "interrupted"].includes(event.type)) {
       state.status = event.type;
@@ -655,7 +660,12 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
 
   async function append(clientOperationId, type, extra = {}) {
     if (storeFailure) throw storeFailure;
-    const event = { seq: events.length + 1, at: new Date().toISOString(), clientOperationId, type, ...(type === "completed" ? { parentGeneration: active.parentGeneration } : {}), ...extra };
+    const dispatch = active.pendingDispatch?.clientOperationId === clientOperationId ? active.pendingDispatch : null;
+    const sessionSwitched = dispatch?.newParent === true && dispatch.switchTurnSeq !== undefined;
+    const event = { seq: events.length + 1, at: new Date().toISOString(), clientOperationId, type,
+      ...(type === "completed" ? { parentGeneration: active.parentGeneration } : {}),
+      ...(dispatch?.turnId ? { threadId: dispatch.threadId, turnId: dispatch.turnId,
+        parentGeneration: dispatch.parentGeneration + (sessionSwitched ? 1 : 0), sessionSwitched } : {}), ...extra };
     try {
       const file = path.join(root, active.logicalConversationId, "events.jsonl");
       const handle = await fs.open(file, "a", 0o600);
@@ -766,7 +776,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
       || (active.pendingSwitch !== undefined && (!isRecord(active.pendingSwitch)
         || active.pendingSwitch.parentGeneration !== active.parentGeneration
         || !Number.isSafeInteger(active.pendingSwitch.turnSeq) || active.pendingSwitch.turnSeq < 1
-        || !["topic", "message_limit", "settings", "memory", "checklist", "calendar"].includes(active.pendingSwitch.reason)))
+        || !["topic", "message_limit", "settings", "memory", "checklist", "calendar", "learning"].includes(active.pendingSwitch.reason)))
       || (active.pendingConfirmation !== undefined && (!isRecord(active.pendingConfirmation)
         || !UUID.test(active.pendingConfirmation.clientOperationId)
         || typeof active.pendingConfirmation.text !== "string" || !active.pendingConfirmation.text.trim()
@@ -1244,6 +1254,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
       ...(state.pairSeq ? { completedOrdinal: (active.completedCount || 0)
         - events.filter((event) => event.type === "completed" && event.pairSeq > state.pairSeq).length } : {}),
       ...(state.outputTokens !== undefined ? { outputTokens: state.outputTokens } : {}),
+      ...(state.sessionSwitched ? { sessionSwitched: true } : {}),
       ...(inFlightId === id && (status === "accepted" || status === "running") && inFlightPartialText
         ? { partialText: inFlightPartialText } : {}),
       ...(state.code ? { code: state.code } : {}),
@@ -2172,7 +2183,8 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
       const learning = await learningContext?.retrieve({ input });
       const prepared = await exclusive(async () => {
         if (signal.aborted) throw invalid("turn_interrupted", "Voice turn was cancelled");
-        const selected = learning?.suppressRecent ? [] : pairs.slice(-RECENT_PAIRS);
+        const selected = learning?.excludedPairSeqs === null ? []
+          : pairs.slice(-RECENT_PAIRS).filter((pair) => !learning?.excludedPairSeqs?.includes(pair.pairSeq));
         const previousLearning = active.learningSnapshot;
         const learningChanged = Boolean(learningContext && active.nativeThreadId && (active.nativeLearningEnabled !== true
           || previousLearning?.contextRevision !== learning?.contextRevision || previousLearning?.selectedDigest !== learning?.selectedDigest));
@@ -2326,7 +2338,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
           await exclusive(() => append(clientOperationId, "native_started", { threadId, turnId }));
           if (prepared.learning) await Promise.resolve(learningContext.delivered({ operationId: clientOperationId, threadId, turnId, snapshot: prepared.learning })).catch(() => {});
           if (prepared.judgeTarget) scheduleTopicJudge(prepared.judgeTarget);
-          hooks.onStarted?.({ threadId, turnId });
+          hooks.onStarted?.({ ...stateOf(clientOperationId), threadId, turnId });
         } });
       stage = "completion_store";
       await (pairExclusive || ((work) => work()))(() => exclusive(async () => {
@@ -2577,7 +2589,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
         let completedOrdinal = (active.completedCount || 0) - events.filter((event) => event.type === "completed").length;
         for (const state of byId.values()) {
           messages.push({ role: "user", text: state.userText, at: state.userAt,
-            clientOperationId: state.clientOperationId });
+            clientOperationId: state.clientOperationId, ...(state.sessionSwitched ? { sessionSwitched: true } : {}) });
           if (state.status === "completed") {
             completedOrdinal += 1;
             messages.push({ role: "assistant", text: state.text, at: state.assistantAt,

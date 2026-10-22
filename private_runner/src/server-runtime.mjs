@@ -7419,6 +7419,10 @@ runnerWsServer.on("connection", (ws, req) => {
           if (voiceJob) failVoiceTts(error);
         }
       },
+      onStarted: (result) => sendRunnerWsEnvelope(ws, {
+        channel: "agent", op: "voice.turn.started", operationId, streamId: operationId,
+        payload: { ...result, orchestratorId: voicePayload.orchestratorId || "main" },
+      }),
       onText: (delta) => {
         sendRunnerWsEnvelope(ws, {
           channel: "agent", op: "voice.turn.delta",

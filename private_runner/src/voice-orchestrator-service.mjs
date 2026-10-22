@@ -57,7 +57,7 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
   };
   const learningContext = (orchestratorId) => ({
     retrieve: (args) => learning ? learning.retrieve({ ...args, orchestratorId }) : Promise.resolve({ contextRevision: 0,
-      selectedDigest: "unavailable", items: [], suppressRecent: true, instruction: "" }),
+      selectedDigest: "unavailable", items: [], excludedPairSeqs: null, instruction: "" }),
     delivered: (args) => learning?.delivered({ ...args, orchestratorId }),
     recordRead: (args) => learning?.recordRead(args),
     tool: async ({ tool, arguments: args, operationId, input }) => {

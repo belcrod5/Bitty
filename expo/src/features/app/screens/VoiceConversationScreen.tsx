@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Ionicons } from "@expo/vector-icons";
 import { randomUUID } from "expo-crypto";
 import { AppState, Platform, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
@@ -561,21 +561,31 @@ function VoiceConversationSession({
                       ? formatOutputTokens(message.outputTokens)
                       : "";
                     return (
-                      <View key={`${message.clientOperationId}-${message.role}-${index}`}
-                        style={{ alignSelf: user ? "flex-end" : "flex-start",
-                          maxWidth: "90%", padding: 12, borderRadius: 12,
-                          backgroundColor: user ? theme.colors.accent : theme.colors.surfaceMuted }}>
-                        <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 8, marginBottom: 4 }}>
-                          <Text style={{ color: textColor, fontSize: 11 }}>{user ? "あなた" : "AI"}</Text>
-                          {time || tokenLabel ? (
-                            <Text style={{ color: textColor, fontSize: 11 }}>
-                              {[time, tokenLabel].filter(Boolean).join("  ")}
-                            </Text>
-                          ) : null}
+                      <Fragment key={`${message.clientOperationId}-${message.role}-${index}`}>
+                        {user && message.sessionSwitched === true ? (
+                          <View testID={`voice-session-switch-${message.clientOperationId}`}
+                            style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 4 }}>
+                            <View style={{ flex: 1, height: 1, backgroundColor: theme.colors.borderStrong }} />
+                            <Text style={{ color: theme.colors.textSecondary, fontSize: 11 }}>セッション切り替え</Text>
+                            <View style={{ flex: 1, height: 1, backgroundColor: theme.colors.borderStrong }} />
+                          </View>
+                        ) : null}
+                        <View
+                          style={{ alignSelf: user ? "flex-end" : "flex-start",
+                            maxWidth: "90%", padding: 12, borderRadius: 12,
+                            backgroundColor: user ? theme.colors.accent : theme.colors.surfaceMuted }}>
+                          <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 8, marginBottom: 4 }}>
+                            <Text style={{ color: textColor, fontSize: 11 }}>{user ? "あなた" : "AI"}</Text>
+                            {time || tokenLabel ? (
+                              <Text style={{ color: textColor, fontSize: 11 }}>
+                                {[time, tokenLabel].filter(Boolean).join("  ")}
+                              </Text>
+                            ) : null}
+                          </View>
+                          <Text style={{ color: textColor, fontSize: 15, lineHeight: 21 }}>{message.text}</Text>
+                          {!user ? <AnswerLearningDetails orchestratorId={orchestrator.id} operationId={message.clientOperationId} paused={paused || !historyExpanded} /> : null}
                         </View>
-                        <Text style={{ color: textColor, fontSize: 15, lineHeight: 21 }}>{message.text}</Text>
-                        {!user ? <AnswerLearningDetails orchestratorId={orchestrator.id} operationId={message.clientOperationId} paused={paused || !historyExpanded} /> : null}
-                      </View>
+                      </Fragment>
                     );
                   })}
                 </ScrollView>

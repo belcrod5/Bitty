@@ -190,7 +190,8 @@ test("bulk adoption is atomic, conditional and scoped; withdrawal changes digest
   await f.service.decide({ items: applied.items.map(ref), action: "retire" });
   const removed = await f.service.retrieve({ orchestratorId: "main", input: "review" });
   assert.equal(removed.items.length, 0); assert.notEqual(removed.selectedDigest, applied.selectedDigest);
-  assert.equal(removed.suppressRecent, true);
+  assert.deepEqual(applied.excludedPairSeqs, []);
+  assert.deepEqual(removed.excludedPairSeqs, item.evidence.map(({ pairSeq }) => pairSeq));
 });
 
 test("skills require explicit publication, exact caller/version/hash; manual modifications block republish", async (t) => {
@@ -687,4 +688,40 @@ test("resolved empty legacy feedback with no linked learning can be cancelled wi
   await restarted.close(); const recovered = await f.open(); status = await recovered.status();
   assert.ok(status.evaluations[0].corrections.slice(0, 3).every((entry) => entry.cancelledAt));
   assert.equal(status.evaluations[0].score, 100); assert.equal(f.calls.length, 1);
+});
+
+for (const action of ["retire", "forget"]) {
+  test(`${action} excludes evidence and inherited policy outputs, including completion after the decision`, async (t) => {
+    const f = await fixture(t); let [item] = await seed(f);
+    await f.service.configure({ model: "", effort: "", settingsRevision: 2 }, MODELS);
+    await f.service.decide({ items: [ref(item)], action: "adopt" }); item = (await f.service.status()).candidates[0];
+    const snapshot = await f.service.retrieve({ orchestratorId: "main", input: "review" });
+    const first = randomUUID(), inherited = randomUUID();
+    await f.service.delivered({ orchestratorId: "main", operationId: first, threadId: "parent", turnId: "one", snapshot });
+    await f.service.recordRead({ operationId: first, callId: "read", skill: { id: item.id, version: item.version, hash: "proof", name: item.content } });
+    await f.service.delivered({ orchestratorId: "main", operationId: inherited, threadId: "parent", turnId: "two", snapshot: { ...snapshot, items: [] } });
+    assert.equal((await f.service.delivery({ orchestratorId: "main", operationId: inherited })).items.length, 0);
+    if (action === "forget") await f.service.forget({ items: [ref(item)] });
+    else await f.service.decide({ items: [ref(item)], action });
+    await f.service.observe([f.pair(2, { clientOperationId: first }), f.pair(3, { clientOperationId: inherited }), f.pair(4)]);
+    const restarted = await f.open();
+    const current = await restarted.retrieve({ orchestratorId: "main", input: "review" });
+    assert.deepEqual(current.excludedPairSeqs.sort(), [1, 2, 3]);
+    assert.equal(current.items.length, 0);
+    if (action === "forget") assert.equal((await restarted.status()).pendingCount, 1, "late forgotten outputs cannot re-enter analysis");
+  });
+}
+
+test("a retrieval delivered after forgetting cannot reintroduce content or replay its later completion", async (t) => {
+  const f = await fixture(t); let [item] = await seed(f);
+  await f.service.configure({ model: "", effort: "", settingsRevision: 2 }, MODELS);
+  await f.service.decide({ items: [ref(item)], action: "adopt" }); item = (await f.service.status()).candidates[0];
+  const snapshot = await f.service.retrieve({ orchestratorId: "main", input: "review" });
+  await f.service.forget({ items: [ref(item)] });
+  const operationId = randomUUID();
+  await f.service.delivered({ orchestratorId: "main", operationId, threadId: "parent", turnId: "late", snapshot });
+  assert.deepEqual((await f.service.delivery({ orchestratorId: "main", operationId })).items, []);
+  await f.service.observe([f.pair(2, { clientOperationId: operationId })]);
+  assert.deepEqual((await f.service.retrieve({ orchestratorId: "main", input: "review" })).excludedPairSeqs, [1, 2]);
+  assert.equal((await f.service.status()).pendingCount, 0);
 });

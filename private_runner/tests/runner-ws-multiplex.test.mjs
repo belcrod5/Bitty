@@ -393,7 +393,7 @@ test("voice acceptance creates one attachable TTS job and keeps its error separa
   assert.equal(ws.sent.find((message) => message.op === "voice.turn.completed").payload.text, "Answer.");
 });
 
-test("voice text deltas use the authenticated envelope with conversation and operation identity", async (t) => {
+test("voice native starts and text deltas use the authenticated conversation and operation identity", async (t) => {
   const service = __TESTING__.voiceContextService;
   const originalStart = service.start;
   const operationId = "44444444-5555-4666-8777-888888888888";
@@ -412,6 +412,13 @@ test("voice text deltas use the authenticated envelope with conversation and ope
   }), false);
   await waitFor(() => ws.sent.some((message) => message.op === "turn.accepted"));
 
+  hooks.onStarted({ logicalConversationId: conversationId, clientOperationId: operationId,
+    status: "running", sessionSwitched: true });
+  assert.deepEqual(ws.sent.find((message) => message.op === "voice.turn.started"), {
+    channel: "agent", op: "voice.turn.started", operationId, streamId: operationId,
+    payload: { logicalConversationId: conversationId, orchestratorId: "main",
+      clientOperationId: operationId, status: "running", sessionSwitched: true },
+  });
   hooks.onText("Live reply");
 
   const delta = ws.sent.find((message) => message.op === "voice.turn.delta");

@@ -7,6 +7,7 @@ import test from "node:test";
 import { createVoiceContextService, readVoiceEventState } from "../src/voice-context-service.mjs";
 import { CALENDAR_READ_TOOL_NAMES } from "../src/calendar-tool-service.mjs";
 import { createVoiceRequestBridge } from "../src/voice-request-bridge.mjs";
+import { openOrchestratorLearning } from "../src/orchestrator-learning-service.mjs";
 
 function fakeCodex({ reply = "answer", summaryReply, topicReplies = [], overviewReplies = [], holdOverviews = false, failTopicJudge = false,
   holdTopicJudges = false, agentEvents, earlyAgentEvents = [], completionUsage, contextUsageByTurn = [], summaryContextUsage,
@@ -562,12 +563,17 @@ test("native activity delays every pending parent switch", async (t) => {
   await complete(service, conversation, "first");
   await complete(service, conversation, "new task");
   await waitFor(async () => Boolean(JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8")).pendingSwitch));
-  await complete(service, conversation, "blocked boundary");
+  const blocked = await complete(service, conversation, "blocked boundary");
+  assert.equal(blocked.result.sessionSwitched, undefined);
+  const blockedEvents = (await fs.readFile(path.join(rootDir, conversation.logicalConversationId, "events.jsonl"), "utf8"))
+    .trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(blockedEvents.filter((event) => event.type === "completed").at(-1).parentGeneration, 0,
+    "a planned switch cannot advance the dispatched parent generation");
   let responseThreads = codex.calls.filter(({ method, params }) => method === "turn/start"
     && params.approvalPolicy === "on-request").map(({ params }) => params.threadId);
   assert.equal(new Set(responseThreads).size, 1);
   outstanding = false;
-  await complete(service, conversation, "safe boundary");
+  assert.equal((await complete(service, conversation, "safe boundary")).result.sessionSwitched, true);
   responseThreads = codex.calls.filter(({ method, params }) => method === "turn/start"
     && params.approvalPolicy === "on-request").map(({ params }) => params.threadId);
   assert.notEqual(responseThreads.at(-1), responseThreads[0]);
@@ -4646,7 +4652,7 @@ test("durable learning observations preserve recovery provenance and cannot fail
 
 test("adopted learning changes switch the parent by digest, including zero, without replaying retired policy pairs", async (t) => {
   let snapshot = { contextRevision: 2, selectedDigest: "first", items: [{ id: randomUUID(), version: 1 }],
-    instruction: "ADOPTED_POLICY_ONE", suppressRecent: true };
+    instruction: "ADOPTED_POLICY_ONE", excludedPairSeqs: [] };
   const deliveries = [];
   const learningContext = { retrieve: async () => snapshot, delivered: async (value) => deliveries.push(value),
     recordRead: async () => {} };
@@ -4655,21 +4661,23 @@ test("adopted learning changes switch the parent by digest, including zero, with
   assert.equal((await complete(service, conversation, "same selection")).result.status, "completed");
   snapshot = { ...snapshot, selectedDigest: "different-selection", instruction: "ADOPTED_POLICY_TWO", items: [{ id: randomUUID(), version: 1 }] };
   assert.equal((await complete(service, conversation, "different task")).result.status, "completed");
-  snapshot = { ...snapshot, contextRevision: 3, selectedDigest: "empty", instruction: "", items: [] };
+  snapshot = { ...snapshot, contextRevision: 3, selectedDigest: "empty", instruction: "", items: [], excludedPairSeqs: [1, 3] };
   assert.equal((await complete(service, conversation, "withdrawn")).result.status, "completed");
   const starts = codex.calls.filter(({ method, params }) => method === "thread/start" && params.approvalPolicy === "on-request");
   assert.equal(starts.length, 3); assert.ok(starts[0].params.developerInstructions.includes("ADOPTED_POLICY_ONE"));
   assert.ok(starts[1].params.developerInstructions.includes("ADOPTED_POLICY_TWO"));
   assert.ok(!starts[2].params.developerInstructions.includes("ADOPTED_POLICY_"));
   assert.ok(starts.every(({ params }) => params.dynamicTools.some((tool) => tool.name === "orchestrator_learning")));
-  assert.equal(codex.calls.filter(({ method }) => method === "thread/inject_items").length, 0);
+  const injections = codex.calls.filter(({ method }) => method === "thread/inject_items");
+  assert.deepEqual(injections.map(({ params }) => params.items.map(({ content }) => content[0].text)),
+    [["first instruction", "answer", "same selection", "answer"], ["same selection", "answer"]]);
   assert.equal(deliveries.length, 4); assert.equal(deliveries[3].snapshot.items.length, 0);
 });
 
 test("revocation cannot start a new turn on a parent with outstanding child work", async (t) => {
   let busy = false;
-  let snapshot = { contextRevision: 2, selectedDigest: "active", items: [{ id: randomUUID(), version: 1 }], instruction: "Policy", suppressRecent: true };
-  const { service, conversation, codex } = await fixture(t, { hasOutstandingActivity: () => busy,
+  let snapshot = { contextRevision: 2, selectedDigest: "active", items: [{ id: randomUUID(), version: 1 }], instruction: "Policy", excludedPairSeqs: [] };
+  const { rootDir, service, conversation, codex } = await fixture(t, { hasOutstandingActivity: () => busy,
     learningContext: { retrieve: async () => snapshot, delivered: async () => {}, recordRead: async () => {} } });
   await complete(service, conversation, "first"); busy = true;
   snapshot = { ...snapshot, contextRevision: 3, selectedDigest: "empty", items: [], instruction: "" };
@@ -4677,7 +4685,10 @@ test("revocation cannot start a new turn on a parent with outstanding child work
   assert.equal(held.result.status, "preflight_failed"); assert.equal(held.result.code, "session_busy");
   const count = codex.calls.filter(({ method, params }) => method === "turn/start" && params.approvalPolicy === "on-request").length;
   assert.equal(count, 1); busy = false;
-  assert.equal((await complete(service, conversation, "retry")).result.status, "completed");
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient,
+    learningContext: { retrieve: async () => snapshot, delivered: async () => {}, recordRead: async () => {} } });
+  await restarted.open();
+  assert.equal((await complete(restarted, conversation, "retry")).result.status, "completed");
 });
 
 test("successful skill reads are recorded after slow delivery, and forged batch target proofs are rejected", async (t) => {
@@ -4688,7 +4699,7 @@ test("successful skill reads are recorded after slow delivery, and forged batch 
     completedItem: { id: "skill-read", type: "dynamicToolCall", status: "completed" } };
   const { service, conversation, codex } = await fixture(t, { nativeRequests: [read,
     { ...read, callId: "bad-proposal", tool: "propose_batch", arguments: { targets: ["not-a-confirmed-target"] }, startedItem: undefined, completedItem: undefined }],
-    learningContext: { retrieve: async () => ({ contextRevision: 1, selectedDigest: "digest", items: [{ id: read.arguments.id, version: 3, skill: { version: 3, hash: "hash" } }], instruction: "", suppressRecent: false }),
+    learningContext: { retrieve: async () => ({ contextRevision: 1, selectedDigest: "digest", items: [{ id: read.arguments.id, version: 3, skill: { version: 3, hash: "hash" } }], instruction: "", excludedPairSeqs: [] }),
       delivered: async () => { await new Promise((resolve) => setTimeout(resolve, 30)); delivered = true; },
       tool: async (value) => { toolCalls.push(value); return { id: read.arguments.id, version: 3, hash: "hash", markdown: "# Workflow" }; },
       recordRead: async (proof) => { assert.equal(delivered, true); proofs.push(proof); } } });
@@ -4709,7 +4720,7 @@ test("target-specific context is read through current successful tool output, th
   ];
   const tools = [], proofs = [];
   const { service, conversation, codex } = await fixture(t, { nativeRequests: requests,
-    learningContext: { retrieve: async () => ({ contextRevision: 2, selectedDigest: "no-targets", items: [], instruction: "", suppressRecent: true }),
+    learningContext: { retrieve: async () => ({ contextRevision: 2, selectedDigest: "no-targets", items: [], instruction: "", excludedPairSeqs: [] }),
       delivered: async () => {}, recordRead: async (value) => proofs.push(value),
       tool: async (value) => { tools.push(value); return { selection: { contextRevision: 2, selectedDigest: "repo-targets", items: [item] } }; } } });
   const hooks = { onCalendarToolCall: async () => ({ success: true, contentItems: [{ type: "inputText", text: "repo-confirmed" }] }) };
@@ -4729,7 +4740,7 @@ test("failed tool output and user-supplied target names do not authorize a condi
     arguments: { targets: ["repo-unverified"] }, threadId: "root", turnId: "root" };
   const { service, conversation, codex } = await fixture(t, { nativeRequests: [read],
     earlyAgentEvents: [{ method: "item/completed", params: { item: { id: "failed", type: "commandExecution", status: "completed", exitCode: 1, aggregatedOutput: "repo-unverified" } } }],
-    learningContext: { retrieve: async () => ({ contextRevision: 1, selectedDigest: "none", items: [], instruction: "", suppressRecent: false }),
+    learningContext: { retrieve: async () => ({ contextRevision: 1, selectedDigest: "none", items: [], instruction: "", excludedPairSeqs: [] }),
       delivered: async () => {}, recordRead: async () => {}, tool: async () => { called = true; } } });
   assert.equal((await complete(service, conversation, "repo-unverified is in my text")).result.status, "completed");
   assert.equal(called, false);
@@ -4747,7 +4758,7 @@ test("a successful conditional read remains revocable after the outer turn fails
         threadId: "root", turnId: "root", completedItem: { id: "conditional", type: "dynamicToolCall", status: "completed", success: true } },
     ];
     const { service, conversation, codex } = await fixture(t, { regularTurnStatus, nativeRequests: requests, hasOutstandingActivity: () => busy,
-      learningContext: { retrieve: async () => ({ contextRevision: 2, selectedDigest: "unverified", items: [], instruction: "", suppressRecent: true }),
+      learningContext: { retrieve: async () => ({ contextRevision: 2, selectedDigest: "unverified", items: [], instruction: "", excludedPairSeqs: [] }),
         delivered: async () => {}, recordRead: async (proof) => proofs.push(proof),
         tool: async () => ({ selection: { contextRevision: 2, selectedDigest: "confirmed", items: [item] } }) } });
     const hooks = { onCalendarToolCall: async () => ({ success: true, contentItems: [{ type: "inputText", text: "repo-confirmed" }] }) };
@@ -4762,4 +4773,128 @@ test("a successful conditional read remains revocable after the outer turn fails
     await complete(service, conversation, "After child settles", randomUUID(), async () => "decline", hooks);
     assert.equal(codex.calls.filter(({ method, params }) => method === "thread/start" && params.approvalPolicy === "on-request").length, 2);
   });
+});
+
+test("adoption preserves shopping continuity through parent switches and topic judgment; forgetting excludes only affected pairs", async (t) => {
+  let learning;
+  const memoryConversationId = randomUUID();
+  const learningContext = {
+    retrieve: (args) => learning.retrieve({ ...args, orchestratorId: "main" }),
+    delivered: (args) => learning.delivered({ ...args, orchestratorId: "main" }),
+    recordRead: (args) => learning.recordRead(args),
+  };
+  const { rootDir, service, conversation, codex } = await fixture(t, { learningContext,
+    reply: "サトウのごはんを追加してよいですか？",
+    onDurablePair: (pair) => learning.observe([{ ...pair, memoryConversationId, orchestratorId: "main" }]),
+  });
+  learning = await openOrchestratorLearning({ workspace: path.dirname(rootDir), memoryConversationId, initialThrough: 0,
+    limits: { batchThreshold: 1, interval: 0 },
+    ledger: { reserve: async () => ({ ok: true, call: { callId: randomUUID() } }), settle: async () => ({ ok: true }), status: async () => ({}) },
+    analyze: async ({ input }) => ({ text: JSON.stringify({ candidates: [{ kind: "preference", content: "Keep answers short",
+      conditions: "Always", reason: "Explicit preference", orchestratorId: "main", evidence: [JSON.parse(input).pairs[0].pairSeq] }] }) }),
+  });
+  t.after(() => learning.close());
+  await complete(service, conversation, "短く回答して");
+  await complete(service, conversation, "買い物リストにご飯を入れたい");
+  await learning.configure({ model: "test-model", effort: "low", settingsRevision: 1 }, [{ modelId: "test-model", effortOptions: ["low"] }]);
+  await learning.runDue();
+  const item = (await learning.status()).candidates[0];
+  await learning.decide({ items: [{ id: item.id, version: item.version }], action: "adopt" });
+  const switched = await complete(service, conversation, "追加してください");
+  assert.equal(switched.result.status, "completed");
+  assert.equal(switched.result.sessionSwitched, true);
+  const injection = codex.calls.filter(({ method }) => method === "thread/inject_items").at(-1);
+  assert.deepEqual(injection.params.items.map(({ content }) => content[0].text),
+    ["短く回答して", "サトウのごはんを追加してよいですか？", "買い物リストにご飯を入れたい", "サトウのごはんを追加してよいですか？"]);
+  await complete(service, conversation, "その商品です");
+  await waitFor(() => codex.calls.some(({ method, params }) => method === "turn/start"
+    && params.approvalPolicy === "never" && params.input[0].text.includes('"user":"その商品です"')));
+  const judged = codex.calls.filter(({ method, params }) => method === "turn/start" && params.approvalPolicy === "never"
+    && params.input[0].text.includes('"user":"その商品です"')).at(-1);
+  assert.deepEqual(JSON.parse(judged.params.input[0].text).recent.map(({ user }) => user),
+    ["短く回答して", "買い物リストにご飯を入れたい", "追加してください", "その商品です"]);
+  const adopted = (await learning.status()).candidates.find(({ id }) => id === item.id);
+  await learning.forget({ items: [{ id: adopted.id, version: adopted.version }] });
+  await complete(service, conversation, "買い物の続きをお願いします");
+  const afterForget = codex.calls.filter(({ method }) => method === "thread/inject_items").at(-1);
+  assert.deepEqual(afterForget.params.items.map(({ content }) => content[0].text),
+    ["買い物リストにご飯を入れたい", "サトウのごはんを追加してよいですか？"]);
+});
+
+test("learning exclusions keep the latest ten-pair window without backfilling older conversation", async (t) => {
+  const { rootDir, conversation, codex } = await fixture(t);
+  await seedPairs(rootDir, conversation.logicalConversationId, 15);
+  const service = createVoiceContextService({ rootDir, createClient: codex.createClient,
+    learningContext: { retrieve: async () => ({ contextRevision: 2, selectedDigest: "empty", items: [], instruction: "", excludedPairSeqs: [14] }),
+      delivered: async () => {}, recordRead: async () => {} } });
+  await complete(service, conversation, "continue");
+  const injected = codex.calls.find(({ method }) => method === "thread/inject_items");
+  assert.deepEqual(injected.params.items.filter(({ role }) => role === "user").map(({ content }) => content[0].text),
+    [6, 7, 8, 9, 10, 11, 12, 13, 15].map((index) => `user-${index}`));
+});
+
+test("unavailable learning does not replay conversation with unknown exclusions", async (t) => {
+  const { rootDir, conversation, codex } = await fixture(t);
+  await seedPairs(rootDir, conversation.logicalConversationId, 2);
+  const service = createVoiceContextService({ rootDir, createClient: codex.createClient,
+    learningContext: { retrieve: async () => ({ contextRevision: 0, selectedDigest: "unavailable", items: [], instruction: "", excludedPairSeqs: null }),
+      delivered: async () => {}, recordRead: async () => {} } });
+  assert.equal((await complete(service, conversation, "continue")).result.status, "completed");
+  assert.equal(codex.calls.some(({ method }) => method === "thread/inject_items"), false);
+});
+
+for (const terminalStatus of ["completed", "failed", "interrupted"]) {
+  test(`actual parent switches remain visible for ${terminalStatus} turns after restart`, async (t) => {
+    let snapshot = { contextRevision: 1, selectedDigest: "one", items: [], instruction: "", excludedPairSeqs: [] };
+    const learningContext = { retrieve: async () => snapshot, delivered: async () => {}, recordRead: async () => {} };
+    const { rootDir, service, conversation, codex } = await fixture(t, { regularTurnStatus: terminalStatus, learningContext });
+    const first = await complete(service, conversation, "first");
+    assert.equal(first.result.sessionSwitched, undefined, "initial native creation is not a switch");
+    snapshot = { ...snapshot, contextRevision: 2, selectedDigest: "two" };
+    let live;
+    const second = await complete(service, conversation, "new parent", randomUUID(), async () => "decline", { onStarted: (value) => { live = value; } });
+    assert.equal(live.status, "running"); assert.equal(live.sessionSwitched, true);
+    assert.equal(second.result.status, terminalStatus); assert.equal(second.result.sessionSwitched, true);
+    const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient, learningContext });
+    assert.equal((await restarted.open()).sessionSwitched, true);
+    assert.deepEqual((await restarted.history()).messages.filter(({ sessionSwitched }) => sessionSwitched).map(({ clientOperationId }) => clientOperationId),
+      [second.message.operationId]);
+    const following = await complete(restarted, conversation, "same parent");
+    assert.equal(following.result.sessionSwitched, undefined);
+  });
+}
+
+for (const lostTurnStatus of ["completed", "failed", "interrupted"]) {
+  test(`lost turn-start response recovers a durable ${lostTurnStatus} parent boundary`, async (t) => {
+    let snapshot = { contextRevision: 1, selectedDigest: "one", items: [], instruction: "", excludedPairSeqs: [] };
+    const learningContext = { retrieve: async () => snapshot, delivered: async () => {}, recordRead: async () => {} };
+    const { rootDir, service, conversation, codex } = await fixture(t, { loseTurnStartResponseAt: 2, lostTurnStatus, learningContext });
+    await complete(service, conversation, "first");
+    snapshot = { ...snapshot, contextRevision: 2, selectedDigest: "two" };
+    const lost = await complete(service, conversation, "new parent");
+    assert.equal(lost.result.status, "unknown"); assert.equal(lost.result.sessionSwitched, undefined, "intent alone is not a native boundary");
+    const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient, learningContext });
+    assert.equal((await restarted.open()).sessionSwitched, true);
+    assert.equal((await createVoiceContextService({ rootDir, createClient: codex.createClient, learningContext }).open()).sessionSwitched, true);
+    assert.equal((await restarted.history()).messages.find(({ clientOperationId, role }) =>
+      clientOperationId === lost.message.operationId && role === "user").sessionSwitched, true);
+  });
+}
+
+test("legacy journals show only boundaries between known native parent identities", async (t) => {
+  const { rootDir, service, conversation, codex } = await fixture(t);
+  await complete(service, conversation, "first");
+  const settings = await service.getSettings();
+  await service.configure(settings.model, settings.effort, `${settings.systemInstruction}\nChanged`);
+  await complete(service, conversation, "second");
+  const eventFile = path.join(rootDir, conversation.logicalConversationId, "events.jsonl");
+  const legacy = (await fs.readFile(eventFile, "utf8")).trim().split("\n").map((line) => {
+    const event = JSON.parse(line); delete event.sessionSwitched;
+    if (event.type !== "native_started") { delete event.threadId; delete event.turnId; }
+    return event;
+  });
+  await fs.writeFile(eventFile, `${legacy.map((event) => JSON.stringify(event)).join("\n")}\n`);
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  const users = (await restarted.history()).messages.filter(({ role }) => role === "user");
+  assert.equal(users[0].sessionSwitched, undefined); assert.equal(users[1].sessionSwitched, true);
 });
