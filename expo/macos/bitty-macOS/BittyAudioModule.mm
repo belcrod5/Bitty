@@ -32,7 +32,8 @@ static double BittyAudioMilliseconds(CMTime time)
 
 - (instancetype)initWithSoundId:(NSString *)soundId
                             uri:(NSString *)uri
-                  initialStatus:(NSDictionary *)initialStatus;
+                  initialStatus:(NSDictionary *)initialStatus
+                        headers:(NSDictionary *)headers;
 - (NSDictionary *)statusWithDidJustFinish:(BOOL)didJustFinish;
 - (void)finishLoadingIfPossible;
 - (void)setProgressUpdateIntervalMillis:(NSInteger)progressUpdateIntervalMillis;
@@ -48,6 +49,7 @@ static double BittyAudioMilliseconds(CMTime time)
 - (instancetype)initWithSoundId:(NSString *)soundId
                             uri:(NSString *)uri
                   initialStatus:(NSDictionary *)initialStatus
+                        headers:(NSDictionary *)headers
 {
   self = [super init];
   if (!self) {
@@ -65,7 +67,9 @@ static double BittyAudioMilliseconds(CMTime time)
     return nil;
   }
 
-  _item = [AVPlayerItem playerItemWithURL:url];
+  AVURLAsset *asset = [AVURLAsset URLAssetWithURL:url
+      options:@{ @"AVURLAssetHTTPHeaderFieldsKey" : headers ?: @{} }];
+  _item = [AVPlayerItem playerItemWithAsset:asset];
   _player = [AVPlayer playerWithPlayerItem:_item];
   NSNumber *volume = initialStatus[@"volume"];
   if (volume) {
@@ -331,6 +335,7 @@ RCT_EXPORT_MODULE(BittyAudio)
 RCT_REMAP_METHOD(create,
                  createWithUri:(NSString *)uri
                  initialStatus:(NSDictionary *)initialStatus
+                 headers:(NSDictionary *)headers
                  resolver:(RCTPromiseResolveBlock)resolve
                  rejecter:(RCTPromiseRejectBlock)reject)
 {
@@ -338,7 +343,8 @@ RCT_REMAP_METHOD(create,
   BittyAudioPlayer *player = [[BittyAudioPlayer alloc]
       initWithSoundId:soundId
                   uri:uri
-        initialStatus:initialStatus ?: @{}];
+        initialStatus:initialStatus ?: @{}
+              headers:headers ?: @{}];
   if (!player) {
     reject(@"audio_url_invalid", @"Mac音声URLが不正です。", nil);
     return;

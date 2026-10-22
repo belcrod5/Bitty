@@ -18,6 +18,7 @@ import {
   useGestureViewerController,
   useGestureViewerState,
 } from "react-native-gesture-image-viewer";
+import { RunnerAudioPlayer } from "./RunnerAudioPlayer";
 import { WorkspaceFileRenameDialog } from "./WorkspaceFileRenameDialog";
 import type { RunnerMediaFile, RunnerMediaItem } from "../utils/runnerFileContextMenu";
 import type { WorkspaceFileTarget } from "../utils/workspaceFiles";
@@ -107,6 +108,9 @@ export function RunnerMediaViewer({ media, onRequestClose }: RunnerMediaViewerPr
 
   const renderMediaItem = useCallback((item: RunnerMediaItem, index: number) => {
     const source = sourceForItem(item);
+    if (item.kind === "audio") {
+      return index === selectedIndex ? <RunnerAudioPlayer key={item.url} source={source} /> : <View key={item.url} />;
+    }
     if (item.kind === "video") {
       return (
         <Video
@@ -186,7 +190,7 @@ export function RunnerMediaViewer({ media, onRequestClose }: RunnerMediaViewerPr
           />
         ) : (
           <View style={viewerStyles.thumbnailVideo}>
-            <Ionicons name="play" size={18} color={theme.dark.textMuted} />
+            <Ionicons name={item.kind === "audio" ? "musical-notes" : "play"} size={18} color={theme.dark.textMuted} />
           </View>
         )}
         <Text style={viewerStyles.thumbnailLabel} numberOfLines={1}>{item.name}</Text>
@@ -238,7 +242,7 @@ export function RunnerMediaViewer({ media, onRequestClose }: RunnerMediaViewerPr
             <Ionicons name="close" size={24} color={theme.dark.textMuted} />
           </TouchableOpacity>
         </View>
-        <View style={viewerStyles.content} onLayout={handleContentLayout}>
+        <View testID="runner-media-content" style={viewerStyles.content} onLayout={handleContentLayout}>
           {items.length > 0 && contentSize.height > 0 ? (
             <GestureViewer
               key={viewerKey}

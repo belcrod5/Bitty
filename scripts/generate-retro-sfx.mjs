@@ -173,10 +173,12 @@ function buildSfxPack() {
 }
 
 function buildVoiceInputSfxPack() {
-  // Original soft two-note chimes, distinct from the reviewed push notification WAVs.
+  // Octave body and clear upper harmonics retain the short two-note melodies.
   const chime = (freq, durationMs) => mix([
-    tone({ freq, durationMs, volume: 0.28, wave: "sine", attackMs: 5, releaseMs: 65 }),
-    tone({ freq: freq * 2, durationMs, volume: 0.035, wave: "sine", attackMs: 5, releaseMs: 65 }),
+    tone({ freq, durationMs, volume: 0.20, wave: "sine", attackMs: 3, releaseMs: 55 }),
+    tone({ freq: freq * 2, durationMs, volume: 0.085, wave: "sine", attackMs: 2, releaseMs: 50 }),
+    tone({ freq: freq * 3, durationMs, volume: 0.045, wave: "sine", attackMs: 2, releaseMs: 45 }),
+    tone({ freq: freq / 2, durationMs, volume: 0.065, wave: "sine", attackMs: 4, releaseMs: 55 }),
   ]);
   return {
     "voice-input-ready.wav": concat([chime(660, 80), silence(12), chime(880, 120)]),

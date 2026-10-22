@@ -59,11 +59,16 @@ test.after(async () => {
   sessionStoreRoot = "";
 });
 
-test("client media types include videos and common images", () => {
+test("client media types include videos, images, and audio", () => {
   assert.equal(hooks.getClientMediaMimeType("clip.mp4"), "video/mp4");
   assert.equal(hooks.getClientMediaMimeType("photo.JPEG"), "image/jpeg");
   assert.equal(hooks.getClientMediaMimeType("image.webp"), "image/webp");
   assert.equal(hooks.getClientMediaMimeType("photo.heic"), "image/heic");
+  for (const [extension, mime] of Object.entries({
+    wav: "audio/wav", mp3: "audio/mpeg", m4a: "audio/mp4", aac: "audio/aac",
+    flac: "audio/flac", ogg: "audio/ogg", opus: "audio/ogg", aif: "audio/aiff",
+    aiff: "audio/aiff", caf: "audio/x-caf",
+  })) assert.equal(hooks.getClientMediaMimeType(`音声.${extension.toUpperCase()}`), mime);
   assert.equal(hooks.getClientMediaMimeType("document.pdf"), "");
 });
 
@@ -412,4 +417,36 @@ test("session messages keep tool status logs for restore", async () => {
   const toolError = payload.messages.find((item) => item.content.startsWith("tool_error : search_dir"));
   assert.ok(toolError);
   assert.equal(toolError.kind, "status_log");
+});
+
+
+test("audio media requests retain bearer auth, byte ranges, and HEAD support", async () => {
+  const filePath = path.resolve(import.meta.dirname, "../../expo/assets/sfx/voice-input-send.wav");
+  const content = await readFile(filePath);
+  const { server } = hooks;
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const url = new URL(`http://127.0.0.1:${server.address().port}/files/media`);
+    url.searchParams.set("path", filePath);
+    url.searchParams.set("rootDir", path.dirname(filePath));
+    assert.equal((await fetch(url)).status, 401);
+    const headers = { authorization: `Bearer ${process.env.RUNNER_TOKEN}` };
+    const full = await fetch(url, { headers });
+    assert.equal(full.status, 200);
+    assert.equal(full.headers.get("content-type"), "audio/wav");
+    assert.equal(full.headers.get("accept-ranges"), "bytes");
+    assert.deepEqual(Buffer.from(await full.arrayBuffer()), content);
+    const head = await fetch(url, { method: "HEAD", headers });
+    assert.equal(head.status, 200);
+    assert.equal(head.headers.get("content-length"), String(content.length));
+    assert.equal((await head.arrayBuffer()).byteLength, 0);
+    const partial = await fetch(url, { headers: { ...headers, range: "bytes=44-63" } });
+    assert.equal(partial.status, 206);
+    assert.equal(partial.headers.get("content-range"), `bytes 44-63/${content.length}`);
+    assert.deepEqual(Buffer.from(await partial.arrayBuffer()), content.subarray(44, 64));
+    const invalid = await fetch(url, { headers: { ...headers, range: `bytes=${content.length}-` } });
+    assert.equal(invalid.status, 416);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
 });

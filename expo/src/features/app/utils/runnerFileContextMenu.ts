@@ -34,6 +34,16 @@ const RUNNER_FILE_OPEN_KIND_BY_EXTENSION: Record<string, RunnerFileOpenKind> = {
   webm: "video",
   mkv: "video",
   avi: "video",
+  wav: "audio",
+  mp3: "audio",
+  m4a: "audio",
+  aac: "audio",
+  flac: "audio",
+  ogg: "audio",
+  opus: "audio",
+  aif: "audio",
+  aiff: "audio",
+  caf: "audio",
   png: "image",
   jpg: "image",
   jpeg: "image",
@@ -46,7 +56,7 @@ const RUNNER_FILE_OPEN_KIND_BY_EXTENSION: Record<string, RunnerFileOpenKind> = {
   tiff: "image",
 };
 
-export type RunnerMediaKind = "video" | "image";
+export type RunnerMediaKind = "video" | "image" | "audio";
 
 export type RunnerFileViewerKind = "html" | "drawio" | "checklist";
 
@@ -177,10 +187,10 @@ function getRunnerFileOpenPresentation(
   canOpenEditor: boolean,
 ): RunnerFileOpenPresentation | null {
   const openKind = getRunnerFileOpenKind(filePath);
-  if (openKind === "video" || openKind === "image") {
+  if (openKind === "video" || openKind === "image" || openKind === "audio") {
     return {
       kind: openKind,
-      buttonText: openKind === "video" ? "再生" : "表示",
+      buttonText: openKind === "image" ? "表示" : "再生",
     };
   }
   if (openKind === "text") {
@@ -426,7 +436,7 @@ export function openRunnerFileContextMenu(params: RunnerFileActionParams, includ
       onPress: copyPathAction,
     },
   ];
-  if (openPresentation?.kind === "video" || openPresentation?.kind === "image") {
+  if (openPresentation?.kind === "video" || openPresentation?.kind === "image" || openPresentation?.kind === "audio") {
     if (includeOpenAction) buttons.push({
       text: openPresentation.buttonText,
       onPress: () => {
@@ -538,7 +548,7 @@ export function getRunnerFileOpenKind(pathRaw: unknown): RunnerFileOpenKind | nu
 
 export function getRunnerMediaKind(pathRaw: unknown): RunnerMediaKind | null {
   const kind = getRunnerFileOpenKind(pathRaw);
-  return kind === "video" || kind === "image" ? kind : null;
+  return kind === "video" || kind === "image" || kind === "audio" ? kind : null;
 }
 
 export function buildRunnerMediaItem(params: {

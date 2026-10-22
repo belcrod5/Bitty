@@ -312,10 +312,10 @@ private final class StreamingSession: NSObject, URLSessionWebSocketDelegate {
           self.priorAudioCategory = audioSession.category
           self.priorAudioMode = audioSession.mode
           self.priorAudioOptions = audioSession.categoryOptions
-          // Match the former recorder's routing. Restore the previous category on cleanup.
-          // A speaker override would also change wired and Bluetooth accessory routing.
+          // Use the speaker when no accessory is selected, while honoring headset routes.
+          // Restore the previous category on cleanup.
           self.diagnose("audio_session_configuring")
-          try audioSession.setCategory(.playAndRecord, mode: .default, options: [.allowBluetoothHFP, .mixWithOthers])
+          try audioSession.setCategory(.playAndRecord, mode: .default, options: [.allowBluetoothHFP, .mixWithOthers, .defaultToSpeaker])
           try audioSession.setActive(true)
           self.diagnose("audio_session_active")
           let engine = AVAudioEngine()
@@ -598,7 +598,7 @@ private final class StreamingSession: NSObject, URLSessionWebSocketDelegate {
     }
     if let category = priorAudioCategory, let mode = priorAudioMode {
       let audioSession = AVAudioSession.sharedInstance()
-      let captureOptions: AVAudioSession.CategoryOptions = [.allowBluetoothHFP, .mixWithOthers]
+      let captureOptions: AVAudioSession.CategoryOptions = [.allowBluetoothHFP, .mixWithOthers, .defaultToSpeaker]
       if audioSession.category == .playAndRecord && audioSession.mode == .default &&
           audioSession.categoryOptions == captureOptions {
         // Another owner (for example TTS) may have reconfigured the shared session.

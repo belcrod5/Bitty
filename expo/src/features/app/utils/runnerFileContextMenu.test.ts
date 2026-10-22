@@ -3,6 +3,7 @@ import { fetchRunnerTextFileContent } from "./runnerFileContent";
 import {
   createRunnerFileTarget,
   getRunnerFileOpenKind,
+  getRunnerMediaKind,
   getRunnerFileViewerKind,
   getRunnerFileLocation,
   isRunnerEditableTextFile,
@@ -560,4 +561,31 @@ test("read-only viewer targets carry a menu without mutation operations", () => 
   expect(alert.mock.calls[0][2]?.map((button) => button.text)).toEqual([
     "相対パスをコピー", "ファイル内容をコピー", "キャンセル",
   ]);
+});
+
+
+test.each(["wav", "mp3", "m4a", "aac", "flac", "ogg", "opus", "aif", "aiff", "caf"])("opens %s audio through the shared authenticated media path", (extension) => {
+  const filePath = `/work/other/日本語.${extension.toUpperCase()}`;
+  expect(getRunnerFileOpenKind(filePath)).toBe("audio");
+  expect(getRunnerMediaKind(filePath)).toBe("audio");
+  const onOpenMedia = jest.fn();
+  expect(openRunnerFile({
+    filePathRaw: filePath,
+    runnerUrl: "https://runner.test",
+    runnerToken: "token",
+    rootDir: "/work/current",
+    getPathLabel: String,
+    showInfoToast: jest.fn(),
+    onOpenMedia,
+  })).toBe(true);
+  const media = onOpenMedia.mock.calls[0][0];
+  expect(media).toMatchObject({ kind: "audio", path: filePath, runnerToken: "token" });
+  const url = new URL(media.url);
+  expect(url.pathname).toBe("/files/media");
+  expect(url.searchParams.get("path")).toBe(filePath);
+  expect(url.searchParams.get("rootDir")).toBe("/work/other");
+  expect(url.searchParams.has("token")).toBe(false);
+  const labels = openContextMenuButtons({ filePath }).map((button) => button.text);
+  expect(labels).toContain("再生");
+  expect(labels).not.toContain("ファイル内容をコピー");
 });
