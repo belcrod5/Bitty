@@ -58,6 +58,8 @@ import { RunnerMediaViewer } from "../components/RunnerMediaViewer";
 import { RunnerFileViewer } from "../components/RunnerFileViewer";
 import { WorkspaceFileRenameDialog } from "../components/WorkspaceFileRenameDialog";
 import { WorkspaceTextFileEditor } from "../components/WorkspaceTextFileEditor";
+import { SessionNoteEditor } from "../components/SessionNoteEditor";
+import { runnerSessionValue } from "../utils/runnerClientState";
 import { ChatSessionSubagentList } from "../components/ChatSessionSubagentList";
 import { ComposerFullscreenEditor } from "../components/ComposerFullscreenEditor";
 import { ChatComposerInput, MACOS_CHAT_SUBMIT_KEY_EVENTS } from "../components/ChatComposerInput";
@@ -88,7 +90,7 @@ import { formatOutputTokens } from "../utils/messageTokens";
 import { CodexScheduleSettings } from "../../codexSchedules/CodexScheduleSettings";
 
 type ChatFooterSelectTarget = "model" | "think";
-type DirectoryMenuMode = "actions" | "rename_directory" | "edit_session_title" | "select_marker" | "subagents";
+type DirectoryMenuMode = "actions" | "rename_directory" | "edit_session_title" | "select_marker" | "subagents" | "edit_note";
 type ChatScreenMode = "mini_board_popup";
 type ChatScreenProps = {
   mode?: ChatScreenMode;
@@ -335,6 +337,8 @@ export function ChatScreen({
     registeredDirectories,
     directorySessionsById,
     sessionTitleOverridesById,
+    sessionNotesById,
+    saveSessionNote,
     formatSessionUpdatedAt,
     loadSessionChildren,
     openSessionHistoryEntry,
@@ -420,6 +424,8 @@ export function ChatScreen({
   const selectedSessionIdForView = isPanelSnapshotView
     ? String(panelSnapshot.selectedSessionId || "").trim()
     : String(selectedLlmSessionId || "").trim();
+  const sessionNoteForView = runnerSessionValue(sessionNotesById, backendIdForView, selectedSessionIdForView) || "";
+  const noteIdentity = JSON.stringify([runnerClientStateScopeId, backendIdForView, selectedSessionIdForView]);
   const selectedSessionMaterializedForView = isPanelSnapshotView
     ? panelSnapshot.sessionMaterialized !== false
     : selectedLlmSessionMaterialized;
@@ -482,6 +488,10 @@ export function ChatScreen({
     : conversationMessages;
   const [directoryMenuOpen, setDirectoryMenuOpen] = useState(false);
   const [directoryMenuMode, setDirectoryMenuMode] = useState<DirectoryMenuMode>("actions");
+  useEffect(() => {
+    setDirectoryMenuOpen(false);
+    setDirectoryMenuMode("actions");
+  }, [noteIdentity]);
   const [directoryRenameInput, setDirectoryRenameInput] = useState("");
   const [directorySessionTitleInput, setDirectorySessionTitleInput] = useState("");
   const [popupComposerFullscreenOpen, setPopupComposerFullscreenOpen] = useState(false);
@@ -1287,7 +1297,6 @@ export function ChatScreen({
 
   useEffect(() => {
     if (!directoryMenuOpen) return;
-    setDirectoryMenuMode("actions");
     setDirectoryRenameInput(String(selectedDirectoryDisplayNameForView || "").trim());
     setDirectorySessionTitleInput(String(selectedSessionTitleForView || "").trim());
   }, [directoryMenuOpen, selectedDirectoryDisplayNameForView, selectedSessionTitleForView]);
@@ -2046,6 +2055,19 @@ export function ChatScreen({
               {selectedSessionTitleForView}
             </Text>
           </TouchableOpacity>
+          {sessionNoteForView ? (
+            <TouchableOpacity
+              style={{ padding: 6, flexShrink: 0 }}
+              accessibilityRole="button"
+              accessibilityLabel="保存済みのメモを編集"
+              onPress={() => {
+                setDirectoryMenuMode("edit_note");
+                setDirectoryMenuOpen(true);
+              }}
+            >
+              <Ionicons name="document-text-outline" size={17} color={theme.colors.controlAccent} />
+            </TouchableOpacity>
+          ) : null}
         </View>
         <View style={styles.chatHeaderRight}>
           <TouchableOpacity
@@ -2673,6 +2695,7 @@ export function ChatScreen({
                 contentContainerStyle={styles.chatDirectoryModalContent}
                 keyboardShouldPersistTaps="handled"
                 nestedScrollEnabled
+                automaticallyAdjustKeyboardInsets={directoryMenuMode === "edit_note"}
               >
                 <View style={styles.chatDirectoryModalHeader}>
                   {directoryMenuMode === "subagents" ? (
@@ -2686,13 +2709,23 @@ export function ChatScreen({
                     </TouchableOpacity>
                   ) : null}
                   <Text style={styles.chatDirectoryModalTitle}>
-                    {directoryMenuMode === "subagents" ? "サブエージェント" : "ディレクトリー"}
+                    {directoryMenuMode === "subagents" ? "サブエージェント" : directoryMenuMode === "edit_note" ? "メモ" : "ディレクトリー"}
                   </Text>
                   <Text style={styles.chatDirectoryMenuPathText} numberOfLines={2}>
                     {selectedDirectoryPathForView}
                   </Text>
                 </View>
-              {directoryMenuMode === "rename_directory" ? (
+              {directoryMenuMode === "edit_note" ? (
+                <SessionNoteEditor
+                  key={noteIdentity}
+                  note={sessionNoteForView}
+                  onSave={(note, expectedNote) => saveSessionNote(backendIdForView, selectedSessionIdForView, note, expectedNote, runnerClientStateScopeId)}
+                  onClose={() => {
+                    setDirectoryMenuMode("actions");
+                    setDirectoryMenuOpen(false);
+                  }}
+                />
+              ) : directoryMenuMode === "rename_directory" ? (
                 <View style={[styles.chatDirectoryRenameBlock, styles.settingsGroup, styles.chatDirectoryEditorGroup]}>
                   <Text style={styles.chatDirectoryRenameTitle}>名前を編集</Text>
                   <TextInput
@@ -2840,6 +2873,19 @@ export function ChatScreen({
                         <Text style={styles.settingsRowValue} numberOfLines={1}>
                           {String(selectedSessionTitleForView || "").trim() || "未設定"}
                         </Text>
+                        <Ionicons name="chevron-forward" size={18} color={theme.colors.disclosure} />
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.settingsRow, styles.settingsRowDivider]}
+                        onPress={() => setDirectoryMenuMode("edit_note")}
+                        disabled={!selectedSessionIdForView || !composerDraftsLoaded}
+                        accessibilityRole="button"
+                        accessibilityLabel="メモを開く"
+                      >
+                        <View style={styles.settingsRowLabelWrap}>
+                          <Text style={styles.settingsRowLabel}>メモ</Text>
+                        </View>
+                        {sessionNoteForView ? <Ionicons name="document-text-outline" size={18} color={theme.colors.controlAccent} /> : null}
                         <Ionicons name="chevron-forward" size={18} color={theme.colors.disclosure} />
                       </TouchableOpacity>
                       <TouchableOpacity style={styles.settingsRow} onPress={() => setDirectoryMenuMode("select_marker")}>

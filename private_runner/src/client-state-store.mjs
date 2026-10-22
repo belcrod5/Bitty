@@ -96,6 +96,11 @@ export function createClientStateStore(storePath) {
         const key = sessionKey(requiredString(operation.backendId, "backendId", 100), requiredString(operation.sessionId, "sessionId", 200));
         const previous = state.sessions[key] || { title: "", markerColor: "none" };
         const next = { ...previous };
+        if (Object.hasOwn(operation, "note")) {
+          if (typeof operation.note !== "string" || operation.note.length > 100_000) throw new Error("invalid note");
+          if (operation.expectedNote !== (previous.note || "")) throw new Error("メモが別の画面で更新されました。開き直して確認してください。");
+          next.note = operation.note.trim() ? operation.note : "";
+        }
         if (Object.hasOwn(operation, "title")) {
           next.title = String(operation.title || "").replace(/\s+/gu, " ").trim().slice(0, 200);
           next.titleSource = "manual";

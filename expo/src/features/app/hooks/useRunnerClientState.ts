@@ -36,6 +36,7 @@ export function useRunnerClientState({
   const [titleReasoningEffort, setTitleReasoningEffort] = useState<ReasoningEffort>("low");
   const [drafts, setDrafts] = useState<ComposerDraft[]>([]);
   const [draftsLoaded, setDraftsLoaded] = useState(false);
+  const [sessionNotesById, setSessionNotesById] = useState<Record<string, string>>({});
   const queue = useRef<Promise<unknown>>(Promise.resolve());
   const snapshotRef = useRef<RunnerClientState | null>(null);
   const snapshotConnectionRef = useRef("");
@@ -65,6 +66,8 @@ export function useRunnerClientState({
       .map(([key, value]) => [key, value.title])));
     setSessionMarkerColorsById(Object.fromEntries(Object.entries(snapshot.sessions)
       .map(([key, value]) => [key, value.markerColor])));
+    setSessionNotesById(Object.fromEntries(Object.entries(snapshot.sessions)
+      .map(([key, value]) => [key, value.note || ""])));
     setMessages(snapshot.composerHistory);
     setDrafts(Object.entries({ ...snapshot.drafts, ...Object.fromEntries(Object.entries(pendingDrafts.current)
       .filter(([, pending]) => pending.connection.id === id && pending.text.trim())
@@ -114,6 +117,7 @@ export function useRunnerClientState({
     setTitleReasoningEffort("low");
     setSessionTitleOverridesById({});
     setSessionMarkerColorsById({});
+    setSessionNotesById({});
     setMessages([]);
     setDrafts([]);
     setDraftsLoaded(false);
@@ -213,5 +217,11 @@ export function useRunnerClientState({
     mutate({ type: "title-settings.set", modelId, reasoningEffort });
   }, [mutate]);
 
-  return { mutate, titleModelId, titleReasoningEffort, changeTitleSettings, messages, recordMessage, drafts, draftsLoaded, setDraft, clearDraft, scopeId: currentConnection.id };
+  const saveSessionNote = useCallback((backendId: string, sessionId: string, note: string, expectedNote: string, scopeId: string) => {
+    if (scopeId !== connectionRef.current.id) return Promise.reject(new Error("Runner が切り替わりました。メモを開き直してください。"));
+    return enqueue({ type: "session.set", backendId, sessionId, note, expectedNote });
+  }, [enqueue]);
+
+  return { mutate, titleModelId, titleReasoningEffort, changeTitleSettings, messages, recordMessage, drafts, draftsLoaded, setDraft, clearDraft,
+    sessionNotesById: snapshotConnectionRef.current === currentConnection.id ? sessionNotesById : {}, saveSessionNote, scopeId: currentConnection.id };
 }
