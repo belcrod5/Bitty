@@ -7335,6 +7335,17 @@ runnerWsServer.on("connection", (ws, req) => {
       })).catch((error) => sendVoiceError(message, error));
       return true;
     }
+    if (["voice.learning.status", "voice.learning.configure", "voice.learning.usage", "voice.learning.price.configure", "voice.learning.decide", "voice.learning.change", "voice.learning.correct", "voice.learning.forget", "voice.learning.proposal", "voice.learning.delivery", "voice.learning.retry"].includes(message.op)) {
+      const operation = message.op === "voice.learning.status" ? voiceContextService.learningStatus()
+        : message.op === "voice.learning.configure" ? voiceContextService.configureLearning(message.payload || {})
+        : message.op === "voice.learning.usage" ? voiceContextService.learningUsage(message.payload || {})
+        : message.op === "voice.learning.price.configure" ? voiceContextService.configureLearningPrice(message.payload?.snapshot ?? null)
+        : message.op === "voice.learning.delivery" ? voiceContextService.learningDelivery(message.payload || {})
+        : voiceContextService.manageLearning(message.op.split(".").at(-1), message.payload || {});
+      void operation.then((payload) => sendRunnerWsEnvelope(ws, { channel: "agent", op: `${message.op}.result`,
+        requestId: message.requestId || "", payload })).catch((error) => sendVoiceError(message, error));
+      return true;
+    }
     if (["voice.settings", "voice.settings.update", "voice.memory.clear", "voice.messages.clear"].includes(message.op)) {
       let operation;
       if (message.op === "voice.settings") operation = voiceContextService.getSettings(orchestratorId);

@@ -9,7 +9,7 @@ import { createVoiceContextService } from "../src/voice-context-service.mjs";
 import { createVoiceOrchestratorService } from "../src/voice-orchestrator-service.mjs";
 
 function fakeCodex({ hold = false, failSummary = false, failTurn = false, approval = false,
-  checklistWrites = [], archiveReads = [] } = {}) {
+  checklistWrites = [], archiveReads = [], failModelList = () => false } = {}) {
   const calls = [];
   const releases = [];
   const threads = new Map();
@@ -25,6 +25,7 @@ function fakeCodex({ hold = false, failSummary = false, failTurn = false, approv
       waitForTurnCompletion() { return { expect() {}, promise: new Promise((resolve) => { resolveCompletion = resolve; }) }; },
       async request(method, params) {
         calls.push({ method, params });
+        if (method === "model/list" && failModelList()) throw new Error("Model catalog unavailable");
         if (method === "model/list") return { data: [
           { model: "gpt-6-luna", displayName: "Luna", supportedReasoningEfforts: [{ reasoningEffort: "low" }] },
           { model: "another-model", displayName: "Another", supportedReasoningEfforts: [{ reasoningEffort: "high" }] },
@@ -907,4 +908,155 @@ test("checklist paths accept only an orchestrator ID in the fixed directory", ()
     "../task-checklists/main.md", "task-checklists/main.json", "task-checklists/completed/main.md", ""]) {
     assert.throws(() => createVoiceContextService({ rootDir: "/unused", taskChecklistPath }), TypeError);
   }
+});
+
+test("shared observation records completed pairs from both chats and settings stay workspace-owned", async (t) => {
+  const { service, codex } = await fixture(t);
+  const main = await service.open("main");
+  const child = await service.create("Research");
+  const childOpen = await service.open(child.id);
+  await (await turn(service, "main", main.logicalConversationId, "Prefer short reports")).finished;
+  await (await turn(service, child.id, childOpen.logicalConversationId, "Compare two options")).finished;
+  const status = await service.learningStatus();
+  assert.equal(status.status, "unconfigured");
+  assert.equal(status.pendingCount, 2); assert.equal(status.observedThrough, 2);
+  const before = await service.getSettings("main");
+  const configured = await service.configureLearning({ model: "another-model", effort: "high", settingsRevision: 1 });
+  assert.deepEqual(configured.settings, { model: "another-model", effort: "high", settingsRevision: 2 });
+  assert.equal((await service.getSettings("main")).model, before.model);
+  await assert.rejects(service.configureLearning({ model: "another-model", effort: "high", settingsRevision: 1 }), { code: "learning_settings_conflict" });
+  await service.configureLearning({ model: "", effort: "", settingsRevision: 2 });
+  assert.equal(codex.calls.filter((call) => call.method === "thread/start" && call.params.developerInstructions?.startsWith("Analyze supplied")).length, 0);
+});
+
+test("observation restart recovers completed sources after observer storage was absent", async (t) => {
+  const { rootDir, service, codex } = await fixture(t);
+  const main = await service.open("main");
+  await (await turn(service, "main", main.logicalConversationId, "Recover this source")).finished;
+  const workspace = (await fs.readdir(path.join(path.dirname(rootDir), "workspaces")))[0];
+  const file = path.join(path.dirname(rootDir), "workspaces", workspace, "orchestrator-learning", "state.json");
+  const saved = JSON.parse(await fs.readFile(file, "utf8"));
+  saved.pending = []; saved.observedThrough = 0;
+  await fs.writeFile(file, JSON.stringify(saved));
+  const restarted = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
+  const restored = await restarted.learningStatus();
+  assert.equal(restored.pendingCount, 1); assert.equal(restored.observedThrough, 1);
+  const persisted = JSON.parse(await fs.readFile(file, "utf8"));
+  assert.equal(persisted.pending[0].orchestratorId, "main");
+  assert.equal(persisted.pending[0].logicalConversationId, main.logicalConversationId);
+  assert.ok(persisted.pending[0].clientOperationId);
+});
+
+test("corrupt learning state pauses learning while ordinary conversations still complete", async (t) => {
+  const { rootDir, service, codex } = await fixture(t);
+  const main = await service.open("main");
+  const workspace = (await fs.readdir(path.join(path.dirname(rootDir), "workspaces")))[0];
+  await fs.writeFile(path.join(path.dirname(rootDir), "workspaces", workspace, "orchestrator-learning", "state.json"), "{}");
+  const restarted = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
+  assert.equal((await restarted.learningStatus()).status, "paused");
+  assert.equal((await (await turn(restarted, "main", main.logicalConversationId, "Still respond")).finished).status, "completed");
+});
+
+test("first observation startup prepares usage storage and excludes pre-existing conversation history", async (t) => {
+  const { rootDir, codex } = await fixture(t);
+  const legacy = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  const opened = await legacy.open();
+  const prior = await turn(legacy, undefined, opened.logicalConversationId, "Before learning existed");
+  assert.equal((await prior.finished).status, "completed");
+  const service = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
+  const initial = await service.learningStatus();
+  assert.equal(initial.status, "unconfigured");
+  assert.equal(initial.usage.blockedReason, null);
+  assert.equal(initial.pendingCount, 0);
+  assert.equal(initial.observedThrough, 1);
+  assert.deepEqual(initial.gaps, [{ from: 1, through: 1, reason: "before_observation" }]);
+  const current = await turn(service, "main", opened.logicalConversationId, "After observation started");
+  assert.equal((await current.finished).status, "completed");
+  const status = await service.learningStatus();
+  assert.equal(status.pendingCount, 1); assert.equal(status.observedThrough, 2);
+});
+
+test("recovery scan waits for a concurrent completion's durable observation", async (t) => {
+  const { rootDir, service, codex } = await fixture(t, { hold: true });
+  const main = await service.open("main");
+  const child = await service.create("Other");
+  const childOpened = await service.open(child.id);
+  const first = await turn(service, "main", main.logicalConversationId, "Record this completion");
+  await waitFor(() => codex.releases.length === 1);
+  const activeFile = path.join(rootDir, "active.json");
+  const mainEvents = path.join(rootDir, main.logicalConversationId, "events.jsonl");
+  const originalRename = fs.rename, originalRead = fs.readFile;
+  let resume, entered;
+  const paused = new Promise((resolve) => { entered = resolve; });
+  const gate = new Promise((resolve) => { resume = resolve; });
+  let blockCompletion = true, reads = 0;
+  fs.rename = async (source, target) => {
+    if (blockCompletion && target === activeFile) {
+      const saved = JSON.parse(await originalRead(source, "utf8"));
+      if (saved.countedThroughPairSeq === 1) { blockCompletion = false; entered(); await gate; }
+    }
+    return originalRename(source, target);
+  };
+  fs.readFile = async (file, ...args) => {
+    if (file === mainEvents) reads++;
+    return originalRead(file, ...args);
+  };
+  t.after(() => { resume(); fs.rename = originalRename; fs.readFile = originalRead; });
+  codex.releases.shift()();
+  await paused;
+  const secondPromise = turn(service, child.id, childOpened.logicalConversationId, "Concurrent request");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(reads, 0, "scan must not enter while pair persistence owns the serialization boundary");
+  resume();
+  assert.equal((await first.finished).status, "completed");
+  const second = await secondPromise;
+  const status = await service.learningStatus();
+  assert.equal(status.observedThrough, 1); assert.equal(status.pendingCount, 1);
+  assert.deepEqual(status.gaps, []);
+  await waitFor(() => codex.releases.length === 1);
+  codex.releases.shift()();
+  assert.equal((await second.finished).status, "completed");
+});
+
+test("learning can stop without a model catalog while enabling still requires validation", async (t) => {
+  let unavailable = false;
+  const { service, codex } = await fixture(t, { failModelList: () => unavailable });
+  await service.configureLearning({ model: "another-model", effort: "high", settingsRevision: 1 });
+  unavailable = true;
+  const before = codex.calls.length;
+  const stopped = await service.configureLearning({ model: "", effort: "", settingsRevision: 2 });
+  assert.equal(stopped.enabled, false);
+  assert.deepEqual(stopped.settings, { model: "", effort: "", settingsRevision: 3 });
+  assert.equal(codex.calls.slice(before).some((call) => call.method === "model/list"), false);
+  await assert.rejects(service.configureLearning({ model: "another-model", effort: "high", settingsRevision: 3 }), /Model catalog unavailable/);
+  assert.deepEqual((await service.learningStatus()).settings, stopped.settings);
+});
+
+test("learning management facade connects bulk adoption, publication, response delivery and forgetting", async (t) => {
+  const { rootDir, service, codex } = await fixture(t);
+  const main = await service.open("main");
+  await (await turn(service, "main", main.logicalConversationId, "Prefer short reports")).finished;
+  const workspace = (await fs.readdir(path.join(path.dirname(rootDir), "workspaces")))[0];
+  const file = path.join(path.dirname(rootDir), "workspaces", workspace, "orchestrator-learning", "state.json");
+  const saved = JSON.parse(await fs.readFile(file, "utf8"));
+  const id = randomUUID();
+  saved.candidates.push({ id, version: 1, status: "candidate", kind: "procedure", content: "Check reports", conditions: "This chat only",
+    reason: "Synthetic explicit procedure", scope: { orchestratorId: "main" }, evidence: [{ ...saved.pending[0], user: undefined, assistant: undefined }],
+    createdAt: new Date().toISOString(), skill: { purpose: "Check reports", triggers: "Report checks", inputs: "Current report", steps: "Read and check",
+      outputs: "Findings", exceptions: "Only requested report", approvals: "Current approval path" } });
+  await fs.writeFile(file, JSON.stringify(saved));
+  const restarted = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
+  let status = await restarted.manageLearning("decide", { items: [{ id, version: 1 }], action: "adopt" });
+  assert.equal(status.candidates[0].status, "active");
+  status = await restarted.manageLearning("decide", { items: [{ id, version: 2 }], action: "publish" });
+  assert.equal(status.candidates[0].published.version, 3);
+  const response = await turn(restarted, "main", main.logicalConversationId, "Check reports");
+  const completed = await response.finished; assert.equal(completed.status, "completed");
+  const proof = await restarted.learningDelivery({ orchestratorId: "main", operationId: completed.clientOperationId });
+  assert.equal(proof.delivery.items[0].id, id); assert.equal(proof.delivery.readsVerified, true);
+  status = await restarted.manageLearning("change", { items: [{ id, version: 3 }], instruction: "Make findings shorter" });
+  assert.equal(status.requests[0].instruction, "Make findings shorter");
+  status = await restarted.manageLearning("forget", { items: [{ id, version: 3 }] });
+  assert.equal(status.candidates.length, 0);
+  assert.equal((await restarted.learningDelivery({ orchestratorId: "main", operationId: completed.clientOperationId })).delivery, null);
 });

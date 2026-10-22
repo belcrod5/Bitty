@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { createVoiceContextService, readVoiceEventState } from "./voice-context-service.mjs";
+import { openOrchestratorLearning } from "./orchestrator-learning-service.mjs";
+import { createOrchestratorLearningUsage } from "./orchestrator-learning-usage.mjs";
 import { createVoiceSubagentService } from "./voice-subagents.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -45,6 +47,28 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
   let main;
   let memoryStore;
   let workspaceDirectory;
+  let learning;
+  let learningLedger;
+  let learningError;
+  let recoveredLearningPairs = [];
+  const observePair = (orchestratorId) => async (pair) => {
+    if (learning) await learning.observe([{ ...pair, orchestratorId, memoryConversationId: memoryStore.conversationId }]);
+    else recoveredLearningPairs.push({ ...pair, orchestratorId });
+  };
+  const learningContext = (orchestratorId) => ({
+    retrieve: (args) => learning ? learning.retrieve({ ...args, orchestratorId }) : Promise.resolve({ contextRevision: 0,
+      selectedDigest: "unavailable", items: [], suppressRecent: true, instruction: "" }),
+    delivered: (args) => learning?.delivered({ ...args, orchestratorId }),
+    recordRead: (args) => learning?.recordRead(args),
+    tool: async ({ tool, arguments: args, operationId, input }) => {
+      if (!learning) throw failure("Learning is unavailable", "learning_store_unavailable");
+      if (tool === "read_context" && Object.keys(args).sort().join() === "sourceItemIds,targets")
+        return { selection: await learning.retrieve({ orchestratorId, input, targets: args.targets }), sourceItemIds: args.sourceItemIds };
+      if (tool === "read_skill" && Object.keys(args).sort().join() === "hash,id,version") return learning.readSkill({ ...args, orchestratorId });
+      if (tool === "propose_batch") return learning.proposeBatch({ ...args, orchestratorId, operationId });
+      throw failure("Unknown learning tool", "learning_request_invalid");
+    },
+  });
   let storeFailure;
   const contexts = new Map();
   const reservations = new Set();
@@ -105,10 +129,15 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
 
   async function allEventPairs(mainPairs) {
     const all = [...mainPairs];
+    const recoveryThrough = memoryStore?.lastPairSeq;
+    const learningPairs = [];
     const retainedOwners = new Map();
     const mainActive = JSON.parse(await safeFile(path.join(root, "active.json")));
-    rememberOperations(retainedOwners, readVoiceEventState(await safeFile(path.join(root, mainActive.logicalConversationId, "events.jsonl")),
-      mainActive.prunedThroughPairSeq || 0).operationIds, "main");
+    const mainEvents = readVoiceEventState(await safeFile(path.join(root, mainActive.logicalConversationId, "events.jsonl")),
+      mainActive.prunedThroughPairSeq || 0);
+    rememberOperations(retainedOwners, mainEvents.operationIds, "main");
+    learningPairs.push(...mainEvents.completedPairs.map((pair) => ({ ...pair, orchestratorId: "main",
+      logicalConversationId: mainActive.logicalConversationId })));
     for (const { id } of registry?.orchestrators || []) {
       if (id === "main") continue;
       const directory = path.join(orchestratorRoot, id);
@@ -118,6 +147,8 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
       const child = readVoiceEventState(buffer, active.prunedThroughPairSeq || 0);
       rememberOperations(retainedOwners, child.operationIds, id);
       all.push(...child.pairs);
+      learningPairs.push(...child.completedPairs.map((pair) => ({ ...pair, orchestratorId: id,
+        logicalConversationId: active.logicalConversationId })));
     }
     all.sort((a, b) => a.pairSeq - b.pairSeq);
     if (all.some((pair, index) => index && pair.pairSeq === all[index - 1].pairSeq)) {
@@ -129,6 +160,9 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
     }
     operationOwners.clear();
     for (const [operationId, owner] of retainedOwners) operationOwners.set(operationId, owner);
+    recoveredLearningPairs = learningPairs;
+    if (learning) await learning.observe(learningPairs.map((pair) => ({ ...pair,
+      memoryConversationId: memoryStore.conversationId })), recoveryThrough).catch(() => {});
     return all;
   }
 
@@ -191,12 +225,31 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
       onChecklistChanged: (conversationId) => onChecklistChanged?.({ orchestratorId: "main", logicalConversationId: conversationId }),
       memoryConversationId: registry.memoryConversationId || undefined,
       memoryEventPairs: allEventPairs, pairExclusive, managedSessions: managedSessions("main"),
+      onDurablePair: observePair("main"), learningContext: learningContext("main"),
       hasOutstandingActivity: hasOutstandingActivity("main") });
     try {
       const opened = await main.open();
       memoryStore = await main.getMemoryStore();
       workspaceDirectory = await main.getWorkspaceDirectory();
       contexts.set("main", main);
+      try {
+        const learningDirectory = path.join(workspaceDirectory, "orchestrator-learning");
+        await fs.mkdir(learningDirectory, { mode: 0o700 }).catch((error) => { if (error.code !== "EEXIST") throw error; });
+        const stat = await fs.lstat(learningDirectory);
+        if (!stat.isDirectory() || stat.isSymbolicLink()
+          || typeof process.getuid === "function" && stat.uid !== process.getuid()) throw failure("Unsafe learning directory");
+        learningLedger = createOrchestratorLearningUsage({ directory: path.join(learningDirectory, "usage") });
+        const recovered = await learningLedger.recover();
+        if (!recovered.ok) throw failure("Learning usage storage is unavailable", "learning_store_unavailable");
+        learning = await openOrchestratorLearning({ workspace: workspaceDirectory,
+          memoryConversationId: memoryStore.conversationId, initialThrough: memoryStore.lastPairSeq,
+          analyze: (args) => main.analyzeLearning(args), ledger: learningLedger,
+          isBusy: () => reservations.size > 0 });
+        await learning.observe(recoveredLearningPairs.map((pair) => ({ ...pair,
+          memoryConversationId: memoryStore.conversationId })), memoryStore.lastPairSeq).catch(() => {});
+      } catch (error) {
+        learningError = { code: "learning_store_unavailable", message: "Learning storage is unavailable; normal conversation is unaffected." };
+      }
       if (!old) await saveRegistry({ ...registry, memoryConversationId: memoryStore.conversationId });
       if (!registry.memoryConversationId || !UUID.test(opened.logicalConversationId)) {
         throw failure("Voice orchestrator registry is invalid", "voice_store_corrupt");
@@ -217,6 +270,7 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
       taskChecklistPath: `task-checklists/${id}.md`,
       onChecklistChanged: (conversationId) => onChecklistChanged?.({ orchestratorId: id, logicalConversationId: conversationId }),
       sharedWorkspaceDirectory: workspaceDirectory, sharedMemoryStore: memoryStore, pairExclusive,
+      onDurablePair: observePair(id), learningContext: learningContext(id),
       managedSessions: managedSessions(id), hasOutstandingActivity: hasOutstandingActivity(id) });
     contexts.set(id, service);
     try { await service.open(); }
@@ -266,6 +320,7 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
           taskChecklistPath: `task-checklists/${item.id}.md`,
           onChecklistChanged: (conversationId) => onChecklistChanged?.({ orchestratorId: item.id, logicalConversationId: conversationId }),
           sharedWorkspaceDirectory: workspaceDirectory, sharedMemoryStore: memoryStore, pairExclusive,
+          onDurablePair: observePair(item.id),
           managedSessions: managedSessions(item.id), hasOutstandingActivity: hasOutstandingActivity(item.id) });
         await service.open();
         if (model !== undefined || effort !== undefined || systemInstruction !== undefined
@@ -316,10 +371,47 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
           orchestrators: registry.orchestrators.filter((item) => item.id !== id) };
         await saveRegistry(next);
         contexts.delete(id);
+        await learning?.removeOrchestrator(id).catch(() => {});
         await fs.rm(path.join(orchestratorRoot, id), { recursive: true });
         await subagents?.retain(new Set(next.orchestrators.map((item) => item.id)));
         return publicList();
       });
+    },
+    async learningStatus() {
+      await exclusive(load);
+      if (!learning) return { mode: "observation", enabled: false, status: "paused", settings: { model: "", effort: "", settingsRevision: 1 },
+        error: learningError, candidates: [], gaps: [], pendingCount: 0, observedThrough: 0, processedThrough: 0, usage: null };
+      return learning.status();
+    },
+    async configureLearning(settings) {
+      await exclusive(load);
+      if (!learning) throw failure("Learning storage is unavailable", "learning_store_unavailable");
+      const models = settings.model === "" && settings.effort === "" ? [] : (await main.getSettings()).models;
+      await learning.configure(settings, models);
+      return learning.status();
+    },
+    async manageLearning(operation, payload) {
+      await exclusive(load);
+      if (!learning) throw failure("Learning storage is unavailable", "learning_store_unavailable");
+      const methods = { decide: "decide", change: "requestChange", correct: "correctEvaluation", forget: "forget", proposal: "proposalDecision", retry: "retry" };
+      if (!methods[operation]) throw failure("Unknown learning operation", "learning_request_invalid");
+      await learning[methods[operation]](payload);
+      return learning.status();
+    },
+    async learningDelivery({ orchestratorId, operationId }) {
+      await exclusive(load);
+      idOf(orchestratorId);
+      return { delivery: await learning?.delivery({ orchestratorId, operationId }) || null };
+    },
+    async learningUsage(options) {
+      await exclusive(load);
+      if (!learningLedger) throw failure("Learning usage storage is unavailable", "learning_store_unavailable");
+      return learningLedger.history(options);
+    },
+    async configureLearningPrice(snapshot) {
+      await exclusive(load);
+      if (!learningLedger) throw failure("Learning usage storage is unavailable", "learning_store_unavailable");
+      return learningLedger.configurePrice(snapshot);
     },
     async getSettings(id) {
       const service = await context(idOf(id));
@@ -374,7 +466,8 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
         const orchestrator = registry.orchestrators.find((item) => item.id === id);
         const operationId = message.payload?.clientOperationId;
         const reservation = `${id}:${operationId}`;
-        await allEventPairs([]);
+        // A completion must finish its durable observation before a recovery scan advances the high water.
+        await pairExclusive(() => allEventPairs([]));
         if (operationOwners.has(operationId) && operationOwners.get(operationId) !== id) {
           throw failure("Voice operation ID belongs to another orchestrator", "operation_conflict");
         }

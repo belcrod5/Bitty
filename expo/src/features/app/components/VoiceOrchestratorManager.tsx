@@ -10,6 +10,7 @@ import { DEFAULT_TTS_PROVIDER, TTS_PROVIDERS, TTS_PROVIDER_LABELS, type TtsProvi
 import { pickVoiceOrchestratorIcon, supportsVoiceOrchestratorIconPicking } from "../utils/voiceOrchestratorIconPicker";
 import { AppModal } from "./AppModal";
 import { SettingsSelect } from "./SettingsSelect";
+import { OrchestratorLearningPanel } from "./OrchestratorLearningPanel";
 import { VoiceOrchestratorIcon, type VoiceOrchestrator } from "./VoiceOrchestratorIcon";
 
 type VoiceModel = { modelId: string; label: string; effortOptions: ReasoningEffort[] };
@@ -35,6 +36,7 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
   const styles = useAppStyles();
   const { theme } = useVisualTheme();
   const [detailId, setDetailId] = useState<string | null>(null);
+  const [learningOpen, setLearningOpen] = useState(false);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -54,7 +56,7 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
   }, [manager]);
 
   useEffect(() => {
-    if (!visible) { setDetailId(null); setDetail(null); setError(""); setVoices([]);
+    if (!visible) { setDetailId(null); setDetail(null); setLearningOpen(false); setError(""); setVoices([]);
       voiceCatalogRequestRef.current += 1; }
   }, [visible]);
 
@@ -203,19 +205,21 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
   const overviewEfforts = effortOptionsForModel(currentOverviewModel
     && { supportsReasoningEffort: true, effortOptions: currentOverviewModel.effortOptions });
 
+  const back = () => learningOpen ? setLearningOpen(false) : detailId === null ? onClose() : setDetailId(null);
+
   return (
-    <AppModal visible={visible} animationType="slide" onRequestClose={() => detailId === null ? onClose() : setDetailId(null)}>
+    <AppModal visible={visible} animationType="slide" onRequestClose={back}>
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}
         automaticOffset={Platform.OS === "ios"}>
       <SafeAreaView style={styles.settingsScreen}>
         <KeyboardAwareScrollView testID="orchestrator-settings-scroll" style={{ flex: 1 }}
           contentContainerStyle={styles.settingsContent} keyboardShouldPersistTaps="handled">
           <TouchableOpacity accessibilityRole="button" accessibilityLabel="戻る"
-            style={styles.settingsBackButton} onPress={() => detailId === null ? onClose() : setDetailId(null)}>
-            <Text style={styles.settingsBackButtonText}>‹ {detailId === null ? "音声会話" : "オーケストレータ"}</Text>
+            style={styles.settingsBackButton} onPress={back}>
+            <Text style={styles.settingsBackButtonText}>‹ {detailId === null && !learningOpen ? "音声会話" : "オーケストレータ"}</Text>
           </TouchableOpacity>
-          <Text style={styles.settingsTitle}>{detailId === null ? "オーケストレータ" : detailId === "new" ? "追加" : "詳細"}</Text>
-          {detailId === null ? (
+          <Text style={styles.settingsTitle}>{learningOpen ? "学習・評価" : detailId === null ? "オーケストレータ" : detailId === "new" ? "追加" : "詳細"}</Text>
+          {learningOpen ? <OrchestratorLearningPanel request={request} orchestrators={list.orchestrators} /> : detailId === null ? (
             <View style={styles.settingsSection}>
               <View style={styles.settingsGroup}>
                 {list.orchestrators.map((item) => (
@@ -230,6 +234,15 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
                 <TouchableOpacity testID="orchestrator-add" accessibilityRole="button" accessibilityLabel="オーケストレータを追加"
                   onPress={() => setDetailId("new")} style={styles.settingsRow}>
                   <Text style={styles.settingsActionText}>＋ 追加</Text>
+                </TouchableOpacity>
+                <TouchableOpacity testID="orchestrator-learning-open" accessibilityRole="button"
+                  accessibilityLabel="学習・評価を開く" onPress={() => setLearningOpen(true)}
+                  style={[styles.settingsRow, { borderTopWidth: 1, borderTopColor: theme.colors.groupedDivider }]}>
+                  <View style={styles.settingsRowLabelWrap}>
+                    <Text style={styles.settingsRowLabel}>学習・評価</Text>
+                    <Text style={styles.settingsRowDescription}>全オーケストレータ共通</Text>
+                  </View>
+                  <Text style={styles.settingsRowValue}>›</Text>
                 </TouchableOpacity>
               </View>
             </View>
