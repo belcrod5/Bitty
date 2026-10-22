@@ -1485,3 +1485,83 @@ describe("reset confirmation countdown lifecycle", () => {
     expect(result.current.turnStatus).toBe("accepted");
   });
 });
+
+for (const persistedUser of [false, true]) {
+  test(`native-start boundary updates the ${persistedUser ? "persisted" : "local"} user row before reply and survives history refresh`, async () => {
+    const originalRequest = mockManager.request.getMockImplementation();
+    let messages: { role: string; text: string; clientOperationId: string; sessionSwitched?: boolean }[] = [];
+    mockManager.request.mockImplementation((message: { op: string }) => message.op === "voice.history"
+      ? Promise.resolve({ op: "voice.history.result", payload: { logicalConversationId: conversationId, messages } })
+      : originalRequest?.(message));
+    const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
+    await waitFor(() => expect(result.current.ready).toBe(true));
+    let sent!: Promise<void>;
+    await act(async () => { sent = result.current.sendTranscript("追加してください", jest.fn()); });
+    if (persistedUser) {
+      messages = [{ role: "user", text: "追加してください", clientOperationId: operationId }];
+      await act(async () => { await result.current.refreshHistory(); });
+    }
+    expect(result.current.history[0].sessionSwitched).toBeUndefined();
+    await act(async () => { handlers.get("voice.turn.started")?.({ payload: {
+      logicalConversationId: conversationId, orchestratorId: "other", clientOperationId: operationId, status: "running", sessionSwitched: true,
+    } }); });
+    expect(result.current.history[0].sessionSwitched).toBeUndefined();
+    await act(async () => { handlers.get("voice.turn.started")?.({ payload: {
+      logicalConversationId: conversationId, orchestratorId: "main", clientOperationId: operationId, status: "running", sessionSwitched: true,
+    } }); });
+    expect(result.current.history[0].sessionSwitched).toBe(true);
+    expect(result.current.turnStatus).toBe("running");
+    // A history response captured before native start must not erase the newer boundary.
+    messages = [{ role: "user", text: "追加してください", clientOperationId: operationId }];
+    await act(async () => { await result.current.refreshHistory(); });
+    expect(result.current.history).toEqual([{ role: "user", text: "追加してください", clientOperationId: operationId, sessionSwitched: true }]);
+    messages = [{ role: "user", text: "追加してください", clientOperationId: operationId, sessionSwitched: true },
+      { role: "assistant", text: "追加しました", clientOperationId: operationId }];
+    await act(async () => { handlers.get("voice.turn.completed")?.({ payload: {
+      logicalConversationId: conversationId, clientOperationId: operationId, text: "追加しました", sessionSwitched: true,
+    } }); await sent; });
+    await act(async () => { await result.current.refreshHistory(); });
+    expect(result.current.history.map(({ sessionSwitched }) => sessionSwitched)).toEqual([true, undefined]);
+  });
+}
+
+test("a late native-start boundary survives local interruption without restarting turn state", async () => {
+  const originalRequest = mockManager.request.getMockImplementation();
+  mockManager.request.mockImplementation((message: { op: string }) => message.op === "voice.turn.interrupt"
+    ? Promise.resolve({ op: "voice.turn.interrupt.result", payload: {} }) : originalRequest?.(message));
+  const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
+  await waitFor(() => expect(result.current.ready).toBe(true));
+  let sent!: Promise<void>;
+  await act(async () => { sent = result.current.sendTranscript("追加してください", jest.fn()); });
+  await act(async () => { result.current.interrupt(); await sent; });
+  expect(result.current.turnStatus).toBe("idle");
+  await act(async () => { handlers.get("voice.turn.started")?.({ payload: {
+    logicalConversationId: "old-conversation", clientOperationId: operationId, status: "running", sessionSwitched: true,
+  } }); });
+  expect(result.current.history[0].sessionSwitched).toBeUndefined();
+  await act(async () => { handlers.get("voice.turn.started")?.({ payload: {
+    logicalConversationId: conversationId, clientOperationId: operationId, status: "running", sessionSwitched: true,
+  } }); });
+  expect(result.current.history[0].sessionSwitched).toBe(true);
+  expect(result.current.turnStatus).toBe("idle");
+});
+
+test("unknown operation recovery carries its authoritative boundary from status and persisted history", async () => {
+  mockManager.request.mockImplementation(async ({ op }: { op: string }) => {
+    if (op === "voice.open") return { op: "voice.open.result", payload: {
+      logicalConversationId: conversationId, contextMode: "self_context_array", ...initialStats,
+      clientOperationId: operationId, status: "unknown", inputText: "追加してください",
+    } };
+    if (op === "voice.status") return { op: "voice.status.result", payload: {
+      logicalConversationId: conversationId, clientOperationId: operationId, status: "unknown", sessionSwitched: true,
+    } };
+    if (op === "voice.history") return { op: "voice.history.result", payload: {
+      logicalConversationId: conversationId, messages: [{ role: "user", text: "追加してください", clientOperationId: operationId, sessionSwitched: true }],
+    } };
+    throw new Error(`unexpected ${op}`);
+  });
+  const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
+  await waitFor(() => expect(result.current.ready).toBe(true));
+  expect(result.current.history).toEqual([{ role: "user", text: "追加してください", clientOperationId: operationId, sessionSwitched: true }]);
+  expect(result.current.turnStatus).toBe("running");
+});

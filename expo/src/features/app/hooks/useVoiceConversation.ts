@@ -8,7 +8,7 @@ import { playVoiceSound } from "../voiceSounds";
 import type { VoiceContextStats } from "../types/appTypes";
 
 type TurnStatus = "idle" | "sending" | "accepted" | "running" | "completed" | "failed";
-export type VoiceHistoryMessage = { role: "user" | "assistant"; text: string; clientOperationId: string; at?: string; outputTokens?: number; completedOrdinal?: number };
+export type VoiceHistoryMessage = { role: "user" | "assistant"; text: string; clientOperationId: string; at?: string; outputTokens?: number; completedOrdinal?: number; sessionSwitched?: boolean };
 export type VoiceTaskChecklist = { status: "present"; markdown: string } | { status: "missing" } | { status: "unavailable" };
 export type VoiceTaskChecklistOverview = { status: "present"; markdown: string }
   | { status: "pending" } | { status: "unavailable" };
@@ -144,7 +144,14 @@ export function useVoiceConversation(
     const id = String(payload.clientOperationId || "");
     const status = String(payload.status || "");
     const pending = pendingRef.current;
-    if (!pending || pending.id !== id || !aliveRef.current) return;
+    if (!aliveRef.current) return;
+    if (payload.sessionSwitched === true && payload.logicalConversationId === conversationIdRef.current) {
+      const markSwitch = (messages: VoiceHistoryMessage[]) => messages.map((message) =>
+        message.role === "user" && message.clientOperationId === id ? { ...message, sessionSwitched: true } : message);
+      setHistory(markSwitch);
+      setLocalHistory(markSwitch);
+    }
+    if (!pending || pending.id !== id) return;
     const jobId = String(payload.jobId || "");
     if (pending.readAloud && jobId && !pending.jobId) {
       pending.jobId = jobId;
@@ -460,6 +467,9 @@ export function useVoiceConversation(
         text: current?.operationId === operationId ? current.text + text : text,
       }));
     });
+    const started = manager.subscribe({ channel: "agent", op: "voice.turn.started" }, (message) => {
+      applyStatus(payloadOf(message), true);
+    });
     const complete = manager.subscribe({ channel: "agent", op: "voice.turn.completed" }, (message) => {
       applyStatus({ ...payloadOf(message), status: "completed" }, true);
     });
@@ -473,6 +483,7 @@ export function useVoiceConversation(
       pendingRef.current = null;
       cancelResetRef.current?.();
       delta();
+      started();
       complete();
       failed();
     };
@@ -542,7 +553,9 @@ export function useVoiceConversation(
       if (!aliveRef.current || historyRequestRef.current !== requestNumber || conversationIdRef.current !== conversationId
         || manager.getSnapshot().generation !== startedGeneration) return;
       const messages = payload.messages as VoiceHistoryMessage[];
-      setHistory(messages);
+      setHistory((current) => messages.map((message) => message.role === "user" && current.some((old) =>
+        old.clientOperationId === message.clientOperationId && old.sessionSwitched === true)
+        ? { ...message, sessionSwitched: true } : message));
       const raw = payload.taskChecklist;
       const value = raw && typeof raw === "object" && !Array.isArray(raw)
         ? raw as Record<string, unknown> : null;
@@ -565,7 +578,8 @@ export function useVoiceConversation(
         && /^[0-9a-f]{64}$/.test(offer.version)
         ? { sourceHash: offer.sourceHash, version: offer.version } : null);
       setLocalHistory((current) => current.filter((local) => !messages.some((message) =>
-        message.role === local.role && message.clientOperationId === local.clientOperationId)));
+        message.role === local.role && message.clientOperationId === local.clientOperationId
+        && (local.sessionSwitched !== true || message.sessionSwitched === true))));
       setHistoryError("");
     } catch (cause) {
       if (aliveRef.current && historyRequestRef.current === requestNumber && conversationIdRef.current === conversationId
@@ -607,7 +621,9 @@ export function useVoiceConversation(
     return () => subscription.remove();
   }, [connected, logicalConversationId, refreshHistory, settledOperationId]);
 
-  const visibleHistory = useMemo(() => [...history, ...localHistory.filter((local) => !history.some((message) =>
+  const visibleHistory = useMemo(() => [...history.map((message) => message.role === "user" && localHistory.some((local) =>
+    local.clientOperationId === message.clientOperationId && local.sessionSwitched === true)
+    ? { ...message, sessionSwitched: true } : message), ...localHistory.filter((local) => !history.some((message) =>
     message.role === local.role && message.clientOperationId === local.clientOperationId))], [history, localHistory]);
 
   return {

@@ -56,7 +56,7 @@ const mockVoice = {
   },
   error: "",
   contextStats: { contextUsagePercent: 31 as number | null, unsummarizedMessageCount: 8, memoryCharacterCount: 55 },
-  history: [] as { role: "user" | "assistant"; text: string; clientOperationId: string; at?: string; completedOrdinal?: number }[],
+  history: [] as { role: "user" | "assistant"; text: string; clientOperationId: string; at?: string; completedOrdinal?: number; sessionSwitched?: boolean }[],
   historyError: "",
   taskChecklist: { status: "present", markdown: "# 最優先\n\n- [ ] 確認する" } as
     { status: "present"; markdown: string } | { status: "missing" | "unavailable" } | null,
@@ -1545,4 +1545,24 @@ test("a remote handoff destination never auto-starts after a rejected operation 
   expect(mockStt.start).not.toHaveBeenCalled();
   expect(mockSynthesizeSpeechStream).not.toHaveBeenCalled();
   await screen.unmount();
+});
+
+test("history shows a session divider before the affected user message only", async () => {
+  mockVoice.history = [
+    { role: "user", text: "買い物リスト", clientOperationId: "first" },
+    { role: "assistant", text: "追加してよいですか？", clientOperationId: "first" },
+    { role: "user", text: "追加してください", clientOperationId: "second", sessionSwitched: true },
+    { role: "assistant", text: "追加しました", clientOperationId: "second" },
+    { role: "user", text: "ありがとう", clientOperationId: "third" },
+  ];
+  mockVoice.reply = { text: "", operationId: "" };
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  const history = within(screen.getByTestId("voice-history-messages"));
+  expect(history.getAllByText("セッション切り替え")).toHaveLength(1);
+  expect(history.queryByTestId("voice-session-switch-first")).toBeNull();
+  expect(history.queryByTestId("voice-session-switch-third")).toBeNull();
+  const content = history.getAllByText(/^(追加してよいですか？|セッション切り替え|追加してください)$/).map((node) => node.props.children);
+  expect(content.indexOf("セッション切り替え")).toBeGreaterThan(content.indexOf("追加してよいですか？"));
+  expect(content.indexOf("セッション切り替え")).toBeLessThan(content.indexOf("追加してください"));
 });

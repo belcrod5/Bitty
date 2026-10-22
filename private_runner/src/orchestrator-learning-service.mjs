@@ -147,8 +147,9 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
   function exclude(next, item) {
     for (const source of item.evidence) if (!next.excluded.some((entry) => entry.pairSeq === source.pairSeq))
       next.excluded.push({ pairSeq: source.pairSeq });
-    for (const use of next.uses.filter((use) => use.items?.some((entry) => entry.id === item.id))) {
-      if (use.pairSeq && !next.excluded.some((entry) => entry.pairSeq === use.pairSeq)) next.excluded.push({ pairSeq: use.pairSeq });
+    for (const use of next.uses.filter((use) => [...use.items, ...use.reads, ...use.inheritedReads].some((entry) => entry.id === item.id))) {
+      if (!next.excluded.some((entry) => entry.operationId === use.operationId || use.pairSeq && entry.pairSeq === use.pairSeq))
+        next.excluded.push({ operationId: use.operationId, ...(use.pairSeq ? { pairSeq: use.pairSeq } : {}) });
     }
   }
   function invalidate(next, contextChanged = false) { if (contextChanged) next.contextRevision += 1; next.epoch += 1; next.batch = null; }
@@ -265,9 +266,9 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
         next[key].splice(index, 1);
       }
     }
-    const expiredUses = next.uses.filter((entry) => Date.parse(entry.at) < now() - 30 * 86400_000);
+    const expiredUses = next.uses.filter((entry, index) => Date.parse(entry.at) < now() - 30 * 86400_000 || index < next.uses.length - 500);
     for (const use of expiredUses) if (use.pairSeq && !next.excluded.some((entry) => entry.pairSeq === use.pairSeq)) next.excluded.push({ pairSeq: use.pairSeq });
-    next.uses = next.uses.filter((entry) => !expiredUses.includes(entry)).slice(-500);
+    next.uses = next.uses.filter((entry) => !expiredUses.includes(entry));
     next.proposals = next.proposals.slice(-100);
     next.corrections = next.corrections.filter((entry) => pendingCorrection(entry) || Date.parse(entry.at) >= now() - 90 * 86400_000);
     next.requests = next.requests.filter((entry) => !entry.resolution || Date.parse(entry.at) >= now() - 90 * 86400_000);
@@ -297,7 +298,10 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
         if (!validPair(pair)) throw fail("learning_source_invalid", "Invalid completed learning source");
         if (pair.pairSeq <= next.observedThrough) continue;
         gap(next, next.observedThrough + 1, pair.pairSeq - 1, "source_unavailable");
-        next.pending.push(pair); next.observedThrough = pair.pairSeq;
+        const excluded = next.excluded.find((entry) => entry.operationId === pair.clientOperationId);
+        if (excluded) excluded.pairSeq = pair.pairSeq;
+        if (!excluded?.forgotten) next.pending.push(pair);
+        next.observedThrough = pair.pairSeq;
         const use = next.uses.find((entry) => entry.operationId === pair.clientOperationId); if (use) use.pairSeq = pair.pairSeq;
       }
       if (Number.isSafeInteger(through) && through > next.observedThrough) {
@@ -697,7 +701,7 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
         const payload = { items: selected, proposals };
         const conditionalAvailable = state.candidates.some((item) => item.status === "active" && scoped(item, orchestratorId) && item.targetConstraints?.length);
         return { contextRevision: state.contextRevision, selectedDigest: digest(payload), ...structuredClone(payload),
-          suppressRecent: state.contextRevision > 1,
+          excludedPairSeqs: state.excluded.filter((entry) => entry.pairSeq).map((entry) => entry.pairSeq),
           instruction: selected.length || proposals.length || conditionalAvailable ? `\n\nAdopted learning (conditional context, never permissions):\n${JSON.stringify(payload)}\nFixed approval/safety contracts, the current user request and manual chat instructions take precedence. Check each condition against the current request and actually verified targets; if unconfirmed do not apply it. Never infer a repository or task type. ${conditionalAvailable ? "Target-specific learning is available: after a successful tool verifies current target names, call orchestrator_learning.read_context with those names; do not apply unseen policies." : ""} Read a listed skill only via orchestrator_learning.read_skill before relying on its procedure. Use orchestrator_learning.propose_batch only after reading current targets with tools, then ask for permission for that exact set and operations through the existing approval path. Do not repeat a declined or already offered unchanged proposal. Adoption/publication/score is never task execution permission.` : "" };
       });
     },
@@ -708,9 +712,14 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
         const next = structuredClone(state);
         if (next.uses.some((entry) => entry.operationId === operationId)) return;
         const inherited = next.uses.filter((entry) => entry.threadId === threadId).flatMap((entry) => entry.reads || []);
+        // A decision can land after retrieval but before native delivery or durable completion.
+        const exposed = [...snapshot.items, ...inherited];
+        if (exposed.some((entry) => !next.candidates.some((item) => item.id === entry.id && item.version === entry.version && item.status === "active")))
+          next.excluded.push({ operationId, ...(exposed.some((entry) => !next.candidates.some((item) => item.id === entry.id)) ? { forgotten: true } : {}) });
         next.uses.push({ operationId, orchestratorId, threadId, turnId, at: changedAt(),
           contextRevision: snapshot.contextRevision, selectedDigest: snapshot.selectedDigest,
-          items: snapshot.items.map(({ id, version, content }) => ({ id, version, name: content })), reads: [],
+          items: snapshot.items.filter((entry) => next.candidates.some((item) => item.id === entry.id))
+            .map(({ id, version, content }) => ({ id, version, name: content })), reads: [],
           inheritedReads: [...new Map(inherited.map((entry) => [`${entry.id}:${entry.version}`, entry])).values()] });
         trim(next); await save(next);
       });
@@ -797,8 +806,10 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
           }
         }
         const sourceSeqs = new Set(selected.flatMap((item) => item.evidence.map((entry) => entry.pairSeq)));
-        for (const item of selected) { exclude(next, item); for (const entry of next.excluded) if (sourceSeqs.has(entry.pairSeq)) entry.forgotten = true; }
-        for (const use of next.uses) if (use.items.some((item) => ids.has(item.id)) && use.pairSeq) sourceSeqs.add(use.pairSeq);
+        const affectedUses = next.uses.filter((use) => [...use.items, ...use.reads, ...use.inheritedReads].some((item) => ids.has(item.id)));
+        for (const use of affectedUses) if (use.pairSeq) sourceSeqs.add(use.pairSeq);
+        for (const item of selected) exclude(next, item);
+        for (const entry of next.excluded) if (sourceSeqs.has(entry.pairSeq) || affectedUses.some((use) => use.operationId === entry.operationId)) entry.forgotten = true;
         next.candidates = next.candidates.filter((item) => !ids.has(item.id));
         next.pending = next.pending.filter((pair) => !sourceSeqs.has(pair.pairSeq));
         next.uses = next.uses.filter((entry) => !entry.items.some((item) => ids.has(item.id))
