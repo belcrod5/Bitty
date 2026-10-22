@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Ionicons } from "@expo/vector-icons";
 import { randomUUID } from "expo-crypto";
 import { AppState, Platform, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
@@ -272,7 +272,7 @@ function VoiceConversationSession({
     }).catch(() => undefined);
   }, [appActive, historyExpanded, manager, orchestrator.id, paused, voice.history,
     voice.logicalConversationId, voice.ready, voice.reply?.completedOrdinal]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     historyAtBottomRef.current = true;
   }, [historyExpanded, voice.logicalConversationId]);
   const replyLoading = voice.turnStatus === "accepted" || voice.turnStatus === "running";
@@ -471,6 +471,14 @@ function VoiceConversationSession({
     return [...voice.history, { role: "assistant" as const, text: reply.text, clientOperationId: reply.operationId,
       outputTokens: reply.outputTokens }];
   }, [voice.history, voice.ready, voice.reply]);
+  const lastHistoryMessage = historyMessages[historyMessages.length - 1];
+  const historyContentKey = JSON.stringify([voice.logicalConversationId, historyMessages.length,
+    lastHistoryMessage?.clientOperationId, lastHistoryMessage?.role, lastHistoryMessage?.text]);
+  useLayoutEffect(() => {
+    if (historyMounted && historyExpanded && voice.ready && historyAtBottomRef.current) {
+      historyScrollRef.current?.scrollToEnd({ animated: false });
+    }
+  }, [historyMounted, historyExpanded, voice.ready, historyContentKey]);
 
   return (
     <KeyboardAvoidingView
@@ -536,9 +544,6 @@ function VoiceConversationSession({
                     historyAtBottomRef.current = contentOffset.y + layoutMeasurement.height >= contentSize.height - 40;
                   }}
                   scrollEventThrottle={16}
-                  onContentSizeChange={() => {
-                    if (historyAtBottomRef.current) historyScrollRef.current?.scrollToEnd({ animated: false });
-                  }}
                   contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 12, paddingBottom: 12, gap: 12 }}>
                   {!voice.ready
                     ? <Text style={{ color: "#ffffff", textAlign: "center" }}>履歴を読み込み中…</Text>
@@ -569,7 +574,7 @@ function VoiceConversationSession({
                           ) : null}
                         </View>
                         <Text style={{ color: textColor, fontSize: 15, lineHeight: 21 }}>{message.text}</Text>
-                        {!user ? <AnswerLearningDetails orchestratorId={orchestrator.id} operationId={message.clientOperationId} color={textColor} paused={paused} /> : null}
+                        {!user ? <AnswerLearningDetails orchestratorId={orchestrator.id} operationId={message.clientOperationId} paused={paused || !historyExpanded} /> : null}
                       </View>
                     );
                   })}
