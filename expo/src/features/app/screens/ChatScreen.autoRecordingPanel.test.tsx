@@ -666,6 +666,20 @@ describe("ChatScreen voice input", () => {
     await screen.unmount();
   });
 
+  it("opens the title menu from either header row while keeping note editing separate", async () => {
+    mockSessionNotesById = { [JSON.stringify(["claude", "session-1"])]: "Saved reminder" };
+    const screen = await render(<ChatScreen />);
+    await fireEvent.press(screen.getByLabelText("ディレクトリー名からチャットタイトルメニューを開く"));
+    await fireEvent.press(screen.getByLabelText("メモを開く"));
+    expect(screen.getByLabelText("セッションメモ").props.value).toBe("Saved reminder");
+    await fireEvent.press(screen.getByLabelText("メモ編集をキャンセル"));
+    await fireEvent.press(screen.getByLabelText("チャットタイトルメニューを開く"));
+    expect(screen.getByLabelText("メモを開く")).toBeTruthy();
+    expect(screen.queryByLabelText("セッションメモ")).toBeNull();
+    expect(mockSaveSessionNote).not.toHaveBeenCalled();
+    await screen.unmount();
+  });
+
   it("opens saved notes directly from a compact icon and supports clearing", async () => {
     mockSessionNotesById = { [JSON.stringify(["claude", "session-1"])]: "Saved reminder" };
     const screen = await render(<ChatScreen />);

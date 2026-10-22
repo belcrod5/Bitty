@@ -2029,45 +2029,56 @@ export function ChatScreen({
               idleSource={pixelRobotImageStatic}
             />
           </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.chatDirectoryHeaderButton}
-            onPress={() => {
-              setDirectoryMenuMode("actions");
-              setDirectoryMenuOpen(true);
-            }}
-            accessibilityRole="button"
-            accessibilityLabel="チャットタイトルメニューを開く"
-          >
+          <View style={styles.chatDirectoryHeaderTitles}>
             <View style={styles.chatDirectoryHeaderPrimaryRow}>
-              {directoryHeaderMarkerColorHex ? (
-                <View
-                  style={[
-                    styles.chatDirectoryHeaderMarkerDot,
-                    { backgroundColor: directoryHeaderMarkerColorHex },
-                  ]}
-                />
+              <TouchableOpacity
+                style={styles.chatDirectoryHeaderDirectoryButton}
+                onPress={() => {
+                  setDirectoryMenuMode("actions");
+                  setDirectoryMenuOpen(true);
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="ディレクトリー名からチャットタイトルメニューを開く"
+              >
+                {directoryHeaderMarkerColorHex ? (
+                  <View
+                    style={[
+                      styles.chatDirectoryHeaderMarkerDot,
+                      { backgroundColor: directoryHeaderMarkerColorHex },
+                    ]}
+                  />
+                ) : null}
+                <Text style={[styles.chatDirectoryHeaderButtonText, { flexShrink: 1 }]} numberOfLines={1}>
+                  {selectedDirectoryDisplayNameForView}
+                </Text>
+              </TouchableOpacity>
+              {sessionNoteForView ? (
+                <TouchableOpacity
+                  style={styles.chatDirectoryHeaderNoteButton}
+                  accessibilityRole="button"
+                  accessibilityLabel="保存済みのメモを編集"
+                  onPress={() => {
+                    setDirectoryMenuMode("edit_note");
+                    setDirectoryMenuOpen(true);
+                  }}
+                >
+                  <Ionicons name="document-text-outline" size={15} color={theme.colors.controlAccent} />
+                </TouchableOpacity>
               ) : null}
-              <Text style={styles.chatDirectoryHeaderButtonText} numberOfLines={1}>
-                {selectedDirectoryDisplayNameForView}
-              </Text>
             </View>
-            <Text style={styles.chatDirectoryHeaderSessionTitleText} numberOfLines={1}>
-              {selectedSessionTitleForView}
-            </Text>
-          </TouchableOpacity>
-          {sessionNoteForView ? (
             <TouchableOpacity
-              style={{ padding: 6, flexShrink: 0 }}
-              accessibilityRole="button"
-              accessibilityLabel="保存済みのメモを編集"
               onPress={() => {
-                setDirectoryMenuMode("edit_note");
+                setDirectoryMenuMode("actions");
                 setDirectoryMenuOpen(true);
               }}
+              accessibilityRole="button"
+              accessibilityLabel="チャットタイトルメニューを開く"
             >
-              <Ionicons name="document-text-outline" size={17} color={theme.colors.controlAccent} />
+              <Text style={styles.chatDirectoryHeaderSessionTitleText} numberOfLines={1}>
+                {selectedSessionTitleForView}
+              </Text>
             </TouchableOpacity>
-          ) : null}
+          </View>
         </View>
         <View style={styles.chatHeaderRight}>
           <TouchableOpacity
