@@ -17,7 +17,8 @@ import { useRunnerWebSocketManager } from "../runnerWs/RunnerWebSocketContext";
 import type { CodexScheduleSettingsProps } from "./CodexScheduleSettings.contract";
 import { useVisualTheme } from "../app/theme/VisualThemeContext";
 import { createStylesByTheme, type VisualTheme } from "../app/theme/visualThemes";
-import { CodexScheduleApiError, getCodexSchedules, putCodexSchedules } from "./codexScheduleApi";
+import { CodexScheduleApiError } from "./codexScheduleApi";
+import { useCodexSchedules } from "./CodexSchedulesContext";
 import { CodexScheduleEditor } from "./CodexScheduleEditor";
 import {
   CODEX_SCHEDULE_REPEAT_OPTIONS,
@@ -77,6 +78,7 @@ function scheduleSubtitle(schedule: CodexSchedule) {
 export function CodexScheduleSettings(props: CodexScheduleSettingsProps) {
   const { theme, themeId } = useVisualTheme();
   const manager = useRunnerWebSocketManager();
+  const { refresh, save: saveSchedules } = useCodexSchedules();
   const [orchestrators, setOrchestrators] = useState<{ id: string; name: string }[] | null>(null);
   const [orchestratorError, setOrchestratorError] = useState("");
   const styles = stylesByTheme[themeId];
@@ -113,7 +115,7 @@ export function CodexScheduleSettings(props: CodexScheduleSettingsProps) {
     setLoadError("");
     void loadOrchestrators();
     try {
-      const snapshot = await getCodexSchedules(props);
+      const snapshot = await refresh();
       setRevision(snapshot.revision);
       setSchedules(snapshot.schedules);
       setSavedSchedules(snapshot.schedules);
@@ -155,7 +157,7 @@ export function CodexScheduleSettings(props: CodexScheduleSettingsProps) {
     }
     setSaving(true);
     try {
-      const snapshot = await putCodexSchedules(props, revision, schedules);
+      const snapshot = await saveSchedules(revision, schedules);
       setRevision(snapshot.revision);
       setSchedules(snapshot.schedules);
       setSavedSchedules(snapshot.schedules);

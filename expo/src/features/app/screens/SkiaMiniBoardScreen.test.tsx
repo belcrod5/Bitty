@@ -407,6 +407,7 @@ const mockDefaultSession = {
   markerColor: "none" as const,
   unread: false,
   isResponding: false,
+  hasScheduledExecution: false,
   activityTrail: [] as Array<{
     kind: "reading" | "writing" | "thinking" | "web";
     active: boolean;
@@ -697,6 +698,17 @@ test("renders Japanese and emoji through system-fallback paragraphs", async () =
   expect(styles.some((style) => !("fontStyle" in style))).toBe(true);
   expect(styles.some((style) => style.fontStyle !== undefined)).toBe(true);
   expect((globalThis as Record<string, unknown>).__skiaBoardDisposedParagraphs).not.toBe(0);
+});
+
+test("adds and removes a compact clock when the session's scheduled state changes", async () => {
+  const screen = await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
+  const iconsBefore = screen.queryAllByTestId("skia-icon-path").length;
+  mockSessions = [{ ...mockDefaultSession, hasScheduledExecution: true }];
+  await screen.rerender(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
+  expect(screen.queryAllByTestId("skia-icon-path")).toHaveLength(iconsBefore + 1);
+  mockSessions = [mockDefaultSession];
+  await screen.rerender(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
+  expect(screen.queryAllByTestId("skia-icon-path")).toHaveLength(iconsBefore);
 });
 
 test("passes the selected board theme across the isolated Skia Canvas root", async () => {
