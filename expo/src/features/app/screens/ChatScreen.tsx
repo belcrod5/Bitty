@@ -87,6 +87,7 @@ import { suggestRunnerWsUrlFromRunnerUrl } from "../utils/urlResolvers";
 import { findChatMessageMatches } from "../utils/chatFind";
 import { formatMessageTimestampLabel } from "../utils/formatting";
 import { formatOutputTokens } from "../utils/messageTokens";
+import { useCodexSchedules } from "../../codexSchedules/CodexSchedulesContext";
 import { CodexScheduleSettings } from "../../codexSchedules/CodexScheduleSettings";
 
 type ChatFooterSelectTarget = "model" | "think";
@@ -424,6 +425,8 @@ export function ChatScreen({
   const selectedSessionIdForView = isPanelSnapshotView
     ? String(panelSnapshot.selectedSessionId || "").trim()
     : String(selectedLlmSessionId || "").trim();
+  const { scheduledThreadIds } = useCodexSchedules();
+  const hasScheduledExecution = backendIdForView === "codex" && scheduledThreadIds.has(selectedSessionIdForView);
   const sessionNoteForView = runnerSessionValue(sessionNotesById, backendIdForView, selectedSessionIdForView) || "";
   const noteIdentity = JSON.stringify([runnerClientStateScopeId, backendIdForView, selectedSessionIdForView]);
   const selectedSessionMaterializedForView = isPanelSnapshotView
@@ -2052,6 +2055,11 @@ export function ChatScreen({
                   {selectedDirectoryDisplayNameForView}
                 </Text>
               </TouchableOpacity>
+              {hasScheduledExecution ? (
+                <View style={styles.chatDirectoryHeaderNoteButton} accessible accessibilityLabel="スケジュール実行予定あり">
+                  <Ionicons name="time-outline" size={15} color={theme.colors.controlAccent} />
+                </View>
+              ) : null}
               {sessionNoteForView ? (
                 <TouchableOpacity
                   style={styles.chatDirectoryHeaderNoteButton}

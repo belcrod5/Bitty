@@ -52,6 +52,10 @@ let mockPanelBackendId = "codex";
 let mockPanelSessionId = "session-1";
 let mockPanelSessionMaterialized: boolean | undefined = true;
 let mockSelectedLlmSessionMaterialized = true;
+let mockScheduledThreadIds = new Set<string>();
+jest.mock("../../codexSchedules/CodexSchedulesContext", () => ({
+  useCodexSchedules: () => ({ scheduledThreadIds: mockScheduledThreadIds }),
+}));
 let mockSessionNotesById: Record<string, string> = {};
 const mockSaveSessionNote = jest.fn(async () => {});
 const mockSendReplyTranscript = jest.fn();
@@ -482,6 +486,7 @@ jest.mock("../contexts/ConversationContext", () => ({
 
 describe("ChatScreen voice input", () => {
   beforeEach(() => {
+    mockScheduledThreadIds = new Set();
     mockUseActualStreamingStt = false;
     mockSessionNotesById = {};
     mockSaveSessionNote.mockReset().mockResolvedValue(undefined);
@@ -649,6 +654,23 @@ describe("ChatScreen voice input", () => {
     expect(mockPushStreamingSample).toHaveBeenCalledWith(0.6);
     expect(onRender).toHaveBeenCalledTimes(commits);
     expect(mockRunnerStatusRenderCount).toBe(statusRenders);
+    await screen.unmount();
+  });
+
+  it("shows the scheduled clock beside the note only for the matching Codex popup", async () => {
+    mockScheduledThreadIds = new Set(["session-1"]);
+    mockSessionNotesById = { [JSON.stringify(["codex", "session-1"])]: "Saved reminder" };
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    expect(screen.getByLabelText("スケジュール実行予定あり")).toBeTruthy();
+    expect(screen.getByLabelText("保存済みのメモを編集")).toBeTruthy();
+    expect(screen.getByText("time-outline")).toBeTruthy();
+    mockScheduledThreadIds = new Set(["other-session"]);
+    await screen.rerender(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    expect(screen.queryByLabelText("スケジュール実行予定あり")).toBeNull();
+    mockScheduledThreadIds = new Set(["session-1"]);
+    mockPanelBackendId = "claude";
+    await screen.rerender(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    expect(screen.queryByLabelText("スケジュール実行予定あり")).toBeNull();
     await screen.unmount();
   });
 

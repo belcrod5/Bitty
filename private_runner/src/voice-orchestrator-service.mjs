@@ -39,7 +39,7 @@ function validateIcon(icon) {
 }
 
 export function createVoiceOrchestratorService({ rootDir, createClient, getAgentService, subjectId,
-  onCompleted, onChecklistChanged, activity, defaultTtsProvider = "aivisspeech" }) {
+  onCompleted, onChecklistChanged, onLearningUnreadChanged, activity, defaultTtsProvider = "aivisspeech" }) {
   const root = path.resolve(rootDir);
   const registryFile = path.join(root, "orchestrators.json");
   const orchestratorRoot = path.join(root, "orchestrators");
@@ -124,7 +124,8 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
   };
   const publicList = async () => ({ orchestrators: await Promise.all(registry.orchestrators.map(async (item) =>
     ({ ...item, ttsProvider: item.ttsProvider || defaultTtsProvider, voiceId: item.voiceId || "",
-      unreadCount: await (await loadedContext(item.id)).unread() }))),
+      unreadCount: await (await loadedContext(item.id)).unread(),
+      ...(item.id === "main" && learning ? { learningUnreadCount: learning.unreadCount() } : {}) }))),
   selectedId: registry.selectedId });
 
   async function allEventPairs(mainPairs) {
@@ -244,7 +245,7 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
         learning = await openOrchestratorLearning({ workspace: workspaceDirectory,
           memoryConversationId: memoryStore.conversationId, initialThrough: memoryStore.lastPairSeq,
           analyze: (args) => main.analyzeLearning(args), ledger: learningLedger,
-          isBusy: () => reservations.size > 0 });
+          isBusy: () => reservations.size > 0, onUnreadChanged: onLearningUnreadChanged });
         await learning.observe(recoveredLearningPairs.map((pair) => ({ ...pair,
           memoryConversationId: memoryStore.conversationId })), memoryStore.lastPairSeq).catch(() => {});
       } catch (error) {
@@ -393,7 +394,7 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
     async manageLearning(operation, payload) {
       await exclusive(load);
       if (!learning) throw failure("Learning storage is unavailable", "learning_store_unavailable");
-      const methods = { decide: "decide", change: "requestChange", correct: "correctEvaluation", cancel: "cancelEvaluationCorrections", forget: "forget", proposal: "proposalDecision", retry: "retry" };
+      const methods = { read: "markRead", decide: "decide", change: "requestChange", correct: "correctEvaluation", cancel: "cancelEvaluationCorrections", forget: "forget", proposal: "proposalDecision", retry: "retry" };
       if (!methods[operation]) throw failure("Unknown learning operation", "learning_request_invalid");
       await learning[methods[operation]](payload);
       return learning.status();

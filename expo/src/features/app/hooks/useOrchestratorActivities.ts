@@ -74,7 +74,9 @@ export function useOrchestratorActivities(runnerUrl: string, runnerToken: string
           if (!item || typeof item !== "object" || typeof item.id !== "string") return [];
           return [{ id: item.id, name: typeof item.name === "string" ? item.name : "?",
             icon: typeof item.icon === "string" ? item.icon : "",
-            unreadCount: typeof item.unreadCount === "number" ? item.unreadCount : 0 }];
+            unreadCount: typeof item.unreadCount === "number" ? item.unreadCount : 0,
+            learningUnreadCount: Number.isSafeInteger(item.learningUnreadCount) && item.learningUnreadCount >= 0
+              ? item.learningUnreadCount : 0 }];
         });
         setOrchestrators(orchestrators);
         const names = orchestrators.map(({ id, name }) => ({ id, name }));

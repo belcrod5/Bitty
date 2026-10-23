@@ -5083,6 +5083,7 @@ const voiceContextService = createVoiceOrchestratorService({
   activity: orchestratorActivity,
   defaultTtsProvider: TTS_PROVIDER,
   onChecklistChanged: broadcastVoiceChecklistChanged,
+  onLearningUnreadChanged: broadcastVoiceUnreadState,
   onCompleted: (result, orchestratorName) => {
     void broadcastVoiceUnreadState();
     void turnCompletionNotifier.notifyVoiceCompleted({ orchestratorId: result.orchestratorId,
@@ -7345,7 +7346,7 @@ runnerWsServer.on("connection", (ws, req) => {
       })).catch((error) => sendVoiceError(message, error));
       return true;
     }
-    if (["voice.learning.status", "voice.learning.configure", "voice.learning.usage", "voice.learning.price.configure", "voice.learning.decide", "voice.learning.change", "voice.learning.correct", "voice.learning.correction.cancel", "voice.learning.forget", "voice.learning.proposal", "voice.learning.delivery", "voice.learning.retry"].includes(message.op)) {
+    if (["voice.learning.status", "voice.learning.read", "voice.learning.configure", "voice.learning.usage", "voice.learning.price.configure", "voice.learning.decide", "voice.learning.change", "voice.learning.correct", "voice.learning.correction.cancel", "voice.learning.forget", "voice.learning.proposal", "voice.learning.delivery", "voice.learning.retry"].includes(message.op)) {
       const operation = message.op === "voice.learning.status" ? voiceContextService.learningStatus()
         : message.op === "voice.learning.configure" ? voiceContextService.configureLearning(message.payload || {})
         : message.op === "voice.learning.usage" ? voiceContextService.learningUsage(message.payload || {})

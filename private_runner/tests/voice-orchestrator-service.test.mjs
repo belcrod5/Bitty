@@ -1068,3 +1068,39 @@ test("learning management facade connects bulk adoption, publication, response d
   assert.equal(status.candidates.length, 0);
   assert.equal((await restarted.learningDelivery({ orchestratorId: "main", operationId: completed.clientOperationId })).delivery, null);
 });
+
+test("main metadata combines all new learning, read broadcasts without deadlock, and versions stay independent", async (t) => {
+  const { rootDir, service, codex } = await fixture(t);
+  const main = await service.open("main");
+  const child = await service.create("Research");
+  await (await turn(service, "main", main.logicalConversationId, "Prefer concise reports")).finished;
+  const workspace = (await fs.readdir(path.join(path.dirname(rootDir), "workspaces")))[0];
+  const file = path.join(path.dirname(rootDir), "workspaces", workspace, "orchestrator-learning", "state.json");
+  const saved = JSON.parse(await fs.readFile(file, "utf8"));
+  const items = ["main", child.id].map((orchestratorId) => ({ id: randomUUID(), version: 2, readVersion: 1,
+    status: "candidate", kind: "preference", content: `Concise ${orchestratorId}`, conditions: "Reports",
+    reason: "Synthetic request", scope: { orchestratorId }, evidence: [{ ...saved.pending[0], user: undefined, assistant: undefined }],
+    createdAt: new Date().toISOString() }));
+  saved.candidates.push(...items);
+  await fs.writeFile(file, JSON.stringify(saved));
+  const broadcasts = [];
+  const restarted = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient,
+    onLearningUnreadChanged: async () => broadcasts.push(await restarted.list()) });
+  const list = await restarted.list();
+  assert.equal(list.orchestrators.find((item) => item.id === "main").learningUnreadCount, 2);
+  assert.equal(list.orchestrators.find((item) => item.id === child.id).learningUnreadCount, undefined);
+  assert.equal(await restarted.unreadCount(), 1, "only the one completed reply is counted, not the two learning items");
+  await restarted.manageLearning("read", { items: [{ id: items[0].id, version: 1 }] });
+  assert.equal((await restarted.learningStatus()).unreadCount, 2, "stale displayed versions cannot clear newer ones");
+  const state = await restarted.manageLearning("read", { items: [{ id: items[0].id, version: 2 }] });
+  assert.equal(state.unreadCount, 1);
+  assert.ok(state.candidates.every((item) => item.status === "candidate"));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(broadcasts.at(-1).orchestrators.find((item) => item.id === "main").learningUnreadCount, 1);
+  const recovered = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
+  assert.equal((await recovered.list()).orchestrators.find((item) => item.id === "main").learningUnreadCount, 1);
+  await recovered.manageLearning("forget", { items: items.map(({ id, version }) => ({ id, version })) });
+  assert.equal((await recovered.list()).orchestrators.find((item) => item.id === "main").learningUnreadCount, 0);
+  assert.equal(codex.calls.filter((call) => call.method === "thread/start"
+    && call.params.developerInstructions?.startsWith("Analyze supplied")).length, 0);
+});
