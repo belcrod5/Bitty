@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Image, Text, View } from "react-native";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 
-export type VoiceOrchestrator = { id: string; name: string; icon: string; unreadCount?: number;
+export type VoiceOrchestrator = { id: string; name: string; icon: string; unreadCount?: number; learningUnreadCount?: number;
   ttsProvider?: string; voiceId?: string };
 
 export function VoiceOrchestratorIcon({ orchestrator, size = 40, active = false }: {
@@ -10,6 +10,8 @@ export function VoiceOrchestratorIcon({ orchestrator, size = 40, active = false 
 }) {
   const { theme } = useVisualTheme();
   const [failedIcon, setFailedIcon] = useState("");
+  const learningUnread = orchestrator.id === "main" && Number.isSafeInteger(orchestrator.learningUnreadCount)
+    && orchestrator.learningUnreadCount! > 0 ? orchestrator.learningUnreadCount! : 0;
   const initial = [...orchestrator.name.trim()][0] || "●";
   return (
     <View style={{ width: size, height: size, borderRadius: size / 2,
@@ -25,6 +27,15 @@ export function VoiceOrchestratorIcon({ orchestrator, size = 40, active = false 
           borderRadius: 8, backgroundColor: theme.colors.accent, alignItems: "center", justifyContent: "center" }}>
         <Text style={{ color: theme.colors.textOnAccent, fontSize: 10, fontWeight: "700" }}>
           {orchestrator.unreadCount! > 99 ? "99+" : orchestrator.unreadCount}
+        </Text>
+      </View>}
+      {learningUnread > 0 && <View testID={`voice-orchestrator-learning-unread-${orchestrator.id}`}
+        pointerEvents="none" accessible accessibilityLabel={`新しく学んだこと ${learningUnread}件`}
+        style={{ position: "absolute", right: -4, bottom: -4, minWidth: 17, height: 17, paddingHorizontal: 3,
+          borderRadius: 9, borderWidth: 1, borderColor: theme.tones.info.border,
+          backgroundColor: theme.tones.info.background, alignItems: "center", justifyContent: "center" }}>
+        <Text style={{ color: theme.tones.info.foreground, fontSize: 10, fontWeight: "700" }}>
+          {learningUnread > 99 ? "99+" : learningUnread}
         </Text>
       </View>}
     </View>

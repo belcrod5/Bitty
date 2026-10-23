@@ -725,3 +725,62 @@ test("a retrieval delivered after forgetting cannot reintroduce content or repla
   assert.deepEqual((await f.service.retrieve({ orchestratorId: "main", input: "review" })).excludedPairSeqs, [1, 2]);
   assert.equal((await f.service.status()).pendingCount, 0);
 });
+
+test("new candidates notify once, read snapshots persist without adopting or reading later arrivals", async (t) => {
+  const notifications = [];
+  let service;
+  const f = await fixture(t, { onUnreadChanged: async () => notifications.push((await service.status()).unreadCount),
+    analyze: async ({ input }) => { const parsed = JSON.parse(input); const seq = parsed.pairs[0].pairSeq;
+      assert.ok(parsed.items.every((item) => !("readVersion" in item)), "read metadata is not learning evidence");
+      return { text: JSON.stringify({ candidates: [{ kind: "preference", content: `Report preference ${seq}`, conditions: "Reports",
+        orchestratorId: "main", evidence: [seq], reason: "Explicit request" }] }) }; } });
+  service = f.service;
+  await configure(service);
+  await service.observe([f.pair(1)]); await service.runDue();
+  const first = (await service.status()).candidates[0];
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(notifications, [1]);
+  await service.markRead({ items: [{ id: first.id, version: first.version + 1 }] });
+  assert.equal(service.unreadCount(), 1);
+  await service.markRead({ items: [{ id: first.id, version: first.version }] });
+  assert.equal(service.unreadCount(), 0);
+  assert.equal((await service.status()).candidates[0].status, "candidate");
+  assert.equal((await service.status()).contextRevision, 1);
+  await service.close();
+  service = await f.open();
+  assert.equal(service.unreadCount(), 0);
+  await service.observe([f.pair(2)]); await service.runDue();
+  await service.markRead({ items: [{ id: first.id, version: first.version }] });
+  assert.equal(service.unreadCount(), 1);
+  const latest = (await service.status()).candidates.find((item) => item.id !== first.id);
+  await service.decide({ items: [{ id: latest.id, version: latest.version }], action: "adopt" });
+  assert.equal(service.unreadCount(), 0);
+  assert.equal(f.calls.length, 2, "list/read/adoption/restart do not run the model");
+});
+
+test("legacy candidates start unread, expired candidates notify removal, and read validates bounded versions", async (t) => {
+  const notifications = [];
+  const f = await fixture(t, { onUnreadChanged: () => notifications.push("changed"),
+    analyze: async () => ({ text: JSON.stringify({ candidates: [{ kind: "preference", content: "Short reports", conditions: "Reports",
+      orchestratorId: "main", evidence: [1], reason: "Explicit request" }] }) }) });
+  await configure(f.service); await f.service.observe([f.pair(1)]); await f.service.runDue();
+  const original = (await f.service.status()).candidates[0];
+  assert.equal(original.readVersion, undefined);
+  await f.service.close();
+  const service = await f.open();
+  assert.equal(service.unreadCount(), 1);
+  for (const items of [null, [{ id: original.id, version: 0 }], [{ id: "invalid", version: 1 }],
+    [{ id: original.id, version: 1 }, { id: original.id, version: 1 }],
+    Array.from({ length: 101 }, () => ({ id: randomUUID(), version: 1 }))]) {
+    await assert.rejects(service.markRead({ items }), { code: "learning_request_invalid" });
+  }
+  await new Promise((resolve) => setImmediate(resolve));
+  const before = notifications.length;
+  f.advance(31 * 86400_000);
+  assert.equal(service.unreadCount(), 0, "an expired candidate is not counted before cleanup");
+  assert.equal((await service.status()).candidates.length, 0);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(notifications.length, before + 1, "cleanup still refreshes connected clients");
+  await service.markRead({ items: [{ id: original.id, version: 1 }] });
+  assert.equal(service.unreadCount(), 0);
+});

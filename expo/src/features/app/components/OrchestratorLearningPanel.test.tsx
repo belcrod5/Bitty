@@ -379,3 +379,41 @@ test("closing details while an evaluation save is pending keeps the parent write
   await fireEvent.press(screen.getByLabelText("評価の一覧を表示")); expect(screen.getByText("55 / 100")).toBeTruthy();
   expect(request.mock.calls.filter(([op]) => op === "voice.learning.correct")).toHaveLength(1); await screen.unmount();
 });
+
+test("opening marks only retrieved candidate versions as read, without adopting or requiring a model", async () => {
+  const status = { ...initialStatus(), unreadCount: 2 };
+  status.candidates.push({ ...status.candidates[0], id: "active", status: "active" });
+  const api = mockApi(status);
+  const request = jest.fn(async (op: string, payload?: Record<string, unknown>) =>
+    op === "voice.learning.read" ? status : api(op, payload));
+  const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  await waitFor(() => expect(request).toHaveBeenCalledWith("voice.learning.read", {
+    items: [{ id: "candidate-1", version: 1 }],
+  }));
+  expect(request.mock.calls.filter(([op]) => op === "voice.learning.decide")).toHaveLength(0);
+  expect(screen.getAllByLabelText("関連する回答で使う: 報告を短くする").map((item) => item.props.value)).toEqual([false, true]);
+  await screen.unmount();
+});
+
+test("a failed or abandoned load never marks knowledge read; old runners receive no read request", async () => {
+  const api = mockApi();
+  const screen = await render(<OrchestratorLearningPanel request={api} orchestrators={orchestrators} />);
+  await waitFor(() => screen.getByText("報告を短くする"));
+  expect(api.mock.calls.some(([op]) => op === "voice.learning.read")).toBe(false);
+  await screen.unmount();
+  let resolveStatus!: (value: Record<string, unknown>) => void;
+  const pending = new Promise<Record<string, unknown>>((resolve) => { resolveStatus = resolve; });
+  const request = jest.fn(async (op: string) => op === "voice.learning.status" ? pending : { models });
+  const abandoned = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  await abandoned.unmount();
+  await act(async () => resolveStatus({ ...initialStatus(), unreadCount: 1 }));
+  expect(request.mock.calls.some(([op]) => op === "voice.learning.read")).toBe(false);
+  const failed = jest.fn(async (op: string) => {
+    if (op === "voice.learning.status") throw new Error("offline");
+    return { models };
+  });
+  const errorScreen = await render(<OrchestratorLearningPanel request={failed} orchestrators={orchestrators} />);
+  await waitFor(() => errorScreen.getByText("offline"));
+  expect(failed.mock.calls.some(([op]) => op === "voice.learning.read")).toBe(false);
+  await errorScreen.unmount();
+});
