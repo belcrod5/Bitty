@@ -89,9 +89,11 @@ function mix(parts) {
 
 function toPcm16(samples) {
   const buf = Buffer.alloc(samples.length * 2);
+  const isPcm16 = samples instanceof Int16Array;
   for (let i = 0; i < samples.length; i += 1) {
-    const s = clamp01(samples[i]);
-    const n = s < 0 ? Math.round(s * 32768) : Math.round(s * 32767);
+    const s = isPcm16 ? samples[i] : clamp01(samples[i]);
+    const n = isPcm16 ? s
+      : s < 0 ? Math.round(s * 32768) : Math.round(s * 32767);
     buf.writeInt16LE(n, i * 2);
   }
   return buf;
@@ -173,22 +175,45 @@ function buildSfxPack() {
 }
 
 function buildVoiceInputSfxPack() {
-  // Retain the original soft body; upper harmonics settle after the onset.
-  const chime = (freq, durationMs) => {
-    const body = tone({ freq, durationMs, volume: 0.28, wave: "sine", attackMs: 5, releaseMs: 65 });
-    const overtones = mix([
-      tone({ freq: freq * 2, durationMs, volume: 0.12, wave: "sine", attackMs: 5, releaseMs: 65 }),
-      tone({ freq: freq * 3, durationMs, volume: 0.075, wave: "sine", attackMs: 5, releaseMs: 65 }),
-      tone({ freq: freq * 4, durationMs, volume: 0.045, wave: "sine", attackMs: 5, releaseMs: 65 }),
-    ]);
-    for (let i = 0; i < overtones.length; i += 1) {
-      overtones[i] *= Math.exp(-Math.max(0, i / SAMPLE_RATE - 0.005) / 0.025);
+  // Adopted "Neon Relay" pair: decaying metallic FM droplets with three echoes.
+  const synth = (notes) => {
+    const sampleCount = Math.round(0.420 * SAMPLE_RATE);
+    const dry = new Float64Array(sampleCount);
+    for (const [onset, frequency, amplitude, length, bend] of notes) {
+      const start = Math.round(onset * SAMPLE_RATE);
+      for (let j = 0; j < Math.round(length * SAMPLE_RATE) && start + j < sampleCount; j += 1) {
+        const t = j / SAMPLE_RATE;
+        const progress = t / length;
+        let envelope = (1 - Math.exp(-t / 0.0045)) * Math.exp(-t / 0.045);
+        envelope *= Math.sin(Math.PI * Math.min(1, (1 - progress) / 0.25) / 2) ** 2;
+        const phase = 2 * Math.PI * frequency * (t + bend * 0.018 * (1 - Math.exp(-t / 0.018)));
+        const fm = 0.65 * Math.exp(-t / 0.035) * Math.sin(2.004 * phase);
+        const body = Math.sin(phase + fm);
+        const glass = 0.13 * Math.sin(2.997 * phase) * Math.exp(-t / 0.018);
+        dry[start + j] += amplitude * envelope * (body + glass);
+      }
     }
-    return mix([body, overtones]);
+    const output = dry.slice();
+    for (const [delay, gain] of [[0.057, 0.34], [0.114, 0.135], [0.171, 0.055]]) {
+      const offset = Math.round(delay * SAMPLE_RATE);
+      for (let i = offset; i < sampleCount; i += 1) output[i] += gain * dry[i - offset];
+    }
+    let energy = 0;
+    let peak = 0;
+    for (let i = 0; i < sampleCount; i += 1) {
+      const fadeIn = Math.min(1, i / Math.round(0.003 * SAMPLE_RATE));
+      const fadeOut = Math.min(1, (sampleCount - 1 - i) / Math.round(0.018 * SAMPLE_RATE));
+      output[i] *= Math.sin(Math.PI / 2 * fadeIn) ** 2 * Math.sin(Math.PI / 2 * fadeOut) ** 2;
+      energy += output[i] * output[i];
+      peak = Math.max(peak, Math.abs(output[i]));
+    }
+    const scale = Math.min(0.095 / Math.sqrt(energy / sampleCount), 0.65 / peak);
+    // Quantize symmetrically, matching the selected PCM16 audition exactly.
+    return Int16Array.from(output, (sample) => Math.round(sample * scale * 32767));
   };
   return {
-    "voice-input-ready.wav": concat([chime(660, 80), silence(12), chime(880, 120)]),
-    "voice-input-send.wav": concat([chime(1046.5, 70), silence(8), chime(784, 100)]),
+    "voice-input-ready.wav": synth([[0, 415.305, 0.85, 0.130, -0.015], [0.066, 622.254, 1, 0.155, -0.010]]),
+    "voice-input-send.wav": synth([[0, 622.254, 0.85, 0.130, 0.010], [0.056, 415.305, 1, 0.155, 0.015]]),
   };
 }
 
