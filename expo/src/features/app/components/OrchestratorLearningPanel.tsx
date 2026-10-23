@@ -16,7 +16,7 @@ type Model = { modelId: string; label: string; effortOptions: ReasoningEffort[] 
 type LearningStatus = {
   settings: { model: string; effort: string; settingsRevision: number };
   status: string; enabled: boolean; observedThrough: number; processedThrough: number;
-  pendingCount: number; candidates: LearningKnowledge[];
+  pendingCount: number; unreadCount?: number; candidates: LearningKnowledge[];
   gaps: { from: number; through: number; reason: string }[];
   error: { code: string; message: string } | null;
   outputLimitEnforced: boolean;
@@ -99,6 +99,10 @@ export function OrchestratorLearningPanel({ request, orchestrators }: {
       setUsageRefresh((current) => current + 1);
       setStatus(value); setSelected([]); setInstruction(""); setSelecting(false); setRequestingChange(false);
       setModel(value.settings.model || ""); setEffort(value.settings.effort || "");
+      if (value.unreadCount !== undefined && value.unreadCount > 0) {
+        void request("voice.learning.read", { items: value.candidates.filter((item) => item.status === "candidate")
+          .map(({ id, version }) => ({ id, version })) }).catch(() => undefined);
+      }
       if (catalog.status === "rejected" || !Array.isArray(catalog.value.models)) {
         setModels([]); setCatalogError("モデル一覧を取得できません。"); return;
       }

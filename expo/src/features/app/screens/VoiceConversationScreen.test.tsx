@@ -1566,3 +1566,25 @@ test("history shows a session divider before the affected user message only", as
   expect(content.indexOf("セッション切り替え")).toBeGreaterThan(content.indexOf("追加してよいですか？"));
   expect(content.indexOf("セッション切り替え")).toBeLessThan(content.indexOf("追加してください"));
 });
+
+test("main learning badge arrives during another chat and stays separate from chat unread", async () => {
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose}
+    initialOrchestratorId="other" />);
+  await waitFor(() => expect(mockQuestionHandlers.has("voice.unread.changed")).toBe(true));
+  const emit = async (learningUnreadCount: number) => act(async () => {
+    mockQuestionHandlers.get("voice.unread.changed")?.forEach((listener) => listener({ channel: "agent",
+      op: "voice.unread.changed", payload: { orchestrators: [
+        { id: "main", name: "メイン", icon: "", unreadCount: 2, learningUnreadCount },
+        { id: "other", name: "調査", icon: "", unreadCount: 0 },
+      ], selectedId: "other" } }));
+  });
+  await emit(3);
+  expect(screen.getByTestId("voice-orchestrator-learning-unread-main")).toBeTruthy();
+  expect(screen.getByTestId("voice-orchestrator-unread-main")).toBeTruthy();
+  expect(screen.getByLabelText("メインに切り替え、新しく学んだこと 3件")).toBeTruthy();
+  expect(screen.queryByTestId("voice-orchestrator-learning-unread-other")).toBeNull();
+  expect(mockHookOrchestratorIds.at(-1)).toBe("other");
+  await emit(0);
+  expect(screen.queryByTestId("voice-orchestrator-learning-unread-main")).toBeNull();
+  expect(screen.getByTestId("voice-orchestrator-unread-main")).toBeTruthy();
+});

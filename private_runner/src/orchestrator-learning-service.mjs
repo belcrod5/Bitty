@@ -45,7 +45,7 @@ const score = (value) => value === null || Number.isInteger(value) && value >= 0
 
 // Single owner of evidence, adoption, skill versions and response delivery records.
 export async function openOrchestratorLearning({ workspace, memoryConversationId, initialThrough,
-  analyze, ledger, isBusy = () => false, now = () => Date.now(), limits = {} }) {
+  analyze, ledger, isBusy = () => false, onUnreadChanged = () => {}, now = () => Date.now(), limits = {} }) {
   const bounds = { ...LIMITS, ...limits };
   const directory = path.join(workspace, "orchestrator-learning");
   await fs.mkdir(directory, { mode: 0o700 }).catch((cause) => { if (cause.code !== "EEXIST") throw cause; });
@@ -61,7 +61,10 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
   let error = null;
   let budgetRetryAt = 0;
   const exclusive = (work) => { const result = serial.then(work); serial = result.catch(() => {}); return result; };
+  const unreadCount = (value = state) => value?.candidates.filter((item) => item.status === "candidate"
+    && item.readVersion !== item.version && Date.parse(item.createdAt) >= now() - bounds.candidateAge).length || 0;
   async function save(next) {
+    const previousCandidates = JSON.stringify(state?.candidates);
     if (bytes(next) > bounds.stateBytes) throw fail("learning_capacity", "Learning state capacity reached");
     const temporary = path.join(directory, `${randomUUID()}.tmp`);
     const handle = await fs.open(temporary, "wx", 0o600);
@@ -71,6 +74,10 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
       const folder = await fs.open(directory, "r");
       try { await folder.sync(); } finally { await folder.close(); }
       state = next;
+      if (previousCandidates !== undefined && previousCandidates !== JSON.stringify(next.candidates)) {
+        // Notify after committing without awaiting a consumer that may read this store again.
+        void Promise.resolve().then(onUnreadChanged).catch(() => {});
+      }
     } catch (cause) { await handle.close().catch(() => {}); await fs.rm(temporary, { force: true }); throw cause; }
   }
   function validPair(pair) {
@@ -117,7 +124,8 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
   if (!positive(state.contextRevision) || ["evaluations", "corrections", "changes", "uses", "proposals", "excluded", "requests"]
     .some((key) => !Array.isArray(state[key]))) throw fail("learning_store_invalid", "Invalid learning lifecycle state");
   for (const item of state.candidates) { item.version ??= 1; item.updatedAt ??= item.createdAt; }
-  if (state.candidates.some((item) => !positive(item.version) || !identifier(item.scope.orchestratorId)
+  if (state.candidates.some((item) => !positive(item.version) || item.readVersion !== undefined && !positive(item.readVersion)
+    || !identifier(item.scope.orchestratorId)
     || item.scope.shared !== undefined && typeof item.scope.shared !== "boolean"
     || [item.matchTerms, item.targetConstraints].some((values) => values !== undefined && (!Array.isArray(values) || values.some((value) => !text(value, 200))))
     || item.skill && (!record(item.skill) || SKILL_FIELDS.some((key) => !text(item.skill[key], 2000)))
@@ -410,8 +418,9 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
         for (const item of next.candidates.filter((entry) => chatIds.has(entry.scope.orchestratorId))
           .sort((a, b) => Number(pinned.has(b.id)) - Number(pinned.has(a.id)))) {
           if (items.length >= 15) break;
-          if (!pinned.has(item.id) && bytes([...items, item]) > bounds.inputBytes / 3) continue;
-          items.push(item);
+          const { readVersion, ...reference } = item;
+          if (!pinned.has(item.id) && bytes([...items, reference]) > bounds.inputBytes / 3) continue;
+          items.push(reference);
         }
         const evaluations = feedback.map((entry) => next.evaluations.find((value) => value.id === entry.evaluationId)).filter(Boolean);
         const pairs = [];
@@ -549,6 +558,23 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
   return {
     observe,
     runDue,
+    unreadCount,
+    async markRead({ items }) {
+      return exclusive(async () => {
+        if (!Array.isArray(items) || items.length > bounds.candidates
+          || items.some((item) => !record(item) || !UUID.test(item.id) || !positive(item.version))
+          || new Set(items.map((item) => item.id)).size !== items.length) {
+          throw fail("learning_request_invalid", "Select current learning versions to mark as read");
+        }
+        const next = structuredClone(state);
+        let changed = false;
+        for (const { id, version } of items) {
+          const item = next.candidates.find((entry) => entry.id === id && entry.version === version && entry.status === "candidate");
+          if (item && item.readVersion !== version) { item.readVersion = version; changed = true; }
+        }
+        if (changed) await save(next);
+      });
+    },
     async status() {
       await exclusive(async () => {
         if (error) return;
@@ -556,7 +582,7 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
         if (JSON.stringify(next) !== JSON.stringify(state)) await save(next);
       }).catch(report);
       await exclusive(() => cleanForgotten()).catch(report);
-      return { mode: "learning", contextRevision: state.contextRevision, enabled: Boolean(state.settings.model), settings: { ...state.settings },
+      return { mode: "learning", unreadCount: unreadCount(), contextRevision: state.contextRevision, enabled: Boolean(state.settings.model), settings: { ...state.settings },
         status: error ? "paused" : task ? "analyzing" : state.batch?.attempts >= (state.batch?.retryCeiling || bounds.maxAttempts) ? "retry_exhausted"
           : state.settings.model ? "observing" : "unconfigured", error: error || (state.batch?.errorCode
             ? { code: state.batch.errorCode, message: "The last learning batch failed; its sources remain unprocessed." } : null),

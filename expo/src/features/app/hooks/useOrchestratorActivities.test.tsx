@@ -145,3 +145,21 @@ test("disconnect, connection generation, foreground, and credentials discard sta
   expect(hook.result.current.orchestrators).toEqual([]);
   await hook.unmount();
 });
+
+test("learning metadata follows pushes, excludes invalid counts, and clears on credential changes", async () => {
+  let token = "one";
+  const hook = await renderHook(() => useOrchestratorActivities("url", token, true));
+  await act(async () => mockHandlers.get("voice.unread.changed")?.({ payload: {
+    orchestrators: [{ id: "main", name: "メイン", learningUnreadCount: 4 },
+      { id: "other", name: "調査", learningUnreadCount: -2 }], selectedId: "other",
+  } }));
+  expect(hook.result.current.orchestrators.map((item) => item.learningUnreadCount)).toEqual([4, 0]);
+  const stale = mockHandlers.get("voice.unread.changed")!;
+  token = "two";
+  await hook.rerender(undefined);
+  await act(async () => stale({ payload: {
+    orchestrators: [{ id: "main", name: "古い", learningUnreadCount: 9 }], selectedId: "main",
+  } }));
+  expect(hook.result.current.orchestrators.some((item) => item.learningUnreadCount === 9)).toBe(false);
+  await hook.unmount();
+});

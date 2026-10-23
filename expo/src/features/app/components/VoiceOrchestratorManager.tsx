@@ -224,7 +224,8 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
               <View style={styles.settingsGroup}>
                 {list.orchestrators.map((item) => (
                   <Pressable key={item.id} testID={`orchestrator-row-${item.id}`}
-                    accessibilityRole="button" accessibilityLabel={`${item.name}の設定`}
+                    accessibilityRole="button" accessibilityLabel={`${item.name}の設定${item.id === "main" && (item.learningUnreadCount || 0) > 0
+                      ? `、新しく学んだこと ${item.learningUnreadCount}件` : ""}`}
                     onPress={() => setDetailId(item.id)} style={[styles.settingsRow, styles.settingsRowDivider, { gap: 12 }]}>
                     <VoiceOrchestratorIcon orchestrator={item} />
                     <Text style={[styles.settingsRowLabel, { flex: 1 }]}>{item.name}</Text>
