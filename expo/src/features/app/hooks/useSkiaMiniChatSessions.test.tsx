@@ -30,6 +30,11 @@ import { useConversationRuntimeStoreController } from "./useConversationRuntimeS
 import type { PanelRuntimePreview, PanelRuntimeSnapshot } from "../contexts/PanelRuntimeStoreContext";
 import type { SkiaBoardCard, SkiaBoardState } from "../utils/skiaBoardState";
 
+let mockScheduledThreadIds = new Set<string>();
+jest.mock("../../codexSchedules/CodexSchedulesContext", () => ({
+  useCodexSchedules: () => ({ scheduledThreadIds: mockScheduledThreadIds }),
+}));
+
 jest.mock("../contexts/ConversationContext", () => ({
   useConversation: jest.fn(),
 }));
@@ -119,12 +124,13 @@ function seedRunnerBoard(cards: SkiaBoardCard[], extra: Partial<SkiaBoardState> 
   runnerStore = { initialized: true, revision: 1, board: boardOf(cards, extra) };
 }
 
-function sessionCard(sessionId: string, col: number, row: number): SkiaBoardCard {
+function sessionCard(sessionId: string, col: number, row: number): Extract<SkiaBoardCard, { kind: "session" }> {
   return { kind: "session", sessionId, col, row };
 }
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockScheduledThreadIds = new Set();
   mockRunnerAuth = { runnerUrl: "http://runner", runnerToken: "runner-token" };
   persistedFile = {};
   mockWsEmitter.handlers = [];
@@ -251,6 +257,23 @@ function BoardWrapper({ children }: PropsWithChildren) {
 }
 
 describe("useSkiaMiniChatSessions", () => {
+  it("updates only the scheduled card and leaves other backends unmarked", async () => {
+    seedRunnerBoard([{ ...sessionCard("session-1", 0, 0), backendId: "codex" },
+      { ...sessionCard("session-2", 1, 0), backendId: "claude" }]);
+    mockConversation([session(1), { ...session(2), backendId: "claude" }]);
+    const { result, rerender } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
+    await flush();
+    const before = result.current.sessions;
+    expect(before.map((item) => item.hasScheduledExecution)).toEqual([false, false]);
+    mockScheduledThreadIds = new Set(["session-1", "session-2"]);
+    await rerender({});
+    expect(result.current.sessions.map((item) => item.hasScheduledExecution)).toEqual([true, false]);
+    expect(result.current.sessions[1]).toBe(before[1]);
+    mockScheduledThreadIds = new Set();
+    await rerender({});
+    expect(result.current.sessions[0].hasScheduledExecution).toBe(false);
+  });
+
   it.each(["completed", "cancelled", "interrupted", "error"] as const)(
     "publishes %s from the shared runtime without replacing getters or waiting for a board tick",
     async (lifecycle) => {

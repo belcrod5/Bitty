@@ -469,6 +469,7 @@ const BoardCard = memo(function BoardCard({
   const footer = item.kind === "session" ? item.updatedAtLabel : "";
   const isSession = item.kind === "session";
   const isResponding = isSession && item.isResponding;
+  const hasScheduledExecution = isSession && item.hasScheduledExecution;
   const cardMutedTextColor = isResponding ? theme.colors.textSecondary : theme.board.textMuted;
   const markerFill = isSession
     ? DIRECTORY_MARKER_COLORS[item.markerColor] ?? theme.colors.border
@@ -582,7 +583,18 @@ const BoardCard = memo(function BoardCard({
           canvas.save();
           canvas.clipRect(Skia.XYWHRect(10, 8, cardWidth - 20, CARD_HEIGHT - 16), ClipOp.Intersect, true);
           canvas.drawCircle(18, 21, 5, fillPaint(markerFill));
-          drawText(header, 31, 14, Math.max(30, cardWidth - 53 - activityBadges.length * 52), {
+          const headerRight = cardWidth - 16 - activityBadges.length * 52;
+          if (hasScheduledExecution) {
+            const path = Skia.Path.MakeFromSVGString("M7.5 1A6.5 6.5 0 1 0 7.5 14A6.5 6.5 0 1 0 7.5 1M7.5 3.5V7.5L10 9");
+            if (path) {
+              canvas.save();
+              canvas.translate(headerRight - 15, 14);
+              canvas.drawPath(path, strokePaint(theme.colors.controlAccent, 1.2));
+              canvas.restore();
+              path.dispose();
+            }
+          }
+          drawText(header, 31, 14, Math.max(30, headerRight - 37 - (hasScheduledExecution ? 20 : 0)), {
             fontSize: bodyFontSize,
             color: cardMutedTextColor,
           });
@@ -660,6 +672,7 @@ const BoardCard = memo(function BoardCard({
       footer,
       footerRightStart,
       header,
+      hasScheduledExecution,
       isSession,
       isResponding,
       markerFill,

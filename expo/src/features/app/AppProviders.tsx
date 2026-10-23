@@ -39,6 +39,7 @@ import {
   ChatScreenProvider,
   type ChatScreenContextValue,
 } from "./contexts/ChatScreenContext";
+import { CodexSchedulesProvider } from "../codexSchedules/CodexSchedulesContext";
 import { SkiaBoardProvider } from "./contexts/SkiaBoardContext";
 
 type AppProvidersProps = {
@@ -79,7 +80,9 @@ export function AppProviders({
                   <ChatComposerProvider value={chatComposer}>
                     <ChatVisualProvider value={chatVisual}>
                       <ChatScreenProvider value={chatScreen}>
-                        <SkiaBoardProvider>{children}</SkiaBoardProvider>
+                        <CodexSchedulesProvider runnerUrl={appSettings.runnerUrl} runnerToken={appSettings.runnerToken}>
+                          <SkiaBoardProvider>{children}</SkiaBoardProvider>
+                        </CodexSchedulesProvider>
                       </ChatScreenProvider>
                     </ChatVisualProvider>
                   </ChatComposerProvider>

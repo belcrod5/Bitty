@@ -5,6 +5,13 @@ import { CodexScheduleSettings } from "./CodexScheduleSettings";
 import { CodexScheduleEditor } from "./CodexScheduleEditor";
 import { CodexScheduleApiError, getCodexSchedules, putCodexSchedules } from "./codexScheduleApi";
 
+jest.mock("./CodexSchedulesContext", () => ({
+  useCodexSchedules: () => ({
+    refresh: () => mockGet({ runnerUrl: "http://runner", runnerToken: "token" }),
+    save: (revision: number, schedules: typeof schedule[]) => mockPut({ runnerUrl: "http://runner", runnerToken: "token" }, revision, schedules),
+  }),
+}));
+
 jest.mock("expo-crypto", () => ({ randomUUID: () => "11111111-1111-4111-8111-111111111111" }));
 jest.mock("@react-native-community/datetimepicker", () => "DateTimePicker");
 jest.mock("react-native-keyboard-controller", () => {

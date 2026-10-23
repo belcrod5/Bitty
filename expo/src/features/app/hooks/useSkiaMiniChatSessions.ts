@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCodexSchedules } from "../../codexSchedules/CodexSchedulesContext";
 import { useChatScreen } from "../contexts/ChatScreenContext";
 import { useConversation } from "../contexts/ConversationContext";
 import type { DirectoryMarkerColor } from "../types/directorySessions";
@@ -43,6 +44,7 @@ export type SkiaMiniChatSession = {
   updatedAtLabel: string;
   unread: boolean;
   isResponding: boolean;
+  hasScheduledExecution: boolean;
   activityTrail: Array<{ kind: SessionActivity; active: boolean }>;
   subagentLoading: boolean;
   subagentRunningCount: number;
@@ -110,6 +112,7 @@ function sameBoardSession(a: SkiaMiniChatSession, b: SkiaMiniChatSession) {
 }
 
 export function useSkiaMiniChatSessions() {
+  const { scheduledThreadIds } = useCodexSchedules();
   const {
     registeredDirectories,
     directorySessionsById,
@@ -436,6 +439,7 @@ export function useSkiaMiniChatSessions() {
         updatedAtLabel: formatSkiaMiniChatUpdatedAt(candidate.updatedAt, nowMs),
         unread: isLlmSessionUnread(candidate),
         isResponding,
+        hasScheduledExecution: candidate.backendId === "codex" && scheduledThreadIds.has(candidate.sessionId),
         activityTrail: runtimeActivityTrail.map((kind, index) => ({
           kind,
           active: isResponding && index === runtimeActivityTrail.length - 1,
@@ -466,6 +470,7 @@ export function useSkiaMiniChatSessions() {
     runtimeRevision,
     nowMs,
     sessionMarkerColorsById,
+    scheduledThreadIds,
   ]);
 
   // file/directoryカードも、元のboardStateカードが同一参照なら同じitemを使い回す。
