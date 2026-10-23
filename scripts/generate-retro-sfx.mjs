@@ -173,13 +173,19 @@ function buildSfxPack() {
 }
 
 function buildVoiceInputSfxPack() {
-  // Octave body and clear upper harmonics retain the short two-note melodies.
-  const chime = (freq, durationMs) => mix([
-    tone({ freq, durationMs, volume: 0.20, wave: "sine", attackMs: 3, releaseMs: 55 }),
-    tone({ freq: freq * 2, durationMs, volume: 0.085, wave: "sine", attackMs: 2, releaseMs: 50 }),
-    tone({ freq: freq * 3, durationMs, volume: 0.045, wave: "sine", attackMs: 2, releaseMs: 45 }),
-    tone({ freq: freq / 2, durationMs, volume: 0.065, wave: "sine", attackMs: 4, releaseMs: 55 }),
-  ]);
+  // Retain the original soft body; upper harmonics settle after the onset.
+  const chime = (freq, durationMs) => {
+    const body = tone({ freq, durationMs, volume: 0.28, wave: "sine", attackMs: 5, releaseMs: 65 });
+    const overtones = mix([
+      tone({ freq: freq * 2, durationMs, volume: 0.12, wave: "sine", attackMs: 5, releaseMs: 65 }),
+      tone({ freq: freq * 3, durationMs, volume: 0.075, wave: "sine", attackMs: 5, releaseMs: 65 }),
+      tone({ freq: freq * 4, durationMs, volume: 0.045, wave: "sine", attackMs: 5, releaseMs: 65 }),
+    ]);
+    for (let i = 0; i < overtones.length; i += 1) {
+      overtones[i] *= Math.exp(-Math.max(0, i / SAMPLE_RATE - 0.005) / 0.025);
+    }
+    return mix([body, overtones]);
+  };
   return {
     "voice-input-ready.wav": concat([chime(660, 80), silence(12), chime(880, 120)]),
     "voice-input-send.wav": concat([chime(1046.5, 70), silence(8), chime(784, 100)]),

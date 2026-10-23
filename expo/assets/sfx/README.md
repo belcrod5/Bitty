@@ -1,8 +1,11 @@
 # Voice input cues
 
 `voice-input-ready.wav` (212 ms) and `voice-input-send.wav` (178 ms) are original,
-procedurally synthesized notification-style chimes. Each note combines a sine fundamental, an octave below for body, and second/third
-harmonics for clarity, with short attack/release envelopes at 44.1 kHz mono PCM16.
+procedurally synthesized notification-style chimes at 44.1 kHz mono PCM16.
+Each note preserves the original sine fundamental, pitches, timing, and 5 ms attack
+without adding a lower octave.
+Second, third, and fourth harmonics share the initial envelope, then decay with a
+25 ms time constant after the first 5 ms, leaving the soft fundamental as the body.
 The rising ready cue and falling send cue are distinct from each other.
 The ready WAV lives in `expo/modules/bitty-stt-transport/ios/Resources/` so native
 iOS capture can play it without reconfiguring the recording audio session.
