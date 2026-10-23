@@ -95,9 +95,9 @@ export function buildRunnerMediaFileUrl(params: {
   }
 }
 
-export type RunnerImageSource = { uri: string; headers?: Record<string, string> };
+export type RunnerMediaSource = { uri: string; headers?: Record<string, string> };
 
-export function getRunnerMediaSource(uri: string, runnerToken: string): RunnerImageSource | null {
+export function getRunnerMediaSource(uri: string, runnerToken: string): RunnerMediaSource | null {
   const token = runnerToken.trim();
   if (!uri || !token) return null;
   return { uri, headers: { ...getCloudflareAccessHeadersForUrl(uri), authorization: `Bearer ${token}` } };
@@ -106,7 +106,7 @@ export function getRunnerMediaSource(uri: string, runnerToken: string): RunnerIm
 export function resolveRunnerMarkdownImage(
   destination: string,
   context: { runnerUrl: string; runnerToken: string; rootDir: string },
-): RunnerImageSource | null {
+): RunnerMediaSource | null {
   const url = destination.trim();
   if (!url || url.startsWith("#")) return null;
   if (/^www\./i.test(url)) return { uri: `https://${url}` };

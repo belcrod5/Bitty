@@ -8,11 +8,11 @@ import type {
   VideoProps,
 } from "expo-av";
 
-type PlaybackSource = number | { uri?: string };
+type PlaybackSource = number | { uri?: string; headers?: Record<string, string> };
 type PlaybackStatusHandler = ((status: AVPlaybackStatus) => void) | null;
 
 type NativeAudioModule = {
-  create(uri: string, initialStatus: AVPlaybackStatusToSet): Promise<{
+  create(uri: string, initialStatus: AVPlaybackStatusToSet, headers: Record<string, string>): Promise<{
     soundId: string;
     status: AVPlaybackStatus;
   }>;
@@ -72,7 +72,9 @@ class MacOSSound {
     source: PlaybackSource,
     initialStatus: AVPlaybackStatusToSet = {}
   ): Promise<{ sound: MacOSSound; status: AVPlaybackStatus }> {
-    const result = await requireNativeAudio().create(resolveSourceUri(source), initialStatus);
+    const result = await requireNativeAudio().create(
+      resolveSourceUri(source), initialStatus, typeof source === "number" ? {} : source.headers ?? {},
+    );
     const sound = new MacOSSound(result.soundId, result.status);
     sounds.set(result.soundId, sound);
     return { sound, status: result.status };
