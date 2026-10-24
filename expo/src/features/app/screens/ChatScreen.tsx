@@ -103,9 +103,6 @@ type ChatScreenProps = {
   onPopupHeaderDragEnd?: (offsetY: number, velocityY: number) => void;
   showPopupMessagesSkeleton?: boolean;
 };
-type OptionalSizeCacheLegendListRef = LegendListRef & {
-  clearCaches?: (options?: { mode?: "sizes" }) => void;
-};
 type ChatScrollDiagnosticState = {
   contentHeight: number;
   viewportHeight: number;
@@ -520,8 +517,6 @@ export function ChatScreen({
   const isAtBottomRef = useRef(true);
   const chatAutoScrollPausedRef = useRef(false);
   const chatScrollDragActiveRef = useRef(false);
-  const lastChatCacheKeyRef = useRef("");
-  const settledChatCacheVersionRef = useRef(0);
   const lastConversationMessageForViewRef = useRef<ConversationMessage | null>(null);
   const lastConversationMessageIndexForViewRef = useRef(-1);
   const chatScrollDiagnosticRef = useRef<ChatScrollDiagnosticState>({
@@ -559,7 +554,6 @@ export function ChatScreen({
   const [panelComposerFocused, setPanelComposerFocused] = useState(false);
   const [chatViewportSize, setChatViewportSize] = useState({ width: 0, height: 0 });
   const [popupChatViewportSize, setPopupChatViewportSize] = useState({ width: 0, height: 0 });
-  const [chatListCacheVersion, setChatListCacheVersion] = useState(0);
   const miniBoardMountLoggedRef = useRef(false);
   const miniBoardPrevSessionIdRef = useRef("");
   const usesPanelComposerState = isMiniBoardPopupMode && !!panelId;
@@ -718,7 +712,6 @@ export function ChatScreen({
   const estimatedChatListSize = currentChatViewportSize.width > 0 && currentChatViewportSize.height > 0
     ? currentChatViewportSize
     : undefined;
-  const chatListRenderKey = `${isMiniBoardPopupMode ? "popup" : "full"}-chat-list-${chatListCacheVersion}`;
   const keyboardVerticalOffset = Platform.OS === "ios"
     ? (isMiniBoardPopupMode ? 0 : 6)
     : 0;
@@ -1327,45 +1320,7 @@ export function ChatScreen({
     clearPendingBottomScrollFrames();
   }, [clearPendingBottomScrollFrames, conversationScrollResetKey, resetChatScrollNavigation]);
   useEffect(() => {
-    const width = Math.round(Number(currentChatViewportSize.width || 0));
-    if (width <= 0) return;
-    const cacheKey = [
-      isMiniBoardPopupMode ? "popup" : "full",
-      conversationScrollResetKey,
-      width,
-    ].join("|");
-    if (lastChatCacheKeyRef.current === cacheKey) return;
-    lastChatCacheKeyRef.current = cacheKey;
-    (chatListRefForView.current as OptionalSizeCacheLegendListRef | null)?.clearCaches?.({ mode: "sizes" });
-    setChatListCacheVersion((prev) => prev + 1);
-  }, [
-    chatListRefForView,
-    conversationScrollResetKey,
-    currentChatViewportSize.width,
-    isMiniBoardPopupMode,
-  ]);
-  useEffect(() => {
-    if (chatListCacheVersion <= 0) return;
-    if (settledChatCacheVersionRef.current === chatListCacheVersion) return;
-    if (conversationMessagesForView.length <= 0) return;
-    settledChatCacheVersionRef.current = chatListCacheVersion;
-    initialSettlingRef.current = true;
-    isAtBottomRef.current = true;
-    scrollChatListToBottomSettled(false);
-    if (initialSettleTimerRef.current !== null) {
-      clearTimeout(initialSettleTimerRef.current);
-    }
-    initialSettleTimerRef.current = setTimeout(() => {
-      initialSettlingRef.current = false;
-      initialSettleTimerRef.current = null;
-    }, CHAT_INITIAL_SCROLL_SETTLE_MS);
-  }, [
-    chatListCacheVersion,
-    conversationMessagesForView.length,
-    scrollChatListToBottomSettled,
-  ]);
-  useEffect(() => {
-    if (conversationMessagesForView.length <= 0) return;
+    if (showMessagesSkeletonForView || conversationMessagesForView.length <= 0) return;
     if (didInitialScrollRef.current) return;
     didInitialScrollRef.current = true;
     initialSettlingRef.current = true;
@@ -1380,7 +1335,7 @@ export function ChatScreen({
       initialSettlingRef.current = false;
       initialSettleTimerRef.current = null;
     }, CHAT_INITIAL_SCROLL_SETTLE_MS);
-  }, [conversationMessagesForView.length, conversationScrollResetKey, scrollChatListToBottomSettled]);
+  }, [conversationMessagesForView.length, conversationScrollResetKey, scrollChatListToBottomSettled, showMessagesSkeletonForView]);
   useEffect(() => {
     const currentMessageCount = conversationMessagesForView.length;
     const previousMessageCount = previousMessageCountRef.current;
@@ -2187,7 +2142,7 @@ export function ChatScreen({
             </View>
           ) : (
             <LegendList
-              key={chatListRenderKey}
+              key={conversationScrollResetKey}
               ref={chatListRefForView}
               style={styles.chatScroll}
               data={conversationMessagesForView}
