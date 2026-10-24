@@ -950,11 +950,18 @@ test("observation restart recovers completed sources after observer storage was 
 test("corrupt learning state pauses learning while ordinary conversations still complete", async (t) => {
   const { rootDir, service, codex } = await fixture(t);
   const main = await service.open("main");
+  assert.equal((await (await turn(service, "main", main.logicalConversationId, "Before corruption")).finished).status, "completed");
+  const activeFile = path.join(rootDir, "active.json");
+  const active = JSON.parse(await fs.readFile(activeFile, "utf8"));
+  await fs.writeFile(activeFile, JSON.stringify({ ...active, learningSnapshot: { contextRevision: 1, selectedDigest: "prior-policy",
+    items: [{ id: randomUUID(), version: 1 }] } }));
   const workspace = (await fs.readdir(path.join(path.dirname(rootDir), "workspaces")))[0];
   await fs.writeFile(path.join(path.dirname(rootDir), "workspaces", workspace, "orchestrator-learning", "state.json"), "{}");
   const restarted = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
   assert.equal((await restarted.learningStatus()).status, "paused");
-  assert.equal((await (await turn(restarted, "main", main.logicalConversationId, "Still respond")).finished).status, "completed");
+  const cleared = await (await turn(restarted, "main", main.logicalConversationId, "Still respond")).finished;
+  assert.equal(cleared.status, "completed"); assert.equal(cleared.sessionSwitched, true);
+  assert.equal((await (await turn(restarted, "main", main.logicalConversationId, "Continue without learning")).finished).sessionSwitched, undefined);
 });
 
 test("first observation startup prepares usage storage and excludes pre-existing conversation history", async (t) => {
