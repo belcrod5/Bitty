@@ -3,7 +3,6 @@ import { useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  Modal,
   SafeAreaView,
   ScrollView,
   StyleSheet,
@@ -13,8 +12,9 @@ import {
   View,
 } from "react-native";
 
+import { AppModal } from "../app/components/AppModal";
 import { useRunnerWebSocketManager } from "../runnerWs/RunnerWebSocketContext";
-import type { CodexScheduleSettingsProps } from "./CodexScheduleSettings.contract";
+import type { ReasoningEffort } from "../app/utils/settingsParsers";
 import { useVisualTheme } from "../app/theme/VisualThemeContext";
 import { createStylesByTheme, type VisualTheme } from "../app/theme/visualThemes";
 import { CodexScheduleApiError } from "./codexScheduleApi";
@@ -30,7 +30,19 @@ import {
   type CodexSchedule,
 } from "./codexScheduleTypes";
 
-function newSchedule(props: CodexScheduleSettingsProps): CodexSchedule {
+type Props = {
+  runnerUrl: string;
+  runnerToken: string;
+  currentCwd: string;
+  currentModelRef: string;
+  currentReasoningEffort: ReasoningEffort;
+  currentThreadId: string;
+  directories: readonly { path: string; displayName: string }[];
+  modelOptions: readonly { value: string; label: string }[];
+  thinkOptions: readonly ReasoningEffort[];
+};
+
+function newSchedule(props: Props): CodexSchedule {
   const start = new Date(Math.ceil((Date.now() + 5 * 60_000) / 60_000) * 60_000);
   return {
     id: randomUUID(),
@@ -75,7 +87,7 @@ function scheduleSubtitle(schedule: CodexSchedule) {
   return schedule.rrule === null && schedule.lastDispatch ? "実行済み" : "次回未定";
 }
 
-export function CodexScheduleSettings(props: CodexScheduleSettingsProps) {
+export function CodexScheduleSettings(props: Props) {
   const { theme, themeId } = useVisualTheme();
   const manager = useRunnerWebSocketManager();
   const { refresh, save: saveSchedules } = useCodexSchedules();
@@ -184,7 +196,7 @@ export function CodexScheduleSettings(props: CodexScheduleSettingsProps) {
       <TouchableOpacity accessibilityRole="button" accessibilityLabel="スケジュール実行" style={styles.menuButton} onPress={open}>
         <Text style={styles.menuButtonText}>スケジュール実行</Text>
       </TouchableOpacity>
-      <Modal visible={visible} animationType="slide" presentationStyle="fullScreen" onRequestClose={close}>
+      <AppModal visible={visible} animationType="slide" presentationStyle="fullScreen" onRequestClose={close}>
         <SafeAreaView style={styles.root}>
           <View style={styles.header}>
             <TouchableOpacity accessibilityRole="button" accessibilityLabel="スケジュールを閉じる" onPress={close} disabled={saving}>
@@ -269,7 +281,7 @@ export function CodexScheduleSettings(props: CodexScheduleSettingsProps) {
             }}
           />
         </SafeAreaView>
-      </Modal>
+      </AppModal>
     </>
   );
 }

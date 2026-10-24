@@ -1,6 +1,5 @@
 import { useState } from "react";
 import {
-  Modal,
   SafeAreaView,
   ScrollView,
   StyleSheet,
@@ -13,6 +12,7 @@ import {
   RunnerFileExplorer,
   type RunnerFileExplorerEntry,
 } from "./RunnerFileExplorer";
+import { AppModal } from "./AppModal";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 
@@ -62,7 +62,7 @@ export function RunnerFilePicker({
         </Text>
         <Text style={styles.chevron}>›</Text>
       </TouchableOpacity>
-      <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setVisible(false)}>
+      <AppModal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setVisible(false)}>
         <SafeAreaView style={styles.root}>
           <View style={styles.header}>
             <TouchableOpacity accessibilityRole="button" accessibilityLabel={closeAccessibilityLabel} onPress={() => setVisible(false)}>
@@ -88,7 +88,7 @@ export function RunnerFilePicker({
             />
           </ScrollView>
         </SafeAreaView>
-      </Modal>
+      </AppModal>
     </>
   );
 }

@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import {
   Alert,
-  Modal,
+  Platform,
   SafeAreaView,
   StyleSheet,
   Switch,
@@ -10,9 +10,10 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import DateTimePicker from "@react-native-community/datetimepicker";
-import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
+import DateTimePicker from "../app/components/DateTimePicker";
+import { KeyboardAwareScrollView } from "../app/keyboardController";
 
+import { AppModal } from "../app/components/AppModal";
 import { OptionSelectField } from "../app/components/OptionSelectField";
 import { RunnerFilePicker } from "../app/components/RunnerFilePicker";
 import type { RunnerFileExplorerEntry } from "../app/components/RunnerFileExplorer";
@@ -118,7 +119,7 @@ export function CodexScheduleEditor({
   const finish = onClose;
 
   return (
-    <Modal visible animationType="slide" presentationStyle="fullScreen" onRequestClose={finish}>
+    <AppModal visible animationType="slide" presentationStyle="fullScreen" onRequestClose={finish}>
       <SafeAreaView style={styles.root}>
         <View style={styles.header}>
           <TouchableOpacity accessibilityRole="button" accessibilityLabel="編集を閉じる" onPress={finish}>
@@ -131,7 +132,7 @@ export function CodexScheduleEditor({
           testID="codex-schedule-editor-scroll"
           contentContainerStyle={styles.content}
           keyboardShouldPersistTaps="handled"
-          bottomOffset={24}
+          {...(Platform.OS === "macos" ? {} : { bottomOffset: 24 })}
         >
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>基本</Text>
@@ -300,7 +301,7 @@ export function CodexScheduleEditor({
           </TouchableOpacity>
         </KeyboardAwareScrollView>
       </SafeAreaView>
-    </Modal>
+    </AppModal>
   );
 }
 
