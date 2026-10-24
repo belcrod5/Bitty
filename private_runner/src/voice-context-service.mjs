@@ -2180,18 +2180,19 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
     let stage = "preflight";
     try {
       const managedContext = managedSessions?.contextOf(await managedSessions.refresh()) || "";
-      const learning = await learningContext?.retrieve({ input });
+      const learning = await learningContext?.retrieve({ input, exposedItems: active.learningSnapshot?.items || [] });
       const prepared = await exclusive(async () => {
         if (signal.aborted) throw invalid("turn_interrupted", "Voice turn was cancelled");
         const selected = learning?.excludedPairSeqs === null ? []
           : pairs.slice(-RECENT_PAIRS).filter((pair) => !learning?.excludedPairSeqs?.includes(pair.pairSeq));
-        const previousLearning = active.learningSnapshot;
-        const learningChanged = Boolean(learningContext && active.nativeThreadId && (active.nativeLearningEnabled !== true
-          || previousLearning?.contextRevision !== learning?.contextRevision || previousLearning?.selectedDigest !== learning?.selectedDigest));
-        const learningRemoved = Boolean(learningChanged && previousLearning?.items?.some((old) =>
-          !learning?.items?.some((item) => item.id === old.id && item.version === old.version)));
-        if (learningChanged && !active.pendingSwitch) await saveActive({ ...active, pendingSwitch: {
+        const learningReset = Boolean(learningContext && active.nativeThreadId
+          && (active.nativeLearningEnabled !== true || learning?.invalidated));
+        if (learningReset && !active.pendingSwitch) await saveActive({ ...active, pendingSwitch: {
           parentGeneration: active.parentGeneration, turnSeq: Math.max(1, active.turnSeq || 0), reason: "learning" } }, "Learning parent switch could not be synced");
+        if (!learningReset && active.pendingSwitch?.reason === "learning") {
+          const next = { ...active }; delete next.pendingSwitch;
+          await saveActive(next, "Obsolete learning parent switch could not be cleared");
+        }
         const legacyChecklistParent = Boolean(taskChecklistPath && active.nativeThreadId
           && (active.checklistReadPending === undefined || active.nativeAgentsEnabled !== true
             || active.nativeChecklistWriteEnabled !== true || active.nativeChecklistCompletionVersion !== CHECKLIST_COMPLETION_VERSION));
@@ -2206,7 +2207,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
         const pending = active.pendingSwitch?.parentGeneration === active.parentGeneration
           ? active.pendingSwitch : null;
         const switching = Boolean(pending && await canSwitchParent(clientOperationId));
-        if ((legacyChecklistParent || legacyCalendarParent || learningRemoved || learningChanged && active.nativeLearningEnabled !== true) && !switching) {
+        if ((legacyChecklistParent || legacyCalendarParent || learningReset) && !switching) {
           throw invalid("session_busy", "Voice tools parent cannot switch yet");
         }
         if (active.contextLimitReached && !switching) {
@@ -2218,20 +2219,27 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
           .some((line) => line.trim() && !/^- \[[ x]\] \S/u.test(line));
         const needsChecklistRead = Boolean(taskChecklistPath
           && (newParent || active.checklistReadPending !== false));
-        const effectiveLearning = learningChanged && !switching ? previousLearning : learning;
-        const instructions = `${responseInstructions()}${effectiveLearning?.instruction || ""}${legacyChecklist ? `\n${CHECKLIST_REPAIR_INSTRUCTION}` : ""}`;
+        const instructions = `${responseInstructions()}${learning?.instruction || ""}${legacyChecklist ? `\n${CHECKLIST_REPAIR_INSTRUCTION}` : ""}`;
         const preflightInstructions = needsChecklistRead ? `${CHECKLIST_READ_INSTRUCTION}\n\n${instructions}` : instructions;
         if (visibleBytes(selected, input, instructions) + bytes(managedContext) > MAX_VISIBLE_BYTES
           || needsChecklistRead && visibleBytes([], CHECKLIST_PREFLIGHT_INPUT, preflightInstructions) > MAX_VISIBLE_BYTES) {
           throw invalid("voice_context_too_large", "Voice context exceeds safe model input budget");
         }
+        const exposedItems = !newParent ? active.learningSnapshot?.items || [] : [];
+        // Resumed threads retain earlier context even when this turn selects no learning.
+        // Save possible exposure before thread/resume, including a failed or lost response.
+        if (learning && !newParent) await saveActive({ ...active, learningSnapshot: {
+          contextRevision: learning.contextRevision, selectedDigest: learning.selectedDigest,
+          items: [...new Map([...(active.learningSnapshot?.items || []), ...learning.items.map(({ id, version }) => ({ id, version }))]
+            .map((item) => [`${item.id}:${item.version}`, item])).values()] } }, "Learning parent exposure could not be synced");
         const generation = active.parentGeneration;
         const judgePairs = [...selected, { user: input }];
         if (!needsChecklistRead) await append(clientOperationId, "dispatching");
         return {
           selected: active.nativeThreadId && !switching ? [] : selected,
           newParent,
-          learning: effectiveLearning,
+          learning,
+          exposedItems,
           needsChecklistRead,
           instructions,
           preflightInstructions,
@@ -2282,11 +2290,11 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
           const value = await learningContext.tool({ tool, arguments: arguments_, callId, operationId: clientOperationId, input });
           if (value?.selection) await exclusive(async () => {
             const snapshot = value.selection;
-            const old = active.learningSnapshot || { items: [], selectedDigest: "" };
+            const old = active.learningSnapshot || { items: [] };
             const items = [...new Map([...old.items, ...snapshot.items.map(({ id, version }) => ({ id, version }))].map((item) => [`${item.id}:${item.version}`, item])).values()];
             // Persist possible parent exposure before returning context, including a later failed outer turn.
             await saveActive({ ...active, learningSnapshot: { contextRevision: snapshot.contextRevision,
-              selectedDigest: createHash("sha256").update(JSON.stringify([old.selectedDigest, snapshot.selectedDigest, callId])).digest("hex"), items } },
+              selectedDigest: snapshot.selectedDigest, items } },
               "Learning context read could not be synced");
           });
           return value;
@@ -2336,7 +2344,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
         }, onTextError: hooks.onTextError,
         onStarted: async ({ threadId, turnId }) => {
           await exclusive(() => append(clientOperationId, "native_started", { threadId, turnId }));
-          if (prepared.learning) await Promise.resolve(learningContext.delivered({ operationId: clientOperationId, threadId, turnId, snapshot: prepared.learning })).catch(() => {});
+          if (prepared.learning) await Promise.resolve(learningContext.delivered({ operationId: clientOperationId, threadId, turnId, snapshot: prepared.learning, exposedItems: prepared.exposedItems })).catch(() => {});
           if (prepared.judgeTarget) scheduleTopicJudge(prepared.judgeTarget);
           hooks.onStarted?.({ ...stateOf(clientOperationId), threadId, turnId });
         } });

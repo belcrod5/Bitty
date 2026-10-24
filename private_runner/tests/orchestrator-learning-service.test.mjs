@@ -186,12 +186,31 @@ test("bulk adoption is atomic, conditional and scoped; withdrawal changes digest
   await f.service.decide({ items: [ref(item)], action: "adopt" });
   const applied = await f.service.retrieve({ orchestratorId: "main", input: "Review workflow" });
   assert.equal(applied.items.length, 1); assert.match(applied.instruction, /current user request/);
+  const exposedItems = applied.items.map(ref);
+  const unmatched = await f.service.retrieve({ orchestratorId: "main", input: "続けて", exposedItems });
+  assert.equal(unmatched.items.length, 0); assert.equal(unmatched.invalidated, false);
+  assert.equal((await f.service.retrieve({ orchestratorId: randomUUID(), input: "review", exposedItems })).invalidated, true);
   assert.equal((await f.service.retrieve({ orchestratorId: randomUUID(), input: "review" })).items.length, 0);
   await f.service.decide({ items: applied.items.map(ref), action: "retire" });
-  const removed = await f.service.retrieve({ orchestratorId: "main", input: "review" });
+  const removed = await f.service.retrieve({ orchestratorId: "main", input: "review", exposedItems });
+  assert.equal(removed.invalidated, true);
   assert.equal(removed.items.length, 0); assert.notEqual(removed.selectedDigest, applied.selectedDigest);
   assert.deepEqual(applied.excludedPairSeqs, []);
   assert.deepEqual(removed.excludedPairSeqs, item.evidence.map(({ pairSeq }) => pairSeq));
+});
+
+test("exposure invalidation follows the adopted version, independently of current selection", async (t) => {
+  const f = await fixture(t);
+  const [first, second] = await seed(f, [candidate(), candidate(1, { content: "Other workflow" })]);
+  await f.service.decide({ items: [ref(first)], action: "adopt" });
+  const snapshot = await f.service.retrieve({ orchestratorId: "main", input: "review" });
+  const exposedItems = snapshot.items.map(ref);
+  await f.service.decide({ items: [ref(second)], action: "adopt" });
+  const unrelated = await f.service.retrieve({ orchestratorId: "main", input: "続けて", exposedItems });
+  assert.ok(unrelated.contextRevision > snapshot.contextRevision);
+  assert.equal(unrelated.invalidated, false, "adopting another item does not revoke prior exposure");
+  await f.service.decide({ items: exposedItems, action: "publish" });
+  assert.equal((await f.service.retrieve({ orchestratorId: "main", input: "続けて", exposedItems })).invalidated, true);
 });
 
 test("skills require explicit publication, exact caller/version/hash; manual modifications block republish", async (t) => {
@@ -698,9 +717,11 @@ for (const action of ["retire", "forget"]) {
     const snapshot = await f.service.retrieve({ orchestratorId: "main", input: "review" });
     const first = randomUUID(), inherited = randomUUID();
     await f.service.delivered({ orchestratorId: "main", operationId: first, threadId: "parent", turnId: "one", snapshot });
-    await f.service.recordRead({ operationId: first, callId: "read", skill: { id: item.id, version: item.version, hash: "proof", name: item.content } });
     await f.service.delivered({ orchestratorId: "main", operationId: inherited, threadId: "parent", turnId: "two", snapshot: { ...snapshot, items: [] } });
-    assert.equal((await f.service.delivery({ orchestratorId: "main", operationId: inherited })).items.length, 0);
+    const delivery = await f.service.delivery({ orchestratorId: "main", operationId: inherited });
+    assert.equal(delivery.items.length, 0);
+    assert.deepEqual(delivery.inheritedItems, [ref(item)], "inherited exposure stores references without copying learning text");
+    assert.deepEqual(delivery.inheritedReads, []);
     if (action === "forget") await f.service.forget({ items: [ref(item)] });
     else await f.service.decide({ items: [ref(item)], action });
     await f.service.observe([f.pair(2, { clientOperationId: first }), f.pair(3, { clientOperationId: inherited }), f.pair(4)]);
@@ -723,6 +744,14 @@ test("a retrieval delivered after forgetting cannot reintroduce content or repla
   assert.deepEqual((await f.service.delivery({ orchestratorId: "main", operationId })).items, []);
   await f.service.observe([f.pair(2, { clientOperationId: operationId })]);
   assert.deepEqual((await f.service.retrieve({ orchestratorId: "main", input: "review" })).excludedPairSeqs, [1, 2]);
+  assert.equal((await f.service.status()).pendingCount, 0);
+  const inheritedOperation = randomUUID();
+  await f.service.delivered({ orchestratorId: "main", operationId: inheritedOperation, threadId: "parent", turnId: "late-inherited",
+    snapshot: { ...snapshot, items: [] }, exposedItems: snapshot.items.map(ref) });
+  const late = await f.service.delivery({ orchestratorId: "main", operationId: inheritedOperation });
+  assert.deepEqual(late.items, []); assert.deepEqual(late.inheritedItems, []);
+  await f.service.observe([f.pair(3, { clientOperationId: inheritedOperation })]);
+  assert.deepEqual((await f.service.retrieve({ orchestratorId: "main", input: "review" })).excludedPairSeqs, [1, 2, 3]);
   assert.equal((await f.service.status()).pendingCount, 0);
 });
 
