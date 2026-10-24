@@ -6130,7 +6130,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     [appDrawerProps]
   );
   return (
-    <AppModalHost>
       <GestureHandlerRootView style={styles.safeArea}>
       <RunnerWebSocketProvider
         bootstrapReady={settingsLoaded}
@@ -6156,6 +6155,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
         chatScreen={chatScreenContextValue}
       >
       <KeyboardProvider>
+      <AppModalHost>
         <AppDrawerLayout
         open={drawerOpen}
         onOpen={openDrawer}
@@ -6222,11 +6222,11 @@ function AppContent({ onReady }: { onReady?: () => void }) {
         ) : null}
         <WidgetSnapshotPublisher ready={settingsLoaded} />
         <PushNotificationRegistrar onUnreadCountSnapshot={sessionNotificationLifecycle.applyUnreadCountSnapshot} />
+      </AppModalHost>
       </KeyboardProvider>
       </AppProviders>
       </RunnerWebSocketProvider>
       <ThemeSplash ready={settingsLoaded} onReady={onReady} />
       </GestureHandlerRootView>
-      </AppModalHost>
   );
 }

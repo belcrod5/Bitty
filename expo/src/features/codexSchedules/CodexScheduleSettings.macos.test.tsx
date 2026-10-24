@@ -6,6 +6,10 @@ import { Platform, Text } from "react-native";
 
 import { AppModal, AppModalHost } from "../app/components/AppModal.macos";
 import type { CodexSchedule } from "./codexScheduleTypes";
+import { CodexSchedulesProvider } from "./CodexSchedulesContext";
+import { getCodexSchedules, putCodexSchedules } from "./codexScheduleApi";
+import { RunnerWebSocketProvider } from "../runnerWs/RunnerWebSocketContext";
+import { RunnerWebSocketManager } from "../runnerWs/RunnerWebSocketManager";
 
 jest.mock("../app/components/AppModal", () => jest.requireActual("../app/components/AppModal.macos"));
 jest.mock("../app/keyboardController", () => jest.requireActual("../app/keyboardController.macos"));
@@ -20,14 +24,10 @@ jest.mock("react-native-keyboard-controller", () => {
   throw new Error("The iOS keyboard controller must not load on macOS");
 });
 jest.mock("expo-crypto", () => ({ randomUUID: () => "11111111-1111-4111-8111-111111111111" }));
-jest.mock("./CodexSchedulesContext", () => ({
-  useCodexSchedules: () => ({ refresh: mockRefresh, save: mockSave }),
-}));
-jest.mock("../runnerWs/RunnerWebSocketContext", () => ({
-  useRunnerWebSocketManager: () => ({
-    connect: async () => {},
-    request: async () => ({ op: "voice.orchestrators.list.result", payload: { orchestrators: [] } }),
-  }),
+jest.mock("./codexScheduleApi", () => ({
+  ...jest.requireActual("./codexScheduleApi"),
+  getCodexSchedules: jest.fn(),
+  putCodexSchedules: jest.fn(),
 }));
 
 function resolveMacImport(originModulePath: string, moduleName: string) {
@@ -66,8 +66,8 @@ function resolveMacImport(originModulePath: string, moduleName: string) {
 }
 
 const settingsPath = path.join(__dirname, "CodexScheduleSettings.tsx");
-const mockRefresh = jest.fn();
-const mockSave = jest.fn();
+const mockRefresh = jest.mocked(getCodexSchedules);
+const mockSave = jest.mocked(putCodexSchedules);
 const schedule: CodexSchedule = {
   id: "11111111-1111-4111-8111-111111111111", name: "Morning", enabled: true,
   startLocal: "2027-02-03T09:07:00", timeZone: "Asia/Tokyo", rrule: "FREQ=DAILY",
@@ -89,7 +89,7 @@ beforeEach(() => {
   });
   Object.defineProperty(Platform, "OS", { configurable: true, value: "macos" });
   mockRefresh.mockResolvedValue({ revision: 4, schedules: [schedule] });
-  mockSave.mockImplementation(async (_revision: number, schedules: CodexSchedule[]) => ({ revision: 5, schedules }));
+  mockSave.mockImplementation(async (_auth, _revision, schedules) => ({ revision: 5, schedules: [...schedules] }));
 });
 afterEach(() => {
   Object.defineProperty(Platform, "OS", { configurable: true, value: originalOS });
@@ -109,12 +109,20 @@ test("macOS opens shared scheduling, edits native dates and nested options, then
   if (resolved.type !== "sourceFile") throw new Error("Schedule settings must resolve to source");
   const { CodexScheduleSettings } = require(resolved.filePath) as typeof import("./CodexScheduleSettings");
   const closeTitleMenu = jest.fn();
-  const screen = await render(<AppModalHost>
-    <Text testID="app-content">App</Text>
-    <AppModal visible onRequestClose={closeTitleMenu}>
-      <Text>タイトルメニュー</Text><CodexScheduleSettings {...props} />
-    </AppModal>
-  </AppModalHost>);
+  const manager = new RunnerWebSocketManager({ bootstrapReady: false, url: "", token: "", appState: "unknown" });
+  jest.spyOn(manager, "connect").mockResolvedValue(undefined);
+  jest.spyOn(manager, "request").mockResolvedValue({ channel: "agent", op: "voice.orchestrators.list.result", payload: { orchestrators: [] } });
+  const screen = await render(<RunnerWebSocketProvider bootstrapReady={false} url="" token="" cloudflareRunnerUrl=""
+    cloudflareAccessClientId="" cloudflareAccessClientSecret="" manager={manager}>
+    <CodexSchedulesProvider runnerUrl={props.runnerUrl} runnerToken={props.runnerToken}>
+      <AppModalHost>
+        <Text testID="app-content">App</Text>
+        <AppModal visible onRequestClose={closeTitleMenu}>
+          <Text>タイトルメニュー</Text><CodexScheduleSettings {...props} />
+        </AppModal>
+      </AppModalHost>
+    </CodexSchedulesProvider>
+  </RunnerWebSocketProvider>);
   await fireEvent.press(screen.getByLabelText("スケジュール実行"));
   await fireEvent.press(await screen.findByLabelText("Morningを編集"));
   expect(screen.getByLabelText("開始日").type).toBe("BittyDateTimePicker");
@@ -130,7 +138,7 @@ test("macOS opens shared scheduling, edits native dates and nested options, then
   await fireEvent.press(screen.getByLabelText("編集を閉じる"));
   await waitFor(() => expect(screen.queryByLabelText("開始日")).toBeNull());
   await act(async () => fireEvent.press(screen.getByLabelText("スケジュールを保存")));
-  expect(mockSave).toHaveBeenCalledWith(4, [{ ...schedule, name: "Updated", startLocal: "2028-02-29T16:42:00" }]);
+  expect(mockSave).toHaveBeenCalledWith({ runnerUrl: props.runnerUrl, runnerToken: props.runnerToken }, 4, [{ ...schedule, name: "Updated", startLocal: "2028-02-29T16:42:00" }]);
   expect(closeTitleMenu).not.toHaveBeenCalled();
   await screen.unmount();
 });
