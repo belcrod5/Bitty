@@ -1,7 +1,28 @@
 import React from "react";
-import { Text } from "react-native";
+import { StyleSheet, Text, View } from "react-native";
 import { fireEvent, render } from "@testing-library/react-native";
 import { AppModal, AppModalHost } from "./AppModal.macos";
+import { appLayoutStylesByTheme } from "../styles/appLayoutStyles";
+
+test("modal roots stack directly above session popups in opening order", async () => {
+  const popupStyle = appLayoutStylesByTheme.standard.drawerPopupOverlayHost;
+  const screen = await render(<AppModalHost>
+    <View testID="session-popup" style={popupStyle} />
+    <AppModal visible testID="title-menu"><Text>Title menu</Text></AppModal>
+    <AppModal visible testID="schedule-editor"><Text>Schedule editor</Text></AppModal>
+  </AppModalHost>);
+
+  expect(screen.toJSON()).toMatchObject({ children: [
+    { props: { testID: "session-popup" } },
+    { props: { testID: "title-menu" } },
+    { props: { testID: "schedule-editor" } },
+  ] });
+  const firstLayer = StyleSheet.flatten(screen.getByTestId("title-menu").props.style);
+  const topLayer = StyleSheet.flatten(screen.getByTestId("schedule-editor").props.style);
+  expect(firstLayer.zIndex).toBeGreaterThan(popupStyle.zIndex);
+  expect(topLayer.zIndex).toBe(firstLayer.zIndex);
+  await screen.unmount();
+});
 
 test("renders macOS modal content in the shared root host", async () => {
   const onRequestClose = jest.fn();

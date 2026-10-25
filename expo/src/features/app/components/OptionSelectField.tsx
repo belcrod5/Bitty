@@ -1,12 +1,12 @@
 import { useState } from "react";
 import {
-  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
 } from "react-native";
+import { AppModal } from "./AppModal";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 
@@ -48,7 +48,7 @@ export function OptionSelectField({
         </Text>
         <Text style={styles.chevron}>▾</Text>
       </TouchableOpacity>
-      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
+      <AppModal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
         <Pressable style={styles.backdrop} onPress={() => setOpen(false)}>
           <Pressable style={styles.card} onPress={() => {}}>
             <Text style={styles.title}>{title}</Text>
@@ -77,7 +77,7 @@ export function OptionSelectField({
             </ScrollView>
           </Pressable>
         </Pressable>
-      </Modal>
+      </AppModal>
     </>
   );
 }

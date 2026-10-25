@@ -1,5 +1,6 @@
 import {
   createContext,
+  Fragment,
   useCallback,
   useContext,
   useEffect,
@@ -75,9 +76,9 @@ export function AppModalHost({ children }: { children: ReactNode }) {
       >
         {children}
         {[...modals].map(([id, entry]) => (
-          <View key={id} style={StyleSheet.absoluteFill}>
+          <Fragment key={id}>
             {entry.content}
-          </View>
+          </Fragment>
         ))}
       </MacOSHostView>
     </ModalHostContext.Provider>
