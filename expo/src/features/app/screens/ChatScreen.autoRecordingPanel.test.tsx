@@ -1,7 +1,7 @@
 import { configureCloudflareAccessFetch } from "../utils/cloudflareAccessFetch";
 import React from "react";
 import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
-import { Alert, AppState, DeviceEventEmitter, Platform, StyleSheet } from "react-native";
+import { Alert, AppState, DeviceEventEmitter, Platform, ScrollView, StyleSheet, View, type LayoutChangeEvent } from "react-native";
 import { CHAT_FIND_CANCEL_EVENT, CHAT_FIND_REQUEST_EVENT, ChatScreen } from "./ChatScreen";
 import { CHAT_CONTENT_MAX_WIDTH } from "../styles/layoutConstants";
 import { VisualThemeProvider } from "../theme/VisualThemeContext";
@@ -21,6 +21,8 @@ let mockStreamingSttPhase: "idle" | "connecting" | "recording" | "finalizing" = 
 let mockRunnerStatusRenderCount = 0;
 const mockStreamingSttOptions: { current: Record<string, any> | null } = { current: null };
 let mockUseActualStreamingStt = false;
+let mockUseActualLegendList = false;
+let mockActualLegendListRef: React.RefObject<import("@legendapp/list").LegendListRef | null> | null = null;
 const mockSttSessions: Array<{ callbacks: { onMessage: (message: string) => void }; abort: jest.Mock }> = [];
 const mockLogSessionDiag = jest.fn();
 const mockLoadOlderSessionHistory = jest.fn();
@@ -80,6 +82,11 @@ jest.mock("@legendapp/list", () => {
   return {
     LegendList: ReactModule.forwardRef((props: Record<string, any>, ref) => {
       mockLegendListProps.current = props;
+      if (mockUseActualLegendList) {
+        const { LegendList } = jest.requireActual("@legendapp/list");
+        mockActualLegendListRef = ref as typeof mockActualLegendListRef;
+        return ReactModule.createElement(LegendList, { ...props, ref, testID: "actual-legend-list" });
+      }
       ReactModule.useImperativeHandle(ref, () => ({
         scrollToEnd: mockScrollToEnd,
         scrollToIndex: mockScrollToIndex,
@@ -488,6 +495,8 @@ describe("ChatScreen voice input", () => {
   beforeEach(() => {
     mockScheduledThreadIds = new Set();
     mockUseActualStreamingStt = false;
+    mockUseActualLegendList = false;
+    mockActualLegendListRef = null;
     mockSessionNotesById = {};
     mockSaveSessionNote.mockReset().mockResolvedValue(undefined);
     mockSttSessions.length = 0;
@@ -514,6 +523,97 @@ describe("ChatScreen voice input", () => {
 
   afterEach(() => {
     if (platformOSDescriptor) Object.defineProperty(Platform, "OS", platformOSDescriptor);
+  });
+
+  it("starts bottom settling when a delayed popup skeleton reveals the list", async () => {
+    jest.useFakeTimers();
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" showPopupMessagesSkeleton />);
+    try {
+      await act(async () => { jest.advanceTimersByTime(3000); });
+      expect(screen.queryByTestId("legend-list")).toBeNull();
+      mockScrollToEnd.mockClear();
+      await screen.rerender(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+      await act(async () => {
+        mockLegendListProps.current?.onLayout?.({ nativeEvent: { layout: { x: 0, y: 0, width: 400, height: 600 } } });
+      });
+      await act(async () => { jest.advanceTimersByTime(500); });
+      expect(mockScrollToEnd).toHaveBeenCalled();
+    } finally {
+      await screen.unmount();
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    }
+  });
+
+  it.each(["macos", "ios"])("keeps the actual list mounted through %s layout changes and resets it for a new session", async (os) => {
+    jest.useFakeTimers();
+    const previousFabric = (global as any).nativeFabricUIManager;
+    (global as any).nativeFabricUIManager = {};
+    mockUseActualLegendList = true;
+    Object.defineProperty(Platform, "OS", { configurable: true, value: os });
+    const viewMeasure = jest.spyOn(View.prototype, "measure").mockImplementation((callback) => callback(0, 0, 400, 100, 0, 0));
+    const scrollMeasure = jest.spyOn(ScrollView.prototype as unknown as View, "measure").mockImplementation(function (this: View, callback) {
+      callback(0, 0, 400, this.props.testID === "actual-legend-list" ? 600 : 100, 0, 0);
+    });
+    const originalMount = ScrollView.prototype.componentDidMount;
+    let listMounts = 0;
+    // Model different native measurements on successive mounts. A width change
+    // must not recreate the view that produced the measurement.
+    ScrollView.prototype.componentDidMount = function () {
+      originalMount?.call(this);
+      if (this.props.testID === "actual-legend-list") {
+        listMounts++;
+        this.props.onLayout?.({ nativeEvent: { layout: { x: 0, y: 0, width: listMounts % 2 ? 400 : 415, height: 600 } } } as LayoutChangeEvent);
+      }
+    };
+    mockPanelConversationMessages = Array.from({ length: 40 }, (_, index) => ({
+      id: `message-${index}`, role: index % 2 ? "user" : "assistant", content: `message ${index}`,
+    }));
+    let screen: Awaited<ReturnType<typeof render>> | undefined;
+    try {
+      screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+      const list = mockActualLegendListRef!.current!;
+      expect(listMounts).toBe(1);
+      expect(list.getState().sizeAtIndex(0)).toBe(100);
+      await fireEvent(screen.getByTestId("actual-legend-list"), "layout", {
+        nativeEvent: { layout: { x: 0, y: 0, width: 350, height: 600 } },
+      });
+      await fireEvent(screen.getByTestId("chat-message-message-0"), "layout", {
+        nativeEvent: { layout: { x: 0, y: 0, width: 350, height: 180 } },
+      });
+      expect(mockActualLegendListRef!.current).toBe(list);
+      expect(listMounts).toBe(1);
+      expect(list.getState().sizeAtIndex(0)).toBe(180);
+      expect(list.getState().positionAtIndex(1)).toBe(180);
+      await act(async () => { jest.advanceTimersByTime(400); });
+      await fireEvent.press(screen.getByLabelText("前のユーザーメッセージまでスクロール"));
+      const scrollToEnd = jest.spyOn(list, "scrollToEnd");
+      await fireEvent(screen.getByTestId("actual-legend-list"), "layout", {
+        nativeEvent: { layout: { x: 0, y: 0, width: 320, height: 600 } },
+      });
+      await act(async () => {
+        mockLegendListProps.current?.onContentSizeChange?.(320, 6000);
+        jest.advanceTimersByTime(500);
+      });
+      expect(mockActualLegendListRef!.current).toBe(list);
+      expect(scrollToEnd).not.toHaveBeenCalled();
+      scrollToEnd.mockRestore();
+      mockPanelSessionId = "session-2";
+      mockPanelConversationMessages = [{ id: "new-message", role: "user", content: "new session" }];
+      await screen.rerender(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+      expect(listMounts).toBe(2);
+      expect(mockActualLegendListRef!.current).not.toBe(list);
+      expect(mockActualLegendListRef!.current!.getState().data).toEqual(mockPanelConversationMessages);
+    } finally {
+      await screen?.unmount();
+      mockUseActualLegendList = false;
+      ScrollView.prototype.componentDidMount = originalMount;
+      viewMeasure.mockRestore();
+      scrollMeasure.mockRestore();
+      (global as any).nativeFabricUIManager = previousFabric;
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    }
   });
 
   it("updates the image resolver for same-ID Access secret rotation and emits only safe source diagnostics", async () => {
