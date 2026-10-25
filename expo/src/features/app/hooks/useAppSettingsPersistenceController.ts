@@ -8,7 +8,7 @@ import {
   type TtsProvider,
 } from "../utils/audioConfig";
 import { parseOptionalSessionId } from "../utils/llmSession";
-import { persistedCloudflareRunnerUrl, resolveRunnerUrl, runnerHttpsOrigin } from "../utils/urlResolvers";
+import { persistedCloudflareRunnerUrl, resolveRunnerUrl, runnerLocalOrigin } from "../utils/urlResolvers";
 import { configureLocalRunnerTls } from "../utils/localRunnerTls";
 import { parseCodexApprovalPolicy, parseLlmDirectory, parseModelRef, parseReasoningEffort, type CodexApprovalPolicy, type ReasoningEffort } from "../utils/settingsParsers";
 import type { LlmBackend } from "../types/appTypes";
@@ -223,7 +223,7 @@ export function useAppSettingsPersistenceController({
     const legacyCloudflareAccessClientId = String(parsed.cloudflareAccessClientId || "").trim();
     const legacyCloudflareAccessClientSecret = String(parsed.cloudflareAccessClientSecret || "").trim();
     const savedCloudflareRunnerUrl = persistedCloudflareRunnerUrl(parsed);
-    const savedLocalRunnerUrl = runnerHttpsOrigin(parsed.localRunnerUrl);
+    const savedLocalRunnerUrl = runnerLocalOrigin(parsed.localRunnerUrl);
     const savedLocalRunnerCertificate = String(parsed.localRunnerCertificate || "").trim();
     let localReady = false;
     try { localReady = await configureLocalRunnerTls(savedLocalRunnerUrl, savedLocalRunnerCertificate); }
