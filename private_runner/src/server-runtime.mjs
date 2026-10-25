@@ -8,7 +8,7 @@ import https from "node:https";
 import os from "node:os";
 import path from "node:path";
 import { createReadStream, promises as fs } from "node:fs";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
@@ -6334,7 +6334,22 @@ const handleRunnerRequest = async (req, res) => {
       const snapshot = req.method === "GET"
         ? await clientStateStore.snapshot()
         : await clientStateStore.mutate((await readJsonBody(req, 3 * 1024 * 1024)).operation);
-      return json(res, 200, { ok: true, snapshot });
+      const body = JSON.stringify({ ok: true, snapshot });
+      const etag = `"${createHash("sha256").update(body).digest("hex")}"`;
+      const headers = { etag, "cache-control": req.method === "GET" ? "private, no-cache" : "no-store", vary: "Authorization" };
+      if (req.method === "GET") {
+        const validators = String(req.headers["if-none-match"] || "").split(",").map((value) => value.trim().replace(/^W\//, ""));
+        if (validators.includes(etag) || validators.includes("*")) {
+          res.writeHead(304, headers);
+          return res.end();
+        }
+      }
+      res.writeHead(200, {
+        ...headers,
+        "content-type": "application/json; charset=utf-8",
+        "content-length": Buffer.byteLength(body),
+      });
+      return res.end(body);
     } catch (error) {
       return json(res, error instanceof ClientStateStoreUnavailableError ? 503 : 400, {
         error: "client_state_unavailable",
