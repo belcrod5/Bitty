@@ -1,5 +1,6 @@
 import { getVoiceControl, type AppControlOrigin } from "../../appControl/voiceControl";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { resolveTtsAudioQuality, type TtsAudioQuality } from "../utils/ttsAudioQuality";
 import { randomUUID } from "expo-crypto";
 import { AppState } from "react-native";
 import { useRunnerWebSocketManager, useRunnerWebSocketSnapshot } from "../../runnerWs/RunnerWebSocketContext";
@@ -24,7 +25,8 @@ type PendingTurn = {
   appControlOrigin?: AppControlOrigin;
   jobId?: string;
   resetDecision?: { parentGeneration: unknown; turnSeq: unknown; required: boolean; decision: "reset" | "continue" };
-  tts?: { speedScale: number };
+  tts?: { speedScale: number; lightweightTtsOnCellular?: boolean };
+  audioQuality?: TtsAudioQuality;
 };
 
 function payloadOf(message: RunnerWsMessage): Record<string, unknown> {
@@ -77,7 +79,7 @@ export type VoiceResetConfirmation = {
 export function useVoiceConversation(
   onCompleted: (text: string, operationId: string) => void,
   onJob?: (jobId: string, operationId: string) => void,
-  tts?: { speedScale: number },
+  tts?: { speedScale: number; lightweightTtsOnCellular?: boolean },
   orchestratorId = "main",
 ) {
   const manager = useRunnerWebSocketManager();
@@ -228,6 +230,11 @@ export function useVoiceConversation(
     const task = (async () => {
       if (!pending.text || !conversationIdRef.current || !aliveRef.current) return;
       try {
+        if (pending.tts && pending.audioQuality === undefined) {
+          pending.audioQuality = pending.tts.lightweightTtsOnCellular
+            ? await resolveTtsAudioQuality(true) : "standard";
+        }
+        const tts = pending.tts ? { speedScale: pending.tts.speedScale, audioQuality: pending.audioQuality } : undefined;
         while (aliveRef.current && pendingRef.current === pending) {
           const response = await manager.request({
             channel: "agent",
@@ -240,7 +247,7 @@ export function useVoiceConversation(
               logicalConversationId: conversationIdRef.current,
               clientOperationId: pending.id,
               input: { blocks: [{ type: "text", text: pending.text }] },
-              ...(pending.tts ? { tts: pending.tts } : {}),
+              ...(tts ? { tts } : {}),
             },
           }, { timeoutMs: 30_000 });
           if (!aliveRef.current || pendingRef.current !== pending) return;

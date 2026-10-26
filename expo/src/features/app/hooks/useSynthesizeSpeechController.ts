@@ -1,4 +1,5 @@
-import { useCallback, type MutableRefObject } from "react";
+import { useCallback, useEffect, type MutableRefObject } from "react";
+import { resolveTtsAudioQuality } from "../utils/ttsAudioQuality";
 import type { AudioContainer, TtsDebugStats, TtsPlaybackTarget } from "../types/appTypes";
 import { trimForInline } from "../utils/statusText";
 import { detectAudioContainer } from "../utils/waveform";
@@ -15,6 +16,7 @@ type UseSynthesizeSpeechControllerOptions = {
   ttsProvider: string;
   selectedVoiceId: string;
   ttsSpeed: number;
+  lightweightTtsOnCellular?: boolean;
   ttsLoading: boolean;
   ttsSynthesisRequestIdRef: MutableRefObject<number>;
   baseUrl: () => string;
@@ -47,6 +49,7 @@ export function useSynthesizeSpeechController(options: UseSynthesizeSpeechContro
     ttsProvider,
     selectedVoiceId,
     ttsSpeed,
+    lightweightTtsOnCellular = false,
     ttsLoading,
     ttsSynthesisRequestIdRef,
     baseUrl,
@@ -61,6 +64,8 @@ export function useSynthesizeSpeechController(options: UseSynthesizeSpeechContro
     playTtsAudio,
     logAuto,
   } = options;
+
+  useEffect(() => () => { ttsSynthesisRequestIdRef.current += 1; }, [ttsSynthesisRequestIdRef]);
 
   return useCallback(async (textOverride?: string, synthOptions?: { messageId?: string }) => {
     const sourceText = (textOverride ?? reply).trim();
@@ -84,6 +89,9 @@ export function useSynthesizeSpeechController(options: UseSynthesizeSpeechContro
     setError("");
 
     try {
+      const audioQuality = lightweightTtsOnCellular ? await resolveTtsAudioQuality(true) : "standard";
+      if (ttsSynthesisRequestIdRef.current !== requestId) return;
+      logAuto("tts_trace", { stage: "http_synthesis_request", requestId, audioQuality });
       const res = await fetch(`${baseUrl()}/tts`, {
         method: "POST",
         headers: {
@@ -92,6 +100,7 @@ export function useSynthesizeSpeechController(options: UseSynthesizeSpeechContro
         },
         body: JSON.stringify({
           ttsProvider,
+          audioQuality,
           text,
           voiceId: selectedVoiceId.trim() || undefined,
           speedScale: ttsSpeed,
@@ -119,7 +128,7 @@ export function useSynthesizeSpeechController(options: UseSynthesizeSpeechContro
         logAuto("tts_trace", { stage: "http_synthesis_cancelled", messageId: targetMessageId, requestId });
         return;
       }
-      logAuto("tts_trace", { stage: "http_synthesis_audio_ready", messageId: targetMessageId, requestId, audioBytes });
+      logAuto("tts_trace", { stage: "http_synthesis_audio_ready", messageId: targetMessageId, requestId, audioBytes, audioQuality: data?.audioQuality || "standard" });
       const detectedAudioContainer = detectAudioContainer(new Uint8Array(0), mimeType);
       setTtsDebugStats((prev) => ({
         ...prev,
@@ -184,6 +193,7 @@ export function useSynthesizeSpeechController(options: UseSynthesizeSpeechContro
     setTtsPlaybackMessageIdWithRef,
     setTtsPlaybackProjectionTarget,
     setTtsUiStatus,
+    lightweightTtsOnCellular,
     ttsLoading,
     ttsProvider,
     ttsSpeed,

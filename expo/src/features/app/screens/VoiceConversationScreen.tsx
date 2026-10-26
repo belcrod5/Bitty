@@ -40,6 +40,7 @@ export type VoiceConversationPlayback = {
   isTtsPlaying?: boolean;
   ttsUiStatus: "idle" | "queued" | "synthesizing" | "playing" | "error";
   ttsSpeed?: number;
+  lightweightTtsOnCellular?: boolean;
   runnerBaseUrl?: string;
   runnerToken?: string;
 };
@@ -153,6 +154,7 @@ function VoiceConversationSession({
   isTtsPlaying,
   ttsUiStatus,
   ttsSpeed,
+  lightweightTtsOnCellular,
   onClose,
   orchestrator,
   orchestrators,
@@ -226,7 +228,7 @@ function VoiceConversationSession({
   const voice = useVoiceConversation(
     playSpeech,
     (jobId, operationId) => { void playSpeech("", operationId, jobId); },
-    typeof ttsSpeed === "number" ? { speedScale: ttsSpeed } : undefined,
+    typeof ttsSpeed === "number" ? { speedScale: ttsSpeed, lightweightTtsOnCellular } : undefined,
     orchestrator.id,
   );
   const isOverviewMode = voice.taskChecklist?.status === "present"

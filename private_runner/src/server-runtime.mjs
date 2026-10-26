@@ -47,6 +47,7 @@ import {
 import { createCodexAppServerClient } from "./codex-app-server-client.mjs";
 import { createVoiceOrchestratorService } from "./voice-orchestrator-service.mjs";
 import { createStreamTtsSegments, TTS_SEGMENT_BOUNDARY } from "./stream-tts-segments.mjs";
+import { convertTtsAudioToMp3 } from "./tts-audio.mjs";
 import { createVoiceRequestBridge } from "./voice-request-bridge.mjs";
 import { createCodexAuthService } from "./codex-auth-service.mjs";
 import { createCodexAuthRuntime } from "./codex-auth-runtime.mjs";
@@ -199,7 +200,6 @@ const GOOGLE_CLOUD_TTS_API_BASE_URL =
 const GOOGLE_CLOUD_TTS_LANGUAGE_CODE = process.env.GOOGLE_CLOUD_TTS_LANGUAGE_CODE || "ja-JP";
 const GOOGLE_CLOUD_TTS_VOICE_NAME = process.env.GOOGLE_CLOUD_TTS_VOICE_NAME || "ja-JP-Neural2-B";
 const GOOGLE_CLOUD_TTS_AUDIO_ENCODING = process.env.GOOGLE_CLOUD_TTS_AUDIO_ENCODING || "MP3";
-const AIVISSPEECH_MP3_BITRATE = "96k";
 const MAX_WORKSPACE_UPLOAD_BYTES = Number(
   process.env.MAX_WORKSPACE_UPLOAD_BYTES || 25 * 1024 * 1024
 );
@@ -2818,7 +2818,7 @@ function sanitizeTtsInputText(raw) {
 }
 
 function createRunnerStreamTtsSegments({ emit, signal, publicBaseUrl, ttsProvider, voiceId, speedScale,
-  modelId, outputFormat, languageCode, audioEncoding, applyLanguageTextNormalization }) {
+  modelId, outputFormat, languageCode, audioEncoding, applyLanguageTextNormalization, audioQuality }) {
   const normalizedSpeed = normalizeSpeedScaleForTtsEstimate(speedScale);
   return createStreamTtsSegments({
     emit, signal, speedScale: normalizedSpeed,
@@ -2835,6 +2835,7 @@ function createRunnerStreamTtsSegments({ emit, signal, publicBaseUrl, ttsProvide
           audioEncoding: audioEncoding || undefined,
           applyLanguageTextNormalization,
           speedScale,
+          audioQuality,
         });
         const synthesisMs = performance.now() - synthesisStartedAt;
         const registrationStartedAt = performance.now();
@@ -2844,6 +2845,7 @@ function createRunnerStreamTtsSegments({ emit, signal, publicBaseUrl, ttsProvide
           synthesisMs, mediaRegistrationMs,
           audioUrl: media.audioUrl, audioBytes: media.audioBytes, mimeType: tts.mimeType,
           provider: tts.provider, voiceId: tts.voiceId, speedScale: tts.speedScale,
+          audioQuality: tts.audioQuality,
         };
       } catch (error) {
         if (isApiError(error)) throw error;
@@ -3741,90 +3743,6 @@ async function runAivisSpeechTts(text, opts = {}) {
   };
 }
 
-async function convertAivisSpeechWavToMp3(wavBuffer) {
-  if (!Buffer.isBuffer(wavBuffer) || wavBuffer.length <= 0) {
-    throw new Error("aivisspeech mp3 conversion input is empty");
-  }
-
-  const timeoutMs = 30000;
-  const stderrMaxBytes = 8192;
-  const chunks = [];
-  let stderr = "";
-  let resolved = false;
-
-  const result = await new Promise((resolve) => {
-    const child = spawn("ffmpeg", [
-      "-hide_banner",
-      "-loglevel",
-      "error",
-      "-f",
-      "wav",
-      "-i",
-      "pipe:0",
-      "-codec:a",
-      "libmp3lame",
-      "-b:a",
-      AIVISSPEECH_MP3_BITRATE,
-      "-f",
-      "mp3",
-      "pipe:1",
-    ], {
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-
-    const finish = (payload) => {
-      if (resolved) return;
-      resolved = true;
-      resolve(payload);
-    };
-
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      finish({ exitCode: -1, timedOut: true });
-    }, timeoutMs);
-
-    child.stdout.on("data", (chunk) => {
-      chunks.push(Buffer.from(chunk));
-    });
-    child.stderr.on("data", (chunk) => {
-      if (stderr.length < stderrMaxBytes) {
-        const text = String(chunk || "");
-        stderr += text.slice(0, Math.max(0, stderrMaxBytes - stderr.length));
-      }
-    });
-    child.stdin.on("error", () => {});
-    child.on("error", (err) => {
-      clearTimeout(timer);
-      finish({
-        exitCode: -1,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      finish({
-        exitCode: Number.isFinite(Number(code)) ? Number(code) : -1,
-        timedOut: false,
-      });
-    });
-
-    child.stdin.end(wavBuffer);
-  });
-
-  const mp3Buffer = Buffer.concat(chunks);
-  if (result?.timedOut) {
-    throw new Error(`aivisspeech mp3 conversion timed out after ${timeoutMs}ms`);
-  }
-  if (Number(result?.exitCode) !== 0) {
-    const detail = String(result?.error || stderr || "ffmpeg exited without details").trim();
-    throw new Error(`aivisspeech mp3 conversion failed: ${detail}`);
-  }
-  if (!mp3Buffer.length) {
-    throw new Error("aivisspeech mp3 conversion returned empty audio");
-  }
-  return mp3Buffer;
-}
-
 async function runElevenLabsTts(text, opts = {}) {
   const voiceId = opts.voiceId || ELEVENLABS_VOICE_ID;
   const modelId = opts.modelId || ELEVENLABS_TTS_MODEL;
@@ -3906,16 +3824,22 @@ function validateTtsProviderRequirements(ttsProvider, endpointName) {
 }
 
 async function runTtsByProvider(ttsProvider, text, opts = {}) {
+  const audioQuality = opts.audioQuality === undefined ? "standard" : opts.audioQuality;
+  if (audioQuality !== "standard" && audioQuality !== "lightweight") {
+    throw makeApiError(400, "audio_quality_invalid", "audioQuality must be standard or lightweight");
+  }
+  const lightweight = audioQuality === "lightweight";
   if (ttsProvider === "google") {
     const tts = await runGoogleCloudTts(text, {
       voiceId: opts.voiceId || undefined,
       languageCode: opts.languageCode || undefined,
-      audioEncoding: opts.audioEncoding || undefined,
+      audioEncoding: lightweight ? "MP3" : opts.audioEncoding || undefined,
       speedScale: typeof opts.speedScale === "number" ? opts.speedScale : undefined,
     });
     return {
-      audioBuffer: tts.audioBuffer,
-      mimeType: googleAudioEncodingToMimeType(tts.audioEncoding),
+      audioBuffer: lightweight ? await convertTtsAudioToMp3(tts.audioBuffer, { audioQuality }) : tts.audioBuffer,
+      mimeType: lightweight ? "audio/mpeg" : googleAudioEncodingToMimeType(tts.audioEncoding),
+      audioQuality,
       provider: "google",
       voiceId: tts.voiceId,
       languageCode: tts.languageCode,
@@ -3929,11 +3853,12 @@ async function runTtsByProvider(ttsProvider, text, opts = {}) {
       voiceId: opts.voiceId || undefined,
       speedScale: typeof opts.speedScale === "number" ? opts.speedScale : undefined,
     });
-    const audioBuffer = await convertAivisSpeechWavToMp3(tts.audioBuffer);
+    const audioBuffer = await convertTtsAudioToMp3(tts.audioBuffer, { audioQuality, inputFormat: "wav" });
     return {
       audioBuffer,
       mimeType: "audio/mpeg",
       provider: "aivisspeech",
+      audioQuality,
       voiceId: tts.voiceId,
       speedScale: tts.speedScale,
     };
@@ -3942,16 +3867,17 @@ async function runTtsByProvider(ttsProvider, text, opts = {}) {
   const tts = await runElevenLabsTts(text, {
     voiceId: opts.voiceId || undefined,
     modelId: opts.modelId || undefined,
-    outputFormat: opts.outputFormat || undefined,
+    outputFormat: lightweight ? "mp3_44100_128" : opts.outputFormat || undefined,
     applyLanguageTextNormalization: opts.applyLanguageTextNormalization,
   });
   return {
-    audioBuffer: tts.audioBuffer,
-    mimeType: elevenOutputFormatToMimeType(tts.outputFormat),
+    audioBuffer: lightweight ? await convertTtsAudioToMp3(tts.audioBuffer, { audioQuality }) : tts.audioBuffer,
+    mimeType: lightweight ? "audio/mpeg" : elevenOutputFormatToMimeType(tts.outputFormat),
+    audioQuality,
     provider: "elevenlabs",
     voiceId: tts.voiceId,
     modelId: tts.modelId,
-    outputFormat: tts.outputFormat,
+    outputFormat: lightweight ? "mp3_24000_32" : tts.outputFormat,
   };
 }
 
@@ -5688,6 +5614,7 @@ async function handleStreamTtsSession(startPayload, opts = {}) {
   const segments = createRunnerStreamTtsSegments({
     emit, signal, publicBaseUrl, ttsProvider, voiceId, speedScale,
     modelId, outputFormat, languageCode, audioEncoding, applyLanguageTextNormalization,
+    audioQuality: startPayload?.audioQuality,
   });
   emit({ type: "started", provider: ttsProvider, route: "stream-tts:text", mode: "text" });
   emit({ type: "stream_mode", mode: "direct_text" });
@@ -7098,6 +7025,7 @@ const handleRunnerRequest = async (req, res) => {
         audioEncoding: audioEncoding || undefined,
         applyLanguageTextNormalization,
         speedScale,
+        audioQuality: body.audioQuality,
       });
       const publicBaseUrl = resolvePublicBaseUrl(req, reqUrl);
       const media = await registerTtsMedia(tts.audioBuffer, tts.mimeType, publicBaseUrl);
@@ -7105,6 +7033,7 @@ const handleRunnerRequest = async (req, res) => {
         audioUrl: media.audioUrl,
         audioBytes: media.audioBytes,
         mimeType: tts.mimeType,
+        audioQuality: tts.audioQuality,
         provider: tts.provider,
         voiceId: tts.voiceId,
         modelId: tts.modelId,
@@ -7439,6 +7368,7 @@ runnerWsServer.on("connection", (ws, req) => {
             emit: (event) => llmJobEmit(voiceJob, event),
             signal: voiceJob.abortController.signal, publicBaseUrl,
             ttsProvider, voiceId: orchestratorTts.voiceId, speedScale,
+            audioQuality: voiceTts.audioQuality,
           });
           llmJobEmit(voiceJob, { type: "started", provider: ttsProvider, route: "voice.turn", mode: "voice" });
         } catch (error) {
@@ -10463,6 +10393,7 @@ export const __TESTING__ = {
   pickBestRelayForThread,
   runnerWsServer,
   voiceContextService,
+  googleCloudService,
   broadcastVoiceChecklistChanged,
   listLlmDirectories,
   resolveToolRoot,

@@ -24,6 +24,7 @@ export function SpeechSettings() {
     filteredVoices,
     ttsSpeedInput,
     ttsSpeed,
+    lightweightTtsOnCellular,
     voiceFilter,
     selectedVoiceId,
     autoBargeInEnabled,
@@ -31,6 +32,7 @@ export function SpeechSettings() {
     autoSpeakAfterReply,
     toolAutoApprovalRuleCount,
     selectTtsProvider,
+    toggleLightweightTtsOnCellular,
     loadVoices,
     changeTtsSpeedInput,
     commitTtsSpeedInput,
@@ -111,6 +113,16 @@ export function SpeechSettings() {
                 <Ionicons name="add" size={18} color={theme.colors.controlAccent} />
               </TouchableOpacity>
             </View>
+          </View>
+
+          <View style={[styles.settingsRow, styles.settingsRowDivider]}>
+            <Ionicons name="cellular-outline" size={22} color={theme.colors.controlTextPrimary} />
+            <View style={styles.settingsRowLabelWrap}>
+              <Text style={styles.settingsRowLabel}>モバイル通信中は軽量音声</Text>
+              <Text style={styles.settingsRowDescription}>モバイル通信中の読み上げ音声の通信量を減らします</Text>
+            </View>
+            <Switch value={lightweightTtsOnCellular} onValueChange={toggleLightweightTtsOnCellular}
+              accessibilityLabel="モバイル通信中は軽量音声" />
           </View>
 
           <SettingsSelect

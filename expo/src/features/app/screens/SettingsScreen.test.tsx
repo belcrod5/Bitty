@@ -66,6 +66,7 @@ const mockSettings = {
   filteredVoices: [{ voiceId: "voice-a", name: "Voice A" }],
   ttsSpeedInput: "1.2",
   ttsSpeed: 1.2,
+  lightweightTtsOnCellular: false,
   voiceFilter: "",
   selectedVoiceId: "",
   autoReplyAfterStt: false,
@@ -82,6 +83,7 @@ const mockSettings = {
   openThinkSelect: jest.fn(),
   toggleFaceIdRequiredForApproval: jest.fn(),
   selectTtsProvider: mockSelectTtsProvider,
+  toggleLightweightTtsOnCellular: jest.fn(),
   loadVoices: mockLoadVoices,
   changeTtsSpeedInput: jest.fn(),
   commitTtsSpeedInput: jest.fn(),
@@ -294,4 +296,10 @@ test("switches the visual theme from the display settings", async () => {
   await fireEvent.press(screen.getByText("cyberpunk"));
 
   expect(selectTheme).toHaveBeenCalledWith("cyberpunk");
+});
+
+test("mobile lightweight audio switch changes the saved preference", async () => {
+  const screen = await render(<SettingsScreen />);
+  await fireEvent(screen.getByLabelText("モバイル通信中は軽量音声"), "valueChange", true);
+  expect(mockSettings.toggleLightweightTtsOnCellular).toHaveBeenCalledWith(true);
 });

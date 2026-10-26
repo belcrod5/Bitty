@@ -43,6 +43,7 @@ export type AppSettingsContextValue = {
   filteredVoices: VoiceOption[];
   ttsSpeedInput: string;
   ttsSpeed: number;
+  lightweightTtsOnCellular: boolean;
   voiceFilter: string;
   selectedVoiceId: string;
   autoReplyAfterStt: boolean;
@@ -66,6 +67,7 @@ export type AppSettingsContextValue = {
   changeVoiceFilter: (value: string) => void;
   selectVoiceId: (voiceId: string) => void;
   selectTtsProvider: (provider: TtsProvider) => void;
+  toggleLightweightTtsOnCellular: (value: boolean) => void;
   toggleAutoReplyAfterStt: (value: boolean) => void;
   toggleAutoBargeInEnabled: (value: boolean) => void;
   toggleAutoSpeakerPriorityEnabled: (value: boolean) => void;

@@ -1,4 +1,5 @@
-import { useCallback, useRef, type MutableRefObject, type SetStateAction } from "react";
+import { useCallback, useEffect, useRef, type MutableRefObject, type SetStateAction } from "react";
+import { resolveTtsAudioQuality } from "../utils/ttsAudioQuality";
 import { isRunnerWsUrl } from "../../runnerWs/llmAdapter";
 import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import {
@@ -33,6 +34,7 @@ type UseSynthesizeSpeechStreamControllerOptions = {
   ttsProvider: string;
   selectedVoiceId: string;
   ttsSpeed: number;
+  lightweightTtsOnCellular?: boolean;
   ttsWaveformPoints: number;
   runnerWebSocketManager?: RunnerWebSocketManager;
   streamTtsControlRef: MutableRefObject<StreamTtsControlState | null>;
@@ -83,12 +85,15 @@ export function useSynthesizeSpeechStreamController(
   options: UseSynthesizeSpeechStreamControllerOptions
 ) {
   const streamTtsOperationSeqRef = useRef(0);
+  const qualityRequestSeqRef = useRef(0);
+  useEffect(() => () => { qualityRequestSeqRef.current += 1; }, []);
   const {
     reply,
     runnerToken,
     ttsProvider,
     selectedVoiceId,
     ttsSpeed,
+    lightweightTtsOnCellular = false,
     ttsWaveformPoints,
     runnerWebSocketManager,
     streamTtsControlRef,
@@ -140,6 +145,7 @@ export function useSynthesizeSpeechStreamController(
       });
       return;
     }
+    const qualityRequestSeq = ++qualityRequestSeqRef.current;
     logAuto("tts_trace", {
       stage: "synthesis_start",
       messageId: targetMessageId,
@@ -213,6 +219,9 @@ export function useSynthesizeSpeechStreamController(
     let snapshotLastAudioChunkSeq = -1;
     let snapshotStatus = "";
 
+    const audioQuality = !voiceJobId && lightweightTtsOnCellular ? await resolveTtsAudioQuality(true) : "standard";
+    if (qualityRequestSeq !== qualityRequestSeqRef.current || streamTtsSuppressedRef.current) return;
+    logAuto("tts_trace", { stage: voiceJobId ? "attach_request" : "synthesis_request", messageId: targetMessageId, ...(voiceJobId ? {} : { audioQuality }) });
     const startPayload = {
       type: "start",
       mode: "text",
@@ -220,6 +229,7 @@ export function useSynthesizeSpeechStreamController(
       ttsProvider: streamOptions?.ttsProvider || ttsProvider,
       voiceId: (streamOptions?.voiceId ?? selectedVoiceId).trim() || undefined,
       speedScale: ttsSpeed,
+      audioQuality,
     };
 
     const readMessagePayload = (message: RunnerWsMessage) => (
@@ -317,6 +327,7 @@ export function useSynthesizeSpeechStreamController(
         logAuto("tts_trace", {
           stage: "chunk_received", messageId: targetMessageId, jobId: chunkJobId, seq,
           audioBytes: segment.audioBytes,
+          audioQuality: data.audioQuality || "standard",
           queueWaitMs: segment.queueWaitMs,
           synthesisMs: segment.synthesisMs,
           mediaRegistrationMs: segment.mediaRegistrationMs,
@@ -786,6 +797,7 @@ export function useSynthesizeSpeechStreamController(
     ttsPlayingRef,
     ttsProvider,
     ttsSpeed,
+    lightweightTtsOnCellular,
     ttsStreamWsUrl,
     ttsWaveformPoints,
     upsertStreamSegment,

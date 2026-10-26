@@ -1,3 +1,6 @@
+import { getNetworkStateAsync } from "../networkState";
+jest.mock("../networkState", () => ({ getNetworkStateAsync: jest.fn() }));
+
 import { getVoiceControl } from "../../appControl/voiceControl";
 import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react-native";
@@ -39,6 +42,7 @@ const initialStats = {
 beforeEach(() => {
   mockSnapshot = { connected: true, generation: 1 };
   handlers.clear();
+  jest.mocked(getNetworkStateAsync).mockReset();
   jest.clearAllMocks();
   jest.mocked(randomUUID).mockReturnValue(operationId);
   mockManager.request.mockImplementation(async ({ op }: { op: string }) => {
@@ -694,7 +698,7 @@ test("attaches the accepted voice job once and skips full-text synthesis on comp
   let sent!: Promise<void>;
   await act(async () => { sent = result.current.sendTranscript("hello", jest.fn()); await Promise.resolve(); });
   expect(mockManager.request).toHaveBeenCalledWith(expect.objectContaining({
-    op: "turn.start", payload: expect.objectContaining({ tts: settings }),
+    op: "turn.start", payload: expect.objectContaining({ tts: { ...settings, audioQuality: "standard" } }),
   }), { timeoutMs: 30_000 });
   expect(onJob).toHaveBeenCalledTimes(1);
   expect(onJob).toHaveBeenCalledWith("voice-job", operationId);
@@ -751,7 +755,9 @@ test.each(["turn_failed", "マイクエラー"])("message clear resets the previ
   expect(result.current.error).toBe("");
 });
 
-test("checks status and resends the same operation only after not_found", async () => {
+test.each([false, true])("checks status before resending the same operation (lightweight=%s)", async (lightweight) => {
+  jest.mocked(getNetworkStateAsync).mockResolvedValueOnce({ type: "CELLULAR" } as Awaited<ReturnType<typeof getNetworkStateAsync>>)
+    .mockResolvedValue({ type: "WIFI" } as Awaited<ReturnType<typeof getNetworkStateAsync>>);
   let starts = 0;
   mockManager.request.mockImplementation(async ({ op }: { op: string }) => {
     if (op === "voice.open") return {
@@ -768,7 +774,8 @@ test("checks status and resends the same operation only after not_found", async 
     throw new Error(`unexpected ${op}`);
   });
   const onAccepted = jest.fn();
-  const { result, rerender } = await renderHook(() => useVoiceConversation(jest.fn()));
+  const { result, rerender } = await renderHook(() => useVoiceConversation(jest.fn(), undefined, lightweight
+    ? { speedScale: 1.2, lightweightTtsOnCellular: true } : undefined));
   await waitFor(() => expect(result.current.ready).toBe(true));
 
   let sent!: Promise<void>;
@@ -784,6 +791,10 @@ test("checks status and resends the same operation only after not_found", async 
   expect(turnStarts[0][0]).toEqual(turnStarts[1][0]);
   expect(result.current.history.map(({ text }) => text)).toEqual(["確定発話", "保存済み"]);
   expect(onAccepted).toHaveBeenCalledTimes(1);
+  if (lightweight) {
+    expect(turnStarts[0][0].payload.tts).toEqual({ speedScale: 1.2, audioQuality: "lightweight" });
+    expect(getNetworkStateAsync).toHaveBeenCalledTimes(1);
+  }
 });
 
 test("recovers a completed turn after reconnect without regenerating it", async () => {
@@ -1564,4 +1575,56 @@ test("unknown operation recovery carries its authoritative boundary from status 
   await waitFor(() => expect(result.current.ready).toBe(true));
   expect(result.current.history).toEqual([{ role: "user", text: "追加してください", clientOperationId: operationId, sessionSwitched: true }]);
   expect(result.current.turnStatus).toBe("running");
+});
+
+
+test("voice turns resolve the mobile quality before sending TTS settings", async () => {
+  jest.mocked(getNetworkStateAsync).mockResolvedValue({ type: "CELLULAR" } as Awaited<ReturnType<typeof getNetworkStateAsync>>);
+  const { result } = await renderHook(() => useVoiceConversation(jest.fn(), jest.fn(), {
+    speedScale: 1.2, lightweightTtsOnCellular: true,
+  }));
+  await waitFor(() => expect(result.current.ready).toBe(true));
+  let sent!: Promise<void>;
+  await act(async () => { sent = result.current.sendTranscript("hello", jest.fn()); });
+  expect(mockManager.request).toHaveBeenCalledWith(expect.objectContaining({ op: "turn.start", payload: expect.objectContaining({
+    tts: { speedScale: 1.2, audioQuality: "lightweight" },
+  }) }), { timeoutMs: 30_000 });
+  await act(async () => { handlers.get("voice.turn.completed")?.({ payload: {
+    clientOperationId: operationId, status: "completed", text: "done",
+  } }); await sent; });
+});
+
+test("interrupting a voice turn during network detection prevents a late turn.start", async () => {
+  let resolveNetwork!: (state: Awaited<ReturnType<typeof getNetworkStateAsync>>) => void;
+  jest.mocked(getNetworkStateAsync).mockReturnValue(new Promise((resolve) => { resolveNetwork = resolve; }));
+  const { result } = await renderHook(() => useVoiceConversation(jest.fn(), jest.fn(), {
+    speedScale: 1.2, lightweightTtsOnCellular: true,
+  }));
+  await waitFor(() => expect(result.current.ready).toBe(true));
+  let sent!: Promise<void>;
+  await act(async () => { sent = result.current.sendTranscript("hello", jest.fn()); });
+  await act(async () => {
+    result.current.interrupt();
+    resolveNetwork({ type: "CELLULAR" } as Awaited<ReturnType<typeof getNetworkStateAsync>>);
+    await sent;
+  });
+  expect(mockManager.request.mock.calls.some(([message]) => message.op === "turn.start")).toBe(false);
+});
+
+
+test("closing voice while network detection is pending prevents a late turn.start", async () => {
+  let resolveNetwork!: (state: Awaited<ReturnType<typeof getNetworkStateAsync>>) => void;
+  jest.mocked(getNetworkStateAsync).mockReturnValue(new Promise((resolve) => { resolveNetwork = resolve; }));
+  const { result, unmount } = await renderHook(() => useVoiceConversation(jest.fn(), jest.fn(), {
+    speedScale: 1.2, lightweightTtsOnCellular: true,
+  }));
+  await waitFor(() => expect(result.current.ready).toBe(true));
+  let sent!: Promise<void>;
+  await act(async () => { sent = result.current.sendTranscript("hello", jest.fn()); });
+  const rejected = expect(sent).rejects.toThrow("音声画面を閉じました");
+  await unmount();
+  resolveNetwork({ type: "CELLULAR" } as Awaited<ReturnType<typeof getNetworkStateAsync>>);
+  await rejected;
+  await Promise.resolve();
+  expect(mockManager.request.mock.calls.some(([message]) => message.op === "turn.start")).toBe(false);
 });

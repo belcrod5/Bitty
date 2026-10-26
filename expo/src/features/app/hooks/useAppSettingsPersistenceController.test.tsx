@@ -68,6 +68,7 @@ function createArgs() {
     codexApprovalPolicy: "on-request",
     ttsProvider: "elevenlabs",
     ttsSpeed: 1,
+    lightweightTtsOnCellular: false,
     selectedVoiceIdByProvider: { elevenlabs: "", google: "", aivisspeech: "" },
     autoBargeInEnabled: false,
     autoSpeakerPriorityEnabled: false,
@@ -98,6 +99,7 @@ function createArgs() {
     setCodexApprovalPolicy: setter,
     setSelectedVoiceIdByProvider: setter,
     setTtsProvider: setter,
+    setLightweightTtsOnCellular: jest.fn(),
     setTtsSpeedWithSync: setter,
     setLlmToolLogCompact: setter,
     setAutoBargeInEnabled: setter,
@@ -682,4 +684,34 @@ test("keeps retry reads from clobbering a credential the user re-entered", async
     expect(update("user-typed-token")).toBe("user-typed-token");
     expect(update("")).toBe("saved-token");
   }
+});
+
+test.each([true, false, undefined, "true"])("restores mobile audio preference %s with a safe default", async (saved) => {
+  mockReadPersistedSettings.mockResolvedValue({ lightweightTtsOnCellular: saved });
+  const args = createArgs();
+  await renderPersistenceController(args);
+  expect(args.setLightweightTtsOnCellular).toHaveBeenCalledWith(saved === true);
+});
+
+test("persists and exports the mobile audio preference through the existing settings document", async () => {
+  const args = { ...createArgs(), lightweightTtsOnCellular: true };
+  const hook = await renderPersistenceController(args);
+  const mutate = mockMutatePersistedSettings.mock.calls[0][0];
+  expect(mutate({}).lightweightTtsOnCellular).toBe(true);
+  await act(async () => { await hook.result.current.exportSettingsJson(); });
+  expect(JSON.parse(mockSetStringAsync.mock.calls[0][0]).appDefaultSettings.lightweightTtsOnCellular).toBe(true);
+});
+
+
+test("imports the mobile audio preference", async () => {
+  mockGetStringAsync.mockResolvedValue(JSON.stringify({ appDefaultSettings: { lightweightTtsOnCellular: true } }));
+  const setLightweightTtsOnCellular = jest.fn();
+  const hook = await renderPersistenceController({ setLightweightTtsOnCellular });
+  setLightweightTtsOnCellular.mockClear();
+  await act(async () => { await hook.result.current.importSettingsJson(); });
+  const confirmation = jest.mocked(Alert.alert).mock.calls.find(([title]) => title === "設定をインポート");
+  const importButton = (confirmation?.[2] as Array<{ text?: string; onPress?: () => void | Promise<void> }> | undefined)
+    ?.find(({ text }) => text === "インポート");
+  await act(async () => { await importButton?.onPress?.(); });
+  expect(setLightweightTtsOnCellular).toHaveBeenCalledWith(true);
 });

@@ -713,6 +713,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   const [ttsUri, setTtsUri] = useState("");
   const [ttsProvider, setTtsProvider] = useState<TtsProvider>(DEFAULT_TTS_PROVIDER);
   const [ttsSpeed, setTtsSpeed] = useState(DEFAULT_TTS_SPEED);
+  const [lightweightTtsOnCellular, setLightweightTtsOnCellular] = useState(false);
   const [ttsSpeedInput, setTtsSpeedInput] = useState(DEFAULT_TTS_SPEED.toFixed(1));
   const [selectedVoiceIdByProvider, setSelectedVoiceIdByProvider] =
     useState<SelectedVoiceIdByProvider>(DEFAULT_SELECTED_VOICE_IDS);
@@ -2712,6 +2713,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     ttsProvider,
     selectedVoiceId,
     ttsSpeed,
+    lightweightTtsOnCellular,
     ttsLoading,
     ttsSynthesisRequestIdRef,
     baseUrl,
@@ -2775,6 +2777,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     ttsProvider,
     selectedVoiceId,
     ttsSpeed,
+    lightweightTtsOnCellular,
     ttsWaveformPoints: TTS_WAVEFORM_POINTS,
     runnerWebSocketManager,
     streamTtsControlRef,
@@ -3687,6 +3690,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     codexApprovalPolicy,
     ttsProvider,
     ttsSpeed,
+    lightweightTtsOnCellular,
     selectedVoiceIdByProvider,
     autoBargeInEnabled,
     autoSpeakerPriorityEnabled,
@@ -3713,6 +3717,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     setCodexApprovalPolicy,
     setSelectedVoiceIdByProvider,
     setTtsProvider,
+    setLightweightTtsOnCellular,
     setTtsSpeedWithSync,
     setAutoBargeInEnabled,
     setAutoSpeakerPriorityEnabled,
@@ -4650,6 +4655,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     filteredVoices,
     ttsSpeedInput,
     ttsSpeed,
+    lightweightTtsOnCellular,
     voiceFilter,
     selectedVoiceId,
     autoReplyAfterStt,
@@ -4673,6 +4679,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     changeVoiceFilter: setVoiceFilter,
     selectVoiceId: selectVoiceIdFromSettingsContext,
     selectTtsProvider: setTtsProvider,
+    toggleLightweightTtsOnCellular: setLightweightTtsOnCellular,
     toggleAutoReplyAfterStt: setAutoReplyAfterStt,
     toggleAutoBargeInEnabled: setAutoBargeInEnabled,
     toggleAutoSpeakerPriorityEnabled: setAutoSpeakerPriorityEnabled,
@@ -6181,6 +6188,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
           isTtsPlaying: ttsPlaying,
           ttsUiStatus,
           ttsSpeed,
+          lightweightTtsOnCellular,
           runnerBaseUrl: baseUrl(),
           runnerToken,
         }}
