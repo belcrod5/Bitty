@@ -786,7 +786,9 @@ describe("ChatScreen voice input", () => {
     expect(screen.queryByTestId("chat-title-menu")).toBeNull();
     await fireEvent.press(screen.getByText(action));
     if (action === "Skiaボードへ追加") {
-      expect(mockAddSkiaBoardSession).toHaveBeenCalledWith("session-1");
+      expect(mockAddSkiaBoardSession).toHaveBeenCalledWith({
+        sessionId: "session-1", backendId: "claude", directory: "/workspace",
+      });
     } else {
       expect(action === "既読にする" ? mockMarkSessionReadManually : mockMarkSessionUnread).toHaveBeenCalledWith({
         backendId: "claude", sessionId: "session-1", source: "all", directory: "/workspace",

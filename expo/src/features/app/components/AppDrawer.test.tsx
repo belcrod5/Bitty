@@ -199,7 +199,9 @@ test("adds a long-pressed session to the Skia board", async () => {
   await user.longPress(drawer.getByText("Fix drawer search"));
   await fireEvent.press(drawer.getByText("Skiaボードへ追加"));
 
-  expect(mockAddSession).toHaveBeenCalledWith("loaded-search");
+  expect(mockAddSession).toHaveBeenCalledWith({
+    sessionId: "loaded-search", backendId: "codex", directory: "/work/bitty",
+  });
 });
 
 test.each(["既読にする", "未読にする"])("shows the target title and handles %s from the drawer", async (action) => {

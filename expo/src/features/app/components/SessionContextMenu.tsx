@@ -48,7 +48,7 @@ export function SessionContextMenu({ target, onClose }: {
             disabled={!loaded}
             onPress={() => {
               if (hasSession(sessionId)) removeSession(sessionId);
-              else addSession(sessionId);
+              else addSession({ sessionId, backendId, directory });
               onClose();
             }}
           >

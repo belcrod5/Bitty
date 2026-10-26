@@ -812,6 +812,38 @@ describe("useSkiaMiniChatSessions", () => {
     warnSpy.mockRestore();
   });
 
+  it("adds a session outside the drawer window with its explicit origin and displays it", async () => {
+    seedRunnerBoard([]);
+    mockConversation([]);
+    const target = { sessionId: "session-99", backendId: "claude", directory: "/another-workspace" };
+    mockFetchSkiaBoardSessionSummaries.mockResolvedValue([{
+      ...session(99), directory: target.directory, cwd: target.directory, contextUsage: null,
+    }]);
+    const { result } = await renderHook(() => ({
+      board: useSkiaBoard(), sessions: useSkiaMiniChatSessions().sessions,
+    }), { wrapper: BoardWrapper });
+    await flush();
+
+    await act(async () => {
+      result.current.board.addSession(target);
+    });
+    await flush();
+    await flush();
+
+    expect(mockPostSkiaBoardOps).toHaveBeenCalledWith(
+      { runnerUrl: "http://runner", runnerToken: "runner-token" },
+      { baseRevision: 1, ops: [{ type: "addCard", card: { kind: "session", ...target } }] },
+    );
+    expect(result.current.board.state?.cards).toEqual([expect.objectContaining({ kind: "session", ...target })]);
+    expect(runnerStore.board?.cards).toEqual([expect.objectContaining({ kind: "session", ...target })]);
+    expect(mockFetchSkiaBoardSessionSummaries).toHaveBeenCalledWith(
+      { baseUrl: "http://runner", token: "runner-token" },
+      { directory: target.directory, backendId: "claude", sessionIds: ["session-99"] },
+      15_000,
+    );
+    expect(result.current.sessions).toEqual([expect.objectContaining({ ...target, title: "Title 99" })]);
+  });
+
   it("resends queued ops after a network failure recovers", async () => {
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
     seedRunnerBoard([sessionCard("session-9", 0, 0)]);
@@ -822,7 +854,7 @@ describe("useSkiaMiniChatSessions", () => {
 
     mockPostSkiaBoardOps.mockRejectedValueOnce(new Error("network down"));
     await act(async () => {
-      result.current.addSession("session-2");
+      result.current.addSession({ sessionId: "session-2", backendId: "codex", directory: "/workspace" });
     });
     await flush();
     // 送信は失敗したが、楽観反映は維持され、ランナーは未変更。
@@ -841,7 +873,7 @@ describe("useSkiaMiniChatSessions", () => {
       "session-2",
     ]);
     expect(cards[0]).toMatchObject({ col: 2, row: 2 });
-    // 手動追加カードには候補由来の出所情報が付く。
+    // 手動追加カードには操作対象の出所情報が付く。
     expect(cards[1]).toMatchObject({ directory: "/workspace", backendId: "codex" });
     warnSpy.mockRestore();
   });
