@@ -10,6 +10,7 @@ const MODELS = [{ modelId: "model-a", effortOptions: ["low"] }, { modelId: "mode
 async function fixture(t, options = {}) {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "learning-test-"));
   const memoryConversationId = randomUUID();
+  const logicalConversationId = randomUUID();
   let time = Date.parse("2026-10-20T12:00:00Z");
   const calls = [], settlements = [];
   const ledger = { reserve: async (input) => { calls.push(input); return { ok: true, call: { callId: randomUUID() } }; },
@@ -22,7 +23,7 @@ async function fixture(t, options = {}) {
   const service = await open();
   t.after(async () => { for (const value of services) await value.close(); await fs.rm(workspace, { recursive: true, force: true }); });
   const pair = (pairSeq, extra = {}) => ({ memoryConversationId, pairSeq, orchestratorId: "main",
-    logicalConversationId: randomUUID(), clientOperationId: randomUUID(), completedAt: new Date(time).toISOString(),
+    logicalConversationId, clientOperationId: randomUUID(), completedAt: new Date(time).toISOString(),
     user: "Keep reports short.", assistant: "Understood.", ...extra });
   return { service, open, args, ledger, calls, settlements, pair, workspace, advance: (ms) => { time += ms; } };
 }
@@ -812,4 +813,205 @@ test("legacy candidates start unread, expired candidates notify removal, and rea
   assert.equal(notifications.length, before + 1, "cleanup still refreshes connected clients");
   await service.markRead({ items: [{ id: original.id, version: 1 }] });
   assert.equal(service.unreadCount(), 0);
+});
+
+test("processed conversation supplies distinct scoped history for a later skill candidate without extra calls", async (t) => {
+  const seen = [];
+  const f = await fixture(t, { analyze: async ({ input }) => {
+    const value = JSON.parse(input); seen.push(value);
+    return { text: JSON.stringify({ candidates: value.pairs[0].pairSeq === 3 ? [candidate(3, { evidence: [1, 3] })] : [] }) };
+  } });
+  const first = f.pair(1, { user: "Review the changes, check the risks, then give me the decision." });
+  await configure(f.service); await f.service.observe([first]); await f.service.runDue();
+  const other = f.pair(2, { orchestratorId: randomUUID() });
+  await f.service.observe([other]); await f.service.runDue();
+  await f.service.observe([first, first, other, f.pair(3, { user: "Use that review workflow again for this new task." })]);
+  await f.service.runDue();
+  assert.deepEqual(seen[2].pairs.map((pair) => pair.pairSeq), [3]);
+  assert.deepEqual(seen[2].history.map((pair) => pair.pairSeq), [1], "other chats and replayed sequences are not extra occurrences");
+  const status = await f.service.status();
+  assert.equal(status.candidates[0].kind, "procedure"); assert.deepEqual(status.candidates[0].evidence.map((pair) => pair.pairSeq), [1, 3]);
+  assert.equal(status.candidates[0].status, "candidate"); assert.equal(status.candidates[0].published, undefined);
+  assert.equal(f.calls.length, 3); assert.equal(status.processedThrough, 3);
+});
+
+test("history cannot independently create candidates, evaluations, or proposal feedback", async (t) => {
+  for (const output of [
+    { candidates: [candidate(1)] },
+    { candidates: [], evaluations: [{ orchestratorId: "main", goal: "Old review", score: 100, reason: "Repeated old evidence", unknowns: "", evidence: [1], itemId: null }] },
+    { candidates: [], proposalFeedback: [{ proposalId: randomUUID(), action: "accepted", pairSeq: 1, userQuote: "Keep", reason: "Old acceptance" }] },
+  ]) {
+    const f = await fixture(t, { analyze: async ({ input }) => ({ text: JSON.stringify(JSON.parse(input).pairs[0].pairSeq === 1 ? { candidates: [] } : output) }) });
+    await configure(f.service); await f.service.observe([f.pair(1)]); await f.service.runDue();
+    await f.service.observe([f.pair(2)]); await f.service.runDue();
+    const status = await f.service.status();
+    assert.equal(status.processedThrough, 1); assert.equal(status.candidates.length, 0); assert.equal(status.evaluations.length, 0);
+    assert.equal(f.settlements.at(-1).reasonCode, "learning_output_invalid");
+  }
+});
+
+test("history stays bounded and never pushes current pairs out of the input budget", async (t) => {
+  const seen = [];
+  const f = await fixture(t, { analyze: async (args) => { seen.push(args); return { text: '{"candidates":[]}' }; } });
+  await configure(f.service); await f.service.observe(Array.from({ length: 10 }, (_, index) => f.pair(index + 1, { user: "Earlier task ".repeat(30) })));
+  await f.service.runDue();
+  await f.service.observe([f.pair(11)]); await f.service.runDue();
+  const value = JSON.parse(seen[1].input);
+  assert.equal(value.history.length, 4); assert.deepEqual(value.history.map((pair) => pair.pairSeq), [7, 8, 9, 10]);
+  assert.ok(Buffer.byteLength(JSON.stringify(value.history)) <= 4000);
+  assert.ok(f.calls[1].estimatedInputTokens <= 24_000);
+  t.diagnostic(JSON.stringify({ historyPairs: value.history.length, historyBytes: Buffer.byteLength(JSON.stringify(value.history)),
+    inputWithHistoryBytes: Buffer.byteLength(seen[1].input), inputWithoutHistoryBytes: Buffer.byteLength(JSON.stringify({ ...value, history: [] })),
+    totalReservedInputBytes: f.calls[1].estimatedInputTokens }));
+  const remaining = 24_000 - f.calls[1].estimatedInputTokens + Buffer.byteLength(JSON.stringify(value.history));
+  const current = f.pair(12, { user: "x".repeat(remaining - 1500) });
+  await f.service.observe([current]); await f.service.runDue();
+  const last = JSON.parse(seen.at(-1).input);
+  assert.equal(last.pairs[0].pairSeq, 12); assert.equal(last.pairs[0].user, current.user);
+  assert.ok(last.history.length < 4); assert.ok(f.calls.at(-1).estimatedInputTokens <= 24_000);
+  assert.equal((await f.service.status()).processedThrough, 12);
+});
+
+test("retained events restore history after restart but pre-observation, gaps, expired and foreign memory never do", async (t) => {
+  const seen = [];
+  const f = await fixture(t, { initialThrough: 2, analyze: async ({ input }) => { seen.push(JSON.parse(input)); return { text: '{"candidates":[]}' }; } });
+  const old = f.pair(2); const first = f.pair(3);
+  await configure(f.service); await f.service.observe([old, first]); await f.service.runDue();
+  await f.service.close(); const restored = await f.open();
+  await restored.observe([old, first, f.pair(5)], 5); await restored.runDue();
+  assert.deepEqual(seen[1].history.map((pair) => pair.pairSeq), [3]);
+  const gapPair = f.pair(4); await restored.observe([gapPair, f.pair(6)]); await restored.runDue();
+  assert.ok(!seen.at(-1).history.some((pair) => pair.pairSeq === 4));
+  f.advance(8 * 86400_000); await restored.observe([f.pair(7)]); await restored.runDue();
+  assert.deepEqual(seen.at(-1).history, []);
+  await restored.observe([f.pair(8, { memoryConversationId: randomUUID() })]);
+  assert.equal((await restored.status()).status, "paused");
+});
+
+test("failed batch retries keep their frozen history and never promote unprocessed pairs", async (t) => {
+  const seen = []; let failSecond = true;
+  const f = await fixture(t, { analyze: async ({ input }) => {
+    const value = JSON.parse(input); seen.push(value);
+    if (value.pairs[0].pairSeq === 2 && failSecond) { failSecond = false; throw new Error("temporary"); }
+    return { text: '{"candidates":[]}' };
+  } });
+  const first = f.pair(1);
+  await configure(f.service); await f.service.observe([first]); await f.service.runDue();
+  await f.service.observe([f.pair(2)]); await f.service.runDue();
+  await f.service.observe([f.pair(3)]); await f.service.close(); const restored = await f.open();
+  await restored.observe([first]); f.advance(70_000); await restored.runDue();
+  assert.deepEqual(seen[2], seen[1], "a persisted retry uses precisely the original reference snapshot");
+  await restored.runDue();
+  assert.deepEqual(seen[3].history.map((pair) => pair.pairSeq), [1, 2]);
+});
+
+test("forgotten or learning-delivered sources never reenter history, including after recovery and all-forget", async (t) => {
+  const seen = [];
+  const f = await fixture(t, { analyze: async ({ input }) => {
+    const value = JSON.parse(input); seen.push(value);
+    return { text: JSON.stringify({ candidates: value.pairs[0].pairSeq === 1 ? [candidate(1)] : [] }) };
+  } });
+  const first = f.pair(1); const second = f.pair(2);
+  await configure(f.service); await f.service.observe([first]); await f.service.runDue();
+  let item = (await f.service.status()).candidates[0]; await f.service.decide({ items: [ref(item)], action: "adopt" });
+  const snapshot = await f.service.retrieve({ orchestratorId: "main", input: "Review workflow" });
+  await f.service.delivered({ orchestratorId: "main", operationId: second.clientOperationId, threadId: "parent", turnId: "turn", snapshot });
+  await f.service.observe([second]); await f.service.runDue();
+  await f.service.observe([f.pair(3)]); await f.service.runDue();
+  assert.ok(!seen.at(-1).history.some((pair) => pair.pairSeq === 2), "supplied learning is not independent repetition evidence");
+  item = (await f.service.status()).candidates[0]; await f.service.forget({ items: [ref(item)] });
+  await f.service.close(); const restored = await f.open();
+  await restored.observe([first, second, f.pair(4)]); await restored.runDue();
+  assert.ok(!seen.at(-1).history.some((pair) => [1, 2].includes(pair.pairSeq)));
+  await restored.forget({ all: true });
+  await restored.observe([first, second, f.pair(5)]); await restored.runDue();
+  assert.deepEqual(seen.at(-1).history, []);
+});
+
+test("removing a chat drops its cached history without affecting another chat", async (t) => {
+  const seen = []; const id = randomUUID();
+  const f = await fixture(t, { analyze: async ({ input }) => { seen.push(JSON.parse(input)); return { text: '{"candidates":[]}' }; } });
+  await configure(f.service); await f.service.observe([f.pair(1, { orchestratorId: id }), f.pair(2)]); await f.service.runDue();
+  await f.service.removeOrchestrator(id);
+  await f.service.observe([f.pair(3, { orchestratorId: id }), f.pair(4)]); await f.service.runDue();
+  assert.deepEqual(seen.at(-1).history.map((pair) => pair.pairSeq), [2]);
+});
+
+
+test("eight pending pairs do not evict earlier processed history", async (t) => {
+  const seen = [];
+  const f = await fixture(t, { analyze: async ({ input }) => { seen.push(JSON.parse(input)); return { text: '{"candidates":[]}' }; } });
+  await configure(f.service); await f.service.observe([f.pair(1)]); await f.service.runDue();
+  await f.service.observe(Array.from({ length: 8 }, (_, index) => f.pair(index + 2))); await f.service.runDue();
+  assert.deepEqual(seen[1].pairs.map((pair) => pair.pairSeq), [2, 3, 4, 5, 6, 7, 8, 9]);
+  assert.deepEqual(seen[1].history.map((pair) => pair.pairSeq), [1]); assert.equal(f.calls.length, 2);
+});
+
+
+test("a cleared message conversation cannot inherit the previous logical conversation history", async (t) => {
+  const seen = [];
+  const f = await fixture(t, { analyze: async ({ input }) => { seen.push(JSON.parse(input)); return { text: '{"candidates":[]}' }; } });
+  await configure(f.service); await f.service.observe([f.pair(1)]); await f.service.runDue();
+  await f.service.observe([f.pair(2, { logicalConversationId: randomUUID() })]); await f.service.runDue();
+  assert.deepEqual(seen[1].history, []);
+});
+
+test("legacy pending batches without history remain retryable", async (t) => {
+  const seen = []; let failing = true;
+  const f = await fixture(t, { analyze: async ({ input }) => {
+    seen.push(JSON.parse(input)); if (failing) throw new Error("temporary"); return { text: '{"candidates":[]}' };
+  } });
+  await configure(f.service); await f.service.observe([f.pair(1)]); await f.service.runDue(); await f.service.close();
+  const file = path.join(f.workspace, "orchestrator-learning", "state.json");
+  const saved = JSON.parse(await fs.readFile(file, "utf8")); delete saved.batch.history; await fs.writeFile(file, JSON.stringify(saved));
+  failing = false; const restored = await f.open(); f.advance(70_000); await restored.runDue();
+  assert.deepEqual(seen.at(-1).history, []); assert.equal((await restored.status()).processedThrough, 1); assert.equal(f.calls.length, 2);
+});
+
+test("all-forget invalidates in-flight historical evidence before it can produce a skill", async (t) => {
+  const seen = []; let release, started;
+  const began = new Promise((resolve) => { started = resolve; });
+  const f = await fixture(t, { analyze: async ({ input }) => {
+    const value = JSON.parse(input); seen.push(value);
+    if (value.pairs[0].pairSeq === 2) {
+      started(); await new Promise((resolve) => { release = resolve; });
+      return { text: JSON.stringify({ candidates: [candidate(2, { evidence: [1, 2] })] }) };
+    }
+    return { text: '{"candidates":[]}' };
+  } });
+  await configure(f.service); await f.service.observe([f.pair(1)]); await f.service.runDue();
+  await f.service.observe([f.pair(2)]); const running = f.service.runDue(); await began;
+  assert.deepEqual(seen[1].history.map((pair) => pair.pairSeq), [1]);
+  await f.service.forget({ all: true }); release(); await running;
+  assert.equal((await f.service.status()).candidates.length, 0);
+  await f.service.observe([f.pair(3)]); await f.service.runDue(); assert.deepEqual(seen[2].history, []);
+});
+
+
+test("history evidence cannot bridge a message clear even when pending pairs span both conversations", async (t) => {
+  const f = await fixture(t, { analyze: async ({ input }) => {
+    const value = JSON.parse(input);
+    return { text: JSON.stringify({ candidates: value.pairs[0].pairSeq === 1 ? [] : [candidate(3, { evidence: [1, 3] })] }) };
+  } });
+  await configure(f.service); await f.service.observe([f.pair(1)]); await f.service.runDue();
+  await f.service.observe([f.pair(2), f.pair(3, { logicalConversationId: randomUUID() })]); await f.service.runDue();
+  assert.equal((await f.service.status()).processedThrough, 1); assert.equal(f.settlements.at(-1).reasonCode, "learning_output_invalid");
+});
+
+
+test("existing change-request evidence is not duplicated into history or forced to cite unrelated new work", async (t) => {
+  const seen = [];
+  const f = await fixture(t, { analyze: async ({ input }) => {
+    const value = JSON.parse(input); seen.push(value);
+    if (value.pairs[0].pairSeq === 1) return { text: JSON.stringify({ candidates: [candidate(1)] }) };
+    return { text: JSON.stringify({ candidates: [candidate(1, { content: "Improved review workflow", replaces: [value.items[0].id] })],
+      corrections: value.feedback.map((entry) => ({ id: entry.id, reason: "Updated the existing procedure", candidateIndex: 0 })) }) };
+  } });
+  await configure(f.service); await f.service.observe([f.pair(1)]); await f.service.runDue();
+  let item = (await f.service.status()).candidates[0]; await f.service.decide({ items: [ref(item)], action: "adopt" });
+  item = (await f.service.status()).candidates[0]; await f.service.requestChange({ items: [ref(item)], instruction: "Clarify this workflow" });
+  await f.service.observe([f.pair(2)]); await f.service.runDue();
+  assert.deepEqual(seen[1].history, []);
+  const status = await f.service.status(); assert.equal(status.processedThrough, 2); assert.equal(status.candidates.length, 2);
+  assert.equal(status.requests[0].resolution.itemId, status.candidates[1].id);
 });
