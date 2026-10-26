@@ -1,6 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useEffect, useState } from "react";
-import { ActivityIndicator, Pressable, Switch, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Platform, Pressable, Switch, Text, TextInput, View } from "react-native";
 import { tokenFingerprint, tokenLength } from "../../ws/tokenFingerprint";
 import { useAppSettings } from "../contexts/AppSettingsContext";
 import { effortOptionsForModel } from "../modelOptions";
@@ -120,7 +120,7 @@ export function ConnectionSettings() {
               value={localRunnerUrl}
               onChangeText={changeLocalRunnerUrl}
               accessibilityLabel="ローカルURL"
-              placeholder="http://mac.local:8788"
+              placeholder={Platform.OS === "macos" ? "http://127.0.0.1:8788" : "https://mac.local:8789"}
               autoCapitalize="none"
               autoCorrect={false}
               keyboardType="url"

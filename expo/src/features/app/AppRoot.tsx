@@ -313,7 +313,7 @@ import {
 } from "./utils/settingsParsers";
 import { buildApprovalCommandLabel } from "./utils/tooling";
 import { resolveRunnerUrl, runnerHttpsOrigin, suggestRunnerWsUrlFromRunnerUrl } from "./utils/urlResolvers";
-import { isLocalRunnerTlsReady } from "./utils/localRunnerTls";
+import { isLocalRunnerReady } from "./utils/localRunnerTls";
 import { RunnerWebSocketManager } from "../runnerWs/RunnerWebSocketManager";
 import { RunnerWebSocketProvider } from "../runnerWs/RunnerWebSocketContext";
 import {
@@ -581,7 +581,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   const [localRunnerUrl, setLocalRunnerUrl] = useState("");
   const [localRunnerCertificate, setLocalRunnerCertificate] = useState("");
   const runnerUrl = resolveRunnerUrl({ runnerUrl: configuredRunnerUrl, cloudflareRunnerUrl, localRunnerUrl,
-    localReady: isLocalRunnerTlsReady(localRunnerUrl, localRunnerCertificate) });
+    localReady: isLocalRunnerReady(localRunnerUrl, localRunnerCertificate) });
   const [llmBackend, setLlmBackend] = useState<LlmBackend>(DEFAULT_LLM_BACKEND);
   const [llmDirectory, setLlmDirectory] = useState(DEFAULT_LLM_DIRECTORY);
   const codexWsUrl = suggestRunnerWsUrlFromRunnerUrl(runnerUrl);

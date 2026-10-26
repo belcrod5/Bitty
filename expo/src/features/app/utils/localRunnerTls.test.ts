@@ -1,5 +1,5 @@
 import { NativeModules, Platform } from "react-native";
-import { configureLocalRunnerTls, createLocalRunnerWebSocket, isLocalRunnerTlsReady } from "./localRunnerTls";
+import { configureLocalRunnerTls, createLocalRunnerWebSocket, isLocalRunnerReady, isLocalRunnerTlsReady } from "./localRunnerTls";
 import { createWebSocketWithOptionalAuth } from "../../ws/webSocketAuth";
 
 let mockListener: ((event: Record<string, unknown>) => void) | undefined;
@@ -101,4 +101,23 @@ test("plaintext LAN websocket is rejected before any native or global transport 
   expect(() => createWebSocketWithOptionalAuth("ws://192.168.1.5:8788/runner-ws", "runner-token"))
     .toThrow("runner_plaintext_connection_rejected");
   expect(module.connect).not.toHaveBeenCalled();
+});
+
+
+test("macOS loopback readiness does not claim to install TLS trust", () => {
+  jest.replaceProperty(Platform, "OS", "macos");
+  expect(isLocalRunnerReady("http://127.0.0.1:8788")).toBe(true);
+  expect(isLocalRunnerTlsReady("http://127.0.0.1:8788")).toBe(false);
+  expect(isLocalRunnerReady("http://192.168.1.5:8788")).toBe(false);
+  expect(isLocalRunnerReady(origin, "test-ca")).toBe(false);
+  expect(module.configure).not.toHaveBeenCalled();
+});
+
+test("iOS readiness still requires HTTPS and the matching paired certificate", async () => {
+  expect(isLocalRunnerReady("http://127.0.0.1:8788")).toBe(false);
+  expect(isLocalRunnerReady("http://192.168.1.5:8788")).toBe(false);
+  expect(isLocalRunnerReady(origin, "test-ca")).toBe(false);
+  await configureLocalRunnerTls(origin, "test-ca");
+  expect(isLocalRunnerReady(origin, "test-ca")).toBe(true);
+  expect(isLocalRunnerReady(origin, "wrong-ca")).toBe(false);
 });
