@@ -13,7 +13,6 @@ import { useChatScreen } from "./ChatScreenContext";
 import { useConversation } from "./ConversationContext";
 import { useRunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketContext";
 import { shouldHandleReadyTransition } from "../utils/resumeSync";
-import { collectRegisteredDirectorySessions } from "../utils/registeredDirectorySessions";
 import {
   fetchSkiaBoard,
   importSkiaBoard,
@@ -52,7 +51,7 @@ import {
 type SkiaBoardContextValue = {
   state: SkiaBoardState | null;
   loaded: boolean;
-  addSession: (sessionId: string) => void;
+  addSession: (target: { sessionId: string; backendId: string; directory: string }) => void;
   removeSession: (sessionId: string) => void;
   hasSession: (sessionId: string) => boolean;
   addDirectory: (target: { directory: string; name?: string }) => void;
@@ -88,7 +87,7 @@ type ServerBoardState = {
 export function SkiaBoardProvider({ children }: { children: ReactNode }) {
   const { runnerUrl, runnerToken } = useChatScreen();
   const runnerWebSocketManager = useRunnerWebSocketManager();
-  const { registeredDirectories, directorySessionsById } = useConversation();
+  const { registeredDirectories } = useConversation();
 
   const [state, setState] = useState<SkiaBoardState | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -107,24 +106,6 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     authRef.current = { runnerUrl, runnerToken };
   }, [runnerUrl, runnerToken]);
-
-  // セッションカード追加時に directory/backendId を補うための逆引き。
-  const sessionMetaById = useMemo(() => {
-    const map = new Map<string, { directory?: string; backendId?: string }>();
-    for (const candidate of collectRegisteredDirectorySessions(registeredDirectories, directorySessionsById)) {
-      if (!map.has(candidate.sessionId)) {
-        map.set(candidate.sessionId, {
-          directory: candidate.directory,
-          backendId: candidate.backendId,
-        });
-      }
-    }
-    return map;
-  }, [directorySessionsById, registeredDirectories]);
-  const sessionMetaRef = useRef(sessionMetaById);
-  useEffect(() => {
-    sessionMetaRef.current = sessionMetaById;
-  }, [sessionMetaById]);
 
   const emptyBoardState = useCallback((): SkiaBoardState => ({
     cards: [],
@@ -404,18 +385,14 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
     void flushPendingOps();
   }, [emptyBoardState, flushPendingOps, setDisplayState]);
 
-  const addSession = useCallback((sessionId: string) => {
-    const id = String(sessionId || "").trim();
-    if (!id) return;
-    const meta = sessionMetaRef.current.get(id) || {};
+  const addSession = useCallback((target: { sessionId: string; backendId: string; directory: string }) => {
+    const sessionId = String(target.sessionId || "").trim();
+    const backendId = String(target.backendId || "").trim();
+    const directory = String(target.directory || "").trim();
+    if (!sessionId || !backendId || !directory) return;
     dispatchOps([{
       type: "addCard",
-      card: {
-        kind: "session",
-        sessionId: id,
-        ...(meta.directory ? { directory: meta.directory } : {}),
-        ...(meta.backendId ? { backendId: meta.backendId } : {}),
-      },
+      card: { kind: "session", sessionId, backendId, directory },
     }]);
   }, [dispatchOps]);
   const removeSession = useCallback((sessionId: string) => {

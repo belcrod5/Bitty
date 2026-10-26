@@ -349,11 +349,16 @@ jest.mock("../contexts/ChatScreenContext", () => ({
 }));
 jest.mock("../contexts/ConversationContext", () => ({
   useConversation: () => ({
+    markSessionReadManually: mockMarkSessionRead,
+    markSessionUnread: mockMarkSessionUnread,
     registeredDirectories: [{ path: "/workspace", displayName: "Workspace" }],
   }),
 }));
 jest.mock("../contexts/SkiaBoardContext", () => ({
   useSkiaBoard: () => ({
+    loaded: true,
+    hasSession: () => true,
+    removeSession: mockRemoveBoardSession,
     renameFile: mockRenameBoardFile,
     markFileUnavailable: mockMarkBoardFileUnavailable,
   }),
@@ -383,6 +388,8 @@ const mockMoveBoardCard = jest.fn();
 const mockAddBoardSection = jest.fn();
 const mockUpdateBoardSection = jest.fn();
 const mockRemoveBoardSection = jest.fn();
+const mockMarkSessionRead = jest.fn();
+const mockMarkSessionUnread = jest.fn();
 const mockRemoveBoardSession = jest.fn();
 const mockRemoveBoardDirectory = jest.fn();
 const mockRemoveBoardFile = jest.fn();
@@ -457,7 +464,6 @@ jest.mock("../hooks/useSkiaMiniChatSessions", () => ({
     addBoardSection: mockAddBoardSection,
     updateBoardSection: mockUpdateBoardSection,
     removeBoardSection: mockRemoveBoardSection,
-    removeBoardSession: mockRemoveBoardSession,
     removeBoardDirectory: mockRemoveBoardDirectory,
     removeBoardFile: mockRemoveBoardFile,
     hasBoardFile: mockHasBoardFile,
@@ -494,6 +500,8 @@ beforeEach(() => {
   mockAddBoardSection.mockClear();
   mockUpdateBoardSection.mockClear();
   mockRemoveBoardSection.mockClear();
+  mockMarkSessionRead.mockClear();
+  mockMarkSessionUnread.mockClear();
   mockRemoveBoardSession.mockClear();
   mockRemoveBoardDirectory.mockClear();
   mockRemoveBoardFile.mockClear();
@@ -1425,25 +1433,23 @@ test("keeps board menu actions clickable through the shared modal", async () => 
   expect(mockSetBoardCardTextScale).toHaveBeenCalledWith(1.1);
 });
 
-test("long-pressing a card asks for confirmation before removing it", async () => {
-  const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
-  await render(
+test.each(["既読にする", "未読にする", "Skiaボードから除外"])("long-pressing a session shows its title and runs %s", async (action) => {
+  const screen = await render(
     <SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />
   );
-
   await act(async () => {
     gestureRegistry().LongPress.onStart({ x: 30, y: 30 });
   });
-
-  expect(alertSpy).toHaveBeenCalled();
-  expect(mockRemoveBoardSession).not.toHaveBeenCalled();
-
-  // 確認ダイアログの「削除」でボードステートから外す。
-  const actions = alertSpy.mock.calls[0][2] as Array<{ text: string; onPress?: () => void }>;
-  const removeAction = actions.find((action) => action.text === "削除");
-  removeAction?.onPress?.();
-  expect(mockRemoveBoardSession).toHaveBeenCalledWith("session-1");
-  alertSpy.mockRestore();
+  expect(within(screen.getByTestId("session-context-menu")).getByText("Title 1")).toBeTruthy();
+  await fireEvent.press(screen.getByText(action));
+  if (action === "Skiaボードから除外") {
+    expect(mockRemoveBoardSession).toHaveBeenCalledWith("session-1");
+  } else {
+    expect(action === "既読にする" ? mockMarkSessionRead : mockMarkSessionUnread).toHaveBeenCalledWith({
+      backendId: "claude", sessionId: "session-1", source: "appserver", directory: "/workspace",
+    });
+  }
+  expect(screen.queryByTestId("session-context-menu")).toBeNull();
 });
 
 test("long-pressing a directory card removes its shortcut after confirmation", async () => {
@@ -1907,8 +1913,7 @@ test("shows a moved-or-deleted message instead of file actions for an unavailabl
 test("long-pressing a selected card still opens its context menu", async () => {
   const displayTitle = `${"🙂".repeat(199)}…`;
   mockSessions = [{ ...mockDefaultSession, title: displayTitle }];
-  const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
-  await render(
+  const screen = await render(
     <SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />
   );
 
@@ -1923,13 +1928,8 @@ test("long-pressing a selected card still opens its context menu", async () => {
     registry.LongPress.onStart({ x: 30, y: 30 });
   });
 
-  expect(alertSpy).toHaveBeenCalledWith(
-    "カードを削除",
-    `「${displayTitle}」をボードから外しますか?\n外したセッションは自動では再追加されません。`,
-    expect.any(Array),
-  );
+  expect(within(screen.getByTestId("session-context-menu")).getByText(displayTitle)).toBeTruthy();
   expect(registry.Pan.minDistance).toBe(10);
-  alertSpy.mockRestore();
 });
 
 test("commits the dragged card position back to the board state", async () => {

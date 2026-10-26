@@ -8,6 +8,12 @@ import { CHAT_CONTENT_MAX_WIDTH } from "../styles/layoutConstants";
 
 const platformOSDescriptor = Object.getOwnPropertyDescriptor(Platform, "OS");
 
+const mockMarkSessionRead = jest.fn();
+const mockMarkSessionUnread = jest.fn();
+jest.mock("../contexts/ConversationContext", () => ({
+  useConversation: () => ({ markSessionReadManually: mockMarkSessionRead, markSessionUnread: mockMarkSessionUnread }),
+}));
+
 const mockAddSession = jest.fn();
 const mockRemoveSession = jest.fn();
 const mockHasSession = jest.fn(() => false);
@@ -137,8 +143,6 @@ function renderDrawer(overrides: Partial<AppDrawerProps> = {}) {
     onLoadSessionChildren: jest.fn(),
     onStartNewSessionInDirectory: jest.fn(),
     onSelectSessionHistoryEntry: jest.fn(),
-    onMarkSessionRead: jest.fn(),
-    onMarkSessionUnread: jest.fn(),
     onMarkDirectorySessionsRead: jest.fn(),
     ...overrides,
   };
@@ -195,7 +199,20 @@ test("adds a long-pressed session to the Skia board", async () => {
   await user.longPress(drawer.getByText("Fix drawer search"));
   await fireEvent.press(drawer.getByText("Skiaボードへ追加"));
 
-  expect(mockAddSession).toHaveBeenCalledWith("loaded-search");
+  expect(mockAddSession).toHaveBeenCalledWith({
+    sessionId: "loaded-search", backendId: "codex", directory: "/work/bitty",
+  });
+});
+
+test.each(["既読にする", "未読にする"])("shows the target title and handles %s from the drawer", async (action) => {
+  const drawer = await renderDrawer();
+  await fireEvent(drawer.getByText("Restore title override"), "longPress");
+  expect(within(drawer.getByTestId("session-context-menu")).getByText("Restore title override")).toBeTruthy();
+  await fireEvent.press(drawer.getByText(action));
+  expect(action === "既読にする" ? mockMarkSessionRead : mockMarkSessionUnread).toHaveBeenCalledWith({
+    backendId: "codex", sessionId: "loaded-restore", source: "cli", directory: "/work/bitty",
+  });
+  expect(drawer.queryByTestId("session-context-menu")).toBeNull();
 });
 
 test("constrains directory and session context menus to the chat width", async () => {
@@ -212,7 +229,7 @@ test("constrains directory and session context menus to the chat width", async (
   await fireEvent.press(drawer.getByText("このディレクトリの未読をすべて既読にする"));
 
   await user.longPress(drawer.getByText("Fix drawer search"));
-  expect(StyleSheet.flatten(drawer.getByTestId("app-drawer-session-context-menu").props.style)).toMatchObject({
+  expect(StyleSheet.flatten(drawer.getByTestId("session-context-menu").props.style)).toMatchObject({
     width: "100%",
     maxWidth: CHAT_CONTENT_MAX_WIDTH,
     alignSelf: "center",
@@ -228,7 +245,7 @@ test("keeps the Skia board action available while persisted board state is unava
   await user.longPress(drawer.getByText("Fix drawer search"));
 
   expect(drawer.getByText("Skiaボードへ追加")).toBeTruthy();
-  await fireEvent.press(drawer.getByTestId("app-drawer-skia-board-session-action"));
+  await fireEvent.press(drawer.getByText("Skiaボードへ追加"));
   expect(mockAddSession).not.toHaveBeenCalled();
 });
 

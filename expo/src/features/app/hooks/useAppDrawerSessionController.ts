@@ -40,18 +40,6 @@ type UseAppDrawerSessionControllerArgs = {
     directory?: string;
     sourceRect?: PopupChatSourceRect;
   }) => void;
-  markSessionUnread: (params: {
-    backendId?: string;
-    sessionId: string;
-    source: LlmSessionSource;
-    directory: string;
-  }) => void;
-  markSessionRead: (params: {
-    backendId?: string;
-    sessionId: string;
-    source: LlmSessionSource;
-    directory: string;
-  }) => void;
   markDirectorySessionsRead: (params: {
     directory: string;
   }) => void;
@@ -80,8 +68,6 @@ export function useAppDrawerSessionController({
   selectLlmDirectory,
   openNewSessionPopup,
   openSessionHistoryPopup,
-  markSessionUnread,
-  markSessionRead,
   markDirectorySessionsRead,
 }: UseAppDrawerSessionControllerArgs): AppDrawerProps {
   const handleOpenSettings = useCallback(() => {
@@ -137,34 +123,6 @@ export function useAppDrawerSessionController({
     selectLlmDirectory,
   ]);
 
-  const handleMarkSessionUnread = useCallback((
-    backendId: string,
-    sessionId: string,
-    source: LlmSessionSource,
-    directoryPath: string
-  ) => {
-    markSessionUnread({
-      backendId,
-      sessionId,
-      source,
-      directory: directoryPath,
-    });
-  }, [markSessionUnread]);
-
-  const handleMarkSessionRead = useCallback((
-    backendId: string,
-    sessionId: string,
-    source: LlmSessionSource,
-    directoryPath: string
-  ) => {
-    markSessionRead({
-      backendId,
-      sessionId,
-      source,
-      directory: directoryPath,
-    });
-  }, [markSessionRead]);
-
   const handleMarkDirectorySessionsRead = useCallback((directoryPath: string) => {
     markDirectorySessionsRead({
       directory: directoryPath,
@@ -192,8 +150,6 @@ export function useAppDrawerSessionController({
     onLoadSessionChildren: handleLoadSessionChildren,
     onStartNewSessionInDirectory: handleSelectDirectory,
     onSelectSessionHistoryEntry: handleSelectSessionHistoryEntry,
-    onMarkSessionRead: handleMarkSessionRead,
-    onMarkSessionUnread: handleMarkSessionUnread,
     onMarkDirectorySessionsRead: handleMarkDirectorySessionsRead,
   }), [
     selectedDirectoryPath,
@@ -216,8 +172,6 @@ export function useAppDrawerSessionController({
     handleLoadSessionChildren,
     handleSelectDirectory,
     handleSelectSessionHistoryEntry,
-    handleMarkSessionRead,
-    handleMarkSessionUnread,
     handleMarkDirectorySessionsRead,
   ]);
 }
