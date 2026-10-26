@@ -6,7 +6,7 @@ import { humanLearningDate, knowledgeState } from "./learningDashboardData";
 
 export type LearningKnowledge = {
   id: string; version: number; status: string; updatedAt?: string; kind: string; content: string; conditions: string; reason: string;
-  action?: "create" | "retire"; replaces?: string[];
+  action?: "create" | "retire"; replaces?: string[]; replacementVersions?: { id: string; version: number }[];
   scope: { orchestratorId: string; shared?: boolean }; matchTerms?: string[]; targetConstraints?: string[];
   skill?: Record<string, string>; published?: { version: number; hash: string }; evidence: { pairSeq: number }[];
 };
@@ -17,21 +17,29 @@ export const learningSkillText = (skill?: Record<string, string>) => skill ? Obj
   steps: "手順", outputs: "出力", exceptions: "例外", approvals: "必要な承認" }).map(([key, label]) => `${label}: ${skill[key] || "未設定"}`).join("\n") : "なし";
 type Manage = (op: string, payload: Record<string, unknown>, reportError?: boolean) => Promise<string | null>;
 
-export function LearningKnowledgeCard({ item, chatName, selecting, selected, busy, onSelect, manage }: {
-  item: LearningKnowledge; chatName: string; selecting: boolean; selected: boolean; busy: boolean;
+export function LearningKnowledgeCard({ item, knowledge, chatName, selecting, selected, busy, onSelect, manage }: {
+  item: LearningKnowledge; knowledge: LearningKnowledge[]; chatName: string; selecting: boolean; selected: boolean; busy: boolean;
   onSelect: () => void; manage: Manage;
 }) {
   const { theme: { colors, tones } } = useVisualTheme();
   const [expanded, setExpanded] = useState(false);
   const references = { items: [{ id: item.id, version: item.version }] };
-  const adoptLabel = item.action === "retire" ? "停止案を適用" : "変更案を適用";
+  const isUpdate = item.status === "candidate" && item.action !== "retire" && Boolean(item.replaces?.length);
+  const originals = (item.replaces || []).map((id) => knowledge.find((entry) => entry.id === id));
+  const currentOriginal = (original: LearningKnowledge | undefined) => original?.status === "active"
+    && item.replacementVersions?.some((entry) => entry.id === original.id && entry.version === original.version);
+  const updateReady = isUpdate && originals.every(currentOriginal);
+  const updateAvailable = item.status === "active" && knowledge.some((entry) => entry.status === "candidate" && entry.action !== "retire"
+    && entry.replaces?.includes(item.id) && entry.replacementVersions?.some((reference) => reference.id === item.id && reference.version === item.version));
+  const adoptLabel = item.action === "retire" ? "停止案を適用" : "この内容に更新";
   const switchable = item.action !== "retire" && (item.status === "active" || item.status === "retired" || item.status === "candidate" && !item.replaces?.length);
   const restore = () => Alert.alert("この方針を再開", "置き換え先の方針が使用中なら停止し、この方針を再開します。", [
     { text: "キャンセル", style: "cancel" }, { text: "再開する", onPress: () => { void manage("decide", { ...references, action: "restore" }); } },
   ]);
   const tone = item.status === "active" ? tones.info : null;
-  const action = (label: string, operation: string, payload: Record<string, unknown>, confirmation?: "forget" | "share") =>
-    <Pressable key={label} accessibilityRole="button" accessibilityLabel={`${label}: ${item.content}`} disabled={busy}
+  const action = (label: string, operation: string, payload: Record<string, unknown>, confirmation?: "forget" | "share") => {
+    const disabled = busy || isUpdate && operation === "decide" && payload.action === "adopt" && !updateReady;
+    return <Pressable key={label} accessibilityRole="button" accessibilityLabel={`${label}: ${item.content}`} disabled={disabled}
       onPress={() => {
         if (confirmation) Alert.alert(
           confirmation === "forget" ? "この学習を削除" : "全チャットで使う",
@@ -41,9 +49,10 @@ export function LearningKnowledgeCard({ item, chatName, selecting, selected, bus
           { text: confirmation === "forget" ? "削除する" : "適用する", style: confirmation === "forget" ? "destructive" : "default", onPress: () => { void manage(operation, payload); } },
         ]);
         else void manage(operation, payload);
-      }} style={({ pressed }) => [styles.action, { opacity: busy ? 0.4 : pressed ? 0.6 : 1 }]}>
+      }} style={({ pressed }) => [styles.action, { opacity: disabled ? 0.4 : pressed ? 0.6 : 1 }]}>
       <Text style={[styles.actionText, { color: confirmation === "forget" ? tones.danger.foreground : colors.accent }]}>{label}</Text>
     </Pressable>;
+  };
   return <View style={[styles.card, { backgroundColor: colors.surface, borderColor: selected ? colors.accent : colors.borderSubtle }]}>
     <View style={styles.heading}>
       {selecting ? <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: selected }}
@@ -53,12 +62,25 @@ export function LearningKnowledgeCard({ item, chatName, selecting, selected, bus
       <View style={styles.content}>
         <View style={styles.metadata}>
           <Text style={[styles.status, { color: tone?.foreground || colors.textSecondary,
-            backgroundColor: tone?.background || colors.surfaceMuted }]}>{knowledgeState(item.status)}</Text>
+            backgroundColor: tone?.background || colors.surfaceMuted }]}>{isUpdate ? "更新案" : knowledgeState(item.status)}</Text>
           <Text style={[styles.caption, { color: colors.textSecondary }]}>{item.skill ? item.published ? "専用スキル" : "専用スキル案" : KIND_LABELS[item.kind] || "学習"}</Text>
           <Text style={[styles.caption, { color: colors.textMuted }]}>{item.scope.shared ? "全チャット" : `${chatName}限定`}</Text>
+          {updateAvailable ? <Text style={[styles.status, { color: tones.info.foreground, backgroundColor: tones.info.background }]}>更新案あり</Text> : null}
           {item.skill ? <Ionicons name="library-outline" size={13} color={colors.textMuted} accessibilityLabel="専用スキル" /> : null}
         </View>
+        {isUpdate ? <View style={styles.comparison}>
+          <View style={[styles.originals, { backgroundColor: colors.surfaceMuted, borderColor: colors.borderSubtle }]}>
+            {originals.map((original, index) => <View key={item.replaces![index]} style={styles.original}>
+              <Text style={[styles.comparisonLabel, { color: colors.textMuted }]}>{currentOriginal(original) ? "現在使用中" : original ? "更新元・変更あり" : "更新元・確認できません"}</Text>
+              {original ? <Text numberOfLines={expanded ? undefined : 2} style={[styles.caption, { color: colors.textSecondary }]}>{original.content}</Text> : null}
+            </View>)}
+          </View>
+          <View style={styles.comparisonHeading}><Ionicons name="arrow-down" size={14} color={colors.accent} />
+            <Text style={[styles.comparisonLabel, { color: colors.accent }]}>{originals.length > 1 ? "まとめて更新後" : "更新後"}</Text></View>
+        </View> : null}
         <Text style={[styles.title, { color: colors.textPrimary }]}>{item.content}</Text>
+        {isUpdate ? <Text style={[styles.caption, { color: colors.textMuted }]}>{updateReady
+          ? "適用すると現在の方針と入れ替わります。" : "更新元が変わっています。更新案の見直しが必要です。"}</Text> : null}
         {item.action === "retire" && item.status === "candidate" ? <Text style={[styles.caption, { color: colors.textSecondary }]}>既存の方針を停止する案</Text>
           : item.conditions ? <Text style={[styles.caption, { color: colors.textSecondary }]}>適用：{item.conditions}</Text> : null}
       </View>
@@ -84,7 +106,7 @@ export function LearningKnowledgeCard({ item, chatName, selecting, selected, bus
       {item.status === "active" ? <Text style={[styles.caption, { color: colors.textSecondary }]}>条件に合う回答で参照します。毎回使うとは限りません。</Text> : null}
       <Text style={[styles.caption, { color: colors.textSecondary }]}>{KIND_LABELS[item.kind] || item.kind} · 元のチャット：{chatName} · {item.scope.shared ? "全チャット共通" : `${chatName}限定`} · 第{item.version}版</Text>
       {item.action === "retire" && item.conditions ? <Text style={[styles.caption, { color: colors.textSecondary }]}>適用条件：{item.conditions}</Text> : null}
-      {item.replaces?.length ? <Text style={[styles.caption, { color: colors.textSecondary }]}>{item.action === "retire" ? "停止" : "置き換え"}対象：{item.replaces.length}件の既存方針</Text> : null}
+      {item.replaces?.length ? <Text style={[styles.caption, { color: colors.textSecondary }]}>{item.action === "retire" ? "停止" : "更新"}対象：{item.replaces.length}件の既存方針</Text> : null}
       {item.matchTerms?.length ? <Text style={[styles.caption, { color: colors.textSecondary }]}>関連する言葉：{item.matchTerms.join("、")}</Text> : null}
       {item.targetConstraints?.length ? <Text style={[styles.caption, { color: colors.textSecondary }]}>ツールで確認する対象：{item.targetConstraints.join("、")}</Text> : null}
       <Text style={[styles.caption, { color: colors.textSecondary }]}>作成理由：{item.reason}</Text>
@@ -109,6 +131,8 @@ const styles = StyleSheet.create({
   checkbox: { minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center", alignSelf: "flex-start" },
   metadata: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 },
   status: { fontSize: 11, fontWeight: "600", paddingHorizontal: 7, paddingVertical: 3, borderRadius: 5 },
+  comparison: { gap: 8 }, originals: { borderWidth: 1, borderRadius: 9, padding: 10, gap: 10 }, original: { gap: 4 },
+  comparisonHeading: { flexDirection: "row", alignItems: "center", gap: 5 }, comparisonLabel: { fontSize: 11, fontWeight: "600" },
   title: { fontSize: 14, fontWeight: "500", lineHeight: 22 }, caption: { fontSize: 12, lineHeight: 18 },
   switchRow: { width: "100%", flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12, paddingVertical: 5 }, switchCopy: { flex: 1, gap: 3 },
   actions: { flexDirection: "row", flexWrap: "wrap", columnGap: 18 },
