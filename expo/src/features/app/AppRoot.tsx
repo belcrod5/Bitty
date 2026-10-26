@@ -4785,6 +4785,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     loadSessionChildrenBatch: loadSessionChildTreesForSessions,
     openSessionHistoryEntry: openSessionHistoryEntryFromContext,
     markSessionRead: markSessionReadFromContext,
+    markSessionReadManually: markSessionRead,
     markSelectedSessionUnread: markSelectedSessionUnreadFromContext,
     reloadSelectedSession: reloadSelectedSessionFromContext,
     resumeWaitingApprovalSession: resumeWaitingApprovalSessionFromContext,
@@ -6121,8 +6122,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     selectLlmDirectory,
     openNewSessionPopup,
     openSessionHistoryPopup,
-    markSessionUnread,
-    markSessionRead,
     markDirectorySessionsRead,
   });
   const renderAppDrawerContent = useCallback(

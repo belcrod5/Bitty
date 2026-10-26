@@ -1,6 +1,6 @@
 import { configureCloudflareAccessFetch } from "../utils/cloudflareAccessFetch";
 import React from "react";
-import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, userEvent, waitFor, within } from "@testing-library/react-native";
 import { Alert, AppState, DeviceEventEmitter, Platform, ScrollView, StyleSheet, View, type LayoutChangeEvent } from "react-native";
 import { CHAT_FIND_CANCEL_EVENT, CHAT_FIND_REQUEST_EVENT, ChatScreen } from "./ChatScreen";
 import { CHAT_CONTENT_MAX_WIDTH } from "../styles/layoutConstants";
@@ -37,6 +37,8 @@ const mockRemoveSkiaBoardFile = jest.fn();
 const mockHasSkiaBoardFile = jest.fn(() => false);
 const mockMarkFileUnavailable = jest.fn();
 const mockRenameBoardFile = jest.fn();
+const mockMarkSessionReadManually = jest.fn();
+const mockAddSkiaBoardSession = jest.fn();
 const mockMarkSessionRead = jest.fn();
 const mockMarkSessionUnread = jest.fn();
 const mockHydratePanelFromSessionHistory = jest.fn(async () => "applied");
@@ -238,6 +240,8 @@ jest.mock("../hooks/useWorkspaceFileMutations", () => ({
 
 jest.mock("../contexts/SkiaBoardContext", () => ({
   useSkiaBoard: () => ({
+    addSession: mockAddSkiaBoardSession,
+    hasSession: () => false,
     addFile: mockAddSkiaBoardFile,
     removeFile: mockRemoveSkiaBoardFile,
     hasFile: mockHasSkiaBoardFile,
@@ -477,6 +481,7 @@ jest.mock("../contexts/ConversationContext", () => ({
     loadSessionChildren: jest.fn(),
     openSessionHistoryEntry: jest.fn(),
     markSessionRead: mockMarkSessionRead,
+    markSessionReadManually: mockMarkSessionReadManually,
     markSessionUnread: mockMarkSessionUnread,
     showChatBottomToast: jest.fn(),
     setTranscript: jest.fn(),
@@ -772,6 +777,50 @@ describe("ChatScreen voice input", () => {
     await screen.rerender(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
     expect(screen.queryByLabelText("スケジュール実行予定あり")).toBeNull();
     await screen.unmount();
+  });
+
+  it.each(["既読にする", "未読にする", "Skiaボードへ追加"])("opens the shared context menu from the title and runs %s", async (action) => {
+    const screen = await render(<ChatScreen />);
+    await userEvent.setup().longPress(screen.getByLabelText("チャットタイトルメニューを開く"));
+    expect(within(screen.getByTestId("session-context-menu")).getByText("Session")).toBeTruthy();
+    expect(screen.queryByTestId("chat-title-menu")).toBeNull();
+    await fireEvent.press(screen.getByText(action));
+    if (action === "Skiaボードへ追加") {
+      expect(mockAddSkiaBoardSession).toHaveBeenCalledWith("session-1");
+    } else {
+      expect(action === "既読にする" ? mockMarkSessionReadManually : mockMarkSessionUnread).toHaveBeenCalledWith({
+        backendId: "claude", sessionId: "session-1", source: "all", directory: "/workspace",
+      });
+    }
+    expect(screen.queryByTestId("session-context-menu")).toBeNull();
+  });
+
+  it("targets the popup session rather than the main session", async () => {
+    mockPanelBackendId = "codex";
+    mockPanelSessionId = "popup-session";
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    await fireEvent(screen.getByLabelText("チャットタイトルメニューを開く"), "longPress");
+    await fireEvent.press(screen.getByText("未読にする"));
+    expect(mockMarkSessionUnread).toHaveBeenCalledWith({
+      backendId: "codex", sessionId: "popup-session", source: "all", directory: "/workspace",
+    });
+  });
+
+  it("keeps the regular title menu available for drafts without exposing session actions", async () => {
+    mockSelectedLlmSessionMaterialized = false;
+    const screen = await render(<ChatScreen />);
+    await fireEvent(screen.getByLabelText("チャットタイトルメニューを開く"), "longPress");
+    expect(screen.queryByTestId("session-context-menu")).toBeNull();
+    await fireEvent.press(screen.getByLabelText("チャットタイトルメニューを開く"));
+    expect(screen.getByTestId("chat-title-menu")).toBeTruthy();
+  });
+
+  it.each([false, true])("does not expose session actions for an unmaterialized or empty popup (materialized=%s)", async (materialized) => {
+    mockPanelSessionMaterialized = materialized;
+    if (materialized) mockPanelSessionId = "";
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    await fireEvent(screen.getByLabelText("チャットタイトルメニューを開く"), "longPress");
+    expect(screen.queryByTestId("session-context-menu")).toBeNull();
   });
 
   it("adds private notes from the title menu with no header indicator before saving", async () => {

@@ -30,6 +30,7 @@ import { useAppStyles } from "../styles";
 import { DIRECTORY_MARKER_COLORS } from "../theme/directoryMarkerColors";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { AppModal } from "../components/AppModal";
+import { SessionContextMenu, type SessionContextMenuTarget } from "../components/SessionContextMenu";
 import { useAppShell } from "../contexts/AppShellContext";
 import { useAppSettings } from "../contexts/AppSettingsContext";
 import { useConversation } from "../contexts/ConversationContext";
@@ -422,6 +423,7 @@ export function ChatScreen({
   const selectedSessionIdForView = isPanelSnapshotView
     ? String(panelSnapshot.selectedSessionId || "").trim()
     : String(selectedLlmSessionId || "").trim();
+  const [sessionContextMenuTarget, setSessionContextMenuTarget] = useState<SessionContextMenuTarget | null>(null);
   const { scheduledThreadIds } = useCodexSchedules();
   const hasScheduledExecution = backendIdForView === "codex" && scheduledThreadIds.has(selectedSessionIdForView);
   const sessionNoteForView = runnerSessionValue(sessionNotesById, backendIdForView, selectedSessionIdForView) || "";
@@ -2035,6 +2037,16 @@ export function ChatScreen({
                 setDirectoryMenuOpen(true);
               }}
               accessibilityRole="button"
+              onLongPress={() => {
+                if (!selectedSessionMaterializedForView || !selectedSessionIdForView) return;
+                setSessionContextMenuTarget({
+                  backendId: backendIdForView,
+                  sessionId: selectedSessionIdForView,
+                  source: "all",
+                  directory: selectedDirectoryPathForView,
+                  title: selectedSessionTitleForView,
+                });
+              }}
               accessibilityLabel="チャットタイトルメニューを開く"
             >
               <Text style={styles.chatDirectoryHeaderSessionTitleText} numberOfLines={1}>
@@ -2586,6 +2598,10 @@ export function ChatScreen({
             if (usesPanelComposerState) setPanelComposerFocused(false);
             setComposerInputFocused(false);
           }}
+        />
+        <SessionContextMenu
+          target={sessionContextMenuTarget}
+          onClose={() => setSessionContextMenuTarget(null)}
         />
         <AppModal
           visible={footerSelectOpen !== null && !approvalDialogPending}

@@ -77,6 +77,7 @@ import { CodexStatusSummaryMenu } from "../components/CodexStatusSummaryMenu";
 import { WorkspaceFileRenameDialog } from "../components/WorkspaceFileRenameDialog";
 import { WorkspaceTextFileEditor } from "../components/WorkspaceTextFileEditor";
 import { AppModal } from "../components/AppModal";
+import { SessionContextMenu, type SessionContextMenuTarget } from "../components/SessionContextMenu";
 import {
   SkiaBoardSectionDraft,
   SkiaBoardSectionOverlay,
@@ -804,7 +805,6 @@ export function SkiaMiniBoardScreen({
     addBoardSection,
     updateBoardSection,
     removeBoardSection,
-    removeBoardSession,
     removeBoardDirectory,
     removeBoardFile,
     hasBoardFile,
@@ -852,6 +852,7 @@ export function SkiaMiniBoardScreen({
     for (const cached of activityImages.current.values()) cached.image?.dispose();
     activityImages.current.clear();
   }, []);
+  const [sessionContextMenuTarget, setSessionContextMenuTarget] = useState<SessionContextMenuTarget | null>(null);
   const [selectedCardId, setSelectedCardId] = useState("");
   const [selectedSectionId, setSelectedSectionId] = useState("");
   const [editingSectionId, setEditingSectionId] = useState("");
@@ -1306,31 +1307,18 @@ export function SkiaMiniBoardScreen({
     [addBoardSection, cardWidth, toolMode],
   );
 
-  const confirmRemoveCard = useCallback(
-    (index: number) => {
-      const item = itemsRef.current[index];
-      if (!item || item.kind !== "session") return;
-      const label = item.title || item.sessionId;
-      Alert.alert("カードを削除", `「${label}」をボードから外しますか?\n外したセッションは自動では再追加されません。`, [
-        { text: "キャンセル", style: "cancel" },
-        {
-          text: "削除",
-          style: "destructive",
-          onPress: () => {
-            removeBoardSession(item.sessionId);
-          },
-        },
-      ]);
-    },
-    [removeBoardSession],
-  );
-
   const openCardContextMenu = useCallback(
     (index: number) => {
       const item = itemsRef.current[index];
       if (!item) return;
       if (item.kind === "session") {
-        confirmRemoveCard(index);
+        setSessionContextMenuTarget({
+          backendId: item.backendId,
+          sessionId: item.sessionId,
+          source: item.source,
+          directory: item.directory,
+          title: item.title,
+        });
         return;
       }
       if (item.kind === "directory") {
@@ -1367,7 +1355,7 @@ export function SkiaMiniBoardScreen({
         },
       ]);
     },
-    [confirmRemoveCard, openAppearanceEditor, removeBoardDirectory, showUnavailableFileMenu],
+    [openAppearanceEditor, removeBoardDirectory, showUnavailableFileMenu],
   );
 
   const openSectionContextMenu = useCallback(
@@ -2219,6 +2207,10 @@ export function SkiaMiniBoardScreen({
         <VoiceConversationScreen key={voiceOpenSequence} {...voicePlayback} initialOrchestratorId={voiceTargetId} initialControlSignal={voiceControlSignal}
           onClose={() => setVoiceOpen(false)} />
       ) : null}
+      <SessionContextMenu
+        target={sessionContextMenuTarget}
+        onClose={() => setSessionContextMenuTarget(null)}
+      />
       <AppModal visible={boardMenuOpen} transparent animationType="fade" onRequestClose={() => setBoardMenuOpen(false)}>
         {boardMenu}
       </AppModal>

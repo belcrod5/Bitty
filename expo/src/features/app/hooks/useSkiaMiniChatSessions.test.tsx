@@ -853,12 +853,12 @@ describe("useSkiaMiniChatSessions", () => {
     ]);
     mockConversation([session(2), session(1)]);
 
-    const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
+    const { result } = await renderHook(() => ({ ...useSkiaMiniChatSessions(), board: useSkiaBoard() }), { wrapper: BoardWrapper });
     await flush();
     expect(result.current.sessions).toHaveLength(2);
 
     await act(async () => {
-      result.current.removeBoardSession("session-2");
+      result.current.board.removeSession("session-2");
     });
     await flush();
 

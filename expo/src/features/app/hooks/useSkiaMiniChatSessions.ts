@@ -126,7 +126,6 @@ export function useSkiaMiniChatSessions() {
   const {
     state: boardState,
     moveCard: moveBoardCard,
-    removeSession: removeBoardSession,
     removeDirectory: removeBoardDirectory,
     removeFile: removeBoardFile,
     hasFile: hasBoardFile,
@@ -516,7 +515,6 @@ export function useSkiaMiniChatSessions() {
     addBoardSection,
     updateBoardSection,
     removeBoardSection,
-    removeBoardSession,
     removeBoardDirectory,
     removeBoardFile,
     hasBoardFile,
