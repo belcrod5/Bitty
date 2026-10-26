@@ -489,6 +489,9 @@ describe("fetchSessionHistory runner snapshot failures", () => {
         sessions: [{
           sessionId: "session-2",
           contextUsage: { usedPct: 10 },
+          modelRef: "snapshot-model",
+          reasoningEffort: "high",
+          lastReadAt: "2026-10-26T01:00:00.000Z",
         }],
         missingSessionIds: ["session-1"],
       }),
@@ -510,10 +513,15 @@ describe("fetchSessionHistory runner snapshot failures", () => {
           directory: "/workspace",
           sessionIds: ["session-1", "session-2"],
           backendId: "codex",
+          includeFirstUserMessage: false,
         }),
       })
     );
     expect(history.entries[1].contextUsedPct).toBe(10);
+    expect(history.entries[1]).toMatchObject({
+      modelRef: "snapshot-model", reasoningEffort: "high", lastReadAt: "2026-10-26T01:00:00.000Z",
+      firstUserMessage: "session-2",
+    });
   });
 
   it("logs a failed snapshot fetch and keeps contextUsedPct null instead of 0", async () => {
@@ -891,6 +899,7 @@ test("hydrates all 122 children from two summary batches without losing fields",
   const grouped = await result.current.fetchSessionChildrenHistory(["parent"], "/workspace");
   expect(fetchMock).toHaveBeenCalledTimes(2);
   expect(fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init?.body)).sessionIds.length)).toEqual([100, 22]);
+  expect(fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init?.body)).includeFirstUserMessage)).toEqual([false, false]);
   expect(grouped.parent).toHaveLength(122);
   expect(grouped.parent.every((entry, index) => (
     entry.sessionId === `child-${index}` && entry.contextUsedPct === 42
@@ -905,6 +914,106 @@ test("hydrates all 122 children from two summary batches without losing fields",
     directChildCount: 122, runnerSnapshotCount: 122,
   }));
   fetchMock.mockRestore();
+});
+
+describe("reuses successful native summaries from session listings", () => {
+  const summary = { contextUsage: { usedPct: 42 }, modelRef: "native-model", reasoningEffort: "high", lastReadAt: "2026-10-26T02:00:00.000Z" };
+  const row = (threadId: string, metadata?: typeof summary | { contextUsage: null; modelRef: string; reasoningEffort: string; lastReadAt: string }) => ({
+    backendId: "codex", threadId, parentThreadId: "", sourceKind: "cli", cwd: "/workspace",
+    preview: threadId, contextUsedPct: null, modelRef: "selected-model", reasoningEffort: "low", lastReadAt: "",
+    ...(metadata ? { summary: metadata } : {}),
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+    mockListCodexAppServerThreads.mockReset();
+  });
+
+  it("skips HTTP for complete summaries including null usage and reuses their native model and ACP read time", async () => {
+    const fetchMock = jest.spyOn(global, "fetch").mockRejectedValue(new Error("must not fetch"));
+    const getRunnerHttpAuth = jest.fn(async () => { throw new Error("must not resolve HTTP auth"); });
+    mockListCodexAppServerThreads.mockResolvedValue({ data: [
+      { ...row("shared"), sourceKind: "appServer" }, row("shared", summary), row("unknown", { ...summary, contextUsage: null }),
+    ] as never, nextCursor: "", backwardsCursor: "" });
+    const onSessionDiagLog = jest.fn();
+    const { result } = await renderExplorerHook({ getRunnerHttpAuth, onSessionDiagLog });
+    const first = await result.current.fetchSessionHistory("/workspace");
+    expect(first.entries).toHaveLength(2);
+    expect(first.entries[0]).toMatchObject({
+      sessionId: "shared", modelRef: "native-model", reasoningEffort: "high", contextUsedPct: 42, lastReadAt: summary.lastReadAt,
+    });
+    expect(first.entries[1].contextUsedPct).toBeNull();
+    expect(onSessionDiagLog).toHaveBeenCalledWith("session_history_fetch_done", expect.objectContaining({
+      runnerSnapshotRequestedCount: 0, runnerSnapshotCount: 2, listElapsedMs: expect.any(Number), runnerSnapshotElapsedMs: expect.any(Number),
+    }));
+    mockListCodexAppServerThreads.mockResolvedValueOnce({ data: [row("shared", { ...summary, modelRef: "fresh-model", contextUsage: { usedPct: 63 } })] as never, nextCursor: "", backwardsCursor: "" });
+    const fresh = await result.current.fetchSessionHistory("/workspace");
+    expect(fresh.entries[0]).toMatchObject({ modelRef: "fresh-model", contextUsedPct: 63 });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(getRunnerHttpAuth).not.toHaveBeenCalled();
+  });
+
+  it("requests HTTP only for old, raw, ACP, and non-Codex rows without reusable metadata", async () => {
+    mockListCodexAppServerThreads.mockResolvedValue({ data: [
+      row("modern", summary), row("old"), { ...row("acp"), sourceKind: "appServer" },
+      { ...row("claude", summary), backendId: "claude" },
+    ] as never, nextCursor: "", backwardsCursor: "" });
+    const fetchMock = jest.spyOn(global, "fetch").mockImplementation(async (_url, init) => {
+      const { sessionIds } = JSON.parse(String(init?.body));
+      return { ok: true, status: 200, text: async () => JSON.stringify({ sessions: sessionIds.map((sessionId: string) => ({
+        sessionId, ...summary, modelRef: "retried-model", contextUsage: { usedPct: 71 },
+      })) }) } as Response;
+    });
+    const onSessionDiagLog = jest.fn();
+    const { result } = await renderExplorerHook({ onSessionDiagLog });
+    const history = await result.current.fetchSessionHistory("/workspace");
+    expect(fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([
+      { directory: "/workspace", sessionIds: ["old", "acp"], backendId: "codex", includeFirstUserMessage: false },
+      { directory: "/workspace", sessionIds: ["claude"], backendId: "claude", includeFirstUserMessage: false },
+    ]);
+    expect(history.entries[0].modelRef).toBe("native-model");
+    expect(history.entries.slice(1).every((entry) => entry.modelRef === "retried-model" && entry.contextUsedPct === 71)).toBe(true);
+    expect(onSessionDiagLog).toHaveBeenCalledWith("session_history_fetch_done", expect.objectContaining({ runnerSnapshotRequestedCount: 3 }));
+  });
+
+  it.each(["HTTP", "auth"])("keeps embedded native summaries when fallback %s fails", async (failure) => {
+    mockListCodexAppServerThreads.mockResolvedValue({ data: [row("modern", summary), row("old")] as never, nextCursor: "", backwardsCursor: "" });
+    const fetchMock = jest.spyOn(global, "fetch").mockRejectedValue(new Error("fallback unavailable"));
+    const onSessionDiagLog = jest.fn();
+    const getRunnerHttpAuth = async () => {
+      if (failure === "auth") throw new Error("auth unavailable");
+      return { baseUrl: "http://runner.test", token: "runner-token" };
+    };
+    const { result } = await renderExplorerHook({ getRunnerHttpAuth, onSessionDiagLog });
+    const history = await result.current.fetchSessionHistory("/workspace");
+    expect(history.entries[0]).toMatchObject({ modelRef: "native-model", contextUsedPct: 42 });
+    expect(history.entries[1]).toMatchObject({ modelRef: "selected-model", contextUsedPct: null });
+    expect(fetchMock).toHaveBeenCalledTimes(failure === "auth" ? 0 : 1);
+    expect(onSessionDiagLog).toHaveBeenCalledWith("runner_session_snapshot_map_failed", expect.objectContaining({ directory: "/workspace" }));
+  });
+
+  it("keeps includeRunnerSnapshots:false behavior without using the embedded summary", async () => {
+    mockListCodexAppServerThreads.mockResolvedValue({ data: [row("modern", summary)] as never, nextCursor: "", backwardsCursor: "" });
+    const fetchMock = jest.spyOn(global, "fetch").mockRejectedValue(new Error("must not fetch"));
+    const { result } = await renderExplorerHook();
+    const history = await result.current.fetchSessionHistory("/workspace", { includeRunnerSnapshots: false });
+    expect(history.entries[0]).toMatchObject({ modelRef: "selected-model", reasoningEffort: "low", contextUsedPct: null });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("reuses direct children's summaries and records zero HTTP requests", async () => {
+    mockListCodexAppServerThreads.mockResolvedValue({ data: [
+      { ...row("child", summary), parentThreadId: "parent" },
+    ] as never, nextCursor: "", backwardsCursor: "" });
+    const fetchMock = jest.spyOn(global, "fetch").mockRejectedValue(new Error("must not fetch"));
+    const onSessionDiagLog = jest.fn();
+    const { result } = await renderExplorerHook({ onSessionDiagLog });
+    const children = await result.current.fetchSessionChildrenHistory(["parent"], "/workspace");
+    expect(children.parent[0]).toMatchObject({ modelRef: "native-model", contextUsedPct: 42 });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(onSessionDiagLog).toHaveBeenCalledWith("session_child_history_fetch_done", expect.objectContaining({
+      runnerSnapshotRequestedCount: 0, listElapsedMs: expect.any(Number), runnerSnapshotElapsedMs: expect.any(Number),
+    }));
+  });
 });
 
 test("a failed second summary batch is logged and no partial snapshots are used", async () => {

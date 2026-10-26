@@ -356,41 +356,57 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     return { response, data };
   }, [fetchTextWithTimeout]);
 
-  const fetchRunnerSessionSnapshotMap = useCallback(async (
+  const fetchRunnerSessionSnapshots = useCallback(async (
     directoryRaw?: unknown,
     threads: CodexThreadListEntry[] = []
-  ): Promise<Map<string, RunnerSessionSnapshot>> => {
+  ): Promise<{ snapshots: Map<string, RunnerSessionSnapshot>; requestedCount: number }> => {
+    const startedAt = Date.now();
     const out = new Map<string, RunnerSessionSnapshot>();
+    let requestedCount = 0;
+    for (const thread of threads) {
+      if ((thread.backendId || "codex") === "codex" && thread.summary) {
+        out.set(runnerSessionKey("codex", thread.threadId), buildRunnerSessionSnapshot(thread.summary));
+      }
+    }
     const idsByBackend = new Map<string, string[]>();
     for (const thread of threads) {
       const id = parseOptionalSessionId(thread.threadId);
       if (!id) continue;
       const backendId = String(thread.backendId || "codex").trim() || "codex";
+      if (out.has(runnerSessionKey(backendId, id))) continue;
       const ids = idsByBackend.get(backendId) || [];
-      ids.push(id);
+      if (!ids.includes(id)) ids.push(id);
       idsByBackend.set(backendId, ids);
     }
-    if (idsByBackend.size <= 0) return out;
-    const { baseUrl: targetLlmUrl, token } = await getRunnerHttpAuth();
-    if (!targetLlmUrl || !token) {
-      emitSessionDiag("runner_sessions_skipped_missing_auth", {
-        hasUrl: Boolean(targetLlmUrl),
-        hasToken: Boolean(token),
-      });
-      return out;
-    }
+    if (idsByBackend.size <= 0) return { snapshots: out, requestedCount };
     const directory = parseLlmDirectory(directoryRaw ?? normalizedLlmDirectoryForRequest());
-    for (const [backendId, sessionIds] of idsByBackend) {
-      const sessions = await fetchRunnerSessionSummaries(
-        { baseUrl: targetLlmUrl, token },
-        { directory, backendId, sessionIds },
-        RUNNER_SESSIONS_HTTP_TIMEOUT_MS,
-      );
-      for (const item of sessions) {
-        out.set(runnerSessionKey(backendId, item.sessionId), buildRunnerSessionSnapshot(item));
+    try {
+      const { baseUrl: targetLlmUrl, token } = await getRunnerHttpAuth();
+      if (!targetLlmUrl || !token) {
+        emitSessionDiag("runner_sessions_skipped_missing_auth", {
+          hasUrl: Boolean(targetLlmUrl),
+          hasToken: Boolean(token),
+        });
+        return { snapshots: out, requestedCount };
       }
+      for (const [backendId, sessionIds] of idsByBackend) {
+        requestedCount += sessionIds.length;
+        const sessions = await fetchRunnerSessionSummaries(
+          { baseUrl: targetLlmUrl, token },
+          { directory, backendId, sessionIds, includeFirstUserMessage: false },
+          RUNNER_SESSIONS_HTTP_TIMEOUT_MS,
+        );
+        for (const item of sessions) {
+          out.set(runnerSessionKey(backendId, item.sessionId), buildRunnerSessionSnapshot(item));
+        }
+      }
+    } catch (error) {
+      emitSessionDiag("runner_session_snapshot_map_failed", {
+        directory, elapsedMs: Math.max(0, Date.now() - startedAt),
+        message: error instanceof Error ? error.message : String(error),
+      });
     }
-    return out;
+    return { snapshots: out, requestedCount };
   }, [emitSessionDiag, getRunnerHttpAuth, normalizedLlmDirectoryForRequest]);
 
   const fetchRunnerSessionSnapshot = useCallback(async (
@@ -881,16 +897,12 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       backendId,
       rawFallbackBackendId,
     });
-    const runnerSnapshotMap = includeRunnerSnapshots
-      ? await fetchRunnerSessionSnapshotMap(directory, listed.data).catch((error) => {
-        emitSessionDiag("runner_session_snapshot_map_failed", {
-          directory,
-          elapsedMs: Math.max(0, Date.now() - startedAt),
-          message: error instanceof Error ? error.message : String(error),
-        });
-        return new Map<string, RunnerSessionSnapshot>();
-      })
-      : new Map<string, RunnerSessionSnapshot>();
+    const listElapsedMs = Math.max(0, Date.now() - startedAt);
+    const snapshotStartedAt = Date.now();
+    const { snapshots: runnerSnapshotMap, requestedCount: runnerSnapshotRequestedCount } = includeRunnerSnapshots
+      ? await fetchRunnerSessionSnapshots(directory, listed.data)
+      : { snapshots: new Map<string, RunnerSessionSnapshot>(), requestedCount: 0 };
+    const runnerSnapshotElapsedMs = Math.max(0, Date.now() - snapshotStartedAt);
     const sessions = listed.data.map((item) => buildLlmSessionHistoryEntry(item, directory, runnerSnapshotMap));
     const deduped = dedupeSessionHistoryEntries(sessions);
     emitSessionDiag("session_history_fetch_done", {
@@ -902,6 +914,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       latestSessionId: sessions[0]?.sessionId || "",
       nextCursor: listed.nextCursor,
       runnerSnapshotCount: runnerSnapshotMap.size,
+      listElapsedMs, runnerSnapshotElapsedMs, runnerSnapshotRequestedCount,
       ...(listed.partialErrors && listed.partialErrors.length > 0
         ? {
           partialErrorBackendIds: listed.partialErrors.map((error) => String(error?.backendId || "")),
@@ -918,7 +931,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     runnerToken,
     codexWsUrl,
     emitSessionDiag,
-    fetchRunnerSessionSnapshotMap,
+    fetchRunnerSessionSnapshots,
     nearUnlimitedTimeoutMs,
     normalizedLlmDirectoryForRequest,
     rawFallbackBackendId,
@@ -1008,20 +1021,12 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     const directChildren = listedThreads.filter((item) => (
       parentSessionIdSet.has(parseOptionalSessionId(item.parentThreadId))
     ));
-    const runnerSnapshotMap = includeRunnerSnapshots
-      ? await fetchRunnerSessionSnapshotMap(
-        directory,
-        directChildren
-      ).catch((error) => {
-        emitSessionDiag("runner_session_snapshot_map_failed", {
-          directory,
-          parentSessionIds,
-          elapsedMs: Math.max(0, Date.now() - startedAt),
-          message: error instanceof Error ? error.message : String(error),
-        });
-        return new Map<string, RunnerSessionSnapshot>();
-      })
-      : new Map<string, RunnerSessionSnapshot>();
+    const listElapsedMs = Math.max(0, Date.now() - startedAt);
+    const snapshotStartedAt = Date.now();
+    const { snapshots: runnerSnapshotMap, requestedCount: runnerSnapshotRequestedCount } = includeRunnerSnapshots
+      ? await fetchRunnerSessionSnapshots(directory, directChildren)
+      : { snapshots: new Map<string, RunnerSessionSnapshot>(), requestedCount: 0 };
+    const runnerSnapshotElapsedMs = Math.max(0, Date.now() - snapshotStartedAt);
     const sessions = dedupeSessionHistoryEntries(
       directChildren.map((item) => buildLlmSessionHistoryEntry(item, directory, runnerSnapshotMap))
     );
@@ -1040,6 +1045,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       directChildCount: directChildren.length,
       threadCountDeduped: sessions.length,
       runnerSnapshotCount: runnerSnapshotMap.size,
+      listElapsedMs, runnerSnapshotElapsedMs, runnerSnapshotRequestedCount,
     });
     return Object.fromEntries(parentSessionIds.map((parentSessionId) => [
       parentSessionId,
@@ -1049,7 +1055,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     runnerToken,
     codexWsUrl,
     emitSessionDiag,
-    fetchRunnerSessionSnapshotMap,
+    fetchRunnerSessionSnapshots,
     nearUnlimitedTimeoutMs,
     normalizedLlmDirectoryForRequest,
     rawFallbackBackendId,

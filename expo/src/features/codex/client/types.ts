@@ -199,6 +199,7 @@ export type CodexThreadListEntry = {
   createdAt: string;
   updatedAt: string;
   lastReadAt?: string;
+  summary?: { contextUsage: unknown; modelRef: string; reasoningEffort: string; lastReadAt: string };
   contextUsedPct: number | null;
   threadStatusType?: CodexThreadStatusType;
 };

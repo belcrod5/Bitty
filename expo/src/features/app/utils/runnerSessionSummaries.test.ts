@@ -130,3 +130,47 @@ test("preserves backend identity in every summary batch", async () => {
   }, 12_000);
   expect(fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init?.body)).backendId)).toEqual(["claude", "claude"]);
 });
+
+test.each([undefined, true, false])("passes includeFirstUserMessage=%s consistently across batches", async (includeFirstUserMessage) => {
+  const fetchMock = jest.spyOn(global, "fetch").mockImplementation(async (_url, init) => {
+    const body = JSON.parse(String(init?.body));
+    return { ok: true, status: 200, text: async () => JSON.stringify({
+      sessions: body.sessionIds.map((sessionId: string) => ({
+        sessionId, contextUsage: { usedPct: 42 }, modelRef: "gpt-test", reasoningEffort: "high",
+        lastReadAt: "2026-10-26", parentSessionId: "parent",
+        ...(body.includeFirstUserMessage === false ? {} : { firstUserMessage: "Card title" }),
+      })),
+    }) } as Response;
+  });
+  const ids = Array.from({ length: 101 }, (_, index) => `id-${index}`);
+  const summaries = await fetchRunnerSessionSummaries(auth, {
+    directory: "/workspace", sessionIds: ids, backendId: "claude", includeFirstUserMessage,
+  }, 12_000);
+  expect(summaries.map((entry) => entry.sessionId)).toEqual(ids);
+  expect(fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init?.body)).sessionIds.length)).toEqual([100, 1]);
+  for (const [, init] of fetchMock.mock.calls) {
+    const body = JSON.parse(String(init?.body));
+    expect(body.backendId).toBe("claude");
+    if (includeFirstUserMessage === undefined) expect(body).not.toHaveProperty("includeFirstUserMessage");
+    else expect(body.includeFirstUserMessage).toBe(includeFirstUserMessage);
+  }
+  expect(summaries[100]).toMatchObject({
+    contextUsage: { usedPct: 42 }, modelRef: "gpt-test", reasoningEffort: "high",
+    lastReadAt: "2026-10-26", parentSessionId: "parent",
+    firstUserMessage: includeFirstUserMessage === false ? "" : "Card title",
+  });
+});
+
+test("an older server can ignore the opt-out flag without losing metadata", async () => {
+  jest.spyOn(global, "fetch").mockResolvedValue({ ok: true, status: 200, text: async () => JSON.stringify({
+    sessions: [{ sessionId: "one", firstUserMessage: "Old server title", contextUsage: { usedPct: 27 },
+      modelRef: "legacy-model", reasoningEffort: "medium", lastReadAt: "2026-10-26", parentSessionId: "parent" }],
+  }) } as Response);
+  const summaries = await fetchRunnerSessionSummaries(auth, {
+    directory: "/workspace", sessionIds: ["one"], includeFirstUserMessage: false,
+  }, 12_000);
+  expect(summaries[0]).toMatchObject({
+    firstUserMessage: "Old server title", contextUsage: { usedPct: 27 },
+    modelRef: "legacy-model", reasoningEffort: "medium", lastReadAt: "2026-10-26", parentSessionId: "parent",
+  });
+});

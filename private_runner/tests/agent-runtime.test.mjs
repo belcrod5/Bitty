@@ -53,6 +53,8 @@ test("Codex Agent history preserves timestamps and unavailable client titles fal
   const canonicalWorkspace = await realpath(".");
   const aliasWorkspace = `${canonicalWorkspace}/.`;
   let titleLookupError = null;
+  let storedSelection = null;
+  const nativeSummary = { contextUsage: { usedPct: 42 }, modelRef: "native-model", reasoningEffort: "high", lastReadAt: "2026-08-24T03:00:00.000Z" };
   const warnings = [];
   const runtime = createPrivateRunnerAgentRuntime({
     claudeBinary: "claude",
@@ -60,7 +62,7 @@ test("Codex Agent history preserves timestamps and unavailable client titles fal
     dynamicTools: null,
     stores: {
       bindSession: async () => ({ status: "bound" }),
-      getSessionBinding: async () => null,
+      getSessionBinding: async () => storedSelection,
       getSessionMode: async () => null,
       acquireSessionLease: async () => ({ status: "acquired", lease: {} }),
       settleSessionLease: async () => ({ status: "released" }),
@@ -91,6 +93,7 @@ test("Codex Agent history preserves timestamps and unavailable client titles fal
         firstUserMessage: "Native title",
         updatedAt: "2026-08-24T02:00:00.000Z",
         lastReadAt: "2026-08-24T03:00:00.000Z",
+        summary: nativeSummary,
       }],
     }),
     getSessionTitles: async () => {
@@ -130,6 +133,13 @@ test("Codex Agent history preserves timestamps and unavailable client titles fal
   const listed = await runtime.service.listSessions({ backendId: "codex", cwd: canonicalWorkspace });
   assert.equal(listed.sessions[0].lastReadAt, "2026-08-24T03:00:00.000Z");
   assert.equal(listed.sessions[0].title, "Shared title");
+  assert.deepEqual(listed.sessions[0].summary, nativeSummary);
+  storedSelection = { canonicalCwd: canonicalWorkspace, modelId: "selected-model", reasoningEffort: "low" };
+  const selected = await runtime.service.listSessions({ backendId: "codex", cwd: canonicalWorkspace });
+  assert.equal(selected.sessions[0].modelId, "selected-model");
+  assert.equal(selected.sessions[0].reasoningEffort, "low");
+  assert.deepEqual(selected.sessions[0].summary, nativeSummary);
+  storedSelection = null;
   titleLookupError = new ClientStateStoreUnavailableError(new Error("invalid client state store"));
   const fallback = await runtime.service.listSessions({ backendId: "codex", cwd: canonicalWorkspace });
   assert.equal(fallback.sessions[0].title, "Native title");

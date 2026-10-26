@@ -81,6 +81,27 @@ it("maps an all-backends listing per entry backend and surfaces partial errors",
   expect(mockRunCodexRpcSession).not.toHaveBeenCalled();
 });
 
+it("preserves complete native CLI summaries without replacing the selected model fields", async () => {
+  const summary = { contextUsage: null, modelRef: "native-model", reasoningEffort: "high", lastReadAt: "2026-10-26" };
+  mockListAgentSessions.mockResolvedValue({ sessions: [{
+    sessionRef: { backendId: "codex", nativeSessionId: "one" }, sourceKind: "cli",
+    modelId: "selected-model", reasoningEffort: "low", summary,
+  }] });
+  const result = await listCodexAppServerThreads({ wsUrl: "ws://runner", runnerWebSocketManager: {} as never, backendId: "codex" });
+  expect(result.data[0]).toMatchObject({ modelRef: "selected-model", reasoningEffort: "low", summary });
+});
+
+it.each([undefined, {}, { contextUsage: null }, { contextUsage: 42, modelRef: "native", reasoningEffort: "high", lastReadAt: "" },
+  { contextUsage: [], modelRef: "native", reasoningEffort: "high", lastReadAt: "" }])(
+  "drops incomplete or malformed summary %j so HTTP fallback remains available", async (summary) => {
+    mockListAgentSessions.mockResolvedValue({ sessions: [{
+      sessionRef: { backendId: "codex", nativeSessionId: "one" }, sourceKind: "cli", summary,
+    }] });
+    const result = await listCodexAppServerThreads({ wsUrl: "ws://runner", runnerWebSocketManager: {} as never, backendId: "codex" });
+    expect(result.data[0]).not.toHaveProperty("summary");
+  },
+);
+
 it("falls back to the raw codex listing when the all-backends scope fails while the runner WS is ready", async () => {
   const onListResponseBytes = jest.fn();
   mockListAgentSessions.mockRejectedValue(new Error("agent channel unavailable"));
