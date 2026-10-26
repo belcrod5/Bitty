@@ -417,3 +417,19 @@ test("a failed or abandoned load never marks knowledge read; old runners receive
   expect(failed.mock.calls.some(([op]) => op === "voice.learning.read")).toBe(false);
   await errorScreen.unmount();
 });
+
+test("update comparison retains the source across list filters and pages", async () => {
+  const status = initialStatus();
+  const original = { ...status.candidates[0], id: "original", status: "active", content: "現在の報告方針" };
+  const update = { ...status.candidates[0], id: "update", content: "更新した報告方針", replaces: [original.id], replacementVersions: [{ id: original.id, version: original.version }] };
+  status.candidates = [original, ...Array.from({ length: 4 }, (_, index) => ({ ...original, id: `other-${index}`, content: `別の方針${index}` })), update];
+  const request = mockApi(status); const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  await waitFor(() => screen.getByText("更新案あり"));
+  expect(screen.queryByText(update.content)).toBeNull(); await fireEvent.press(screen.getByLabelText("学習の次のページ"));
+  expect(screen.getByText(original.content)).toBeTruthy(); expect(screen.getByText(update.content)).toBeTruthy(); expect(screen.getByText("現在使用中")).toBeTruthy();
+  await fireEvent.press(screen.getByLabelText("学習: 確認待ち"));
+  expect(screen.getByText(original.content)).toBeTruthy(); expect(screen.getByText(update.content)).toBeTruthy();
+  await fireEvent.press(screen.getByLabelText("学習: 使用中"));
+  expect(screen.getByText("更新案あり")).toBeTruthy(); expect(screen.queryByText(update.content)).toBeNull();
+  expect(request.mock.calls.some(([op]) => op === "voice.learning.decide")).toBe(false); await screen.unmount();
+});

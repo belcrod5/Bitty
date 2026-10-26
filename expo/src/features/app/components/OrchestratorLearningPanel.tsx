@@ -243,7 +243,7 @@ export function OrchestratorLearningPanel({ request, orchestrators }: {
           </> : null}
         </View> : null}
         {filteredKnowledge.length ? <View style={{ gap: 12 }}>{filteredKnowledge.slice(knowledgeCurrentPage * 5, knowledgeCurrentPage * 5 + 5).map((item) => (
-          <LearningKnowledgeCard key={item.id} item={item}
+          <LearningKnowledgeCard key={item.id} item={item} knowledge={status.candidates}
             chatName={orchestrators.find((entry) => entry.id === item.scope.orchestratorId)?.name || "元のチャット"}
             selecting={selecting} selected={selected.includes(item.id)} busy={busy} manage={manage}
             onSelect={() => setSelected((current) => current.includes(item.id) ? current.filter((id) => id !== item.id) : [...current, item.id])} />
