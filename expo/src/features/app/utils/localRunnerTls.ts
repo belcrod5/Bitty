@@ -1,5 +1,5 @@
 import { NativeEventEmitter, NativeModules, Platform } from "react-native";
-import { runnerHttpsOrigin } from "./urlResolvers";
+import { runnerHttpsOrigin, runnerLocalOrigin } from "./urlResolvers";
 import { utf8ByteLength } from "../../ws/networkUsageMetrics";
 
 type NativeTlsModule = {
@@ -26,6 +26,11 @@ export function isLocalRunnerTlsReady(url: unknown, certificate?: unknown): bool
   const origin = runnerHttpsOrigin(url);
   return !!origin && origin === readyOrigin && !!readyCertificate
     && (certificate === undefined || String(certificate || "").trim() === readyCertificate);
+}
+
+export function isLocalRunnerReady(url: unknown, certificate?: unknown): boolean {
+  const origin = runnerLocalOrigin(url);
+  return !!origin && (!runnerHttpsOrigin(origin) || isLocalRunnerTlsReady(origin, certificate));
 }
 
 export async function configureLocalRunnerTls(url: unknown, certificate: unknown): Promise<boolean> {

@@ -1,6 +1,6 @@
 import { act, renderHook } from "@testing-library/react-native";
 import { useState } from "react";
-import { Alert, AppState } from "react-native";
+import { Alert, AppState, Platform } from "react-native";
 import * as Clipboard from "../clipboard";
 import { useAppSettingsPersistenceController } from "./useAppSettingsPersistenceController";
 import { configureLocalRunnerTls } from "../utils/localRunnerTls";
@@ -714,4 +714,17 @@ test("imports the mobile audio preference", async () => {
     ?.find(({ text }) => text === "インポート");
   await act(async () => { await importButton?.onPress?.(); });
   expect(setLightweightTtsOnCellular).toHaveBeenCalledWith(true);
+});
+
+
+test("macOS hydrates a saved loopback local URL without TLS or Cloudflare", async () => {
+  jest.replaceProperty(Platform, "OS", "macos");
+  mockReadPersistedSettings.mockResolvedValue({ runnerUrl: "http://127.0.0.1:8790",
+    localRunnerUrl: "http://127.0.0.1:8788", cloudflareRunnerUrl: "" });
+  jest.mocked(configureLocalRunnerTls).mockResolvedValue(false);
+  const setRunnerUrl = jest.fn();
+  const setLocalRunnerUrl = jest.fn();
+  await renderPersistenceController({ setRunnerUrl, setLocalRunnerUrl });
+  expect(setLocalRunnerUrl).toHaveBeenCalledWith("http://127.0.0.1:8788");
+  expect(setRunnerUrl).toHaveBeenCalledWith("http://127.0.0.1:8788");
 });

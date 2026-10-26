@@ -1,3 +1,5 @@
+import { Platform } from "react-native";
+
 export function runnerHttpsOrigin(rawUrl: unknown): string {
   const value = String(rawUrl || "").trim();
   try {
@@ -17,23 +19,30 @@ export function runnerDevelopmentOrigin(rawUrl: unknown): string {
   } catch { return ""; }
 }
 
+export function runnerLocalOrigin(rawUrl: unknown): string {
+  return runnerHttpsOrigin(rawUrl) || (Platform.OS === "macos" ? runnerDevelopmentOrigin(rawUrl) : "");
+}
+
 export function persistedCloudflareRunnerUrl(settings: Record<string, unknown>): string {
   return String(settings.cloudflareRunnerUrl || settings.tunnelRunnerUrl
     || (settings.runnerUrl !== settings.localRunnerUrl ? runnerHttpsOrigin(settings.runnerUrl) : ""));
 }
 
 // All foreground/background clients consume this origin contract. A saved LAN
-// selection cannot become usable before its paired native trust is installed.
+// selection requires paired native trust; macOS loopback stays inside this Mac.
 export function resolveRunnerUrl({ runnerUrl, cloudflareRunnerUrl, localRunnerUrl, localReady = false }: {
   runnerUrl?: unknown; cloudflareRunnerUrl?: unknown; localRunnerUrl?: unknown; localReady?: boolean;
 }): string {
   const cloudflare = runnerHttpsOrigin(cloudflareRunnerUrl);
   if (String(cloudflareRunnerUrl || "").trim() && !cloudflare) return "";
-  const selected = runnerHttpsOrigin(runnerUrl);
-  const local = runnerHttpsOrigin(localRunnerUrl);
-  if (local && selected === local) return localReady ? local : cloudflare;
+  const selected = runnerHttpsOrigin(runnerUrl) || runnerDevelopmentOrigin(runnerUrl);
+  const local = runnerLocalOrigin(localRunnerUrl);
+  if (String(localRunnerUrl || "").trim() && !local) return cloudflare;
+  if (local && (selected === local || !cloudflare)) {
+    return !runnerHttpsOrigin(local) || localReady ? local : cloudflare;
+  }
   if (cloudflare) return cloudflare;
-  return selected || runnerDevelopmentOrigin(runnerUrl);
+  return selected;
 }
 
 export function suggestRunnerWsUrlFromRunnerUrl(rawRunnerUrl: unknown): string {

@@ -1,14 +1,12 @@
 import React from "react";
 import { act, render } from "@testing-library/react-native";
-import { AppState } from "react-native";
+import { AppState, NativeModules, Platform } from "react-native";
 import * as Network from "expo-network";
+import { configureLocalRunnerTls } from "../utils/localRunnerTls";
 import { useRunnerRouteSelection } from "./useRunnerRouteSelection";
 
 jest.mock("expo-network", () => ({
   addNetworkStateListener: jest.fn(),
-}));
-jest.mock("../utils/localRunnerTls", () => ({
-  isLocalRunnerTlsReady: jest.fn((url: string) => url.startsWith("https://")),
 }));
 
 const localRunnerUrl = "https://d5-macbook.local:8789";
@@ -27,7 +25,10 @@ describe("useRunnerRouteSelection", () => {
   const appStateListeners: Array<(state: "active" | "background" | "inactive") => void> = [];
   const networkListeners: Array<() => void> = [];
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    jest.replaceProperty(Platform, "OS", "ios");
+    NativeModules.BittyRunnerTLS = { configure: jest.fn().mockResolvedValue(undefined) };
+    await configureLocalRunnerTls(localRunnerUrl, "paired-ca");
     jest.useFakeTimers();
     jest.clearAllTimers();
     jest.clearAllMocks();
@@ -117,6 +118,65 @@ describe("useRunnerRouteSelection", () => {
     await advanceTimers(5000);
     expect(fetch).not.toHaveBeenCalled();
     expect(setRunnerUrl).not.toHaveBeenCalled();
+  });
+
+  it("selects the only macOS loopback candidate without a Cloudflare probe", async () => {
+    jest.replaceProperty(Platform, "OS", "macos");
+    const local = "http://127.0.0.1:8788";
+    const { setRunnerUrl } = await renderSelection({ localRunnerUrl: local, cloudflareRunnerUrl: "", runnerUrl: "" });
+    await runPendingTimers();
+    expect(setRunnerUrl).toHaveBeenCalledWith(local);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("selects macOS loopback over Cloudflare when reachable", async () => {
+    jest.replaceProperty(Platform, "OS", "macos");
+    const local = "http://127.0.0.1:8788";
+    const { setRunnerUrl } = await renderSelection({ localRunnerUrl: local });
+    await runPendingTimers();
+    expect(fetch).toHaveBeenCalledWith(`${local}/health`, expect.objectContaining({
+      headers: { Authorization: `Bearer ${runnerToken}` },
+    }));
+    expect(setRunnerUrl).toHaveBeenCalledWith(local);
+  });
+
+  it("does not probe iOS loopback HTTP", async () => {
+    jest.replaceProperty(Platform, "OS", "ios");
+    const { setRunnerUrl } = await renderSelection({ localRunnerUrl: "http://127.0.0.1:8788" });
+    await runPendingTimers();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(setRunnerUrl).not.toHaveBeenCalled();
+  });
+
+  it.each(["", "http://192.168.1.5:8788"])("discards an old probe and selection after editing local URL to %s", async (nextLocal) => {
+    const oldHealth = resolveFetchLater();
+    jest.mocked(fetch).mockImplementationOnce(() => oldHealth.promise);
+    const { rendered, setRunnerUrl } = await renderSelection();
+    await advanceTimers(0);
+    await rendered.rerender(<RouteSelectionProbe enabled={true}
+      localRunnerUrl={nextLocal} localRunnerCertificate="paired-ca"
+      cloudflareRunnerUrl="" runnerToken={runnerToken}
+      runnerUrl={localRunnerUrl} setRunnerUrl={setRunnerUrl} />);
+    await act(async () => {
+      oldHealth.resolveResponse({ ok: true } as Response);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await runPendingTimers();
+    expect(setRunnerUrl).toHaveBeenCalledWith("");
+    expect(setRunnerUrl).not.toHaveBeenCalledWith(localRunnerUrl);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not clear a persisted selection while settings are loading", async () => {
+    const { rendered, setRunnerUrl } = await renderSelection({ enabled: false, localRunnerUrl: "" });
+    await rendered.rerender(<RouteSelectionProbe enabled={false}
+      localRunnerUrl={localRunnerUrl} localRunnerCertificate="paired-ca"
+      cloudflareRunnerUrl={cloudflareRunnerUrl} runnerToken={runnerToken}
+      runnerUrl={localRunnerUrl} setRunnerUrl={setRunnerUrl} />);
+    await runPendingTimers();
+    expect(setRunnerUrl).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("rechecks when a local runner candidate is saved after startup", async () => {

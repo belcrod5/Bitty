@@ -313,7 +313,7 @@ import {
 } from "./utils/settingsParsers";
 import { buildApprovalCommandLabel } from "./utils/tooling";
 import { resolveRunnerUrl, runnerHttpsOrigin, suggestRunnerWsUrlFromRunnerUrl } from "./utils/urlResolvers";
-import { isLocalRunnerTlsReady } from "./utils/localRunnerTls";
+import { isLocalRunnerReady } from "./utils/localRunnerTls";
 import { RunnerWebSocketManager } from "../runnerWs/RunnerWebSocketManager";
 import { RunnerWebSocketProvider } from "../runnerWs/RunnerWebSocketContext";
 import {
@@ -581,7 +581,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   const [localRunnerUrl, setLocalRunnerUrl] = useState("");
   const [localRunnerCertificate, setLocalRunnerCertificate] = useState("");
   const runnerUrl = resolveRunnerUrl({ runnerUrl: configuredRunnerUrl, cloudflareRunnerUrl, localRunnerUrl,
-    localReady: isLocalRunnerTlsReady(localRunnerUrl, localRunnerCertificate) });
+    localReady: isLocalRunnerReady(localRunnerUrl, localRunnerCertificate) });
   const [llmBackend, setLlmBackend] = useState<LlmBackend>(DEFAULT_LLM_BACKEND);
   const [llmDirectory, setLlmDirectory] = useState(DEFAULT_LLM_DIRECTORY);
   const codexWsUrl = suggestRunnerWsUrlFromRunnerUrl(runnerUrl);
@@ -4792,6 +4792,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     loadSessionChildrenBatch: loadSessionChildTreesForSessions,
     openSessionHistoryEntry: openSessionHistoryEntryFromContext,
     markSessionRead: markSessionReadFromContext,
+    markSessionReadManually: markSessionRead,
     markSelectedSessionUnread: markSelectedSessionUnreadFromContext,
     reloadSelectedSession: reloadSelectedSessionFromContext,
     resumeWaitingApprovalSession: resumeWaitingApprovalSessionFromContext,
@@ -6128,8 +6129,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     selectLlmDirectory,
     openNewSessionPopup,
     openSessionHistoryPopup,
-    markSessionUnread,
-    markSessionRead,
     markDirectorySessionsRead,
   });
   const renderAppDrawerContent = useCallback(
@@ -6137,7 +6136,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     [appDrawerProps]
   );
   return (
-    <AppModalHost>
       <GestureHandlerRootView style={styles.safeArea}>
       <RunnerWebSocketProvider
         bootstrapReady={settingsLoaded}
@@ -6163,6 +6161,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
         chatScreen={chatScreenContextValue}
       >
       <KeyboardProvider>
+      <AppModalHost>
         <AppDrawerLayout
         open={drawerOpen}
         onOpen={openDrawer}
@@ -6230,11 +6229,11 @@ function AppContent({ onReady }: { onReady?: () => void }) {
         ) : null}
         <WidgetSnapshotPublisher ready={settingsLoaded} />
         <PushNotificationRegistrar onUnreadCountSnapshot={sessionNotificationLifecycle.applyUnreadCountSnapshot} />
+      </AppModalHost>
       </KeyboardProvider>
       </AppProviders>
       </RunnerWebSocketProvider>
       <ThemeSplash ready={settingsLoaded} onReady={onReady} />
       </GestureHandlerRootView>
-      </AppModalHost>
   );
 }

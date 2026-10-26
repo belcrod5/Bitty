@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { AppState, type AppStateStatus } from "react-native";
 import * as Network from "../networkState";
-import { isLocalRunnerTlsReady } from "../utils/localRunnerTls";
-import { runnerHttpsOrigin } from "../utils/urlResolvers";
+import { isLocalRunnerReady } from "../utils/localRunnerTls";
+import { runnerHttpsOrigin, runnerLocalOrigin } from "../utils/urlResolvers";
 
 const ROUTE_RECHECK_DEBOUNCE_MS = 500;
 const NETWORK_STABILIZE_RECHECK_DELAYS_MS = [500, 2000, 5000];
@@ -48,7 +48,7 @@ function buildHealthUrl(runnerUrl: string) {
 async function probeRunnerHealth(runnerUrl: string, runnerToken: string) {
   const healthUrl = buildHealthUrl(runnerUrl);
   const token = String(runnerToken || "").trim();
-  if (!healthUrl || !token || !isLocalRunnerTlsReady(runnerUrl)) return false;
+  if (!healthUrl || !token || !isLocalRunnerReady(runnerUrl)) return false;
 
   const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
   const timeout = setTimeout(() => controller?.abort(), LOCAL_HEALTH_TIMEOUT_MS);
@@ -75,9 +75,10 @@ export function useRunnerRouteSelection({
   runnerUrl,
   setRunnerUrl,
 }: RunnerRouteSelectionArgs) {
+  const previousLocalRunnerUrlRef = useRef(localRunnerUrl);
   const latestRef = useRef({
     enabled,
-    localRunnerUrl: isLocalRunnerTlsReady(localRunnerUrl, localRunnerCertificate) ? runnerHttpsOrigin(localRunnerUrl) : "",
+    localRunnerUrl: isLocalRunnerReady(localRunnerUrl, localRunnerCertificate) ? runnerLocalOrigin(localRunnerUrl) : "",
     cloudflareRunnerUrl: runnerHttpsOrigin(cloudflareRunnerUrl),
     runnerToken: String(runnerToken || "").trim(),
     runnerUrl: trimTrailingSlash(runnerUrl),
@@ -98,7 +99,7 @@ export function useRunnerRouteSelection({
   useEffect(() => {
     latestRef.current = {
       enabled,
-      localRunnerUrl: isLocalRunnerTlsReady(localRunnerUrl, localRunnerCertificate) ? runnerHttpsOrigin(localRunnerUrl) : "",
+      localRunnerUrl: isLocalRunnerReady(localRunnerUrl, localRunnerCertificate) ? runnerLocalOrigin(localRunnerUrl) : "",
       cloudflareRunnerUrl: runnerHttpsOrigin(cloudflareRunnerUrl),
       runnerToken: String(runnerToken || "").trim(),
       runnerUrl: trimTrailingSlash(runnerUrl),
@@ -125,14 +126,14 @@ export function useRunnerRouteSelection({
       const latest = latestRef.current;
       if (
         !latest.enabled ||
-        !latest.localRunnerUrl ||
-        !latest.cloudflareRunnerUrl ||
+        (!latest.localRunnerUrl && !latest.cloudflareRunnerUrl) ||
         !latest.runnerToken
       ) {
         return;
       }
 
-      const localReachable = await probeRunnerHealth(latest.localRunnerUrl, latest.runnerToken);
+      const localReachable = !!latest.localRunnerUrl && (!latest.cloudflareRunnerUrl
+        || await probeRunnerHealth(latest.localRunnerUrl, latest.runnerToken));
       if (scheduleGeneration !== scheduleGenerationRef.current || probeSeq !== probeSeqRef.current) return;
 
       const current = latestRef.current;
@@ -189,7 +190,10 @@ export function useRunnerRouteSelection({
   }, [setRunnerUrl]);
 
   useEffect(() => {
-    if (!enabled || !isLocalRunnerTlsReady(localRunnerUrl, localRunnerCertificate) || !runnerHttpsOrigin(cloudflareRunnerUrl) || !runnerToken) return;
+    if (previousLocalRunnerUrlRef.current !== localRunnerUrl) {
+      previousLocalRunnerUrlRef.current = localRunnerUrl;
+      if (enabled) setRunnerUrl("");
+    }
     scheduleRouteSelectionRef.current([0]);
   }, [
     cloudflareRunnerUrl,
@@ -197,6 +201,7 @@ export function useRunnerRouteSelection({
     localRunnerUrl,
     localRunnerCertificate,
     runnerToken,
+    setRunnerUrl,
   ]);
 
   return {

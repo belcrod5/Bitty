@@ -23,6 +23,7 @@ import { isLlmSessionUnread, resolveLlmSessionDisplayTitle } from "../utils/llmS
 import { runnerSessionValue } from "../utils/runnerClientState";
 import { formatModelRefForDisplay } from "../utils/settingsParsers";
 import { AppModal } from "./AppModal";
+import { SessionContextMenu, type SessionContextMenuTarget } from "./SessionContextMenu";
 import {
   parseDirectoryMarkerColor,
   type DirectoryMarkerColor,
@@ -74,8 +75,6 @@ export type AppDrawerProps = {
     directoryPath: string,
     sourceRect?: PopupChatSourceRect
   ) => void;
-  onMarkSessionRead: (backendId: string, sessionId: string, source: LlmSessionSource, directoryPath: string) => void;
-  onMarkSessionUnread: (backendId: string, sessionId: string, source: LlmSessionSource, directoryPath: string) => void;
   onMarkDirectorySessionsRead: (directoryPath: string) => void;
 };
 
@@ -129,8 +128,6 @@ export const AppDrawer = memo(function AppDrawer({
   onLoadSessionChildren,
   onStartNewSessionInDirectory,
   onSelectSessionHistoryEntry,
-  onMarkSessionRead,
-  onMarkSessionUnread,
   onMarkDirectorySessionsRead,
 }: AppDrawerProps) {
   const styles = useAppStyles();
@@ -139,9 +136,6 @@ export const AppDrawer = memo(function AppDrawer({
     addDirectory,
     removeDirectory,
     hasDirectory,
-    addSession,
-    removeSession,
-    hasSession,
     loaded: skiaBoardLoaded,
   } = useSkiaBoard();
   const expandedSet = useMemo(() => new Set(expandedDirectoryIds), [expandedDirectoryIds]);
@@ -152,12 +146,7 @@ export const AppDrawer = memo(function AppDrawer({
   const normalizedSearchQuery = normalizeDrawerSearchText(searchQuery);
   const [expandedSessionIds, setExpandedSessionIds] = useState<string[]>([]);
   const expandedSessionSet = useMemo(() => new Set(expandedSessionIds), [expandedSessionIds]);
-  const [sessionContextMenuTarget, setSessionContextMenuTarget] = useState<{
-    backendId: string;
-    sessionId: string;
-    source: LlmSessionSource;
-    directoryPath: string;
-  } | null>(null);
+  const [sessionContextMenuTarget, setSessionContextMenuTarget] = useState<SessionContextMenuTarget | null>(null);
   const [directoryContextMenuTarget, setDirectoryContextMenuTarget] = useState<{
     directoryPath: string;
     directoryName: string;
@@ -280,7 +269,8 @@ export const AppDrawer = memo(function AppDrawer({
               backendId: session.backendId,
               sessionId: session.sessionId,
               source: session.source,
-              directoryPath: session.directory || directory.path,
+              directory: session.directory || directory.path,
+              title: sessionPrimaryTitle,
             });
           }}
         >
@@ -584,75 +574,10 @@ export const AppDrawer = memo(function AppDrawer({
             </Pressable>
           </Pressable>
         </AppModal>
-        <AppModal
-          visible={sessionContextMenuTarget !== null}
-          transparent
-          animationType="fade"
-          onRequestClose={() => setSessionContextMenuTarget(null)}
-        >
-          <Pressable style={styles.modalBackdrop} onPress={() => setSessionContextMenuTarget(null)}>
-            <Pressable
-              testID="app-drawer-session-context-menu"
-              style={[styles.modalCard, Platform.OS === "macos" && styles.chatContentWidth]}
-              onPress={() => {}}
-            >
-              <TouchableOpacity
-                style={styles.modalOption}
-                onPress={() => {
-                  if (sessionContextMenuTarget) {
-                    onMarkSessionRead(
-                      sessionContextMenuTarget.backendId,
-                      sessionContextMenuTarget.sessionId,
-                      sessionContextMenuTarget.source,
-                      sessionContextMenuTarget.directoryPath
-                    );
-                  }
-                  setSessionContextMenuTarget(null);
-                }}
-              >
-                <Text style={styles.modalOptionText}>既読にする</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.modalOption}
-                onPress={() => {
-                  if (sessionContextMenuTarget) {
-                    onMarkSessionUnread(
-                      sessionContextMenuTarget.backendId,
-                      sessionContextMenuTarget.sessionId,
-                      sessionContextMenuTarget.source,
-                      sessionContextMenuTarget.directoryPath
-                    );
-                  }
-                  setSessionContextMenuTarget(null);
-                }}
-              >
-                <Text style={styles.modalOptionText}>未読にする</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                testID="app-drawer-skia-board-session-action"
-                style={[styles.modalOption, !skiaBoardLoaded && styles.buttonDisabled]}
-                disabled={!skiaBoardLoaded}
-                onPress={() => {
-                  if (sessionContextMenuTarget) {
-                    const sessionId = sessionContextMenuTarget.sessionId;
-                    if (hasSession(sessionId)) {
-                      removeSession(sessionId);
-                    } else {
-                      addSession(sessionId);
-                    }
-                  }
-                  setSessionContextMenuTarget(null);
-                }}
-              >
-                <Text style={styles.modalOptionText}>
-                  {sessionContextMenuTarget && hasSession(sessionContextMenuTarget.sessionId)
-                    ? "Skiaボードから除外"
-                    : "Skiaボードへ追加"}
-                </Text>
-              </TouchableOpacity>
-            </Pressable>
-          </Pressable>
-        </AppModal>
+        <SessionContextMenu
+          target={sessionContextMenuTarget}
+          onClose={() => setSessionContextMenuTarget(null)}
+        />
       </ScrollView>
       {Platform.OS === "ios" ? (
         <InputAccessoryView nativeID={APP_DRAWER_SEARCH_INPUT_ACCESSORY_ID} backgroundColor={theme.colors.surfaceRaised}>

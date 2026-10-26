@@ -8,7 +8,7 @@ export type AppModalProps = {
   onDismiss?: () => void;
   onRequestClose?: () => void;
   onShow?: () => void;
-  presentationStyle?: "fullScreen";
+  presentationStyle?: "fullScreen" | "pageSheet";
   statusBarTranslucent?: boolean;
   style?: StyleProp<ViewStyle>;
   testID?: string;
