@@ -909,3 +909,130 @@ test("summary lookup routes native IDs to their backend and preserves request or
   assert.equal(result.sessions[1].firstUserMessage, "Claude title");
   assert.equal(result.sessions[1].modelRef, "sonnet");
 });
+
+test("summary body opt-out preserves every other field and reads fresh metadata for each backend", async (t) => {
+  for (const backendId of ["codex", "claude"]) await t.test(backendId, async () => {
+    const metadata = {
+      updatedAt: "2026-10-01T01:00:00.000Z", lastReadAt: "2026-10-01T00:00:00.000Z",
+      firstUserMessage: "長い初回プロンプト".repeat(4000),
+      contextUsage: { usedPct: 42, usedTokens: 42 }, modelRef: "model-before", reasoningEffort: "high",
+    };
+    const scopes = [];
+    const service = createService({
+      listAcpSessionsForDirectory: async (directory) => {
+        scopes.push(directory);
+        return [{ sessionId: "second", ...metadata, cwd: directory, parentSessionId: "parent" }];
+      },
+      findCliSessionIndexEntriesBySessionIds: async (_ids, { directory }) => {
+        scopes.push(directory);
+        return [{ sessionId: "first", filePath: "/fixture/rollout", ...metadata, cwd: directory, parentSessionId: "parent" }];
+      },
+      readCliSessionSummaryFromRolloutFile: async () => metadata,
+      listAgentSessionSnapshot: async ({ backendId: requestedBackend, cwds }) => {
+        assert.equal(requestedBackend, backendId);
+        scopes.push(...cwds);
+        return { groups: [{ cwd: cwds[0], sessions: ["first", "second"].map((id) => ({
+          sessionRef: { backendId, nativeSessionId: id }, canonicalCwd: cwds[0],
+          ...metadata, title: metadata.firstUserMessage, modelId: metadata.modelRef,
+          sourceKind: "cli", parentSessionRef: { backendId, nativeSessionId: "parent" },
+        })) }] };
+      },
+    });
+    const request = { directory: "/workspace", backendId, sessionIds: ["second", "missing", "first", "second"] };
+    const original = await service.getLlmSessionSummaries(request);
+    assert.deepEqual(original.sessions.map((entry) => entry.sessionId), ["second", "first"]);
+    assert.deepEqual(original.missingSessionIds, ["missing"]);
+    for (const value of [true, "false", 0, null]) {
+      assert.deepEqual(await service.getLlmSessionSummaries({ ...request, includeFirstUserMessage: value }), original);
+    }
+    const withoutBody = await service.getLlmSessionSummaries({ ...request, includeFirstUserMessage: false });
+    const expected = structuredClone(original);
+    for (const entry of expected.sessions) delete entry.firstUserMessage;
+    assert.deepEqual(withoutBody, expected);
+    assert.ok(withoutBody.sessions.every((entry) => !Object.hasOwn(entry, "firstUserMessage")));
+    assert.ok(Buffer.byteLength(JSON.stringify(withoutBody)) < Buffer.byteLength(JSON.stringify(original)) / 10);
+    metadata.updatedAt = "2026-10-01T03:00:00.000Z";
+    metadata.lastReadAt = "2026-10-01T02:00:00.000Z";
+    metadata.contextUsage = { usedPct: 63, usedTokens: 63 };
+    metadata.modelRef = "model-after";
+    metadata.reasoningEffort = "medium";
+    const fresh = await service.getLlmSessionSummaries({ ...request, includeFirstUserMessage: false });
+    assert.ok(fresh.sessions.every((entry) => entry.updatedAt === metadata.updatedAt && entry.lastReadAt === metadata.lastReadAt));
+    assert.equal(fresh.sessions[1].modelRef, "model-after");
+    assert.equal(fresh.sessions[1].reasoningEffort, "medium");
+    if (backendId === "codex") assert.deepEqual(fresh.sessions[1].contextUsage, metadata.contextUsage);
+    const freshFull = await service.getLlmSessionSummaries(request);
+    for (const entry of freshFull.sessions) delete entry.firstUserMessage;
+    assert.deepEqual(fresh, freshFull);
+    assert.ok(scopes.length > 0 && scopes.every((directory) => directory === "/canonical/workspace"));
+    assert.deepEqual(await service.getLlmSessionSummaries({ ...request, sessionIds: [], includeFirstUserMessage: false }), {
+      directory: "/canonical/workspace", sessions: [], missingSessionIds: [],
+    });
+  });
+});
+
+test("listed successful CLI summaries match HTTP metadata, merge ACP read state, and remain fresh", async () => {
+  let fail = true;
+  let modelRef = "native-model";
+  const reads = [];
+  const entries = ["shared", "unknown", "failed"].map((sessionId) => ({
+    sessionId, source: "cli", cwd: "/canonical/workspace", filePath: `/${sessionId}`,
+    updatedAt: "2026-10-26T01:00:00.000Z", lastReadAt: "",
+  }));
+  const acpEntries = [{ ...entries[0], source: "acp", lastReadAt: "2026-10-26T02:00:00.000Z" }, {
+    sessionId: "acp-only", source: "acp", updatedAt: "2026-10-26T00:00:00.000Z",
+  }];
+  const service = createService({
+    listAcpSessionsForDirectory: async () => acpEntries,
+    listCliSessionsForDirectory: async () => entries,
+    findCliSessionIndexEntriesBySessionIds: async (ids) => entries.filter((entry) => ids.includes(entry.sessionId)),
+    readCliSessionSummaryFromRolloutFile: async (filePath) => {
+      reads.push(filePath);
+      if (filePath === "/failed" && fail) throw new Error("temporary read failure");
+      return { firstUserMessage: "Long prompt", contextUsage: filePath === "/unknown" ? null : { usedPct: 42 }, modelRef, reasoningEffort: "high" };
+    },
+  });
+  const listed = await service.listLlmSessions("/workspace", { source: "all", limit: 100 });
+  const cli = listed.sessions.filter((entry) => entry.source === "cli");
+  assert.deepEqual(reads.sort(), ["/failed", "/shared", "/unknown"]);
+  assert.ok(listed.sessions.filter((entry) => entry.source === "acp").every((entry) => !Object.hasOwn(entry, "summary")));
+  assert.equal(cli.find((entry) => entry.sessionId === "failed").summary, undefined);
+  assert.equal(cli.find((entry) => entry.sessionId === "unknown").summary.contextUsage, null);
+  for (const entry of cli.filter((row) => row.summary)) {
+    const http = (await service.getLlmSessionSummaries({ directory: "/workspace", sessionIds: [entry.sessionId] })).sessions[0];
+    assert.deepEqual(entry.summary, {
+      contextUsage: http.contextUsage, modelRef: http.modelRef,
+      reasoningEffort: http.reasoningEffort, lastReadAt: http.lastReadAt,
+    });
+    assert.equal(Object.hasOwn(entry.summary, "firstUserMessage"), false);
+  }
+  assert.equal(cli.find((entry) => entry.sessionId === "shared").summary.lastReadAt, acpEntries[0].lastReadAt);
+  fail = false;
+  const retried = await service.getLlmSessionSummaries({ directory: "/workspace", sessionIds: ["failed"] });
+  assert.equal(retried.sessions[0].modelRef, modelRef);
+  assert.equal(reads.filter((filePath) => filePath === "/failed").length, 2);
+  modelRef = "fresh-native-model";
+  const refreshed = await service.listLlmSessions("/workspace", { source: "all", limit: 100 });
+  assert.ok(refreshed.sessions.filter((entry) => entry.source === "cli").every((entry) => entry.summary.modelRef === modelRef));
+  assert.equal(refreshed.sessions.find((entry) => entry.sessionId === "failed").summary.modelRef, modelRef);
+});
+
+test("duplicate CLI rollout IDs keep HTTP selection instead of embedding file-specific metadata", async () => {
+  const entries = ["new", "old"].map((version, index) => ({
+    sessionId: "duplicate", source: "cli", filePath: `/${version}`,
+    cwd: "/canonical/workspace", updatedAt: `2026-10-${26 - index}T00:00:00.000Z`,
+  }));
+  const service = createService({
+    listCliSessionsForDirectory: async () => entries,
+    findCliSessionIndexEntriesBySessionIds: async () => [entries[0]],
+    readCliSessionSummaryFromRolloutFile: async (filePath) => ({
+      modelRef: filePath, reasoningEffort: "high", contextUsage: { usedPct: filePath === "/new" ? 63 : 42 },
+    }),
+  });
+  const listed = await service.listLlmSessions("/workspace", { source: "all", limit: 100 });
+  assert.equal(listed.sessions.length, 2);
+  assert.ok(listed.sessions.every((entry) => !Object.hasOwn(entry, "summary")));
+  const http = await service.getLlmSessionSummaries({ directory: "/workspace", sessionIds: ["duplicate"] });
+  assert.equal(http.sessions[0].modelRef, "/new");
+  assert.equal(http.sessions[0].contextUsage.usedPct, 63);
+});

@@ -46,6 +46,7 @@ type UseAppSettingsPersistenceControllerArgs = {
   codexApprovalPolicy: CodexApprovalPolicy;
   ttsProvider: TtsProvider;
   ttsSpeed: number;
+  lightweightTtsOnCellular: boolean;
   selectedVoiceIdByProvider: SelectedVoiceIdByProvider;
   autoBargeInEnabled: boolean;
   autoSpeakerPriorityEnabled: boolean;
@@ -73,6 +74,7 @@ type UseAppSettingsPersistenceControllerArgs = {
   setCodexApprovalPolicy: Dispatch<SetStateAction<CodexApprovalPolicy>>;
   setSelectedVoiceIdByProvider: Dispatch<SetStateAction<SelectedVoiceIdByProvider>>;
   setTtsProvider: Dispatch<SetStateAction<TtsProvider>>;
+  setLightweightTtsOnCellular: Dispatch<SetStateAction<boolean>>;
   setTtsSpeedWithSync: (value: number) => void;
   setAutoBargeInEnabled: Dispatch<SetStateAction<boolean>>;
   setAutoSpeakerPriorityEnabled: Dispatch<SetStateAction<boolean>>;
@@ -105,6 +107,7 @@ export function useAppSettingsPersistenceController({
   codexApprovalPolicy,
   ttsProvider,
   ttsSpeed,
+  lightweightTtsOnCellular,
   selectedVoiceIdByProvider,
   autoBargeInEnabled,
   autoSpeakerPriorityEnabled,
@@ -132,6 +135,7 @@ export function useAppSettingsPersistenceController({
   setCodexApprovalPolicy,
   setSelectedVoiceIdByProvider,
   setTtsProvider,
+  setLightweightTtsOnCellular,
   setTtsSpeedWithSync,
   setAutoBargeInEnabled,
   setAutoSpeakerPriorityEnabled,
@@ -182,6 +186,7 @@ export function useAppSettingsPersistenceController({
       codexApprovalPolicy,
       ttsProvider,
       ttsSpeed,
+      lightweightTtsOnCellular,
       selectedVoiceId: selectedVoiceIdByProvider.elevenlabs,
       selectedVoiceIdByProvider,
       autoBargeInEnabled,
@@ -213,6 +218,7 @@ export function useAppSettingsPersistenceController({
     selectedVoiceIdByProvider,
     ttsProvider,
     ttsSpeed,
+    lightweightTtsOnCellular,
   ]);
 
   const applyPersistedSettings = useCallback(async (parsed: Record<string, unknown>) => {
@@ -300,6 +306,7 @@ export function useAppSettingsPersistenceController({
     setSelectedVoiceIdByProvider(savedVoiceIds);
     setTtsProvider(parseTtsProvider(parsed.ttsProvider));
     setTtsSpeedWithSync(parseTtsSpeed(parsed.ttsSpeed));
+    setLightweightTtsOnCellular(parsed.lightweightTtsOnCellular === true);
     if (typeof parsed.autoBargeInEnabled === "boolean") {
       setAutoBargeInEnabled(parsed.autoBargeInEnabled);
     }
@@ -351,6 +358,7 @@ export function useAppSettingsPersistenceController({
     setSelectedLlmSessionMaterialized,
     setSelectedVoiceIdByProvider,
     setTtsProvider,
+    setLightweightTtsOnCellular,
     setTtsSpeedWithSync,
   ]);
 

@@ -124,6 +124,11 @@ voice loading and speech synthesis fail with a runner error instead of falling
 back silently to another provider. Use ElevenLabs or Google Cloud TTS if you do
 not want to run AivisSpeech locally.
 
+The audio setting “モバイル通信中は軽量音声” optionally reduces synthesized speech
+on cellular connections to mono 24 kHz, 32 kbps MP3. It is off by default;
+Wi-Fi and unknown connections retain the usual quality. This setting requires
+`ffmpeg` on the runner for every TTS provider and applies to new synthesis.
+
 ## Quick Start
 
 1. Install the runner dependencies and create local config:

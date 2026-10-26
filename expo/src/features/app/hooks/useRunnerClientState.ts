@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { Alert, AppState } from "react-native";
 import type { RegisteredDirectoryEntry } from "../types/directorySessions";
-import { requestRunnerClientState, runnerSessionKey, type RunnerClientState } from "../utils/runnerClientState";
+import { requestRunnerClientState, runnerSessionKey, type RunnerClientState, type RunnerClientStateCache } from "../utils/runnerClientState";
 import type { ComposerDraft } from "./useComposerPersistence";
 import type { ReasoningEffort } from "../utils/settingsParsers";
 
@@ -39,6 +39,7 @@ export function useRunnerClientState({
   const [sessionNotesById, setSessionNotesById] = useState<Record<string, string>>({});
   const queue = useRef<Promise<unknown>>(Promise.resolve());
   const snapshotRef = useRef<RunnerClientState | null>(null);
+  const requestCache = useRef<RunnerClientStateCache>({});
   const snapshotConnectionRef = useRef("");
   const currentConnection = selectedConnection(runnerUrl, runnerToken, backendId, localRunnerUrl, cloudflareRunnerUrl);
   const connectionRef = useRef(currentConnection);
@@ -56,7 +57,7 @@ export function useRunnerClientState({
         if ((snapshot.drafts[sessionKey]?.text || "") === pending.text) delete pendingDrafts.current[key];
       }
     }
-    if (snapshotConnectionRef.current === id && snapshotRef.current?.revision === snapshot.revision) return;
+    if (snapshotConnectionRef.current === id && snapshotRef.current === snapshot) return;
     snapshotConnectionRef.current = id;
     snapshotRef.current = snapshot;
     setRegisteredDirectories((current) => JSON.stringify(current) === JSON.stringify(snapshot.directories) ? current : snapshot.directories);
@@ -82,13 +83,13 @@ export function useRunnerClientState({
     const active = connection.id === connectionRef.current.id ? connectionRef.current : connection;
     const { runnerUrl: url, runnerToken: token } = active;
     if (!url || !token) return;
-    let snapshot = await requestRunnerClientState({ runnerUrl: url, runnerToken: token });
+    let snapshot = await requestRunnerClientState({ runnerUrl: url, runnerToken: token, cache: requestCache.current });
     applySnapshot(snapshot, connection);
     for (const [key, pending] of Object.entries(pendingDrafts.current)) {
       if (pending.connection.id !== connection.id) continue;
       if (draftTimers.current[key] || queuedDrafts.current.has(key)) continue;
       const [draftBackendId, sessionId] = JSON.parse(key.slice(connection.id.length + 1)) as [string, string];
-      snapshot = await requestRunnerClientState({ runnerUrl: url, runnerToken: token, operation: {
+      snapshot = await requestRunnerClientState({ runnerUrl: url, runnerToken: token, cache: requestCache.current, operation: {
         type: "draft.set", backendId: draftBackendId, sessionId, text: pending.text,
       } });
       applySnapshot(snapshot, connection);
@@ -103,7 +104,7 @@ export function useRunnerClientState({
       const active = connection.id === connectionRef.current.id ? connectionRef.current : connection;
       const { runnerUrl: url, runnerToken: token } = active;
       if (!url || !token) throw new Error("Runner connection is not configured");
-      applySnapshot(await requestRunnerClientState({ runnerUrl: url, runnerToken: token, operation }), connection);
+      applySnapshot(await requestRunnerClientState({ runnerUrl: url, runnerToken: token, cache: requestCache.current, operation }), connection);
     });
     queue.current = next.catch(() => {});
     return next;
@@ -111,6 +112,7 @@ export function useRunnerClientState({
 
   useEffect(() => {
     snapshotRef.current = null;
+    requestCache.current.entry = undefined;
     snapshotConnectionRef.current = "";
     setRegisteredDirectories([]);
     setTitleModelId("gpt-6-luna");

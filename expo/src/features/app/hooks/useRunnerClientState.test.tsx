@@ -1,6 +1,7 @@
 import { act, renderHook, waitFor } from "@testing-library/react-native";
 import { Alert, AppState } from "react-native";
 import { useRunnerClientState } from "./useRunnerClientState";
+const originalAppState = AppState.currentState;
 const sessionKey = JSON.stringify(["codex", "session-1"]);
 const directory = { id: "dir-1", path: "/work", displayName: "Work", markerColor: "green" as const };
 let server: {
@@ -47,6 +48,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  AppState.currentState = originalAppState;
   jest.restoreAllMocks();
   jest.useRealTimers();
 });
@@ -80,6 +82,35 @@ test("loads Runner state without sending a migration operation", async () => {
   expect(setRegisteredDirectories).toHaveBeenCalledWith(expect.any(Function));
   expect(setSessionTitleOverridesById).toHaveBeenCalledWith({ [sessionKey]: "Runner title" });
 });
+
+test("15-second polling revalidates cached state and applies another device's update at the same revision", async () => {
+  AppState.currentState = "active";
+  let etag = '"original"';
+  const originalFetch = global.fetch;
+  global.fetch = jest.fn(async (url, init) => {
+    if ((init?.headers as Record<string, string>)["if-none-match"] === etag) {
+      return { status: 304, ok: false, headers: { get: () => etag } } as unknown as Response;
+    }
+    const response = await originalFetch(url, init);
+    return { ...response, headers: { get: () => etag } } as unknown as Response;
+  }) as typeof fetch;
+  server.sessions[sessionKey] = { title: "Before restore", markerColor: "red" };
+  const { result, setSessionTitleOverridesById } = await renderState();
+  await waitFor(() => expect(result.current.draftsLoaded).toBe(true));
+  const applications = setSessionTitleOverridesById.mock.calls.length;
+  const requests = (global.fetch as jest.Mock).mock.calls.length;
+  await act(async () => { jest.advanceTimersByTime(15_000); });
+  await act(async () => Promise.resolve());
+  expect(global.fetch).toHaveBeenCalledTimes(requests + 1);
+  expect(setSessionTitleOverridesById).toHaveBeenCalledTimes(applications);
+
+  server.sessions[sessionKey].title = "Restored on another device";
+  etag = '"restored"';
+  await act(async () => { jest.advanceTimersByTime(15_000); });
+  await waitFor(() => expect(setSessionTitleOverridesById).toHaveBeenLastCalledWith({ [sessionKey]: "Restored on another device" }));
+  expect(server.revision).toBe(0);
+});
+
 test("shows GPT-6 Luna/low for an older empty title setting", async () => {
   server.titleModelId = "";
   server.titleReasoningEffort = "high";

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -55,5 +56,118 @@ test("client state is authenticated, durable, provider-aware, and merges field o
     assert.equal(restarted.revision, snapshot.revision);
   } finally {
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+test("conditional client-state GET validates current state without suppressing other clients' updates", async () => {
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const url = `http://127.0.0.1:${server.address().port}/client-state`;
+  const headers = { authorization: "Bearer test-runner-token" };
+  try {
+    const first = await fetch(url, { headers });
+    assert.equal(first.status, 200);
+    assert.equal(first.headers.get("cache-control"), "private, no-cache");
+    assert.equal(first.headers.get("vary"), "Authorization");
+    const body = await first.text();
+    const etag = first.headers.get("etag");
+    assert.equal(etag, `"${createHash("sha256").update(body).digest("hex")}"`);
+    assert.equal(Number(first.headers.get("content-length")), Buffer.byteLength(body));
+    for (const validator of [etag, `"unrelated", W/${etag}`, "*"]) {
+      const unchanged = await fetch(url, { headers: { ...headers, "if-none-match": validator } });
+      assert.equal(unchanged.status, 304);
+      assert.equal(unchanged.headers.get("etag"), etag);
+      assert.equal(unchanged.headers.get("cache-control"), "private, no-cache");
+      assert.equal(await unchanged.text(), "");
+    }
+    for (const authorization of ["", "Bearer wrong-token"]) {
+      const unauthorized = await fetch(url, { headers: { authorization, "if-none-match": etag } });
+      assert.equal(unauthorized.status, 401);
+      assert.equal(unauthorized.headers.get("etag"), null);
+      assert.equal(unauthorized.headers.get("cache-control"), "no-store");
+    }
+    const operation = { type: "session.set", backendId: "codex", sessionId: "other-device", title: "Updated on another device" };
+    const changed = await fetch(url, {
+      method: "POST", headers: { ...headers, "content-type": "application/json", "if-none-match": etag },
+      body: JSON.stringify({ operation }),
+    });
+    assert.equal(changed.status, 200);
+    assert.equal(changed.headers.get("cache-control"), "no-store");
+    const postedEtag = changed.headers.get("etag");
+    assert.ok(postedEtag);
+    assert.notEqual(postedEtag, etag);
+    const posted = await changed.json();
+    const updated = await fetch(url, { headers: { ...headers, "if-none-match": etag } });
+    assert.equal(updated.status, 200);
+    const newEtag = updated.headers.get("etag");
+    assert.notEqual(newEtag, etag);
+    assert.equal(newEtag, postedEtag);
+    assert.deepEqual((await updated.json()).snapshot, posted.snapshot);
+    assert.equal(posted.snapshot.sessions[JSON.stringify(["codex", "other-device"])].title, operation.title);
+    const unchanged = await fetch(url, { headers: { ...headers, "if-none-match": newEtag } });
+    assert.equal(unchanged.status, 304);
+    assert.equal(await unchanged.text(), "");
+    const invalid = await fetch(url, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: "{}" });
+    assert.equal(invalid.status, 400);
+    assert.equal(invalid.headers.get("etag"), null);
+    assert.equal(invalid.headers.get("cache-control"), "no-store");
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+test("client-state validators survive restart and detect restored content even at the same revision", async () => {
+  const headers = { authorization: "Bearer test-runner-token" };
+  async function read(runtimeServer, etag) {
+    await new Promise((resolve) => runtimeServer.listen(0, "127.0.0.1", resolve));
+    try {
+      const response = await fetch(`http://127.0.0.1:${runtimeServer.address().port}/client-state`, {
+        headers: { ...headers, ...(etag ? { "if-none-match": etag } : {}) },
+      });
+      return { status: response.status, etag: response.headers.get("etag"), body: await response.text() };
+    } finally {
+      await new Promise((resolve, reject) => runtimeServer.close((error) => error ? reject(error) : resolve()));
+    }
+  }
+  const initial = await read(server);
+  const restarted = await import("../src/server-runtime.mjs?client-state-restart");
+  const unchanged = await read(restarted.__TESTING__.server, initial.etag);
+  assert.equal(unchanged.status, 304);
+  assert.equal(unchanged.etag, initial.etag);
+  const restored = JSON.parse(await fs.readFile(process.env.CLIENT_STATE_STORE_PATH, "utf8"));
+  const originalRevision = restored.revision;
+  restored.composerHistory = ["Restored backup with the same revision"];
+  await fs.writeFile(process.env.CLIENT_STATE_STORE_PATH, JSON.stringify(restored));
+  const restoredRuntime = await import("../src/server-runtime.mjs?client-state-restored");
+  const updated = await read(restoredRuntime.__TESTING__.server, initial.etag);
+  assert.equal(updated.status, 200);
+  assert.notEqual(updated.etag, initial.etag);
+  const snapshot = JSON.parse(updated.body).snapshot;
+  assert.equal(snapshot.revision, originalRevision);
+  assert.deepEqual(snapshot.composerHistory, restored.composerHistory);
+});
+
+test("an unavailable authoritative store returns an error instead of a cache hit", async () => {
+  const originalStorePath = process.env.CLIENT_STATE_STORE_PATH;
+  const unavailableStorePath = path.join(tempDir, "corrupt-client-state.json");
+  await fs.writeFile(unavailableStorePath, "{}");
+  let unavailable;
+  try {
+    process.env.CLIENT_STATE_STORE_PATH = unavailableStorePath;
+    unavailable = await import("../src/server-runtime.mjs?client-state-unavailable");
+  } finally {
+    process.env.CLIENT_STATE_STORE_PATH = originalStorePath;
+  }
+  const runtimeServer = unavailable.__TESTING__.server;
+  await new Promise((resolve) => runtimeServer.listen(0, "127.0.0.1", resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${runtimeServer.address().port}/client-state`, {
+      headers: { authorization: "Bearer test-runner-token", "if-none-match": "*" },
+    });
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get("etag"), null);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.equal((await response.json()).error, "client_state_unavailable");
+  } finally {
+    await new Promise((resolve, reject) => runtimeServer.close((error) => error ? reject(error) : resolve()));
   }
 });

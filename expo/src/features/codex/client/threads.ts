@@ -68,6 +68,12 @@ export async function listCodexAppServerThreads(options: {
         data: sessions.map((raw) => {
           const item = raw && typeof raw === "object" ? raw as Record<string, any> : {};
           const entryBackendId = String(item.sessionRef?.backendId || fallbackEntryBackendId);
+          const summary = item.summary;
+          const hasSummary = entryBackendId === "codex" && summary && typeof summary === "object"
+            && !Array.isArray(summary) && Object.prototype.hasOwnProperty.call(summary, "contextUsage")
+            && (summary.contextUsage === null || (typeof summary.contextUsage === "object" && !Array.isArray(summary.contextUsage)))
+            && typeof summary.modelRef === "string"
+            && typeof summary.reasoningEffort === "string" && typeof summary.lastReadAt === "string";
           return {
             backendId: entryBackendId,
             threadId: String(item.sessionRef?.nativeSessionId || ""),
@@ -90,6 +96,7 @@ export async function listCodexAppServerThreads(options: {
             updatedAt: String(item.updatedAt || ""),
             lastReadAt: String(item.lastReadAt || ""),
             contextUsedPct: null,
+            ...(hasSummary ? { summary } : {}),
             // read経路(activeRun→active/idle)と同じサーバー発の実行状態。
             // 欠落させると常に"unknown"となりsubagent実行中カウントが構造的に0になる。
             threadStatusType: item.isActive === true ? "active" as const : "idle" as const,

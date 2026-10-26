@@ -1,1 +1,1 @@
-export { addNetworkStateListener } from "expo-network";
+export { addNetworkStateListener, getNetworkStateAsync } from "expo-network";

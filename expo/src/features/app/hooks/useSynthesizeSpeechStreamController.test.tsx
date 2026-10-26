@@ -1,3 +1,6 @@
+import { getNetworkStateAsync } from "../networkState";
+jest.mock("../networkState", () => ({ getNetworkStateAsync: jest.fn() }));
+
 import { act, renderHook } from "@testing-library/react-native";
 
 import { VoiceControl, type VoiceSurface, type VoiceTarget } from "../../appControl/voiceControl";
@@ -114,6 +117,7 @@ function createOptions(manager: FakeRunnerWebSocketManager) {
       ttsProvider: "mock",
       selectedVoiceId: "voice-1",
       ttsSpeed: 1,
+      lightweightTtsOnCellular: false,
       ttsWaveformPoints: 8,
       runnerWebSocketManager: manager as unknown as RunnerWebSocketManager,
       streamTtsControlRef,
@@ -191,6 +195,7 @@ function createStopOptions(options: ReturnType<typeof createOptions>["options"],
 
 beforeEach(() => {
   mockCreateWebSocketWithOptionalAuth.mockReset();
+  jest.mocked(getNetworkStateAsync).mockReset();
 });
 
 test("voice job attaches, replays once, and resumes from eventSeq", async () => {
@@ -319,7 +324,7 @@ test("direct WebSocket releases its active ref at done before the close event", 
     queueWaitMs: 42, synthesisMs: 550, mediaRegistrationMs: 3,
     at: "2026-10-15T00:00:00.000Z" }) });
   expect(options.logAuto).toHaveBeenCalledWith("tts_trace", {
-    stage: "chunk_received", messageId: "message-1", jobId: "job-1", seq: 0, audioBytes: 0,
+    stage: "chunk_received", messageId: "message-1", jobId: "job-1", seq: 0, audioBytes: 0, audioQuality: "standard",
     queueWaitMs: 42, synthesisMs: 550, mediaRegistrationMs: 3,
     serverEmittedAtMs: Date.parse("2026-10-15T00:00:00.000Z"),
   });
@@ -961,4 +966,50 @@ test.each([false, true])("scoped release joining an older native stop rechecks o
   if (newOwner) expect(options.streamTtsControlRef.current?.operationId).toBe("new-operation");
   else expect(options.streamTtsControlRef.current).toBeNull();
   expect(manager.sent).toContainEqual(expect.objectContaining({ channel: "tts", op: "detach", streamId: "caller-job" }));
+});
+
+
+test("managed TTS rechecks cellular and Wi-Fi for each synthesis", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const { options } = createOptions(manager);
+  options.lightweightTtsOnCellular = true;
+  jest.mocked(getNetworkStateAsync).mockResolvedValueOnce({ type: "CELLULAR" } as Awaited<ReturnType<typeof getNetworkStateAsync>>)
+    .mockResolvedValueOnce({ type: "WIFI" } as Awaited<ReturnType<typeof getNetworkStateAsync>>);
+  const { result } = await renderHook(() => useSynthesizeSpeechStreamController(options));
+  await result.current("first"); await flushPromises();
+  await result.current("second"); await flushPromises();
+  expect(manager.sent.filter(({ op }) => op === "start").map(({ payload }) => (payload as Record<string, unknown>).audioQuality))
+    .toEqual(["lightweight", "standard"]);
+});
+
+test.each(["cancel", "unmount", "newer request"])("stream TTS ignores a pending network result after %s", async (action) => {
+  const manager = new FakeRunnerWebSocketManager();
+  const { options } = createOptions(manager);
+  options.lightweightTtsOnCellular = true;
+  let resolveNetwork!: (state: Awaited<ReturnType<typeof getNetworkStateAsync>>) => void;
+  jest.mocked(getNetworkStateAsync).mockReturnValueOnce(new Promise((resolve) => { resolveNetwork = resolve; }))
+    .mockResolvedValue({ type: "WIFI" } as Awaited<ReturnType<typeof getNetworkStateAsync>>);
+  const { result, unmount } = await renderHook(() => useSynthesizeSpeechStreamController(options));
+  const first = result.current("first");
+  if (action === "cancel") options.streamTtsSuppressedRef.current = true;
+  else if (action === "unmount") await unmount();
+  else { await result.current("second"); await flushPromises(); }
+  resolveNetwork({ type: "CELLULAR" } as Awaited<ReturnType<typeof getNetworkStateAsync>>);
+  await first; await flushPromises();
+  const starts = manager.sent.filter(({ op }) => op === "start");
+  expect(starts).toHaveLength(action === "newer request" ? 1 : 0);
+  if (starts.length) expect(starts[0].payload).toMatchObject({ text: "second", audioQuality: "standard" });
+});
+
+test("legacy stream socket includes lightweight quality in its start frame", async () => {
+  jest.mocked(getNetworkStateAsync).mockResolvedValue({ type: "CELLULAR" } as Awaited<ReturnType<typeof getNetworkStateAsync>>);
+  const { options } = createOptions(new FakeRunnerWebSocketManager());
+  const ws = { readyState: WebSocket.OPEN, close: jest.fn(), send: jest.fn(), onopen: null as null | (() => void) };
+  mockCreateWebSocketWithOptionalAuth.mockReturnValue(ws);
+  const { result } = await renderHook(() => useSynthesizeSpeechStreamController({
+    ...options, runnerWebSocketManager: undefined, runnerToken: "token", lightweightTtsOnCellular: true,
+  }));
+  await result.current("hello");
+  ws.onopen?.();
+  expect(JSON.parse(ws.send.mock.calls[0][0])).toMatchObject({ type: "start", audioQuality: "lightweight" });
 });

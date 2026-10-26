@@ -132,6 +132,7 @@ export function createPrivateRunnerAgentRuntime({
           title: String(session.firstUserMessage || ""),
           modelId: String(session.modelRef || ""),
           reasoningEffort: String(session.reasoningEffort || ""),
+          ...(session.summary ? { summary: session.summary } : {}),
           ...(session.source ? { sourceKind: String(session.source) } : {}),
           isSubagent: session.isSubagent === true,
           ...(session.parentSessionId

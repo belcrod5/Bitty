@@ -73,7 +73,7 @@ export function createLlmSessionService(deps = {}) {
     }
   }
 
-  function serializeSession(item, summary) {
+  function serializeSession(item, summary, includeFirstUserMessage = true) {
     const serialized = {
       ...item,
       firstUserMessage: String(summary?.firstUserMessage || "").trim(),
@@ -82,6 +82,7 @@ export function createLlmSessionService(deps = {}) {
       reasoningEffort: String(summary?.reasoningEffort || "").trim(),
     };
     delete serialized.filePath;
+    if (!includeFirstUserMessage) delete serialized.firstUserMessage;
     return serialized;
   }
 
@@ -123,6 +124,7 @@ export function createLlmSessionService(deps = {}) {
     if (source === "acp" || source === "all") {
       sessions.push(...await listAcpSessionsForDirectory(directory));
     }
+    const acpBySessionId = new Map(sessions.map((item) => [String(item.sessionId), item]));
     if (source === "cli" || source === "all") {
       // index側updatedAtはrollout先頭session_metaのtimestamp(=セッション開始時刻)で、
       // resumeしても進まない。一覧はrollout実ファイルのmtimeとの新しい方で並べ、
@@ -132,6 +134,13 @@ export function createLlmSessionService(deps = {}) {
         useRolloutMtime: true,
         ...(opts?.includeSubagents === false ? { includeSubagents: false } : {}),
       }));
+    }
+    const cliCounts = new Map();
+    for (const item of sessions) {
+      if (String(item.source).toLowerCase() === "cli") {
+        const id = String(item.sessionId);
+        cliCounts.set(id, (cliCounts.get(id) || 0) + 1);
+      }
     }
     const parentIds = Array.isArray(opts?.parentSessionRefs) && opts.parentSessionRefs.length > 0
       ? new Set(opts.parentSessionRefs
@@ -165,6 +174,14 @@ export function createLlmSessionService(deps = {}) {
       // 全体limitで切った時、Backendごとに実際に返した位置まで進めるために使う。
       sessions: limited.map((item, index) => ({
         ...serializeSession(item, summaries[index]),
+        ...(source === "all" && summaries[index] && cliCounts.get(String(item.sessionId)) === 1 ? {
+          summary: {
+            contextUsage: summaries[index].contextUsage,
+            modelRef: summaries[index].modelRef,
+            reasoningEffort: summaries[index].reasoningEffort,
+            lastReadAt: newerTimestamp(item.lastReadAt, acpBySessionId.get(String(item.sessionId))?.lastReadAt),
+          },
+        } : {}),
         cursor: encodeSessionListPageCursor(item),
       })),
       ...(nextCursor ? { cursor: nextCursor } : {}),
@@ -459,6 +476,7 @@ export function createLlmSessionService(deps = {}) {
 
   async function getLlmSessionSummaries(rawBody) {
     const body = rawBody && typeof rawBody === "object" ? rawBody : {};
+    const includeFirstUserMessage = body.includeFirstUserMessage !== false;
     const rawDirectory = String(body.directory || "").trim();
     if (!rawDirectory) {
       throw makeApiError(400, "invalid_directory", "directory is required");
@@ -482,7 +500,7 @@ export function createLlmSessionService(deps = {}) {
           updatedAt: session.updatedAt,
           lastReadAt: session.lastReadAt,
           source: session.sourceKind,
-          firstUserMessage: session.title,
+          ...(includeFirstUserMessage ? { firstUserMessage: session.title } : {}),
           parentSessionId: session.parentSessionRef?.nativeSessionId || "",
           modelRef: session.modelId,
           reasoningEffort: session.reasoningEffort,
@@ -531,7 +549,7 @@ export function createLlmSessionService(deps = {}) {
           source: "cli",
           updatedAt: newerTimestamp(cli.updatedAt, acp?.updatedAt),
           lastReadAt: newerTimestamp(cli.lastReadAt, acp?.lastReadAt),
-        }, summary));
+        }, summary, includeFirstUserMessage));
         continue;
       }
       if (acp) {
@@ -539,7 +557,7 @@ export function createLlmSessionService(deps = {}) {
           ...acp,
           directory,
           source: "acp",
-        }, null));
+        }, null, includeFirstUserMessage));
         continue;
       }
       missingSessionIds.push(sessionId);
