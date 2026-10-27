@@ -653,3 +653,15 @@ run `20261027_170230_450`の受信時刻`2026-10-27T08:04:01.664Z`（17:04:01.66
 接続エラー／切断通知は両cycle開始前の08:02:29〜30Zだった。復元先不在2件、Git error 24件（directory不在13・repository不正10・その他1）、proxy error 8件（not-loaded 4・rollout不在4）は別に記録し、一覧batch失敗とは断定しない。今回は安全な集計だけを第17群へ保存し、source変更・追加build／Runner再起動は行っていない。速度の因果的前後差や全取得成功はまだ主張しない。
 
 別途08:07:15.596Zのlive Runner読み取り専用probeでは、hello＋batchの2要求で25成功・99行・group失敗0・backend部分失敗0、有効summaryはCodex 95/95・Claude 4/4で補足対象0だった。稼働serverのsummary修正を確認できたが、これは実アプリの補足HTTP 0の実測ではない。WS open後hello＋batchは0.884秒（batchのみ0.882秒）、接続確立／HTTP／UIを除くloopback値で、携帯回線での起動秒数や因果的改善値とは扱わない。
+
+### 18.9 ログ送出の詰まりと不要renderの削減（2026-10-27）
+
+ack修正済みのhookでも、上限240・送信40の待ち時間中に十分なburstを入れると、101〜325／101〜330の225／230連続欠損と完了集計消失を再現できた。任意burstを有限bufferで全保持できないため、実ログの原因確定や完全保証とはしない。別の代表fixture（40件を200ms毎に12波、mock POST 10ms、fake clock）では通常flushが1batch毎に700ms待つため、480生成→360受信・完了消失となった。
+
+通常flushも既存loopの最大12batchを連続送信し、空になった後／上限到達後だけ次便を待つようにした。同fixtureは480/480受信・完了1件となり、上限240・送信40・初回700msは変えない。production参照が無いqueued／sent／statusの3React stateとsendNow／clearLocalの2APIを削除し、hookの実装量も減らした。enqueue＋flushのowner renderは旧hook実行3回→1回。ログが原因で実アプリのhydrateが増えていたという因果まで実証したものではない。clearLocal専用回帰は未使用APIごと不要となり、先のack identity修正とoverflow／retry回帰は実送信内容で維持する。
+
+連続送信はunmount／無効化／URL・token切替で旧条件の後続要求を止め、残存分は現在のflushへ戻す。失敗後はenqueueが立てた短いtimerを外しretry間隔を守る。POST先頭eventのpayloadをcopyして生成済seq・累積buffer evictionの2数値だけを添え、元entry／payloadを変更しない。evictionには送信中で後から届くentryも含まれ、未達数ではない（225欠損fixtureでeviction 245）。生成seqもqueue内を含み、受領済み範囲ではない。server・endpoint・上限・専用queueは追加変更しない。
+
+重複するhydrate received／loadedとGit settledの3eventは、既存detailed設定へ移した。start／done／errorと同期集計は維持し、機能処理は変えない。手元の検証設定では詳細が有効だったため、この3eventの削減は既存詳細スイッチをOFFにした検証buildで確認する必要がある。永続local設定は変更しない。詳細OFF時でも極端burst・送信失敗・先頭eventのfilter／切詰め・終了等による観測欠損はあり得るため、累積数値とseqを併せて判定し、完了event未観測を取得失敗とは扱わない。
+
+関連Jestは`useBufferedClientLogs`・`appDiagnostics`・`useGitChangedFilesController`・`useSkiaMiniChatSessions`・`useLlmSessionExplorer`の5suite・99件、default／macOS型チェックが成功した。metadataの送信先頭seq4と元payloadをfreezeした検査、counter単調性、12batch後の待機、unmount・設定切替／復帰・retryを含むlogger境界13件も再成功。旧paced失敗は`/tmp/bitty-log-drain-before.log`、旧render比較は`/tmp/bitty-log-drain-before-render.log`、修正後は`/tmp/bitty-log-drain-after.log`、最終境界検査は`/tmp/bitty-log-drain-counter-check.log`、型チェックは`/tmp/bitty-log-drain-typecheck{,-macos}.log`。安全な集計を第18群へ保存した。実機の変更後capture・追加build・Runner再起動は未実施で、起動秒数短縮は主張しない。

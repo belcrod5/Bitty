@@ -5509,7 +5509,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
       requestedTitleHint: titleHint,
       requestedModelRefHint: modelRefHint,
       requestedReasoningEffortHint: reasoningEffortHint,
-    }, { throttleMs: 0 });
+    }, { throttleMs: 0, detailed: true });
     try {
       const restored = await fetchRunnerSessionMessagesCached(sessionId, directory, { backendId });
       const restoredSessionId = parseOptionalSessionId(restored.threadId);
@@ -5576,7 +5576,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
         firstMessagePreview: String(firstConversation?.content || "").slice(0, 80),
         lastMessageRole: lastConversation?.role || "",
         lastMessagePreview: String(lastConversation?.content || "").slice(0, 80),
-      }, { throttleMs: 0 });
+      }, { throttleMs: 0, detailed: true });
       let selectedSessionTitle = titleHint;
       const overrideTitle = formatLlmSessionDisplayTitle(
         runnerSessionValue(sessionTitleOverridesById, backendId, markerSessionId) ||

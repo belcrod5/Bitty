@@ -259,7 +259,7 @@ export function useGitChangedFilesController({
         directory,
         elapsedMs: Math.max(0, Date.now() - startedAt),
         loading: false,
-      }, { throttleMs: 0 });
+      }, { throttleMs: 0, detailed: true });
     }
   }, [
     fetchRunnerGitChangedFiles,

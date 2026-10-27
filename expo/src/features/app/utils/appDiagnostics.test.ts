@@ -1,4 +1,4 @@
-import { logAutoEvent, ttsDiagnosticError } from "./appDiagnostics";
+import { logAutoEvent, logSessionDiagEvent, ttsDiagnosticError } from "./appDiagnostics";
 
 test("persists TTS traces while general auto diagnostics are disabled", () => {
   const enqueueLog = jest.fn();
@@ -27,4 +27,15 @@ test("diagnostic errors retain known codes without exposing free text, URLs, or 
     .toBe("Error");
   expect(ttsDiagnosticError(new Error("provider says job_secret"))).toBe("Error");
   expect(ttsDiagnosticError("data:audio/mpeg;base64," + "A".repeat(200))).toBe("unknown_error");
+});
+
+
+test.each([false, true])("duplicate lifecycle details use the existing detail switch (%s)", (detailsEnabled) => {
+  const enqueueLog = jest.fn();
+  for (const event of ["mini_board_hydrate_request_received", "mini_board_hydrate_loaded_messages", "git_changed_files_refresh_settled"]) {
+    logSessionDiagEvent({ event, payload: { count: 1 }, options: { throttleMs: 0, detailed: true },
+      sessionDiagDetailEventsEnabled: detailsEnabled, sessionDiagEventThrottleDefaultMs: 1200,
+      sessionDiagEventLastAtByKey: {}, enqueueLog });
+  }
+  expect(enqueueLog).toHaveBeenCalledTimes(detailsEnabled ? 3 : 0);
 });

@@ -1845,6 +1845,84 @@
           "No user identifiers, paths, session content or credentials are retained"
         ]
       }
+    },
+    {
+      "id": "bounded-client-log-drain-and-observation",
+      "kind": "fake-clock-hook-transport-contract-regression",
+      "base": "8df03ed",
+      "bufferMax": 240,
+      "flushBatchSize": 40,
+      "coalescingDelayMs": 700,
+      "automaticMaxBatchesBefore": 1,
+      "automaticMaxBatchesAfter": 12,
+      "pacedBurst": {
+        "waves": 12,
+        "eventsPerWave": 40,
+        "waveIntervalMs": 200,
+        "mockPostResponseDelayMs": 10,
+        "before": {
+          "produced": 480,
+          "observed": 360,
+          "completionObserved": false
+        },
+        "after": {
+          "produced": 480,
+          "observed": 480,
+          "completionObserved": true
+        }
+      },
+      "ownerRendersDuringEnqueueAndSuccessfulFlush": {
+        "before": 3,
+        "after": 1,
+        "oldImplementationFromGitHeadFixture": true
+      },
+      "unboundedBurstLimitCases": [
+        {
+          "generated": 565,
+          "received": 340,
+          "missingSequences": 225,
+          "missingFirstSequence": 101,
+          "missingLastSequence": 325,
+          "bufferEvictedCount": 245,
+          "completionObserved": false
+        },
+        {
+          "generated": 570,
+          "received": 340,
+          "missingSequences": 230,
+          "missingFirstSequence": 101,
+          "missingLastSequence": 330,
+          "bufferEvictedCount": 250,
+          "completionObserved": false
+        }
+      ],
+      "newPayloadMetadataFields": [
+        "clientLogGeneratedThroughSeq",
+        "clientLogBufferEvictedCount"
+      ],
+      "removedUnusedProductionApi": [
+        "queuedCount",
+        "sentCount",
+        "status",
+        "sendNow",
+        "clearLocal"
+      ],
+      "existingEventsMovedToDetailed": [
+        "mini_board_hydrate_request_received",
+        "mini_board_hydrate_loaded_messages",
+        "git_changed_files_refresh_settled"
+      ],
+      "serverChanged": false,
+      "newConfigOrDependency": false,
+      "limitations": [
+        "Fake-clock fixtures do not prove the cause of historical device gaps or measure real startup time",
+        "The unchanged finite cap can still evict a completion event during an arbitrary or sufficiently slow-send burst",
+        "BufferEvictedCount counts evictions including in-flight entries that may be delivered later; it is not a missing-delivery count",
+        "GeneratedThroughSeq includes queued, evicted and already-sent generated entries, not an acknowledgement watermark",
+        "First-entry metadata may itself be filtered or truncated; no per-batch or durable-persistence guarantee is added",
+        "Detailed-event reduction requires the existing detail switch to be off; verbose mode remains available",
+        "The measured owner render reduction does not prove a cause of panel rehydration in the actual app"
+      ]
     }
   ],
   "checksRun": {
@@ -1900,5 +1978,17 @@
     "appBuildRun": false,
     "runnerRestarted": false,
     "actualAppImprovementMeasured": false
+  },
+  "logDrainFollowupValidation": {
+    "date": "2026-10-27",
+    "base": "8df03ed",
+    "jestSuites": 5,
+    "jestTestsPassed": 99,
+    "loggerBoundaryTestsPassed": 13,
+    "defaultTypecheckPassed": true,
+    "macosTypecheckPassed": true,
+    "appBuildRun": false,
+    "runnerRestarted": false,
+    "actualAppCaptureAfterChangeVerified": false
   }
 }
