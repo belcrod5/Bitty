@@ -1,6 +1,11 @@
 import type { ReactNode } from "react";
 import type { StyleProp, ViewStyle } from "react-native";
 
+export type AppModalHostProps = {
+  children: ReactNode;
+  foreground?: ReactNode;
+};
+
 export type AppModalProps = {
   animationType?: "none" | "slide" | "fade";
   backdropColor?: string;

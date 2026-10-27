@@ -28,6 +28,7 @@ import { WebView } from "react-native-webview";
 import { useAppStyles } from "./styles";
 import { AppProviders } from "./AppProviders";
 import { AppModalHost } from "./components/AppModal";
+import { RunnerConnectionIndicator } from "../runnerWs/RunnerConnectionIndicator";
 import { AppDrawer } from "./components/AppDrawer";
 import { AppDrawerLayout } from "./components/AppDrawerLayout";
 import { AppScreenContent } from "./components/AppScreenContent";
@@ -677,7 +678,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     titleModelId, titleReasoningEffort, changeTitleSettings,
     messages: composerMessageHistory, recordMessage: recordComposerMessageHistory,
     drafts: composerDrafts, draftsLoaded: composerDraftsLoaded, setDraft: setComposerDraft, clearDraft: clearComposerDraft,
-    scopeId: runnerClientStateScopeId } = useRunnerClientState({
+    scopeId: runnerClientStateScopeId, connectionInterrupted: runnerClientStateConnectionInterrupted } = useRunnerClientState({
       settingsLoaded, runnerUrl, localRunnerUrl, cloudflareRunnerUrl, runnerToken, backendId: llmBackend,
       setRegisteredDirectories, setSessionTitleOverridesById, setSessionMarkerColorsById,
     });
@@ -6161,7 +6162,10 @@ function AppContent({ onReady }: { onReady?: () => void }) {
         chatScreen={chatScreenContextValue}
       >
       <KeyboardProvider>
-      <AppModalHost>
+      <AppModalHost foreground={<RunnerConnectionIndicator
+        enabled={settingsLoaded && !!runnerUrl && !!runnerToken}
+        connectionInterrupted={runnerClientStateConnectionInterrupted}
+      />}>
         <AppDrawerLayout
         open={drawerOpen}
         onOpen={openDrawer}

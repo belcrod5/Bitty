@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { Alert, AppState } from "react-native";
 import type { RegisteredDirectoryEntry } from "../types/directorySessions";
-import { requestRunnerClientState, runnerSessionKey, type RunnerClientState, type RunnerClientStateCache } from "../utils/runnerClientState";
+import { requestRunnerClientState, RunnerClientStateConnectionError, runnerSessionKey, type RunnerClientState, type RunnerClientStateCache } from "../utils/runnerClientState";
 import type { ComposerDraft } from "./useComposerPersistence";
 import type { ReasoningEffort } from "../utils/settingsParsers";
 
@@ -27,10 +27,16 @@ function selectedConnection(runnerUrl: string, runnerToken: string, backendId: s
   return { runnerUrl: url, runnerToken, backendId, id: JSON.stringify([canonicalUrl, runnerToken]) };
 }
 
+function reportSaveError(error: unknown) {
+  if (error instanceof RunnerClientStateConnectionError) return;
+  Alert.alert("Runner に保存できません", error instanceof Error ? error.message : String(error));
+}
+
 export function useRunnerClientState({
   settingsLoaded, runnerUrl, localRunnerUrl, cloudflareRunnerUrl, runnerToken, backendId,
   setRegisteredDirectories, setSessionTitleOverridesById, setSessionMarkerColorsById,
 }: Options) {
+  const [interruptedConnectionId, setInterruptedConnectionId] = useState("");
   const [messages, setMessages] = useState<string[]>([]);
   const [titleModelId, setTitleModelId] = useState("gpt-6-luna");
   const [titleReasoningEffort, setTitleReasoningEffort] = useState<ReasoningEffort>("low");
@@ -99,12 +105,21 @@ export function useRunnerClientState({
   const enqueue = useCallback((operation?: Record<string, unknown>, selectedConnection = connectionRef.current) => {
     const connection = { ...selectedConnection };
     const next = queue.current.then(async () => {
-      if (!snapshotRef.current || snapshotConnectionRef.current !== connection.id || !operation) await refresh(connection);
-      if (!operation) return;
-      const active = connection.id === connectionRef.current.id ? connectionRef.current : connection;
-      const { runnerUrl: url, runnerToken: token } = active;
-      if (!url || !token) throw new Error("Runner connection is not configured");
-      applySnapshot(await requestRunnerClientState({ runnerUrl: url, runnerToken: token, cache: requestCache.current, operation }), connection);
+      try {
+        if (!snapshotRef.current || snapshotConnectionRef.current !== connection.id || !operation) await refresh(connection);
+        if (operation) {
+          const active = connection.id === connectionRef.current.id ? connectionRef.current : connection;
+          const { runnerUrl: url, runnerToken: token } = active;
+          if (!url || !token) throw new Error("Runner connection is not configured");
+          applySnapshot(await requestRunnerClientState({ runnerUrl: url, runnerToken: token, cache: requestCache.current, operation }), connection);
+        }
+        if (connection.id === connectionRef.current.id) setInterruptedConnectionId("");
+      } catch (error) {
+        if (connection.id === connectionRef.current.id) {
+          setInterruptedConnectionId(error instanceof RunnerClientStateConnectionError ? connection.id : "");
+        }
+        throw error;
+      }
     });
     queue.current = next.catch(() => {});
     return next;
@@ -145,7 +160,7 @@ export function useRunnerClientState({
   }, [enqueue, runnerUrl, runnerToken, settingsLoaded]);
 
   const mutate = useCallback((operation: Record<string, unknown>, connection?: Connection) => {
-    void enqueue(operation, connection).catch((error) => Alert.alert("Runner に保存できません", error instanceof Error ? error.message : String(error)));
+    void enqueue(operation, connection).catch(reportSaveError);
   }, [enqueue]);
 
   const sendDraft = useCallback((backendId: string, sessionId: string, text: string, connection: Connection) => {
@@ -153,7 +168,7 @@ export function useRunnerClientState({
     const queuedKey = pendingKey(connection, key);
     queuedDrafts.current.add(queuedKey);
     void enqueue({ type: "draft.set", backendId, sessionId, text }, connection)
-      .catch((error) => Alert.alert("Runner に保存できません", error instanceof Error ? error.message : String(error)))
+      .catch(reportSaveError)
       .finally(() => queuedDrafts.current.delete(queuedKey));
   }, [enqueue]);
 
@@ -224,6 +239,6 @@ export function useRunnerClientState({
     return enqueue({ type: "session.set", backendId, sessionId, note, expectedNote });
   }, [enqueue]);
 
-  return { mutate, titleModelId, titleReasoningEffort, changeTitleSettings, messages, recordMessage, drafts, draftsLoaded, setDraft, clearDraft,
+  return { connectionInterrupted: interruptedConnectionId === currentConnection.id, mutate, titleModelId, titleReasoningEffort, changeTitleSettings, messages, recordMessage, drafts, draftsLoaded, setDraft, clearDraft,
     sessionNotesById: snapshotConnectionRef.current === currentConnection.id ? sessionNotesById : {}, saveSessionNote, scopeId: currentConnection.id };
 }

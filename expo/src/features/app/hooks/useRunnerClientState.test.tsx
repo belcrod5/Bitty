@@ -360,3 +360,54 @@ test("notes clear when Runner changes and stale editor scope cannot write to the
   });
   expect(operations).toEqual([]);
 });
+
+test("failed metadata and draft transport use shared connection state without save alerts, then polling clears it", async () => {
+  AppState.currentState = "active";
+  const alert = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+  const { result } = await renderState();
+  await waitFor(() => expect(result.current.draftsLoaded).toBe(true));
+  const oldFetch = global.fetch;
+  global.fetch = jest.fn().mockRejectedValue(new Error("Aborted"));
+  await act(async () => result.current.recordMessage("message"));
+  await waitFor(() => expect(result.current.connectionInterrupted).toBe(true));
+  await act(async () => result.current.setDraft("session-1", "draft"));
+  await act(async () => { jest.advanceTimersByTime(300); });
+  expect(alert).not.toHaveBeenCalled();
+  expect(result.current.connectionInterrupted).toBe(true);
+  global.fetch = oldFetch;
+  await act(async () => { jest.advanceTimersByTime(15_000); });
+  await waitFor(() => expect(result.current.connectionInterrupted).toBe(false));
+  expect(server.drafts[sessionKey]?.text).toBe("draft");
+  expect(alert).not.toHaveBeenCalled();
+});
+
+test.each([401, 409, 500])("HTTP %s still reports a real save failure", async (status) => {
+  const alert = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+  const { result } = await renderState();
+  await waitFor(() => expect(result.current.draftsLoaded).toBe(true));
+  global.fetch = jest.fn().mockResolvedValue({ ok: false, status, json: async () => ({ message: "Save rejected" }) });
+  await act(async () => result.current.recordMessage("message"));
+  await waitFor(() => expect(alert).toHaveBeenCalledWith("Runner に保存できません", "Save rejected"));
+  expect(result.current.connectionInterrupted).toBe(false);
+});
+
+test("a late failure from the old Runner cannot mark the new Runner disconnected", async () => {
+  const props = {
+    settingsLoaded: true, runnerUrl: "http://runner.test", localRunnerUrl: "", cloudflareRunnerUrl: "",
+    runnerToken: "token", backendId: "codex",
+    setRegisteredDirectories: jest.fn(), setSessionTitleOverridesById: jest.fn(), setSessionMarkerColorsById: jest.fn(),
+  };
+  const { result, rerender } = await renderHook((options: typeof props) => useRunnerClientState(options), { initialProps: props });
+  await waitFor(() => expect(result.current.draftsLoaded).toBe(true));
+  const oldFetch = global.fetch;
+  let rejectOld!: (error: Error) => void;
+  global.fetch = jest.fn((url, init) => String(url).startsWith("http://runner.test/")
+    ? new Promise<Response>((_resolve, reject) => { rejectOld = reject; }) : oldFetch(url, init)) as typeof fetch;
+  await act(async () => result.current.recordMessage("old Runner"));
+  await waitFor(() => expect(rejectOld).toBeDefined());
+  await rerender({ ...props, runnerUrl: "http://new-runner.test" });
+  await act(async () => { rejectOld(new Error("Aborted")); });
+  expect(result.current.connectionInterrupted).toBe(false);
+  await waitFor(() => expect(result.current.draftsLoaded).toBe(true));
+  expect(result.current.connectionInterrupted).toBe(false);
+});

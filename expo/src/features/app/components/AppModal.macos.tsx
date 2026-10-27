@@ -19,7 +19,7 @@ import {
   useWindowDimensions,
 } from "react-native";
 import type { KeyEvent } from "react-native-macos/Libraries/Types/CoreEventTypes";
-import type { AppModalProps } from "./AppModal.contract";
+import type { AppModalHostProps, AppModalProps } from "./AppModal.contract";
 
 // React Native macOS 0.81.9の標準Modalは、表示時にFabricのcreateNode周辺で
 // Exception in HostFunctionが発生するため、同じReactツリー内のoverlayで代替する。
@@ -43,7 +43,7 @@ const MacOSHostView = View as ComponentType<
   }
 >;
 
-export function AppModalHost({ children }: { children: ReactNode }) {
+export function AppModalHost({ children, foreground }: AppModalHostProps) {
   const [modals, setModals] = useState<Map<string, ModalEntry>>(() => new Map());
   const remove = useCallback((id: string) => {
     setModals((current) => {
@@ -80,6 +80,7 @@ export function AppModalHost({ children }: { children: ReactNode }) {
             {entry.content}
           </Fragment>
         ))}
+        {foreground}
       </MacOSHostView>
     </ModalHostContext.Provider>
   );
