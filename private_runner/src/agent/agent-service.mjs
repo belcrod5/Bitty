@@ -300,7 +300,7 @@ export function createAgentService({
       const requestedCwd = await resolveCanonicalCwd(cwd);
       if (requestedCwd !== canonicalCwd) {
         throw agentError("session_cwd_mismatch",
-          `Session working directory (${canonicalCwd}) does not match cwd (${requestedCwd}). Use the session working directory.`,
+          `cwd does not match the session working directory. Set cwd to ${canonicalCwd}.`,
           { backendId: sessionRef.backendId });
       }
     }

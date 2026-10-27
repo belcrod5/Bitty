@@ -1117,7 +1117,8 @@ test("existing-chat saves reject cwd mismatches atomically and dispatch rechecks
         if (patch.threadId === "missing-thread") return error.code === "session_not_found";
         assert.equal(error.code, "session_cwd_mismatch");
         assert.ok(error.message.includes(canonicalParent));
-        assert.ok(error.message.includes(canonicalChild));
+        assert.match(error.message, /Set cwd to/);
+        assert.equal(error.message.includes(canonicalChild), false);
         return true;
       });
       assert.deepEqual(await harness.service.snapshot(), before);
@@ -1136,7 +1137,7 @@ test("existing-chat saves reject cwd mismatches atomically and dispatch rechecks
   assert.equal(response.status, 400);
   assert.equal(response.payload.error, "invalid_codex_schedules");
   assert.ok(response.payload.message.includes(canonicalParent));
-  assert.ok(response.payload.message.includes(canonicalChild));
+  assert.match(response.payload.message, /Set cwd to/);
   // A symlink and dot segments identify the same workspace as the native cwd.
   const cwd = `${alias}/.`;
   await harness.service.patchSchedule(id, { baseRevision: 1, patch: { cwd, threadId: sessionRef.nativeSessionId } });
