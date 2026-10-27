@@ -2025,6 +2025,65 @@
         "bufferEvictionOccurred": true,
         "missingEventTypesKnown": false
       }
+    },
+    {
+      "id": "registered-origin-first-page-summary-ordering",
+      "kind": "hook-api-call-order-regression",
+      "base": "a171674",
+      "fixture": {
+        "registeredOrigins": 1,
+        "boardCards": 2,
+        "firstPageContainsCards": 1,
+        "outsideWindowCards": 1
+      },
+      "before": {
+        "beforeFirstPage": {
+          "summaryRequests": 1,
+          "requestedSummaryRows": 2,
+          "hydrations": 2
+        },
+        "afterFirstPage": {
+          "summaryRequests": 2,
+          "requestedSummaryRows": 3,
+          "hydrations": 3
+        }
+      },
+      "afterFirstPage": {
+        "summaryRequests": 1,
+        "requestedSummaryRows": 1,
+        "hydrations": 2
+      },
+      "oldExpectedContractRegressionFailed": true,
+      "inlinePlan": "Defer only missing registered-origin cards while that origin first page is pending; fetch remaining outside-window cards after settlement",
+      "boundariesTested": [
+        "Absent/unstarted/loading/refreshing registered origins defer",
+        "Nonregistered origin remains immediately eligible",
+        "Terminal error and partial error allow fallback",
+        "Cached pending-origin cards remain visible both with and without other eligible origins",
+        "Read-only tree changes do not refetch the same missing summary key",
+        "Authentication scope changes clear retained previous-runner summaries",
+        "Origin generation changes prevent old results and remaining old-origin requests",
+        "Latest first-page metadata is passed to hydration"
+      ],
+      "readOnlyPostBoundaryObservation": {
+        "previousServerReceiptAtUtc": "2026-10-27T08:43:02.479Z",
+        "nextServerReceiptAtUtc": "2026-10-27T08:43:10.394Z",
+        "nextPostGeneratedThroughSeq": 466,
+        "generatedEventAtUtc": "2026-10-27T08:43:10.261Z",
+        "actualHttpRttMeasured": false
+      },
+      "remainingSeparateSourceFinding": {
+        "readyDrivenPanelResumeBackendPropagation": "panel backendId is not forwarded to hydrate; not modified in this follow-up"
+      },
+      "limitations": [
+        "Synthetic hook fixture counts summary API and hydrate calls, not actual network bytes, message HTTP calls or device elapsed time",
+        "Does not identify the sole cause of the second-device-startup repeated work or event eviction",
+        "Server receive timestamps and latest-generated-event timestamps do not reveal POST send time, response time or an eight-second HTTP RTT",
+        "session_messages_cache_hit is emitted after a fresh delta fetch, not a memory-only cache read",
+        "No in-flight promise sharing, cache TTL, global list wait, protocol, logger priority or buffer-size change",
+        "Popup body/resume and already available first-page candidates remain on their existing paths",
+        "Actual device elapsed, repeated hydration reduction and loss-free capture after this fix remain unmeasured"
+      ]
     }
   ],
   "checksRun": {
@@ -2092,5 +2151,16 @@
     "appBuildRun": false,
     "runnerRestarted": false,
     "actualAppCaptureAfterChangeVerified": false
+  },
+  "originWaitFollowupValidation": {
+    "date": "2026-10-27",
+    "base": "a171674",
+    "jestSuites": 5,
+    "jestTestsPassed": 155,
+    "defaultTypecheckPassed": true,
+    "macosTypecheckPassed": true,
+    "appBuildRun": false,
+    "runnerRestarted": false,
+    "actualDeviceImprovementMeasured": false
   }
 }

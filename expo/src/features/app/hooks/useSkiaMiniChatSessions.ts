@@ -174,6 +174,7 @@ export function useSkiaMiniChatSessions() {
   const { runnerUrl, runnerToken } = useChatScreen();
   const missingSummaryKey = useMemo(() => {
     const byOrigin = new Map<string, { directory: string; backendId: string; sessionIds: string[] }>();
+    const pendingOrigins = new Set<string>();
     for (const card of boardState?.cards || []) {
       if (card.kind !== "session" || sessionCandidates.some((candidate) => (
         candidate.sessionId === card.sessionId && (!card.backendId || candidate.backendId === card.backendId)
@@ -183,15 +184,22 @@ export function useSkiaMiniChatSessions() {
       if (!directory) continue;
       const backendId = card.backendId || "codex";
       const origin = JSON.stringify([directory, backendId]);
+      const registered = registeredDirectories.find((entry) => String(entry.path || "").trim() === directory);
+      const tree = registered ? directorySessionsById[registered.id] : undefined;
+      if (registered && (!tree || tree.loading || tree.refreshing || (!tree.loaded && !tree.error))) {
+        pendingOrigins.add(origin);
+        continue;
+      }
       const group = byOrigin.get(origin) || { directory, backendId, sessionIds: [] };
       group.sessionIds.push(card.sessionId);
       byOrigin.set(origin, group);
     }
-    return JSON.stringify(
+    return JSON.stringify([
       Array.from(byOrigin.values(), ({ directory, backendId, sessionIds }) => [directory, backendId, sessionIds.sort()])
-        .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
-    );
-  }, [boardState, sessionCandidates]);
+        .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
+      [...pendingOrigins].sort(),
+    ]);
+  }, [boardState, sessionCandidates, registeredDirectories, directorySessionsById]);
 
   type SummaryCandidate = LlmSessionHistoryEntry & {
     directory: string;
@@ -213,10 +221,12 @@ export function useSkiaMiniChatSessions() {
     if (summaryFetchInFlightKeyRef.current === requestKey) return;
     const generation = ++summaryFetchGenerationRef.current;
     summaryFetchInFlightKeyRef.current = "";
-    const groups = JSON.parse(missingSummaryKey) as Array<[string, string, string[]]>;
+    const [groups, pendingOrigins] = JSON.parse(missingSummaryKey) as [Array<[string, string, string[]]>, string[]];
     if (groups.length <= 0) {
-      // 空→空の再設定は余分な再レンダリングになるため据え置く。
-      setSummaryCandidates((current) => (current.length > 0 ? [] : current));
+      setSummaryCandidates((current) => {
+        const retained = current.filter((candidate) => pendingOrigins.includes(JSON.stringify([candidate.directory, candidate.backendId])));
+        return retained.length === current.length ? current : retained;
+      });
       return;
     }
     if (!runnerUrl.trim() || !runnerToken.trim()) return;
@@ -228,9 +238,10 @@ export function useSkiaMiniChatSessions() {
     void (async () => {
       try {
         const collected: SummaryCandidate[] = [];
-        const failedOrigins = new Set<string>();
-        // A failed read is not an empty snapshot; only successful origins replace their previous data.
+        const retainedOrigins = new Set(pendingOrigins);
+        // Pending and failed origins keep their previous summaries; only successful reads replace them.
         for (const [directory, backendId, sessionIds] of groups) {
+          if (summaryFetchGenerationRef.current !== generation) return;
           let summaries;
           try {
             summaries = await fetchRunnerSessionSummaries(
@@ -239,7 +250,7 @@ export function useSkiaMiniChatSessions() {
               15_000,
             );
           } catch (error) {
-            failedOrigins.add(JSON.stringify([directory, backendId]));
+            retainedOrigins.add(JSON.stringify([directory, backendId]));
             console.warn(
               `[skia_board] failed to fetch session summaries for ${directory}`,
               error
@@ -270,7 +281,7 @@ export function useSkiaMiniChatSessions() {
         }
         if (summaryFetchGenerationRef.current !== generation) return;
         setSummaryCandidates((current) => [
-          ...current.filter((candidate) => failedOrigins.has(JSON.stringify([candidate.directory, candidate.backendId]))),
+          ...current.filter((candidate) => retainedOrigins.has(JSON.stringify([candidate.directory, candidate.backendId]))),
           ...collected,
         ]);
       } catch (error) {

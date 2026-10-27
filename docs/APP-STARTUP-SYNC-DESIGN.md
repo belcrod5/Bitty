@@ -678,3 +678,20 @@ run `20261027_170230_450`、受信cutoff `2026-10-27T08:43:41.830Z`（17:43:41.8
 1回目は一括完了を08:37:55.759Zに記録し、一覧2,173ms・全処理2,175ms・補足2ms・auth待ち0・補足HTTP要求0だった。実アプリのこの一覧処理について、補足再取得なしで104行が返ったことを確認できた。当該先頭ページ26完了は全て記録され、client全期間のfetch done総33には後続の個別取得7件も含む。計時は一覧要求開始からで、WS接続確立・画面描画やアプリ起動全体の時間ではない。以前とは登録先件数等も異なるため、因果的な改善秒数は算出しない。
 
 2回目は26開始と対象26のbatch送信1回を確認できたが、seq123〜226の104件が欠け、累積evictionも104だった。欠損の境界はseq122（08:43:02.082Z）→seq227（08:43:03.363Z）、その後のmetadataは生成済466・eviction104を示し、buffer押し出しの発生自体は確認できた。欠けたevent種類は分からず、先頭ページdone・一括doneは0件で、実完了・返却行数・HTTP 0・所要時間は未確認。完了eventを全条件で保持できたとは言えず、未観測を取得失敗とも扱わない。全client期間の送信数は1回目hello110・個別list60・batch1、2回目hello85・個別list17・batch1で、他機能の操作も含み、起動一覧だけの通信数とは扱わない。安全な集計を第19群へ保存し、今回はcode変更・追加build／再起動を行っていない。
+
+### 18.11 登録先の初回一覧とボード補足の順序修正（2026-10-27）
+
+2回目のPOST受信記録時刻02.479Z→10.394ZだけでHTTPが約8秒遅れたとは判断できない。後者の生成済seq466は10.261Zのeventで、実送信時刻・response受領時刻は未記録だった。また`session_messages_cache_hit`はメモリ参照だけでなくfreshな差分取得後のeventであり、多数のhydrateは実workを伴い得る。
+
+既存board hookで、登録先一覧が未到着でも候補が無い全cardをwindow外と判定し、origin毎に補足取得→hydrateを先行する構造を確認した。登録1origin・card2件の一時fixtureでは、一覧pending中に補足API 1回／2行・hydrate 2回、一覧到着後に更にAPI 1回／1行・hydrate 1回が発生した。新しい先頭一覧を待てば不要になる取得順序の重複である。旧実装で新しい契約testが失敗することも確認した。
+
+既存`missingSummaryKey`の中で、登録originのtree未着手・loading／refreshingだけを保留する。先頭一覧の成功後にまだwindow外のcardだけ補足し、非登録origin・終端error／partialは従来のfallbackを許可する。保留originの既存summaryは全origin保留時も他origin成功時も保持し、auth変更時だけ旧Runner分を消す。取得可否を含む安定keyを使いread変更だけでは再取得せず、世代が変わった旧loopは次origin要求を出さない。新planner・inflight共有・global待機・TTL・logger例外処理は追加しない。既に一覧にあるcard・popup本文／resumeの取得経路は変えない。
+
+| 同じhook fixture | 補足API呼出 | 補足対象行（延べ） | hydrate要求 |
+| --- | ---: | ---: | ---: |
+| 変更前 | 2 | 3 | 3 |
+| 変更後 | 1 | 1 | 2 |
+
+変更後は先頭一覧内cardの最新metadataを直接hydrateへ渡し、window外cardのfresh補足を維持した。これは合成データの呼出回数比較であり、実HTTP bytes／本文HTTP回数／実機秒数の測定ではない。実機2回目の重複／evictionの唯一原因を特定したものでも、全条件でログ欠損を解消したものでもない。
+
+関連Jestは`useSkiaMiniChatSessions`・`useReadyDrivenResumeSyncController`・`panelAssignmentHydration`・`useSessionMessagesCacheController`・`useLlmSessionExplorer`の5suite・155件、default／macOS型チェックが成功した。全origin保留中の既存card保持、部分失敗／非登録先・auth／世代切替・read更新・最新metadataを確認した。ログは`/tmp/bitty-pending-origin-before.log`、旧契約失敗`/tmp/bitty-pending-origin-regression-before.log`、最終`/tmp/bitty-pending-origin-implementation-jest.log`、型チェック`/tmp/bitty-pending-origin-typecheck{,-macos}.log`。集計を第20群へ保存した。別件としてresume panelのbackendIdがhydrateへ渡らない既存箇所も見つかったが、今回は変更していない。追加build／Runner再起動・変更後の実機効果は未確認。
