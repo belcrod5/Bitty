@@ -638,3 +638,18 @@ loggerは送信前のsliceと成功後の位置指定spliceの間にenqueue／�
 診断は既存WS `onDiagEvent`からhello／個別list／batchの`socket.send`成功時にoperation・対象件数のみを記録し、このeventだけthrottleを外す。一括完了には1件だけ対象／成功／失敗／部分失敗／行数・一覧時間・補足wall時間・auth待ち合計・HTTP要求数／所要合計／失敗数を記録する。HTTP数は100件chunkごとのfetch呼出単位で、ID数とは別。合計値は並列分を含みwall時間ではない。新eventにはpath／session ID／本文／tokenを含めず、診断observer例外は取得結果へ伝播させない。buffer上限によるdropや途中失敗では完全な記録を保証しない。
 
 Nodeは`agent-service`・`agent-transport`・`claude-backend`・`llm-session-service`の167件、Jestは`useBufferedClientLogs`・`useLlmSessionExplorer`・`runnerSessionSummaries`・`threads`・`RunnerWebSocketManager`・`useDirectorySessionTreeController`の6suite・179件、default／macOS型チェックが成功した（計346件、旧検証と重複加算しない）。旧失敗ログ`/tmp/bitty-buffered-logs-before.log`、修正後`/tmp/bitty-buffered-logs-after.log`、最終`/tmp/bitty-summary-implementation-{jest,node,typecheck,typecheck-macos}.log`。集計とfixture実elapsedは保存JSONの第14〜16群へ追加した。実機の追加build／Runner再起動・変更後の実アプリ速度測定は未実施。
+
+### 18.8 再build後の実アプリ監査（2026-10-27）
+
+run `20261027_170230_450`の受信時刻`2026-10-27T08:04:01.664Z`（17:04:01.664 JST）以前、1,015診断eventへ範囲を固定して独立監査した。2cycleとも25登録先の開始と、対象25の`socket.send`成功batch 1回を観測できた。ただし各client系列に225／230件のseq欠損があり、先頭ページ完了と一括完了eventは両方0件だった。
+
+| cycle開始 UTC / JST | 一覧開始 | batch送信／対象 | seq欠損 | 観測できた先頭ページ／一括完了 |
+| --- | ---: | ---: | ---: | ---: |
+| 08:02:37.525Z / 17:02:37.525 | 25 | 1回／25 | 225 | 0／0 |
+| 08:02:49.879Z / 17:02:49.879 | 25 | 1回／25 | 230 | 0／0 |
+
+実アプリがbatchを送ったことは前回より確認が進んだが、返却行数・補足HTTP 0・cycle全体時間は未確認。全監査範囲ではhello 149・個別list 33・batch 2送信が記録されているが、子取得・復元等の独立操作を含み、起動先頭ページだけの通信数とは扱わない。欠損は既存buffer上限のdropが残ることと整合する一方、失われたevent種類や原因は確定できず、ack競合修正が無効だったとも判断できない。
+
+接続エラー／切断通知は両cycle開始前の08:02:29〜30Zだった。復元先不在2件、Git error 24件（directory不在13・repository不正10・その他1）、proxy error 8件（not-loaded 4・rollout不在4）は別に記録し、一覧batch失敗とは断定しない。今回は安全な集計だけを第17群へ保存し、source変更・追加build／Runner再起動は行っていない。速度の因果的前後差や全取得成功はまだ主張しない。
+
+別途08:07:15.596Zのlive Runner読み取り専用probeでは、hello＋batchの2要求で25成功・99行・group失敗0・backend部分失敗0、有効summaryはCodex 95/95・Claude 4/4で補足対象0だった。稼働serverのsummary修正を確認できたが、これは実アプリの補足HTTP 0の実測ではない。WS open後hello＋batchは0.884秒（batchのみ0.882秒）、接続確立／HTTP／UIを除くloopback値で、携帯回線での起動秒数や因果的改善値とは扱わない。

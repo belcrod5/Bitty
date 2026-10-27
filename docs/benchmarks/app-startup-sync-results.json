@@ -1678,6 +1678,173 @@
         "Failed request retries old and new retained entries"
       ],
       "historical135EventGapExplainedWithCertainty": false
+    },
+    {
+      "id": "actual-app-rebuild-batch-send-observation",
+      "kind": "frozen-client-diagnostic-independent-audit",
+      "sourceRun": "20261027_170230_450",
+      "receivedTimestampCutoffUtc": "2026-10-27T08:04:01.664Z",
+      "sourceEventCount": 1015,
+      "cycles": [
+        {
+          "startAtUtc": "2026-10-27T08:02:37.525Z",
+          "startCount": 25,
+          "uniqueTargetCount": 25,
+          "recordedClientEventCount": 342,
+          "firstSequence": 1,
+          "lastSequence": 567,
+          "sequenceGaps": [
+            {
+              "first": 101,
+              "last": 325,
+              "count": 225
+            }
+          ],
+          "observedFirstPageDoneCount": 0,
+          "observedBatchDoneCount": 0,
+          "sentOperationCounts": {
+            "agent.hello": 64,
+            "sessions.list": 13,
+            "sessions.list.batch": 1
+          },
+          "batchTargets": [
+            25
+          ]
+        },
+        {
+          "startAtUtc": "2026-10-27T08:02:49.879Z",
+          "startCount": 25,
+          "uniqueTargetCount": 25,
+          "recordedClientEventCount": 613,
+          "firstSequence": 1,
+          "lastSequence": 843,
+          "sequenceGaps": [
+            {
+              "first": 101,
+              "last": 330,
+              "count": 230
+            }
+          ],
+          "observedFirstPageDoneCount": 0,
+          "observedBatchDoneCount": 0,
+          "sentOperationCounts": {
+            "agent.hello": 82,
+            "sessions.list": 20,
+            "sessions.list.batch": 1
+          },
+          "batchTargets": [
+            25
+          ]
+        }
+      ],
+      "sentOperationCounts": {
+        "agent.hello": 149,
+        "sessions.list": 33,
+        "sessions.list.batch": 2
+      },
+      "otherDiagnostics": {
+        "session_restore_error": {
+          "count": 2,
+          "classes": {
+            "session_not_found": 2
+          },
+          "firstAtUtc": "2026-10-27T08:02:36.972Z",
+          "lastAtUtc": "2026-10-27T08:02:49.496Z"
+        },
+        "git_changed_files_refresh_error": {
+          "count": 24,
+          "classes": {
+            "directory_not_found": 13,
+            "not_git_repo": 10,
+            "other": 1
+          },
+          "firstAtUtc": "2026-10-27T08:02:37.964Z",
+          "lastAtUtc": "2026-10-27T08:03:58.999Z"
+        },
+        "runner_ws_socket_error": {
+          "count": 2,
+          "classes": {
+            "other": 2
+          },
+          "firstAtUtc": "2026-10-27T08:02:29.037Z",
+          "lastAtUtc": "2026-10-27T08:02:30.418Z"
+        },
+        "runner_ws_closed": {
+          "count": 2,
+          "classes": {
+            "1006": 2
+          },
+          "firstAtUtc": "2026-10-27T08:02:29.138Z",
+          "lastAtUtc": "2026-10-27T08:02:30.479Z"
+        }
+      },
+      "limitations": [
+        "Actual batch socket sends are observed; response completion, row count, enrichment HTTP count and cycle duration are not observed",
+        "Missing sequences cannot identify the event types or directly establish the loss cause",
+        "Hello and scalar list sends include independent operations and cannot be attributed solely to startup first-page sync",
+        "No causal speed comparison is possible from this incomplete trace"
+      ],
+      "proxyDiagnostics": {
+        "source": "parent-read-only-filtered-audit",
+        "count": 8,
+        "classes": {
+          "thread_not_loaded": 4,
+          "no_rollout": 4
+        }
+      },
+      "actualAppBatchSocketSendObserved": true,
+      "actualAppBatchResponseCompletionObserved": false,
+      "actualAppRowCount": null,
+      "actualAppSummaryHttpRequestCount": null,
+      "actualAppCycleDurationMs": null,
+      "missingSequenceCauseProven": false,
+      "logGapsProveAckFixIneffective": false,
+      "sourceCodeChanged": false,
+      "agentRanAppBuild": false,
+      "agentRestartedRunner": false,
+      "separateReadOnlyProbe": {
+        "observedAtUtc": "2026-10-27T08:07:15.596Z",
+        "kind": "read-only-loopback-live-summary-validation",
+        "requests": 2,
+        "operations": [
+          "agent.hello",
+          "sessions.list.batch"
+        ],
+        "targetCount": 25,
+        "limitPerDirectory": 5,
+        "protocolVersion": 2,
+        "supportsSessionBatch": true,
+        "afterOpenHelloAndBatchElapsedMs": 884,
+        "batchOnlyElapsedMs": 882,
+        "includesWsConnectionSetup": false,
+        "includesHttpSummaries": false,
+        "includesUi": false,
+        "groupCount": 25,
+        "successfulGroupCount": 25,
+        "failedGroupCount": 0,
+        "partialErrorGroupCount": 0,
+        "backendPartialErrorCount": 0,
+        "backendPartialErrorCodes": {},
+        "rowCount": 99,
+        "backendCounts": {
+          "codex": {
+            "rows": 95,
+            "validSummaryCount": 95,
+            "supplementTargetCount": 0
+          },
+          "claude": {
+            "rows": 4,
+            "validSummaryCount": 4,
+            "supplementTargetCount": 0
+          }
+        },
+        "limitations": [
+          "Current live-server probe is independent from incomplete app diagnostics",
+          "Loopback probe does not measure mobile startup, UI paint or app HTTP calls",
+          "Supplement target count follows the validated inline-summary contract; no supplementary HTTP request was sent by the probe",
+          "No user identifiers, paths, session content or credentials are retained"
+        ]
+      }
     }
   ],
   "checksRun": {
