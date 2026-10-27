@@ -1550,7 +1550,8 @@
         "includesHello": true,
         "route": "local-loopback",
         "includesHttpSummaries": false,
-        "includesUi": false
+        "includesUi": false,
+        "excludesWsConnect": true
       }
     }
   ],

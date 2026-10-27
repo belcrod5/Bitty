@@ -623,4 +623,4 @@ npm run typecheck:macos
 summary区間が長い観測はあるが、欠損を含むためcycle全体やUI描画の完了時間ではない。既存loggerの240件buffer上限と送信await後のbuffer削除は欠損の候補であり、今回のruntime原因と実証したものではない。接続エラー・切断通知は両cycleより前の07:07:45〜46Zに限られた。復元先不在4件はsessionの古さを証明せず、Git診断36件（repository不正20・directory不在16）も一覧batch失敗とは分けて扱う。
 
 観測後の読み取り専用確認では稼働Runnerは今回のworktreeで、helloはbatch対応（上限64directory・64KiB、2backend）だった。同じ25登録先・先頭5件を実WS batch 1要求で直接取得したloopback probeは25成功・99行・group error 0、0.859秒、受信envelope 89,055bytes。hello・HTTP補完・UIは含まず、携帯回線での起動時間ではない。実アプリのwire operation数は記録されておらず「2要求で完了」を実測確認したとは言えない。比較条件を揃えた前後測定ではないため因果的な改善秒数は主張しない。集計のみを保存し、code変更・追加build／再起動は行っていない。
-追加の別loopback確認ではhello＋batchの2要求で25成功・99行、failed group 0・backend部分失敗0、0.970秒だった。こちらもHTTP補完・UIを除く読み取り専用probeであり、実アプリの通信数を測定したものではない。先の0.859秒probeはhelloを含まない独立結果として残す。
+追加の別loopback確認ではhello＋batchの2要求で25成功・99行、failed group 0・backend部分失敗0、0.970秒だった。計時開始はWS open後で、接続確立・HTTP補完・UIを除く読み取り専用probeであり、実アプリの通信数を測定したものではない。先の0.859秒probeはhelloを含まない独立結果として残す。
