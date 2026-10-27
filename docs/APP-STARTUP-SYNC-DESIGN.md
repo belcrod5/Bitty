@@ -695,3 +695,16 @@ run `20261027_170230_450`、受信cutoff `2026-10-27T08:43:41.830Z`（17:43:41.8
 変更後は先頭一覧内cardの最新metadataを直接hydrateへ渡し、window外cardのfresh補足を維持した。これは合成データの呼出回数比較であり、実HTTP bytes／本文HTTP回数／実機秒数の測定ではない。実機2回目の重複／evictionの唯一原因を特定したものでも、全条件でログ欠損を解消したものでもない。
 
 関連Jestは`useSkiaMiniChatSessions`・`useReadyDrivenResumeSyncController`・`panelAssignmentHydration`・`useSessionMessagesCacheController`・`useLlmSessionExplorer`の5suite・155件、default／macOS型チェックが成功した。全origin保留中の既存card保持、部分失敗／非登録先・auth／世代切替・read更新・最新metadataを確認した。ログは`/tmp/bitty-pending-origin-before.log`、旧契約失敗`/tmp/bitty-pending-origin-regression-before.log`、最終`/tmp/bitty-pending-origin-implementation-jest.log`、型チェック`/tmp/bitty-pending-origin-typecheck{,-macos}.log`。集計を第20群へ保存した。別件としてresume panelのbackendIdがhydrateへ渡らない既存箇所も見つかったが、今回は変更していない。追加build／Runner再起動・変更後の実機効果は未確認。
+
+### 18.12 origin待機修正後の実アプリ観測（2026-10-27）
+
+run `20261027_170230_450`、受信cutoff `2026-10-27T09:56:01.795Z`（18:56:01.795 JST）までに新しい診断系列を2つ確認した。ユーザーの操作回数と系列数が同じとは断定しない。両系列で対象26・成功26・失敗0・部分失敗0・104行、一括送信は各1回、一覧の補足HTTP要求／auth待ちは0だった。
+
+| 一覧開始 UTC / JST → 完了 UTC | 一覧 | 全一覧処理 | 補足 | seq／eviction |
+| --- | ---: | ---: | ---: | --- |
+| 09:54:53.282Z / 18:54:53.282 → 09:54:55.225Z | 1,940ms | 1,943ms | 3ms | 1〜427連続／0 |
+| 09:55:37.411Z / 18:55:37.411 → 09:55:39.352Z | 1,938ms | 1,941ms | 3ms | 1〜426連続／0 |
+
+各系列の初診断から15秒では、cache hitは35／36回（各34 session、差分0は33／35回）、hydrate開始と完了は34／35回（各34 session）だった。panel・session・directoryの組は34／35種で各組1回、同一組のhydrate重複とsupersededは両系列0だった。15秒内の観測eventは388／396件。以前の2回目には32 sessionでcache hit62回・superseded28回・seq欠損104件があったが、今回は対象数・条件が異なるため、修正による因果的な秒数差は断定しない。cache hitの1／2回の反復も別callerを含み、不要再取得とは断定しない。cache hitにもfreshな差分通信がある。detailedへ移した3eventは今回も両系列0件だった。
+
+全系列のWS送信はhello78・個別list35・batch1と、hello77・個別list33・batch1で、他機能を含み、起動一覧だけの通信数ではない。各系列にrestore error1件・Git error9件も記録されたが、一覧の成功集計とは分けて扱う。約1.94秒は一覧開始からの処理区間で、WS接続・UI描画・アプリ起動全体の時間ではない。今回は観測範囲内で完了まで欠損なく確認できたが、任意条件でのログ配送保証はしない。安全な元集計を第21群へ保存し、code変更・追加build／Runner再起動は行っていない。
