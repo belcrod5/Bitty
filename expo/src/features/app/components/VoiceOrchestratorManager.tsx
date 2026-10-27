@@ -20,6 +20,7 @@ type Detail = {
   topicModel: string; topicEffort: ReasoningEffort;
   overviewModel?: string; overviewEffort?: ReasoningEffort;
   models: VoiceModel[]; storedMessageCount: number; memoryCharacterCount: number;
+  isolationVersion: number;
 };
 type List = { orchestrators: VoiceOrchestrator[]; selectedId: string };
 const EFFORT_LABELS: Record<ReasoningEffort, string> = {
@@ -36,13 +37,15 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
   const styles = useAppStyles();
   const { theme } = useVisualTheme();
   const [detailId, setDetailId] = useState<string | null>(null);
-  const [learningOpen, setLearningOpen] = useState(false);
+  const [learningId, setLearningId] = useState<string | null>(null);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [voices, setVoices] = useState<{ voiceId: string; name: string }[]>([]);
   const [voicesLoading, setVoicesLoading] = useState(false);
   const [voiceFilter, setVoiceFilter] = useState("");
+  const detailIdRef = useRef(detailId);
+  detailIdRef.current = detailId;
   const voiceCatalogKeyRef = useRef("");
   const voiceCatalogRequestRef = useRef(0);
   voiceCatalogKeyRef.current = detail ? `${detailId}:${detail.ttsProvider}` : "";
@@ -52,11 +55,13 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
       ? response.payload as Record<string, unknown> : {};
     if (response.op === "error") throw new Error(String(result.message || result.code || "操作に失敗しました。"));
     if (response.op !== `${op}.result`) throw new Error("Runnerの応答が不正です。");
+    if (payload?.orchestratorId !== undefined && result.orchestratorId !== undefined
+      && result.orchestratorId !== payload.orchestratorId) throw new Error("別のオーケストレータの応答を受信しました。");
     return result;
   }, [manager]);
 
   useEffect(() => {
-    if (!visible) { setDetailId(null); setDetail(null); setLearningOpen(false); setError(""); setVoices([]);
+    if (!visible) { setDetailId(null); setDetail(null); setLearningId(null); setError(""); setVoices([]);
       voiceCatalogRequestRef.current += 1; }
   }, [visible]);
 
@@ -72,9 +77,11 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
     void request("voice.settings", { orchestratorId: detailId === "new" ? "main" : detailId })
       .then((value) => {
         if (!current) return;
-        if (typeof value.model !== "string" || !isReasoningEffort(value.effort)
-          || typeof value.topicModel !== "string" || !isReasoningEffort(value.topicEffort)
-          || typeof value.systemInstruction !== "string" || !Array.isArray(value.models)) {
+        const settings = detailId === "new" && value.defaults && typeof value.defaults === "object"
+          ? value.defaults as Record<string, unknown> : detailId === "new" ? {} : value;
+        if (typeof settings.model !== "string" || !isReasoningEffort(settings.effort)
+          || typeof settings.topicModel !== "string" || !isReasoningEffort(settings.topicEffort)
+          || typeof settings.systemInstruction !== "string" || !Array.isArray(value.models)) {
           throw new Error("設定を読み込めません。");
         }
         const models = value.models.flatMap((model) => {
@@ -86,16 +93,17 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
         setDetail({
           name: detailId === "new" ? "" : String(value.name || ""),
           icon: detailId === "new" ? "" : String(value.icon || ""),
-          ttsProvider: TTS_PROVIDERS.includes(value.ttsProvider as TtsProvider)
+          ttsProvider: detailId !== "new" && TTS_PROVIDERS.includes(value.ttsProvider as TtsProvider)
             ? value.ttsProvider as TtsProvider : DEFAULT_TTS_PROVIDER,
           voiceId: detailId === "new" ? "" : String(value.voiceId || ""),
-          model: value.model, effort: value.effort, systemInstruction: value.systemInstruction,
-          topicModel: value.topicModel, topicEffort: value.topicEffort,
-          ...(typeof value.overviewModel === "string"
-            && isReasoningEffort(value.overviewEffort)
-            ? { overviewModel: value.overviewModel, overviewEffort: value.overviewEffort } : {}),
+          model: settings.model, effort: settings.effort, systemInstruction: settings.systemInstruction,
+          topicModel: settings.topicModel, topicEffort: settings.topicEffort,
+          ...(typeof settings.overviewModel === "string"
+            && isReasoningEffort(settings.overviewEffort)
+            ? { overviewModel: settings.overviewModel, overviewEffort: settings.overviewEffort } : {}),
           models, storedMessageCount: Number(value.storedMessageCount || 0),
           memoryCharacterCount: Number(value.memoryCharacterCount || 0),
+          isolationVersion: value.isolationVersion === 1 ? 1 : 0,
         });
       }).catch((cause) => { if (current) setError(cause instanceof Error ? cause.message : "設定を読み込めません。"); });
     return () => { current = false; };
@@ -168,21 +176,23 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
 
   const clear = (kind: "memory" | "messages") => {
     if (!detailId || detailId === "new") return;
-    Alert.alert(kind === "memory" ? "共有メモリーをクリア" : "保持メッセージをクリア",
-      kind === "memory" ? "全オーケストレータの要約メモリーを消します。" : "このオーケストレータの会話履歴を消します。", [
+    if (kind === "memory" && detail?.isolationVersion !== 1) return;
+    Alert.alert(kind === "memory" ? "メモリーをクリア" : "保持メッセージをクリア",
+      kind === "memory" ? "このオーケストレータの要約メモリーを消します。" : "このオーケストレータの会話履歴を消します。", [
         { text: "キャンセル", style: "cancel" },
         { text: "クリア", style: "destructive", onPress: () => {
           setBusy(true);
           void request(kind === "memory" ? "voice.memory.clear" : "voice.messages.clear",
             { orchestratorId: detailId })
             .then((result) => {
+              if (kind === "messages") onConversationChanged(detailId);
+              if (detailIdRef.current !== detailId) return;
               setDetail((current) => current && { ...current,
                 storedMessageCount: kind === "messages" ? 0 : current.storedMessageCount,
                 memoryCharacterCount: kind === "memory" ? 0 : current.memoryCharacterCount });
-              if (kind === "messages") onConversationChanged(detailId);
               if (kind === "memory" && typeof result.memoryCharacterCount !== "number") throw new Error("メモリーを確認できません。");
             })
-            .catch((cause) => setError(cause instanceof Error ? cause.message : "クリアできません。"))
+            .catch((cause) => { if (detailIdRef.current === detailId) setError(cause instanceof Error ? cause.message : "クリアできません。"); })
             .finally(() => setBusy(false));
         } },
       ]);
@@ -205,7 +215,8 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
   const overviewEfforts = effortOptionsForModel(currentOverviewModel
     && { supportsReasoningEffort: true, effortOptions: currentOverviewModel.effortOptions });
 
-  const back = () => learningOpen ? setLearningOpen(false) : detailId === null ? onClose() : setDetailId(null);
+  const learningOrchestrator = list.orchestrators.find((item) => item.id === learningId);
+  const back = () => learningId ? setLearningId(null) : detailId === null ? onClose() : setDetailId(null);
 
   return (
     <AppModal visible={visible} animationType="slide" onRequestClose={back}>
@@ -216,15 +227,20 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
           contentContainerStyle={styles.settingsContent} keyboardShouldPersistTaps="handled">
           <TouchableOpacity accessibilityRole="button" accessibilityLabel="戻る"
             style={styles.settingsBackButton} onPress={back}>
-            <Text style={styles.settingsBackButtonText}>‹ {detailId === null && !learningOpen ? "音声会話" : "オーケストレータ"}</Text>
+            <Text style={styles.settingsBackButtonText}>‹ {detailId === null && !learningId ? "音声会話" : "オーケストレータ"}</Text>
           </TouchableOpacity>
-          <Text style={styles.settingsTitle}>{learningOpen ? "学習・評価" : detailId === null ? "オーケストレータ" : detailId === "new" ? "追加" : "詳細"}</Text>
-          {learningOpen ? <OrchestratorLearningPanel request={request} orchestrators={list.orchestrators} /> : detailId === null ? (
+          <Text style={styles.settingsTitle}>{learningId ? "学習・評価" : detailId === null ? "オーケストレータ" : detailId === "new" ? "追加" : "詳細"}</Text>
+          {learningId ? learningOrchestrator ? <>
+            <SettingsSelect icon="chatbubbles-outline" label="オーケストレータ"
+              options={list.orchestrators.map((item) => ({ value: item.id, label: item.name }))}
+              selectedValue={learningId} onSelect={setLearningId} />
+            <OrchestratorLearningPanel key={learningId} request={request} orchestrator={learningOrchestrator} />
+          </> : <Text style={styles.settingsErrorText}>オーケストレータが見つかりません。</Text> : detailId === null ? (
             <View style={styles.settingsSection}>
               <View style={styles.settingsGroup}>
                 {list.orchestrators.map((item) => (
                   <Pressable key={item.id} testID={`orchestrator-row-${item.id}`}
-                    accessibilityRole="button" accessibilityLabel={`${item.name}の設定${item.id === "main" && (item.learningUnreadCount || 0) > 0
+                    accessibilityRole="button" accessibilityLabel={`${item.name}の設定${(item.learningUnreadCount || 0) > 0
                       ? `、新しく学んだこと ${item.learningUnreadCount}件` : ""}`}
                     onPress={() => setDetailId(item.id)} style={[styles.settingsRow, styles.settingsRowDivider, { gap: 12 }]}>
                     <VoiceOrchestratorIcon orchestrator={item} />
@@ -237,11 +253,11 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
                   <Text style={styles.settingsActionText}>＋ 追加</Text>
                 </TouchableOpacity>
                 <TouchableOpacity testID="orchestrator-learning-open" accessibilityRole="button"
-                  accessibilityLabel="学習・評価を開く" onPress={() => setLearningOpen(true)}
+                  accessibilityLabel="学習・評価を開く" onPress={() => setLearningId(list.selectedId)}
                   style={[styles.settingsRow, { borderTopWidth: 1, borderTopColor: theme.colors.groupedDivider }]}>
                   <View style={styles.settingsRowLabelWrap}>
                     <Text style={styles.settingsRowLabel}>学習・評価</Text>
-                    <Text style={styles.settingsRowDescription}>全オーケストレータ共通</Text>
+                    <Text style={styles.settingsRowDescription}>オーケストレータごとに管理</Text>
                   </View>
                   <Text style={styles.settingsRowValue}>›</Text>
                 </TouchableOpacity>
@@ -249,6 +265,9 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
             </View>
           ) : detail ? (
             <View style={styles.settingsSection}>
+              <Text style={styles.settingsFooterText}>{detail.isolationVersion === 1
+                ? "記憶・学習・スキルは専用です。共通スキルや外部連携は自動で引き継ぎません。"
+                : "分離機能を使うにはRunnerを更新してください。"}</Text>
               <View style={styles.settingsGroup}>
                 <View style={[styles.settingsRow, styles.settingsRowDivider, { gap: 12 }]}>
                   <VoiceOrchestratorIcon orchestrator={{ id: detailId, name: detail.name || "?", icon: detail.icon }} size={52} />
@@ -329,13 +348,19 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
                 </View>
               </View>
               {detailId !== "new" ? <View style={[styles.settingsGroup, { marginTop: 20 }]}>
+                <TouchableOpacity accessibilityRole="button" accessibilityLabel="このオーケストレータの学習・評価を開く"
+                  onPress={() => setLearningId(detailId)} style={[styles.settingsRow, styles.settingsRowDivider]}>
+                  <Text style={styles.settingsActionText}>学習・評価</Text>
+                  <Text style={styles.settingsRowValue}>›</Text>
+                </TouchableOpacity>
                 <View style={[styles.settingsRow, styles.settingsRowDivider]}>
                   <View style={styles.settingsRowLabelWrap}>
-                    <Text style={styles.settingsRowLabel}>共有メモリー</Text>
-                    <Text style={styles.settingsRowDescription}>{detail.memoryCharacterCount} 文字 · 全オーケストレータで共有</Text>
+                    <Text style={styles.settingsRowLabel}>メモリー</Text>
+                    <Text style={styles.settingsRowDescription}>{detail.isolationVersion === 1
+                      ? `${detail.memoryCharacterCount} 文字 · このオーケストレータ専用` : "専用メモリーに対応するRunnerへ更新してください。"}</Text>
                   </View>
-                  <TouchableOpacity accessibilityRole="button" accessibilityLabel="共有メモリーをクリア"
-                    disabled={busy} onPress={() => clear("memory")}><Text style={styles.settingsDangerText}>クリア</Text></TouchableOpacity>
+                  <TouchableOpacity accessibilityRole="button" accessibilityLabel="メモリーをクリア"
+                    disabled={busy || detail.isolationVersion !== 1} onPress={() => clear("memory")}><Text style={styles.settingsDangerText}>クリア</Text></TouchableOpacity>
                 </View>
                 <View style={[styles.settingsRow, detailId === "main" ? undefined : styles.settingsRowDivider]}>
                   <View style={styles.settingsRowLabelWrap}>

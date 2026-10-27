@@ -20,6 +20,7 @@ type LearningStatus = {
   gaps: { from: number; through: number; reason: string }[];
   error: { code: string; message: string } | null;
   outputLimitEnforced: boolean;
+  migration?: { legacyRetained: boolean; importedCandidates: number; skippedCandidates: number; memory: string };
   retry?: { batchId: string; settingsRevision: number; attempts: number; ceiling: number } | null;
   evaluations?: LearningEvaluation[];
   changes?: { id: string; at: string; action: string; actor: string; reason: string;
@@ -45,7 +46,7 @@ const STATUS_LABELS: Record<string, string> = {
   paused: "保留中", retry_exhausted: "再試行の上限に達したため保留中",
 };
 
-function readStatus(value: Record<string, unknown>): LearningStatus {
+function readStatus(value: Record<string, unknown>, orchestratorId: string): LearningStatus {
   if (!value.settings || typeof value.settings !== "object" || typeof value.status !== "string"
     || !Array.isArray(value.candidates) || !Array.isArray(value.gaps)
     || (value.usage !== null && (!value.usage || typeof value.usage !== "object"))) throw new Error("学習状態を読み込めません。");
@@ -55,7 +56,7 @@ function readStatus(value: Record<string, unknown>): LearningStatus {
     || (state.usage !== null && (!state.usage.budget || !state.usage.today || !Array.isArray(state.usage.today.estimatedCosts)))
     || state.candidates.some((item) => !item || typeof item.content !== "string"
       || typeof item.conditions !== "string" || typeof item.reason !== "string"
-      || !item.scope || typeof item.scope.orchestratorId !== "string" || !Array.isArray(item.evidence))
+      || !item.scope || item.scope.orchestratorId !== orchestratorId || !Array.isArray(item.evidence))
     || state.gaps.some((item) => !item || typeof item.reason !== "string")
     || (state.error !== null && (!state.error || typeof state.error.message !== "string"))) {
     throw new Error("学習状態を読み込めません。");
@@ -63,9 +64,19 @@ function readStatus(value: Record<string, unknown>): LearningStatus {
   return state;
 }
 
-export function OrchestratorLearningPanel({ request, orchestrators }: {
-  request: Request; orchestrators: VoiceOrchestrator[];
+export function OrchestratorLearningPanel({ request: sendRequest, orchestrator }: {
+  request: Request; orchestrator: VoiceOrchestrator;
 }) {
+  const request = useCallback<Request>(async (op, payload) => {
+    const result = await sendRequest(op, { ...payload, orchestratorId: orchestrator.id });
+    if (op.startsWith("voice.learning.") && typeof result.orchestratorId !== "string") {
+      throw new Error("オーケストレータ別の応答を確認できません。Runnerを更新してください。");
+    }
+    if (result.orchestratorId !== undefined && result.orchestratorId !== orchestrator.id) {
+      throw new Error("別のオーケストレータの応答を受信しました。");
+    }
+    return result;
+  }, [sendRequest, orchestrator.id]);
   const styles = useAppStyles();
   const { theme: { colors, tones } } = useVisualTheme();
   const [knowledgeFilter, setKnowledgeFilter] = useState("all");
@@ -91,11 +102,11 @@ export function OrchestratorLearningPanel({ request, orchestrators }: {
     setBusy(true); setError(""); setCatalogError(""); setSaved(false);
     try {
       const [state, catalog] = await Promise.allSettled([
-        request("voice.learning.status"), request("voice.settings", { orchestratorId: "main" }),
+        request("voice.learning.status"), request("voice.settings"),
       ]);
       if (id !== requestId.current) return;
       if (state.status === "rejected") throw state.reason;
-      const value = readStatus(state.value);
+      const value = readStatus(state.value, orchestrator.id);
       setUsageRefresh((current) => current + 1);
       setStatus(value); setSelected([]); setInstruction(""); setSelecting(false); setRequestingChange(false);
       setModel(value.settings.model || ""); setEffort(value.settings.effort || "");
@@ -118,7 +129,7 @@ export function OrchestratorLearningPanel({ request, orchestrators }: {
     } catch (cause) {
       if (id === requestId.current) setError(cause instanceof Error ? cause.message : "学習状態を読み込めません。");
     } finally { if (id === requestId.current) setBusy(false); }
-  }, [request]);
+  }, [request, orchestrator.id]);
 
   useEffect(() => {
     void load();
@@ -135,7 +146,7 @@ export function OrchestratorLearningPanel({ request, orchestrators }: {
     try {
       const value = readStatus(await request("voice.learning.configure", {
         model, effort, settingsRevision: status.settings.settingsRevision,
-      }));
+      }), orchestrator.id);
       if (id !== requestId.current) return;
       setStatus(value); setModel(value.settings.model); setEffort(value.settings.effort); setSaved(true);
     } catch (cause) {
@@ -148,7 +159,7 @@ export function OrchestratorLearningPanel({ request, orchestrators }: {
     managing.current = true;
     const id = ++requestId.current; setBusy(true); setError("");
     try {
-      const value = readStatus(await request(`voice.learning.${op}`, payload));
+      const value = readStatus(await request(`voice.learning.${op}`, payload), orchestrator.id);
       if (id !== requestId.current) return "画面が更新されました。状態を確認してください。";
       setUsageRefresh((current) => current + 1);
       setStatus(value); setSelected([]); setInstruction(""); setSelecting(false); setRequestingChange(false);
@@ -162,8 +173,7 @@ export function OrchestratorLearningPanel({ request, orchestrators }: {
   const selectedItems = (status?.candidates || []).filter((item) => selected.includes(item.id));
   const references = selectedItems.map(({ id, version }) => ({ id, version }));
   const canDecide = references.length > 0 && references.length <= 50 && selectedItems.every((item) => item.status === "candidate");
-  const canChange = references.length > 0 && references.length <= 5
-    && new Set(selectedItems.map((item) => item.scope.orchestratorId)).size === 1;
+  const canChange = references.length > 0 && references.length <= 5;
   const button = (label: string, op: string, payload: Record<string, unknown>, disabled = false) => (
     <TouchableOpacity key={label} accessibilityRole="button" accessibilityLabel={label} disabled={busy || disabled}
       onPress={() => void manage(op, payload)} style={[styles.settingsBackButton, { opacity: busy || disabled ? 0.5 : 1 }]}>
@@ -179,7 +189,7 @@ export function OrchestratorLearningPanel({ request, orchestrators }: {
     {error ? <Text accessibilityRole="alert" style={styles.settingsErrorText}>{error}</Text> : null}
     <View style={dashboard.top}>
       <View style={dashboard.topCopy}><Text style={[dashboard.eyebrow, { color: colors.textMuted }]}>会話から育つアシスタント</Text>
-        <Text accessibilityRole="header" style={[dashboard.pageTitle, { color: colors.textPrimary }]}>あなたに合わせて</Text></View>
+        <Text accessibilityRole="header" style={[dashboard.pageTitle, { color: colors.textPrimary }]}>{orchestrator.name}の学習</Text></View>
       <TouchableOpacity testID="learning-status-refresh" accessibilityRole="button" accessibilityLabel="学習状態を更新"
         disabled={busy} onPress={() => void load()} style={styles.settingsBackButton}>
         <Text style={styles.settingsActionText}>{busy ? "更新中…" : "更新"}</Text>
@@ -192,6 +202,7 @@ export function OrchestratorLearningPanel({ request, orchestrators }: {
           <Text style={[dashboard.caption, { color: colors.textMuted }]}>{status.pendingCount}件の会話が分析待ち</Text></View>
       </View>
       {status.error ? <Text accessibilityRole="alert" style={styles.settingsErrorText}>{status.error.message}</Text> : null}
+      {status.migration?.legacyRetained ? <Text style={styles.settingsFooterText}>旧共有メモリーは保管し、帰属を確認できた学習だけ引き継ぎました。メモリーはこのチャット専用に新しく蓄積します。</Text> : null}
       {status.status === "retry_exhausted" && status.retry ? <>
         <Text style={styles.settingsFooterText}>当日の予算を維持し、現在のモデル設定でもう一度だけ試します。</Text>
         {button("保留した分析を1回再試行", "retry", { batchId: status.retry.batchId, settingsRevision: status.retry.settingsRevision }, !status.settings.model)}
@@ -244,7 +255,7 @@ export function OrchestratorLearningPanel({ request, orchestrators }: {
         </View> : null}
         {filteredKnowledge.length ? <View style={{ gap: 12 }}>{filteredKnowledge.slice(knowledgeCurrentPage * 5, knowledgeCurrentPage * 5 + 5).map((item) => (
           <LearningKnowledgeCard key={item.id} item={item} knowledge={status.candidates}
-            chatName={orchestrators.find((entry) => entry.id === item.scope.orchestratorId)?.name || "元のチャット"}
+            chatName={orchestrator.name}
             selecting={selecting} selected={selected.includes(item.id)} busy={busy} manage={manage}
             onSelect={() => setSelected((current) => current.includes(item.id) ? current.filter((id) => id !== item.id) : [...current, item.id])} />
         ))}</View> : <Text style={styles.settingsFooterText}>{status.candidates.length ? "この状態の学習はありません。" : "学習はまだありません。"}</Text>}
@@ -268,7 +279,7 @@ export function OrchestratorLearningPanel({ request, orchestrators }: {
       </View>
     </> : null}
     <View style={[dashboard.section, { borderColor: colors.borderSubtle }]}><LearningDisclosure title="学習の設定">
-    <Text style={styles.settingsFooterText}>学習・評価用モデルは全オーケストレータ共通</Text>
+    <Text style={styles.settingsFooterText}>学習・評価用モデルと予算はこのオーケストレータ専用です。</Text>
     <View style={styles.settingsSection}>
       <View style={styles.settingsGroup}>
         <SettingsSelect icon="bulb-outline" label="学習・評価用モデル"
@@ -301,9 +312,9 @@ export function OrchestratorLearningPanel({ request, orchestrators }: {
     {status ? <View style={[dashboard.section, { borderColor: colors.borderSubtle }]}><LearningDisclosure title="データの管理・診断">
       <View style={styles.settingsSection}>
         <Text style={styles.settingsSectionTitle}>学習の忘却</Text>
-        <Text style={styles.settingsFooterText}>全学習・専用スキルと保存版・評価・訂正・変更/参照履歴を削除します。会話原本と既存メモリーは別です。利用量・料金の台帳と当日予算は保持します。</Text>
+        <Text style={styles.settingsFooterText}>このオーケストレータの全学習・専用スキルと保存版・評価・訂正・変更/参照履歴を削除します。会話原本と既存メモリーは別です。利用量・料金の台帳と当日予算は保持します。</Text>
         <TouchableOpacity accessibilityRole="button" accessibilityLabel="全学習を忘却" disabled={busy}
-          onPress={() => Alert.alert("全学習を忘却", "全学習、専用スキルと保存版、評価と履歴を削除します。会話原本・既存メモリー・利用量台帳は保持します。", [
+          onPress={() => Alert.alert("全学習を忘却", "このオーケストレータの全学習、専用スキルと保存版、評価と履歴を削除します。会話原本・既存メモリー・利用量台帳は保持します。", [
             { text: "キャンセル", style: "cancel" }, { text: "忘却", style: "destructive", onPress: () => void manage("forget", { all: true }) },
           ])} style={styles.settingsBackButton}>
           <Text style={styles.settingsActionText}>全学習を忘却</Text>

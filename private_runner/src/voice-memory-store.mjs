@@ -21,7 +21,7 @@ const digestOf = (index, topics) => {
   return hash.digest("hex");
 };
 
-export async function openVoiceMemoryStore({ workspace, conversationId, previousConversationId, eventPairs,
+export async function openVoiceMemoryStore({ workspace, conversationId, previousConversationId, eventPairs, initialThroughPairSeq = 0,
   atomicWrite, syncDirectory, ownedDirectory }) {
   const directory = path.join(workspace, "voice-memory");
   const generations = path.join(directory, "generations");
@@ -44,7 +44,8 @@ export async function openVoiceMemoryStore({ workspace, conversationId, previous
     return result;
   };
 
-  if (!UUID.test(conversationId) || (previousConversationId && !UUID.test(previousConversationId))) {
+  if (!UUID.test(conversationId) || (previousConversationId && !UUID.test(previousConversationId))
+    || !Number.isSafeInteger(initialThroughPairSeq) || initialThroughPairSeq < 0) {
     throw new Error("Voice conversation ID is invalid");
   }
 
@@ -290,7 +291,7 @@ export async function openVoiceMemoryStore({ workspace, conversationId, previous
     await ownedDirectory(rawDirectory);
     await atomicWrite(initializingFile, JSON.stringify({ conversationId }));
     await writeRawRange(0, 0);
-    const initialCursor = (eventPairs[0]?.pairSeq || 1) - 1;
+    const initialCursor = Math.max(initialThroughPairSeq, (eventPairs[0]?.pairSeq || 1) - 1);
     await commit("# Topics\n", new Map(), initialCursor);
     for (const pair of eventPairs) await appendPair(pair);
     await fs.rm(initializingFile);

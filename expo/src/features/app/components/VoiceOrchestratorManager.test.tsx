@@ -7,15 +7,20 @@ import { VoiceOrchestratorManager } from "./VoiceOrchestratorManager";
 const icon = "data:image/png;base64,iVBORw0KGgo=";
 let mockLegacySettings = false;
 let mockSaveFailure = false;
+let mockMainInstruction = "Be helpful.";
+let mockIsolationVersion = 1;
 const mockPickIcon = jest.fn(async () => icon);
 const mockRequest = jest.fn(async (message: { op: string; payload?: Record<string, unknown> }) => {
   const { op, payload } = message;
   if (op === "voice.settings") return { op: `${op}.result`, payload: {
     orchestratorId: payload?.orchestratorId,
+    isolationVersion: mockIsolationVersion,
     name: payload?.orchestratorId === "main" ? "メイン" : "調査",
-    icon: "", model: "gpt-6-luna", effort: "low", systemInstruction: "Be helpful.",
+    icon: "", model: "gpt-6-luna", effort: "low", systemInstruction: mockMainInstruction,
     ttsProvider: "aivisspeech", voiceId: "",
     topicModel: "gpt-6-luna", topicEffort: "low",
+    defaults: { model: "gpt-6-luna", effort: "low", systemInstruction: "Be helpful.",
+      topicModel: "gpt-6-luna", topicEffort: "low", overviewModel: "gpt-6-luna", overviewEffort: "low" },
     ...(!mockLegacySettings
       ? { overviewModel: "gpt-6-luna", overviewEffort: "low" } : {}),
     models: [
@@ -61,9 +66,9 @@ jest.mock("./AppModal", () => ({
   AppModal: jest.fn(({ children }: { children: ReactNode }) => children),
 }));
 jest.mock("./OrchestratorLearningPanel", () => ({
-  OrchestratorLearningPanel: () => {
+  OrchestratorLearningPanel: ({ orchestrator }: { orchestrator: { id: string } }) => {
     const ReactModule = require("react");
-    return ReactModule.createElement(require("react-native").Text, null, "共有学習パネル");
+    return ReactModule.createElement(require("react-native").Text, null, `学習パネル: ${orchestrator.id}`);
   },
 }));
 jest.mock("./SettingsSelect", () => ({
@@ -86,7 +91,7 @@ const onConversationChanged = jest.fn();
 const onClose = jest.fn();
 const props = { visible: true, list, onListChanged, onConversationChanged, onClose };
 
-beforeEach(() => { jest.clearAllMocks(); mockLegacySettings = false; mockSaveFailure = false; });
+beforeEach(() => { jest.clearAllMocks(); mockLegacySettings = false; mockSaveFailure = false; mockMainInstruction = "Be helpful."; mockIsolationVersion = 1; });
 
 test("opens through the platform modal and closes detail before the manager", async () => {
   const screen = await render(<VoiceOrchestratorManager {...props} />);
@@ -182,15 +187,18 @@ test("opening another orchestrator clears the previous voice search", async () =
 });
 
 test("new detail creates with full settings and main has no delete control", async () => {
+  mockMainInstruction = "Main expert private instruction.";
   const screen = await render(<VoiceOrchestratorManager {...props} />);
   await fireEvent.press(screen.getByTestId("orchestrator-row-main"));
   await waitFor(() => screen.getByTestId("orchestrator-name"));
+  expect(screen.getByTestId("orchestrator-system-instruction")).toHaveProp("value", mockMainInstruction);
   expect(screen.queryByTestId("orchestrator-delete")).toBeNull();
   expect(screen.getByTestId("select-To Do表示モデル")).toBeTruthy();
   expect(screen.getByTestId("select-To Do表示エフォート")).toBeTruthy();
   await fireEvent.press(screen.getByLabelText("戻る"));
   await fireEvent.press(screen.getByTestId("orchestrator-add"));
   await waitFor(() => screen.getByTestId("orchestrator-name"));
+  expect(screen.getByTestId("orchestrator-system-instruction")).toHaveProp("value", "Be helpful.");
   expect(screen.getByTestId("select-To Do表示モデル")).toBeTruthy();
   await fireEvent.changeText(screen.getByTestId("orchestrator-name"), "新規");
   await fireEvent.press(screen.getByTestId("orchestrator-save"));
@@ -227,18 +235,56 @@ test("older Runner settings remain editable without unsupported To Do display co
   await screen.unmount();
 });
 
-test("shared memory and per-orchestrator messages clear through their own controls", async () => {
+test("per-orchestrator memory and messages clear through their own controls", async () => {
   const alerts = jest.spyOn(Alert, "alert").mockImplementation(() => undefined);
   const screen = await render(<VoiceOrchestratorManager {...props} />);
   await fireEvent.press(screen.getByTestId("orchestrator-row-other"));
   await waitFor(() => screen.getByTestId("orchestrator-name"));
-  await fireEvent.press(screen.getByLabelText("共有メモリーをクリア"));
+  await fireEvent.press(screen.getByLabelText("メモリーをクリア"));
+  expect(alerts.mock.calls.at(-1)?.[1]).toBe("このオーケストレータの要約メモリーを消します。");
   await act(async () => { alerts.mock.calls.at(-1)?.[2]?.[1]?.onPress?.(); });
   await waitFor(() => expect(mockRequest).toHaveBeenCalledWith({ channel: "agent", op: "voice.memory.clear",
     payload: { orchestratorId: "other" } }));
   await fireEvent.press(screen.getByLabelText("保持メッセージをクリア"));
   await act(async () => { alerts.mock.calls.at(-1)?.[2]?.[1]?.onPress?.(); });
   await waitFor(() => expect(onConversationChanged).toHaveBeenCalledWith("other"));
+  await screen.unmount();
+  alerts.mockRestore();
+});
+
+test("an older Runner cannot clear shared memory through the isolated memory control", async () => {
+  mockIsolationVersion = 0;
+  const alerts = jest.spyOn(Alert, "alert").mockImplementation(() => undefined);
+  const screen = await render(<VoiceOrchestratorManager {...props} />);
+  await fireEvent.press(screen.getByTestId("orchestrator-row-other"));
+  await waitFor(() => screen.getByTestId("orchestrator-name"));
+  expect(screen.getByLabelText("メモリーをクリア")).toBeDisabled();
+  await fireEvent.press(screen.getByLabelText("メモリーをクリア"));
+  expect(alerts).not.toHaveBeenCalled();
+  expect(mockRequest.mock.calls.some(([message]) => message.op === "voice.memory.clear")).toBe(false);
+  await screen.unmount();
+  alerts.mockRestore();
+});
+
+test("a delayed memory clear never updates another orchestrator detail", async () => {
+  let finish!: (value: Awaited<ReturnType<typeof mockRequest>>) => void;
+  const pending = new Promise<Awaited<ReturnType<typeof mockRequest>>>((resolve) => { finish = resolve; });
+  const alerts = jest.spyOn(Alert, "alert").mockImplementation(() => undefined);
+  const screen = await render(<VoiceOrchestratorManager {...props} />);
+  await fireEvent.press(screen.getByTestId("orchestrator-row-other"));
+  await waitFor(() => screen.getByTestId("orchestrator-name"));
+  await fireEvent.press(screen.getByLabelText("メモリーをクリア"));
+  mockRequest.mockImplementationOnce(async () => pending);
+  await act(async () => { alerts.mock.calls.at(-1)?.[2]?.[1]?.onPress?.(); });
+  await fireEvent.press(screen.getByLabelText("戻る"));
+  await fireEvent.press(screen.getByTestId("orchestrator-row-main"));
+  await waitFor(() => screen.getByTestId("orchestrator-name"));
+  await act(async () => {
+    finish({ op: "voice.memory.clear.result", payload: { orchestratorId: "other", memoryCharacterCount: 0, storedMessageCount: 0 } });
+    await pending;
+  });
+  expect(screen.getByText("12 文字 · このオーケストレータ専用")).toBeTruthy();
+  expect(screen.queryByText("0 文字 · このオーケストレータ専用")).toBeNull();
   await screen.unmount();
   alerts.mockRestore();
 });
@@ -258,14 +304,28 @@ test("deletion confirms and removes only a non-main orchestrator", async () => {
   alerts.mockRestore();
 });
 
-test("shared learning opens independently and back returns to the orchestrator list", async () => {
+test("selected orchestrator learning opens independently and back returns to the orchestrator list", async () => {
   const screen = await render(<VoiceOrchestratorManager {...props} />);
   await fireEvent.press(screen.getByTestId("orchestrator-learning-open"));
-  expect(screen.getByText("共有学習パネル")).toBeTruthy();
+  expect(screen.getByText("学習パネル: main")).toBeTruthy();
+  await fireEvent.press(screen.getByTestId("select-オーケストレータ"));
+  expect(screen.getByText("学習パネル: other")).toBeTruthy();
+  expect(screen.queryByText("学習パネル: main")).toBeNull();
   expect(screen.queryByTestId("orchestrator-row-main")).toBeNull();
   expect(screen.queryByTestId("orchestrator-save")).toBeNull();
   await act(async () => { jest.mocked(AppModal).mock.lastCall?.[0].onRequestClose?.(); });
   expect(screen.getByTestId("orchestrator-row-main")).toBeTruthy();
   expect(onClose).not.toHaveBeenCalled();
+  await screen.unmount();
+});
+
+test("a specialist detail opens only its own learning and returns to its detail", async () => {
+  const screen = await render(<VoiceOrchestratorManager {...props} />);
+  await fireEvent.press(screen.getByTestId("orchestrator-row-other"));
+  await waitFor(() => screen.getByTestId("orchestrator-name"));
+  await fireEvent.press(screen.getByLabelText("このオーケストレータの学習・評価を開く"));
+  expect(screen.getByText("学習パネル: other")).toBeTruthy();
+  await act(async () => { jest.mocked(AppModal).mock.lastCall?.[0].onRequestClose?.(); });
+  expect(screen.getByTestId("orchestrator-name")).toHaveProp("value", "調査");
   await screen.unmount();
 });

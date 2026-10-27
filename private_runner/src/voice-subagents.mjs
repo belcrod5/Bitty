@@ -159,6 +159,11 @@ export function createVoiceSubagentService({ rootDir, getAgentService, subjectId
       return { ok: true, runId: prior.runId, backendId: prior.backendId,
         sessionId: prior.sessionId || null, status: prior.status };
     }
+    if (sessionId && !await exclusive(async () => {
+      await load();
+      return records.some((item) => item.orchestratorId === orchestratorId
+        && item.backendId === backendId && item.sessionId === sessionId);
+    })) return { ok: false, error: "Session does not belong to this orchestrator" };
     const service = getAgentService();
     const backend = (await service.getStatuses()).find((item) => item.backendId === backendId);
     const policyProfileId = backend?.capabilities?.action?.policyProfiles?.find((item) => item.interactive === true)?.id || "";

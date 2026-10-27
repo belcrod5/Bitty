@@ -39,28 +39,22 @@ function validateIcon(icon) {
 }
 
 export function createVoiceOrchestratorService({ rootDir, createClient, getAgentService, subjectId,
-  onCompleted, onChecklistChanged, onLearningUnreadChanged, activity, defaultTtsProvider = "aivisspeech" }) {
+  onCompleted, onChecklistChanged, onLearningUnreadChanged, disposeRuntime, activity, defaultTtsProvider = "aivisspeech" }) {
   const root = path.resolve(rootDir);
   const registryFile = path.join(root, "orchestrators.json");
   const orchestratorRoot = path.join(root, "orchestrators");
   let registry;
-  let main;
-  let memoryStore;
-  let workspaceDirectory;
-  let learning;
-  let learningLedger;
-  let learningError;
-  let recoveredLearningPairs = [];
-  const observePair = (orchestratorId) => async (pair) => {
-    if (learning) await learning.observe([{ ...pair, orchestratorId, memoryConversationId: memoryStore.conversationId }]);
-    else recoveredLearningPairs.push({ ...pair, orchestratorId });
-  };
+  const learnings = new Map();
+  const learningLedgers = new Map();
+  const learningErrors = new Map();
+  const learningMemoryIds = new Map();
   const learningContext = (orchestratorId) => ({
-    retrieve: (args) => learning ? learning.retrieve({ ...args, orchestratorId }) : Promise.resolve({ contextRevision: 0,
+    retrieve: (args) => learnings.get(orchestratorId)?.retrieve({ ...args, orchestratorId }) || Promise.resolve({ contextRevision: 0,
       selectedDigest: "unavailable", items: [], invalidated: Boolean(args.exposedItems?.length), excludedPairSeqs: null, instruction: "" }),
-    delivered: (args) => learning?.delivered({ ...args, orchestratorId }),
-    recordRead: (args) => learning?.recordRead(args),
+    delivered: (args) => learnings.get(orchestratorId)?.delivered({ ...args, orchestratorId }),
+    recordRead: (args) => learnings.get(orchestratorId)?.recordRead(args),
     tool: async ({ tool, arguments: args, operationId, input }) => {
+      const learning = learnings.get(orchestratorId);
       if (!learning) throw failure("Learning is unavailable", "learning_store_unavailable");
       if (tool === "read_context" && Object.keys(args).sort().join() === "sourceItemIds,targets")
         return { selection: await learning.retrieve({ orchestratorId, input, targets: args.targets }), sourceItemIds: args.sourceItemIds };
@@ -74,29 +68,20 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
   const reservations = new Set();
   const operationOwners = new Map();
   const subagents = getAgentService ? createVoiceSubagentService({ rootDir: root, getAgentService, subjectId }) : null;
-  const managedSessions = (id) => subagents ? {
-    refresh: () => subagents.refresh(id), contextOf: subagents.contextOf,
-    handleTool: (request) => subagents.handleTool(id, request),
-  } : undefined;
   const hasOutstandingActivity = (id) => (threadId) => Boolean(activity?.hasOutstanding?.({
     orchestratorId: id, rootThreadId: threadId,
   }));
+  const hasOutstandingDelegates = async (id) => Boolean(subagents
+    && (await subagents.refresh(id)).records.some((record) => !["completed", "failed", "interrupted"].includes(record.status)));
   const withCounts = async (id, value) => {
     if (!subagents) return value;
     const { runningCount, totalCount } = await subagents.refresh(id);
     return { ...value, subagentRunningCount: runningCount, subagentTotalCount: totalCount };
   };
   let serial = Promise.resolve();
-  let pairSerial = Promise.resolve();
   const exclusive = (work) => {
     const result = serial.then(work);
     serial = result.catch(() => {});
-    return result;
-  };
-  const pairExclusive = (work) => {
-    const result = pairSerial.then(work);
-    pairSerial = result.catch(() => {});
-    void result.then(() => main.scheduleSummary()).catch(() => {});
     return result;
   };
   const safeFile = async (file) => {
@@ -125,54 +110,21 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
   const publicList = async () => ({ orchestrators: await Promise.all(registry.orchestrators.map(async (item) =>
     ({ ...item, ttsProvider: item.ttsProvider || defaultTtsProvider, voiceId: item.voiceId || "",
       unreadCount: await (await loadedContext(item.id)).unread(),
-      ...(item.id === "main" && learning ? { learningUnreadCount: learning.unreadCount() } : {}) }))),
+      learningUnreadCount: learnings.get(item.id)?.unreadCount() || 0 }))),
   selectedId: registry.selectedId });
 
-  async function allEventPairs(mainPairs) {
-    const all = [...mainPairs];
-    const recoveryThrough = memoryStore?.lastPairSeq;
-    const learningPairs = [];
-    const retainedOwners = new Map();
-    const mainActive = JSON.parse(await safeFile(path.join(root, "active.json")));
-    const mainEvents = readVoiceEventState(await safeFile(path.join(root, mainActive.logicalConversationId, "events.jsonl")),
-      mainActive.prunedThroughPairSeq || 0);
-    rememberOperations(retainedOwners, mainEvents.operationIds, "main");
-    learningPairs.push(...mainEvents.completedPairs.map((pair) => ({ ...pair, orchestratorId: "main",
-      logicalConversationId: mainActive.logicalConversationId })));
-    for (const { id } of registry?.orchestrators || []) {
-      if (id === "main") continue;
-      const directory = path.join(orchestratorRoot, id);
+  async function rememberOperations() {
+    for (const { id } of registry.orchestrators) {
+      const directory = id === "main" ? root : path.join(orchestratorRoot, id);
       const active = JSON.parse(await safeFile(path.join(directory, "active.json")));
-      if (!UUID.test(active.logicalConversationId)) throw failure("Orchestrator conversation is invalid", "voice_store_corrupt");
-      const buffer = await safeFile(path.join(directory, active.logicalConversationId, "events.jsonl"));
-      const child = readVoiceEventState(buffer, active.prunedThroughPairSeq || 0);
-      rememberOperations(retainedOwners, child.operationIds, id);
-      all.push(...child.pairs);
-      learningPairs.push(...child.completedPairs.map((pair) => ({ ...pair, orchestratorId: id,
-        logicalConversationId: active.logicalConversationId })));
-    }
-    all.sort((a, b) => a.pairSeq - b.pairSeq);
-    if (all.some((pair, index) => index && pair.pairSeq === all[index - 1].pairSeq)) {
-      throw failure("Voice memory pair sequence is duplicated", "voice_store_corrupt");
-    }
-    for (const reservation of reservations) {
-      const [owner, operationId] = reservation.split(":");
-      rememberOperations(retainedOwners, [operationId], owner);
-    }
-    operationOwners.clear();
-    for (const [operationId, owner] of retainedOwners) operationOwners.set(operationId, owner);
-    recoveredLearningPairs = learningPairs;
-    if (learning) await learning.observe(learningPairs.map((pair) => ({ ...pair,
-      memoryConversationId: memoryStore.conversationId })), recoveryThrough).catch(() => {});
-    return all;
-  }
-
-  function rememberOperations(owners, operationIds, id) {
-    for (const operationId of operationIds) {
-      if (owners.has(operationId) && owners.get(operationId) !== id) {
-        throw failure("Voice operation ID is duplicated across orchestrators", "voice_store_corrupt");
+      const events = readVoiceEventState(await safeFile(path.join(directory, active.logicalConversationId, "events.jsonl")),
+        active.prunedThroughPairSeq || 0);
+      for (const operationId of events.operationIds) {
+        if (operationOwners.has(operationId) && operationOwners.get(operationId) !== id) {
+          throw failure("Voice operation ID belongs to another orchestrator", "operation_conflict");
+        }
+        operationOwners.set(operationId, id);
       }
-      owners.set(operationId, id);
     }
   }
 
@@ -193,8 +145,7 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
         && (voiceId === undefined || typeof voiceId === "string" && voiceId.length <= 200))
       || new Set(old.orchestrators.map(({ id }) => id)).size !== old.orchestrators.length
       || !old.orchestrators.some(({ id }) => id === old.selectedId)
-      || !UUID.test(old.memoryConversationId))) throw failure("Voice orchestrator registry is invalid", "voice_store_corrupt");
-    let recoveredMemoryConversationId = "";
+      || old.memoryConversationId !== undefined && !UUID.test(old.memoryConversationId))) throw failure("Voice orchestrator registry is invalid", "voice_store_corrupt");
     if (!old) {
       const orphaned = await fs.readdir(orchestratorRoot).catch((error) => {
         if (error.code === "ENOENT") return [];
@@ -203,85 +154,84 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
       if (orphaned.some((entry) => entry !== ".DS_Store")) {
         throw failure("Voice orchestrator registry is missing", "voice_store_corrupt");
       }
-      const previous = await fs.readFile(path.join(root, "active.json"), "utf8")
-        .then(JSON.parse, (error) => error.code === "ENOENT" ? null : Promise.reject(error));
-      if (previous && UUID.test(previous.logicalConversationId)) {
-        const workspace = path.join(path.dirname(root), "workspaces",
-          previous.workspaceConversationId || previous.logicalConversationId, "voice-memory");
-        const pointer = await fs.readFile(path.join(workspace, "index.md"), "utf8")
-          .catch((error) => error.code === "ENOENT" ? "" : Promise.reject(error));
-        const generation = pointer.match(/^<!-- voice-memory:v1 generation=([0-9a-f-]{36})/i)?.[1];
-        if (generation) {
-          const state = JSON.parse(await safeFile(path.join(workspace, "generations", generation, "state.json")));
-          if (!UUID.test(state.conversationId)) throw failure("Voice memory conversation is invalid", "voice_store_corrupt");
-          recoveredMemoryConversationId = state.conversationId;
-        }
-      }
     }
-    registry = old || { orchestrators: [{ id: "main", name: "メイン", icon: "" }],
-      selectedId: "main", memoryConversationId: recoveredMemoryConversationId };
-    main = createVoiceContextService({ rootDir: root, createClient,
-      getOrchestratorName: () => registry.orchestrators.find((item) => item.id === "main")?.name,
-      taskChecklistPath: "task-checklists/main.md",
-      onChecklistChanged: (conversationId) => onChecklistChanged?.({ orchestratorId: "main", logicalConversationId: conversationId }),
-      memoryConversationId: registry.memoryConversationId || undefined,
-      memoryEventPairs: allEventPairs, pairExclusive, managedSessions: managedSessions("main"),
-      onDurablePair: observePair("main"), learningContext: learningContext("main"),
-      hasOutstandingActivity: hasOutstandingActivity("main") });
+    registry = old || { orchestrators: [{ id: "main", name: "メイン", icon: "" }], selectedId: "main" };
     try {
-      const opened = await main.open();
-      memoryStore = await main.getMemoryStore();
-      workspaceDirectory = await main.getWorkspaceDirectory();
-      contexts.set("main", main);
-      try {
-        const learningDirectory = path.join(workspaceDirectory, "orchestrator-learning");
-        await fs.mkdir(learningDirectory, { mode: 0o700 }).catch((error) => { if (error.code !== "EEXIST") throw error; });
-        const stat = await fs.lstat(learningDirectory);
-        if (!stat.isDirectory() || stat.isSymbolicLink()
-          || typeof process.getuid === "function" && stat.uid !== process.getuid()) throw failure("Unsafe learning directory");
-        learningLedger = createOrchestratorLearningUsage({ directory: path.join(learningDirectory, "usage") });
-        const recovered = await learningLedger.recover();
-        if (!recovered.ok) throw failure("Learning usage storage is unavailable", "learning_store_unavailable");
-        learning = await openOrchestratorLearning({ workspace: workspaceDirectory,
-          memoryConversationId: memoryStore.conversationId, initialThrough: memoryStore.lastPairSeq,
-          analyze: (args) => main.analyzeLearning(args), ledger: learningLedger,
-          isBusy: () => reservations.size > 0, onUnreadChanged: onLearningUnreadChanged });
-        await learning.observe(recoveredLearningPairs.map((pair) => ({ ...pair,
-          memoryConversationId: memoryStore.conversationId })), memoryStore.lastPairSeq).catch(() => {});
-      } catch (error) {
-        learningError = { code: "learning_store_unavailable", message: "Learning storage is unavailable; normal conversation is unaffected." };
-      }
-      if (!old) await saveRegistry({ ...registry, memoryConversationId: memoryStore.conversationId });
-      if (!registry.memoryConversationId || !UUID.test(opened.logicalConversationId)) {
-        throw failure("Voice orchestrator registry is invalid", "voice_store_corrupt");
-      }
+      await loadedContext("main");
+      if (!old) await saveRegistry(registry);
       await subagents?.retain(new Set(registry.orchestrators.map((item) => item.id)));
     } catch (error) {
       registry = undefined;
-      main = undefined;
+      contexts.clear();
       throw error;
+    }
+  }
+
+  async function openContext(id) {
+    const directory = id === "main" ? root : path.join(orchestratorRoot, id);
+    const service = createVoiceContextService({ rootDir: directory, createClient, orchestratorId: id,
+      legacyWorkspaceRoot: path.join(path.dirname(root), "workspaces"),
+      getOrchestratorName: () => registry.orchestrators.find((item) => item.id === id)?.name,
+      taskChecklistPath: `task-checklists/${id}.md`,
+      onChecklistChanged: (conversationId) => onChecklistChanged?.({ orchestratorId: id, logicalConversationId: conversationId }),
+      onDurablePair: async (pair) => {
+        await learnings.get(id)?.observe([{ ...pair, orchestratorId: id, memoryConversationId: learningMemoryIds.get(id) }]);
+      },
+      learningContext: learningContext(id),
+      hasOutstandingActivity: hasOutstandingActivity(id) });
+    contexts.set(id, service);
+    try { await service.open(); }
+    catch (error) { contexts.delete(id); throw error; }
+    await openLearning(id, service);
+    return service;
+  }
+
+  async function openLearning(id, service) {
+    try {
+      const workspace = await service.getWorkspaceDirectory();
+      const memoryStore = await service.getMemoryStore();
+      if (!memoryStore) {
+        learningErrors.set(id, { code: "orchestrator_isolation_pending", message: "Finish or interrupt legacy work before isolation." });
+        return;
+      }
+      learningMemoryIds.set(id, memoryStore.conversationId);
+      const learningDirectory = path.join(workspace, "orchestrator-learning");
+      await fs.mkdir(learningDirectory, { mode: 0o700 }).catch((error) => { if (error.code !== "EEXIST") throw error; });
+      const stat = await fs.lstat(learningDirectory);
+      if (!stat.isDirectory() || stat.isSymbolicLink()
+        || typeof process.getuid === "function" && stat.uid !== process.getuid()) throw failure("Unsafe learning directory");
+      const ledger = createOrchestratorLearningUsage({ directory: path.join(learningDirectory, "usage") });
+      learningLedgers.set(id, ledger);
+      if (!(await ledger.recover()).ok) throw failure("Learning usage storage is unavailable", "learning_store_unavailable");
+      const directory = id === "main" ? root : path.join(orchestratorRoot, id);
+      const active = JSON.parse(await safeFile(path.join(directory, "active.json")));
+      const learning = await openOrchestratorLearning({ workspace, orchestratorId: id,
+        legacyDirectory: active.legacyWorkspaceDirectory ? path.join(active.legacyWorkspaceDirectory, "orchestrator-learning") : undefined,
+        memoryConversationId: memoryStore.conversationId, initialThrough: memoryStore.lastPairSeq,
+        analyze: (args) => service.analyzeLearning(args), ledger,
+        isBusy: () => [...reservations].some((key) => key.startsWith(`${id}:`)),
+        onUnreadChanged: () => onLearningUnreadChanged?.(id) });
+      learnings.set(id, learning);
+      learningErrors.delete(id);
+      const events = readVoiceEventState(await safeFile(path.join(directory, active.logicalConversationId, "events.jsonl")),
+        active.prunedThroughPairSeq || 0);
+      await learning.observe(events.completedPairs.filter((pair) => pair.pairSeq > active.memoryFloorPairSeq).map((pair) => ({ ...pair, orchestratorId: id,
+        logicalConversationId: active.logicalConversationId, memoryConversationId: memoryStore.conversationId })), memoryStore.lastPairSeq);
+    } catch (error) {
+      learningErrors.set(id, { code: "learning_store_unavailable", message: "Learning storage is unavailable; normal conversation is unaffected." });
     }
   }
 
   async function loadedContext(id) {
     if (!registry.orchestrators.some((item) => item.id === id)) throw failure("Orchestrator was not found", "not_found");
-    if (contexts.has(id)) return contexts.get(id);
-    const service = createVoiceContextService({ rootDir: path.join(orchestratorRoot, id), createClient,
-      getOrchestratorName: () => registry.orchestrators.find((item) => item.id === id)?.name,
-      taskChecklistPath: `task-checklists/${id}.md`,
-      onChecklistChanged: (conversationId) => onChecklistChanged?.({ orchestratorId: id, logicalConversationId: conversationId }),
-      sharedWorkspaceDirectory: workspaceDirectory, sharedMemoryStore: memoryStore, pairExclusive,
-      onDurablePair: observePair(id), learningContext: learningContext(id),
-      managedSessions: managedSessions(id), hasOutstandingActivity: hasOutstandingActivity(id) });
-    contexts.set(id, service);
-    try { await service.open(); }
-    catch (error) { contexts.delete(id); throw error; }
+    const service = contexts.get(id);
+    if (!service) return openContext(id);
+    if (learningErrors.get(id)?.code === "orchestrator_isolation_pending") await openLearning(id, service);
     return service;
   }
 
   async function context(id) {
-    await exclusive(load);
-    return loadedContext(id);
+    return exclusive(async () => { await load(); return loadedContext(id); });
   }
 
   function idOf(id) {
@@ -316,14 +266,7 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
       return exclusive(async () => {
         await load();
         await fs.mkdir(orchestratorRoot, { recursive: true, mode: 0o700 });
-        const service = createVoiceContextService({ rootDir: path.join(orchestratorRoot, item.id), createClient,
-          getOrchestratorName: () => registry.orchestrators.find((entry) => entry.id === item.id)?.name,
-          taskChecklistPath: `task-checklists/${item.id}.md`,
-          onChecklistChanged: (conversationId) => onChecklistChanged?.({ orchestratorId: item.id, logicalConversationId: conversationId }),
-          sharedWorkspaceDirectory: workspaceDirectory, sharedMemoryStore: memoryStore, pairExclusive,
-          onDurablePair: observePair(item.id),
-          managedSessions: managedSessions(item.id), hasOutstandingActivity: hasOutstandingActivity(item.id) });
-        await service.open();
+        const service = await openContext(item.id);
         if (model !== undefined || effort !== undefined || systemInstruction !== undefined
           || topicModel !== undefined || topicEffort !== undefined
           || overviewModel !== undefined || overviewEffort !== undefined) {
@@ -347,6 +290,7 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
           ? { ...item, name, icon, ...validateTtsVoice(changes.ttsProvider ?? item.ttsProvider ?? defaultTtsProvider,
             changes.voiceId ?? (changes.ttsProvider && changes.ttsProvider !== item.ttsProvider ? "" : item.voiceId ?? "")) } : item);
         const service = await loadedContext(id);
+        if (await hasOutstandingDelegates(id)) throw failure("Orchestrator has outstanding delegated work", "session_busy");
         const nameChanged = name !== registry.orchestrators.find((item) => item.id === id).name;
         if (nameChanged || changes.model !== undefined || changes.effort !== undefined || changes.systemInstruction !== undefined
           || changes.topicModel !== undefined || changes.topicEffort !== undefined
@@ -367,52 +311,62 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
       return exclusive(async () => {
         await load();
         const service = await loadedContext(id);
-        if (await service.isBusy()) throw failure("Orchestrator is busy", "session_busy");
+        if (await service.isBusy() || await hasOutstandingDelegates(id)) throw failure("Orchestrator is busy", "session_busy");
         const next = { ...registry, selectedId: registry.selectedId === id ? "main" : registry.selectedId,
           orchestrators: registry.orchestrators.filter((item) => item.id !== id) };
         await saveRegistry(next);
+        await service.close();
+        await learnings.get(id)?.close();
+        await disposeRuntime?.(id);
         contexts.delete(id);
-        await learning?.removeOrchestrator(id).catch(() => {});
+        learnings.delete(id);
+        learningLedgers.delete(id);
+        learningErrors.delete(id);
+        learningMemoryIds.delete(id);
         await fs.rm(path.join(orchestratorRoot, id), { recursive: true });
         await subagents?.retain(new Set(next.orchestrators.map((item) => item.id)));
         return publicList();
       });
     },
-    async learningStatus() {
-      await exclusive(load);
-      if (!learning) return { mode: "observation", enabled: false, status: "paused", settings: { model: "", effort: "", settingsRevision: 1 },
-        error: learningError, candidates: [], gaps: [], pendingCount: 0, observedThrough: 0, processedThrough: 0, usage: null };
-      return learning.status();
+    async learningStatus(id = "main") {
+      await context(idOf(id));
+      const learning = learnings.get(id);
+      if (!learning) return { orchestratorId: id, mode: "observation", enabled: false, status: "paused", settings: { model: "", effort: "", settingsRevision: 1 },
+        error: learningErrors.get(id), candidates: [], gaps: [], pendingCount: 0, observedThrough: 0, processedThrough: 0, usage: null };
+      return { ...await learning.status(), orchestratorId: id };
     },
-    async configureLearning(settings) {
-      await exclusive(load);
+    async configureLearning(settings, id = "main") {
+      const service = await context(idOf(id));
+      const learning = learnings.get(id);
       if (!learning) throw failure("Learning storage is unavailable", "learning_store_unavailable");
-      const models = settings.model === "" && settings.effort === "" ? [] : (await main.getSettings()).models;
+      const models = settings.model === "" && settings.effort === "" ? [] : (await service.getSettings()).models;
       await learning.configure(settings, models);
-      return learning.status();
+      return { ...await learning.status(), orchestratorId: id };
     },
-    async manageLearning(operation, payload) {
-      await exclusive(load);
+    async manageLearning(operation, payload, id = "main") {
+      await context(idOf(id));
+      const learning = learnings.get(id);
       if (!learning) throw failure("Learning storage is unavailable", "learning_store_unavailable");
       const methods = { read: "markRead", decide: "decide", change: "requestChange", correct: "correctEvaluation", cancel: "cancelEvaluationCorrections", forget: "forget", proposal: "proposalDecision", retry: "retry" };
       if (!methods[operation]) throw failure("Unknown learning operation", "learning_request_invalid");
       await learning[methods[operation]](payload);
-      return learning.status();
+      return { ...await learning.status(), orchestratorId: id };
     },
     async learningDelivery({ orchestratorId, operationId }) {
-      await exclusive(load);
-      idOf(orchestratorId);
-      return { delivery: await learning?.delivery({ orchestratorId, operationId }) || null };
+      await context(idOf(orchestratorId));
+      return { orchestratorId, delivery: await learnings.get(orchestratorId)?.delivery({ orchestratorId, operationId }) || null };
     },
-    async learningUsage(options) {
-      await exclusive(load);
-      if (!learningLedger) throw failure("Learning usage storage is unavailable", "learning_store_unavailable");
-      return learningLedger.history(options);
+    async learningUsage(options, id = "main") {
+      await context(idOf(id));
+      const ledger = learningLedgers.get(id);
+      if (!ledger) throw failure("Learning usage storage is unavailable", "learning_store_unavailable");
+      return { ...await ledger.history(options), orchestratorId: id };
     },
-    async configureLearningPrice(snapshot) {
-      await exclusive(load);
-      if (!learningLedger) throw failure("Learning usage storage is unavailable", "learning_store_unavailable");
-      return learningLedger.configurePrice(snapshot);
+    async configureLearningPrice(snapshot, id = "main") {
+      await context(idOf(id));
+      const ledger = learningLedgers.get(id);
+      if (!ledger) throw failure("Learning usage storage is unavailable", "learning_store_unavailable");
+      return { ...await ledger.configurePrice(snapshot), orchestratorId: id };
     },
     async getSettings(id) {
       const service = await context(idOf(id));
@@ -427,20 +381,16 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
           overviewModel, overviewEffort);
       });
     },
-    async clearMemory() { return exclusive(async () => {
-      await load();
-      for (const { id } of registry.orchestrators) {
-        if (await (await loadedContext(id)).isBusy()) throw failure("Voice conversation is busy", "session_busy");
-      }
-      const result = await main.clearMemory();
-      for (const [id, service] of contexts) {
-        if (id !== "main") await service.clearMemory({ clearStore: false });
-      }
-      return result;
-    }); },
+    async clearMemory(id = "main") {
+      const service = await context(idOf(id));
+      if (await hasOutstandingDelegates(id)) throw failure("Orchestrator has outstanding delegated work", "session_busy");
+      return service.clearMemory();
+    },
     async clearMessages(id) { return exclusive(async () => {
       await load();
-      const result = await (await loadedContext(idOf(id))).clearMessages();
+      const service = await loadedContext(idOf(id));
+      if (await hasOutstandingDelegates(id)) throw failure("Orchestrator has outstanding delegated work", "session_busy");
+      const result = await service.clearMessages();
       return result;
     }); },
     async taskOverview() { return (await context("main")).taskOverview(); },
@@ -448,7 +398,7 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
     async respondToChecklistCompletion(id, sourceHash, version, decision) {
       return (await context(idOf(id))).respondToChecklistCompletion(sourceHash, version, decision);
     },
-    async isBusy(id) { return (await context(idOf(id))).isBusy(); },
+    async isBusy(id) { return await (await context(idOf(id))).isBusy() || await hasOutstandingDelegates(id); },
     async open(id) { return withCounts(id, await (await context(idOf(id))).open()); },
     async status(id, conversationId, operationId) {
       return withCounts(id, await (await context(idOf(id))).status(conversationId, operationId));
@@ -468,11 +418,13 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
         const operationId = message.payload?.clientOperationId;
         const reservation = `${id}:${operationId}`;
         // A completion must finish its durable observation before a recovery scan advances the high water.
-        await pairExclusive(() => allEventPairs([]));
+        await rememberOperations();
         if (operationOwners.has(operationId) && operationOwners.get(operationId) !== id) {
           throw failure("Voice operation ID belongs to another orchestrator", "operation_conflict");
         }
-        if (memoryStore.remainingCapacity <= reservations.size && !reservations.has(reservation)) {
+        const memoryStore = await service.getMemoryStore();
+        if (!memoryStore) throw failure("Finish or interrupt legacy work before isolation", "session_busy");
+        if (memoryStore.remainingCapacity < 1 && !reservations.has(reservation)) {
           try { await service.status(message.payload?.logicalConversationId, operationId); }
           catch { throw failure("Voice memory is awaiting a successful update", "voice_memory_full"); }
         }
