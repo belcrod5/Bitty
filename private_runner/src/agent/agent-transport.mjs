@@ -1,6 +1,8 @@
 import {
   AGENT_EVENT_TYPES,
   AGENT_PROTOCOL_VERSION,
+  SESSION_LIST_BATCH_MAX_DIRECTORIES,
+  SESSION_LIST_BATCH_MAX_BYTES,
   AGENT_TERMINAL_EVENT_TYPES,
   serializeAgentError,
 } from "./agent-protocol.mjs";
@@ -246,9 +248,10 @@ export function createAgentWsConnection({ service, ws, sendEnvelope, subjectId, 
         payload: {
           protocolVersion: AGENT_PROTOCOL_VERSION,
           supportedProtocolVersions: [AGENT_PROTOCOL_VERSION],
+          sessionListBatch: { maxDirectories: SESSION_LIST_BATCH_MAX_DIRECTORIES, maxBytes: SESSION_LIST_BATCH_MAX_BYTES },
           operations: [
             "turn.start", "voice.open", "voice.status", "voice.history", "voice.turn.interrupt", "voice.session-reset.respond", "voice.task-checklist.complete.respond", "voice.settings", "voice.settings.update", "voice.learning.status", "voice.learning.read", "voice.learning.configure", "voice.learning.usage", "voice.learning.price.configure", "voice.learning.decide", "voice.learning.change", "voice.learning.correct", "voice.learning.correction.cancel", "voice.learning.forget", "voice.learning.proposal", "voice.learning.delivery", "voice.learning.retry", "voice.memory.clear", "voice.messages.clear", "voice.orchestrators.list", "voice.orchestrators.select", "voice.orchestrators.create", "voice.orchestrators.update", "voice.orchestrators.delete", "voice.approval.decision", "voice.userInput.respond", "turn.interrupt", "action.claim", "action.respond", "events.resume", "events.detach", "session.handoff",
-            "session.compact", "sessions.list", "sessions.active-count", "history.read", "history.search", "conversation.read",
+            "session.compact", "sessions.list", "sessions.list.batch", "sessions.active-count", "history.read", "history.search", "conversation.read",
             "workspaces.list", "workspace.prepare", "workspace.confirm", "workspace.revoke",
           ],
           events: Array.from(AGENT_EVENT_TYPES),
@@ -440,6 +443,12 @@ export function createAgentWsConnection({ service, ws, sendEnvelope, subjectId, 
         requestId: message.requestId || "",
         sessionId: result.sessionRef.nativeSessionId,
         payload: result,
+      })).catch((error) => sendError(message, error));
+      return true;
+    }
+    if (message.op === "sessions.list.batch") {
+      void service.listSessionsBatch(payloadObject(message), { subjectId }).then((result) => sendEnvelope(ws, {
+        channel: "agent", op: "sessions.list.batch.result", requestId: message.requestId || "", payload: result,
       })).catch((error) => sendError(message, error));
       return true;
     }

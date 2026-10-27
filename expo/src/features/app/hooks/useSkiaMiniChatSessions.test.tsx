@@ -1347,3 +1347,136 @@ test("resolves colliding native IDs using each card's backend", async () => {
   expect(result.current.sessions[0].backendId).toBe("claude");
   expect(result.current.sessions[0].title).toBe("Archived title");
 });
+
+test("waits for a registered first page before resolving missing board cards", async () => {
+  seedRunnerBoard([1, 2].map((n) => ({ kind: "session" as const, sessionId: `session-${n}`, backendId: "codex", directory: "/workspace", col: n, row: 0 })));
+  mockConversation([], { directorySessionsById: { workspace: { ...tree([]), loaded: false, loading: true } },
+    directorySessionSync: { ...IDLE_DIRECTORY_SESSION_SYNC, cycleId: 1, phase: "loading" } });
+  mockFetchSkiaBoardSessionSummaries.mockImplementation(async (_auth, options) => options.sessionIds.map((sessionId) => ({ ...archivedSummary, sessionId, updatedAt: "2026-06-01", firstUserMessage: "fixture" })));
+  const hydrate = jest.fn(async () => "applied" as const);
+  mockUsePanelRuntimeController.mockReturnValue({ clearPanelSnapshot: jest.fn(), hydratePanelFromSessionHistory: hydrate } as never);
+  const { result, rerender } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
+  await flush();
+  expect(mockFetchSkiaBoardSessionSummaries).not.toHaveBeenCalled();
+  expect(hydrate).not.toHaveBeenCalled();
+  mockConversation([{ ...session(1), updatedAt: "2026-06-30T00:00:00Z" }], {
+    directorySessionSync: { ...IDLE_DIRECTORY_SESSION_SYNC, cycleId: 1, phase: "complete" },
+  });
+  await rerender(undefined as never); await flush();
+  expect(mockFetchSkiaBoardSessionSummaries).toHaveBeenCalledTimes(1);
+  expect(mockFetchSkiaBoardSessionSummaries.mock.calls[0][1].sessionIds).toEqual(["session-2"]);
+  expect(hydrate).toHaveBeenCalledTimes(2);
+  expect(hydrate).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "session-1", updatedAt: "2026-06-30T00:00:00Z" }));
+  console.info("pending_origin_after_fixture", JSON.stringify({ summaryRequests: mockFetchSkiaBoardSessionSummaries.mock.calls.length,
+    requestedSummaryRows: mockFetchSkiaBoardSessionSummaries.mock.calls.reduce((n, call) => n + call[1].sessionIds.length, 0), hydrations: hydrate.mock.calls.length }));
+});
+
+test.each(["missing", "unstarted", "loading", "refreshing"])("defers a registered missing-card summary while its first page is %s", async (state) => {
+  seedRunnerBoard([archivedCard]);
+  const waiting = state === "missing" ? {} : { workspace: { ...tree([]), loaded: state === "refreshing",
+    loading: state === "loading", refreshing: state === "refreshing" } };
+  mockConversation([], { directorySessionsById: waiting });
+  mockFetchSkiaBoardSessionSummaries.mockResolvedValue([archivedSummary]);
+  await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper }); await flush();
+  expect(mockFetchSkiaBoardSessionSummaries).not.toHaveBeenCalled();
+});
+
+test("resolves a nonregistered card origin while another origin's first page is pending", async () => {
+  seedRunnerBoard([{ ...archivedCard, directory: "/outside" }]);
+  mockConversation([], { directorySessionsById: {} });
+  mockFetchSkiaBoardSessionSummaries.mockResolvedValue([{ ...archivedSummary, directory: "/outside", cwd: "/outside" }]);
+  const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper }); await flush();
+  expect(mockFetchSkiaBoardSessionSummaries).toHaveBeenCalledTimes(1);
+  expect(mockFetchSkiaBoardSessionSummaries.mock.calls[0][1].directory).toBe("/outside");
+  expect(result.current.sessions).toHaveLength(1);
+});
+
+test.each([false, true])("uses summary fallback after an origin terminates with an error (partial=%s)", async (partial) => {
+  seedRunnerBoard([archivedCard]);
+  mockConversation([], { directorySessionsById: { workspace: { ...tree([]), loaded: partial, error: "backend unavailable" } },
+    directorySessionSync: { ...IDLE_DIRECTORY_SESSION_SYNC, phase: partial ? "partial_error" : "error" } });
+  mockFetchSkiaBoardSessionSummaries.mockResolvedValue([archivedSummary]);
+  const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper }); await flush();
+  expect(mockFetchSkiaBoardSessionSummaries).toHaveBeenCalledTimes(1);
+  expect(result.current.sessions).toHaveLength(1);
+});
+
+test("retains a pending origin while another origin refreshes and ignores read-only tree updates", async () => {
+  const registeredDirectories = [workspaceDirectory];
+  seedRunnerBoard([archivedCard, { ...archivedCard, sessionId: "outside", directory: "/outside", col: 2 }]);
+  mockConversation([], { registeredDirectories });
+  mockFetchSkiaBoardSessionSummaries.mockImplementation(async (_auth, options) => [{ ...archivedSummary,
+    sessionId: options.sessionIds[0], directory: options.directory, cwd: options.directory }]);
+  const { result, rerender } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper }); await flush();
+  expect(result.current.sessions).toHaveLength(2);
+  const waiting = { ...tree([]), refreshing: true };
+  mockConversation([], { registeredDirectories, directorySessionsById: { workspace: waiting } });
+  await rerender(undefined as never); await flush();
+  expect(result.current.sessions).toHaveLength(2);
+  expect(mockFetchSkiaBoardSessionSummaries).toHaveBeenCalledTimes(3);
+  expect(mockFetchSkiaBoardSessionSummaries.mock.calls[2][1].directory).toBe("/outside");
+  mockConversation([], { registeredDirectories, directorySessionsById: { workspace: { ...waiting, fetchedAtMs: 42 } } });
+  await rerender(undefined as never); await flush();
+  expect(mockFetchSkiaBoardSessionSummaries).toHaveBeenCalledTimes(3);
+});
+
+test("clears another Runner's retained summary even when this origin is pending", async () => {
+  seedRunnerBoard([archivedCard]); mockConversation([]);
+  mockFetchSkiaBoardSessionSummaries.mockResolvedValue([archivedSummary]);
+  const { result, rerender } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper }); await flush();
+  expect(result.current.sessions).toHaveLength(1);
+  mockRunnerAuth = { ...mockRunnerAuth, runnerToken: "replacement-token" };
+  mockConversation([], { directorySessionsById: {} });
+  await rerender(undefined as never); await flush();
+  expect(result.current.sessions).toHaveLength(0);
+  expect(mockFetchSkiaBoardSessionSummaries).toHaveBeenCalledTimes(1);
+});
+
+test("does not apply a summary issued before its origin returned to pending", async () => {
+  const pending = deferred<typeof archivedSummary[]>();
+  const hydrate = jest.fn(async () => "applied" as const);
+  mockUsePanelRuntimeController.mockReturnValue({ clearPanelSnapshot: jest.fn(), hydratePanelFromSessionHistory: hydrate } as never);
+  seedRunnerBoard([archivedCard]); mockConversation([]);
+  mockFetchSkiaBoardSessionSummaries.mockReturnValue(pending.promise);
+  const { result, rerender } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper }); await flush();
+  mockConversation([], { directorySessionsById: {} });
+  await rerender(undefined as never); await flush();
+  await act(async () => pending.resolve([archivedSummary])); await flush();
+  expect(result.current.sessions).toHaveLength(0);
+  mockConversation([{ ...session(1), sessionId: "archived", modelRef: "fresh-list-model" }]);
+  await rerender(undefined as never); await flush();
+  expect(hydrate).toHaveBeenCalledWith(expect.objectContaining({ modelRef: "fresh-list-model" }));
+  expect(mockFetchSkiaBoardSessionSummaries).toHaveBeenCalledTimes(1);
+});
+
+
+test.each(["pending", "token"])("stops the remaining old-origin requests after a %s change", async (change) => {
+  seedRunnerBoard([archivedCard, { ...archivedCard, sessionId: "outside", directory: "/zzz-outside", col: 2 }]);
+  mockConversation([]);
+  const old = deferred<typeof archivedSummary[]>();
+  mockFetchSkiaBoardSessionSummaries.mockImplementation(async (_auth, options) => [{ ...archivedSummary,
+    sessionId: options.sessionIds[0], directory: options.directory, cwd: options.directory }]);
+  mockFetchSkiaBoardSessionSummaries.mockReturnValueOnce(old.promise);
+  const { rerender } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper }); await flush();
+  expect(mockFetchSkiaBoardSessionSummaries).toHaveBeenCalledTimes(1);
+  if (change === "pending") mockConversation([], { directorySessionsById: {} });
+  else mockRunnerAuth = { ...mockRunnerAuth, runnerToken: "replacement-token" };
+  await rerender(undefined as never); await flush();
+  const issued = mockFetchSkiaBoardSessionSummaries.mock.calls.length;
+  expect(issued).toBe(change === "pending" ? 2 : 3);
+  await act(async () => old.resolve([archivedSummary])); await flush();
+  expect(mockFetchSkiaBoardSessionSummaries).toHaveBeenCalledTimes(issued);
+});
+
+test("keeps a single origin's cached card while every missing origin is pending", async () => {
+  seedRunnerBoard([archivedCard]); mockConversation([]);
+  mockFetchSkiaBoardSessionSummaries.mockResolvedValue([archivedSummary]);
+  const { result, rerender } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper }); await flush();
+  expect(result.current.sessions).toHaveLength(1);
+  mockConversation([], { directorySessionsById: { workspace: { ...tree([]), refreshing: true } },
+    directorySessionSync: { ...IDLE_DIRECTORY_SESSION_SYNC, cycleId: 2, phase: "refreshing" } });
+  await rerender(undefined as never); await flush();
+  expect(result.current.sessions).toHaveLength(1);
+  expect(result.current.sessions[0].title).toBe("Archived title");
+  expect(mockFetchSkiaBoardSessionSummaries).toHaveBeenCalledTimes(1);
+});

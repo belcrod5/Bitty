@@ -10,6 +10,8 @@ const platformOSDescriptor = Object.getOwnPropertyDescriptor(Platform, "OS");
 
 const mockMarkSessionRead = jest.fn();
 const mockMarkSessionUnread = jest.fn();
+jest.mock("../hooks/useReduceMotionEnabled", () => ({ useReduceMotionEnabled: () => true }));
+
 jest.mock("../contexts/ConversationContext", () => ({
   useConversation: () => ({ markSessionReadManually: mockMarkSessionRead, markSessionUnread: mockMarkSessionUnread }),
 }));
@@ -24,8 +26,10 @@ let mockSkiaBoardLoaded = true;
 let mockRunnerUrl = "http://runner";
 let mockRunnerToken = "runner-token";
 let mockUnreadCount = 0;
+let mockDrawerOpen = true;
+
 jest.mock("../contexts/AppShellContext", () => ({
-  useAppShell: () => ({ unreadCount: mockUnreadCount }),
+  useAppShell: () => ({ unreadCount: mockUnreadCount, drawerOpen: mockDrawerOpen }),
 }));
 jest.mock("../contexts/SkiaBoardContext", () => ({
   useSkiaBoard: () => ({
@@ -150,6 +154,7 @@ function renderDrawer(overrides: Partial<AppDrawerProps> = {}) {
 }
 
 beforeEach(() => {
+  mockDrawerOpen = true;
   jest.clearAllMocks();
   mockHasSession.mockReturnValue(false);
   mockHasDirectory.mockReturnValue(false);
@@ -329,12 +334,12 @@ test("shows the authoritative 66 unread total when 55 sessions are outside the l
   expect(drawer.getByLabelText("relief-box2の未読 7件")).toBeTruthy();
 });
 
-test("shows one aggregate progress bar for registered directory session sync", async () => {
+test.each(["loading", "refreshing"] as const)("shows a thin fixed indeterminate bar during %s without text/counts", async (phase) => {
   const drawer = await renderDrawer({
     directorySessionSync: {
       ...IDLE_DIRECTORY_SESSION_SYNC,
       cycleId: 1,
-      phase: "loading",
+      phase,
       totalCount: 4,
       pendingCount: 2,
       completedCount: 2,
@@ -342,23 +347,27 @@ test("shows one aggregate progress bar for registered directory session sync", a
     },
   });
 
-  expect(drawer.getByText("セッション同期中 2/4")).toBeTruthy();
-  expect(
-    drawer.getByLabelText("登録ディレクトリのセッション同期").props.accessibilityValue
-  ).toEqual({
-    min: 0,
-    max: 4,
-    now: 2,
-    text: "2/4",
-  });
+  const bar = drawer.getByTestId("session-sync-bar");
+  expect(StyleSheet.flatten(bar.props.style).height).toBe(2);
+  expect(bar.props.accessibilityValue).toBeUndefined();
+  expect(within(drawer.getByTestId("app-drawer-scroll")).queryByTestId("session-sync-bar")).toBeNull();
+  expect(drawer.queryByText(/セッション(?:同期中|更新中)|2\/4/)).toBeNull();
 });
 
-test("shows a terminal partial error instead of leaving sync pending", async () => {
+test("stops the hidden drawer bar while the menu ring owns the closed state", async () => {
+  mockDrawerOpen = false;
+  const drawer = await renderDrawer({
+    directorySessionSync: { ...IDLE_DIRECTORY_SESSION_SYNC, phase: "refreshing" },
+  });
+  expect(drawer.queryByTestId("session-sync-bar")).toBeNull();
+});
+
+test.each(["partial_error", "error"] as const)("retains the %s notification without progress counts", async (phase) => {
   const drawer = await renderDrawer({
     directorySessionSync: {
       ...IDLE_DIRECTORY_SESSION_SYNC,
       cycleId: 1,
-      phase: "partial_error",
+      phase,
       totalCount: 3,
       failedCount: 1,
       completedCount: 3,
@@ -366,7 +375,7 @@ test("shows a terminal partial error instead of leaving sync pending", async () 
     },
   });
 
-  expect(drawer.getByRole("alert").props.children).toBe("一部更新失敗 1/3");
+  expect(drawer.getByRole("alert").props.children).toBe(phase === "error" ? "セッション同期失敗" : "一部更新失敗");
   expect(drawer.queryByLabelText("登録ディレクトリのセッション同期")).toBeNull();
 });
 

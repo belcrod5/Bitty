@@ -1,6 +1,6 @@
 import { runCodexRpcSession } from "./rpcSession";
-import { listCodexAppServerThreads, readCodexAppServerThread } from "./threads";
-import { listAgentSessions, readAgentHistory } from "../../agent/client";
+import { listCodexAppServerThreads, listCodexAppServerThreadsBatch, readCodexAppServerThread } from "./threads";
+import { listAgentSessions, listAgentSessionsBatch, readAgentHistory } from "../../agent/client";
 
 jest.mock("./rpcSession", () => ({
   ...jest.requireActual("./rpcSession"),
@@ -9,6 +9,7 @@ jest.mock("./rpcSession", () => ({
 jest.mock("../../agent/client", () => ({
   ALL_BACKENDS_SCOPE: "all",
   listAgentSessions: jest.fn(),
+  listAgentSessionsBatch: jest.fn(),
   readAgentHistory: jest.fn(),
 }));
 
@@ -81,10 +82,10 @@ it("maps an all-backends listing per entry backend and surfaces partial errors",
   expect(mockRunCodexRpcSession).not.toHaveBeenCalled();
 });
 
-it("preserves complete native CLI summaries without replacing the selected model fields", async () => {
+it.each(["codex", "claude"])("preserves complete %s summaries without replacing the selected model fields", async (backendId) => {
   const summary = { contextUsage: null, modelRef: "native-model", reasoningEffort: "high", lastReadAt: "2026-10-26" };
   mockListAgentSessions.mockResolvedValue({ sessions: [{
-    sessionRef: { backendId: "codex", nativeSessionId: "one" }, sourceKind: "cli",
+    sessionRef: { backendId, nativeSessionId: "one" }, sourceKind: "cli",
     modelId: "selected-model", reasoningEffort: "low", summary,
   }] });
   const result = await listCodexAppServerThreads({ wsUrl: "ws://runner", runnerWebSocketManager: {} as never, backendId: "codex" });
@@ -92,10 +93,11 @@ it("preserves complete native CLI summaries without replacing the selected model
 });
 
 it.each([undefined, {}, { contextUsage: null }, { contextUsage: 42, modelRef: "native", reasoningEffort: "high", lastReadAt: "" },
-  { contextUsage: [], modelRef: "native", reasoningEffort: "high", lastReadAt: "" }])(
-  "drops incomplete or malformed summary %j so HTTP fallback remains available", async (summary) => {
+  { contextUsage: [], modelRef: "native", reasoningEffort: "high", lastReadAt: "" }].flatMap((summary) =>
+    ["codex", "claude"].map((backendId) => ({ backendId, summary }))))(
+  "drops incomplete or malformed $backendId summary $summary so HTTP fallback remains available", async ({ backendId, summary }) => {
     mockListAgentSessions.mockResolvedValue({ sessions: [{
-      sessionRef: { backendId: "codex", nativeSessionId: "one" }, sourceKind: "cli", summary,
+      sessionRef: { backendId, nativeSessionId: "one" }, sourceKind: "cli", summary,
     }] });
     const result = await listCodexAppServerThreads({ wsUrl: "ws://runner", runnerWebSocketManager: {} as never, backendId: "codex" });
     expect(result.data[0]).not.toHaveProperty("summary");
@@ -373,4 +375,25 @@ it("keeps active state without loading turns", async () => {
   expect(result.hasRunningTurn).toBe(true);
   expect(result.runningTurn?.summary).toBe("応答生成中");
   expect(rpc).toHaveBeenCalledTimes(1);
+});
+
+it('normalizes batch pages with the same summary, cursor, title and partial error contract', async () => {
+  const summary = { contextUsage: { usedPct: 20 }, modelRef: 'native', reasoningEffort: 'high', lastReadAt: 'read' };
+  jest.mocked(listAgentSessionsBatch).mockResolvedValue([{ cwd: '/workspace', payload: { sessions: [{
+    sessionRef: { backendId: 'codex', nativeSessionId: 'one' }, title: 'shared', sourceKind: 'cli',
+    canonicalCwd: '/workspace', lastReadAt: 'read', summary,
+  }], cursor: 'next', errors: [{ backendId: 'claude', code: 'backend_unavailable' }] } }]);
+  const [group] = await listCodexAppServerThreadsBatch({ wsUrl: 'ws://runner', cwds: ['/workspace'], limit: 5, runnerWebSocketManager: {} as never });
+  expect(group.result).toMatchObject({ nextCursor: 'next', partialErrors: [{ backendId: 'claude' }],
+    data: [{ backendId: 'codex', threadId: 'one', preview: 'shared', lastReadAt: 'read', summary }] });
+  expect(mockListAgentSessions).not.toHaveBeenCalled();
+});
+
+it('marks legacy raw success as Codex-only even for a successful empty batch page', async () => {
+  jest.mocked(listAgentSessionsBatch).mockResolvedValue([{ cwd: '/workspace', payload: null }]);
+  mockRunCodexRpcSession.mockResolvedValue({ data: [], nextCursor: '', backwardsCursor: '' });
+  const [group] = await listCodexAppServerThreadsBatch({ wsUrl: 'ws://runner', cwds: ['/workspace'], limit: 5, runnerWebSocketManager: {} as never });
+  expect(group.result).toMatchObject({ data: [], successfulBackendIds: ['codex'], partialErrors: [{ code: 'backend_unavailable' }] });
+  expect(mockListAgentSessions).not.toHaveBeenCalled();
+  expect(mockRunCodexRpcSession).toHaveBeenCalledTimes(1);
 });

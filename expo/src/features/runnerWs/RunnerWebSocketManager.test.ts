@@ -1460,3 +1460,25 @@ test("app control registers over the real manager handshake before issuing a tru
     expect(control.origin("drawer_session_popup", target)).toBeUndefined();
   } finally { unregister(); stop(); manager.disconnect(); }
 });
+
+test("logs only safe session-list operation counts after successful socket sends", async () => {
+  const onDiagEvent = jest.fn();
+  const manager = new RunnerWebSocketManager({ url: "ws://127.0.0.1:8788/runner-ws", token: "private-token", appState: "active", onDiagEvent });
+  const socket = nextSocket();
+  await connectReady(manager, socket);
+  onDiagEvent.mockClear();
+  for (const [op, payload] of [
+    ["agent.hello", {}], ["sessions.list.batch", { cwds: ["/private-one", "/private-two"] }],
+    ["sessions.list", { cwd: "/private-three" }], ["history.read", { nativeSessionId: "private-session" }],
+  ] as const) manager.send({ channel: "agent", op, payload });
+  expect(onDiagEvent.mock.calls.filter(([event]) => event === "runner_ws_session_list_sent")).toEqual([
+    ["runner_ws_session_list_sent", { operation: "agent.hello", targetCount: 0 }],
+    ["runner_ws_session_list_sent", { operation: "sessions.list.batch", targetCount: 2 }],
+    ["runner_ws_session_list_sent", { operation: "sessions.list", targetCount: 1 }],
+  ]);
+  expect(JSON.stringify(onDiagEvent.mock.calls)).not.toMatch(/private-/);
+  socket.send = () => { throw new Error("send failure"); };
+  expect(() => manager.send({ channel: "agent", op: "sessions.list" })).toThrow("send failure");
+  expect(onDiagEvent.mock.calls.filter(([event]) => event === "runner_ws_session_list_sent")).toHaveLength(3);
+  manager.disconnect("manual");
+});

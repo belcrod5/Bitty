@@ -1,4 +1,4 @@
-import { listAgentSessions, startAgentSessionObserverWithRawFallback, startAgentTurnWithRawFallback } from "./client";
+import { listAgentSessions, listAgentSessionsBatch, startAgentSessionObserverWithRawFallback, startAgentTurnWithRawFallback } from "./client";
 import type { RunnerWebSocketManager } from "../runnerWs/RunnerWebSocketManager";
 
 test("child listing sends backend-qualified parents without changing an ordinary listing", async () => {
@@ -1284,4 +1284,70 @@ test("neutral turn carries the trusted app origin separately from user text", as
   expect(start.payload.input).toEqual({ blocks: [{ type: "text", text: "hello" }] });
   live.emit("turn.completed", {});
   await live.session.promise;
+});
+
+function batchManager(operations: string[] = ["sessions.list.batch"], maxDirectories = 64) {
+  let snapshot = { connectionState: "ready", generation: 1, connectionId: "one", url: "ws://runner" };
+  const request = jest.fn(async (message: { op: string; payload?: any }) => {
+    if (message.op === "agent.hello") return { channel: "agent", op: "agent.ready", payload: {
+      protocolVersion: 2, backends: [{ backendId: "codex", readiness: { ready: true } }], operations,
+      sessionListBatch: { maxDirectories, maxBytes: 65536 },
+    } };
+    if (message.op === "sessions.list.batch") return { channel: "agent", op: "sessions.list.batch.result", payload: {
+      groups: message.payload.cwds.map((cwd: string) => ({ cwd, payload: { sessions: [{ title: cwd }] } })),
+    } };
+    return { channel: "agent", op: "sessions.list.result", payload: { sessions: [{ title: message.payload.cwd }] } };
+  });
+  return { manager: { request, getSnapshot: () => snapshot } as unknown as RunnerWebSocketManager, request,
+    replaceConnection: () => { snapshot = { ...snapshot, generation: 2, connectionId: "two" }; } };
+}
+
+test("a list cycle performs one hello and one bounded batch; later cycles recheck capabilities", async () => {
+  const { manager, request } = batchManager();
+  const paths = Array.from({ length: 25 }, (_, i) => `/workspace/${i}`);
+  const first = await listAgentSessionsBatch(manager, paths, 5);
+  expect(first.map((group) => group.cwd)).toEqual(paths);
+  expect(request.mock.calls.map(([message]) => message.op)).toEqual(["agent.hello", "sessions.list.batch"]);
+  await listAgentSessionsBatch(manager, paths, 5);
+  expect(request.mock.calls.filter(([message]) => message.op === "agent.hello")).toHaveLength(2);
+  expect(await listAgentSessionsBatch(manager, [], 5)).toEqual([]);
+  expect(request).toHaveBeenCalledTimes(4);
+});
+
+test("an older Agent Runner uses scalar lists with the same hello and keeps per-directory errors", async () => {
+  const { manager, request } = batchManager([]);
+  const send = request.getMockImplementation()!;
+  request.mockImplementation(async (message) => message.op === "sessions.list" && message.payload.cwd === "/bad"
+    ? { channel: "agent", op: "error", payload: { message: "bad directory" } } as any : send(message));
+  const groups = await listAgentSessionsBatch(manager, ["/one", "/bad", "/three"], 5);
+  expect(groups[0].payload).toEqual({ sessions: [{ title: "/one" }] });
+  expect(groups[1].error?.message).toBe("bad directory");
+  expect(groups[2].payload).toBeDefined();
+  expect(request.mock.calls.map(([message]) => message.op)).toEqual(["agent.hello", "sessions.list", "sessions.list", "sessions.list"]);
+});
+
+test("a failed later chunk keeps earlier results and never replays the cycle as scalar", async () => {
+  const { manager, request } = batchManager(["sessions.list.batch"], 2);
+  const send = request.getMockImplementation()!;
+  let batches = 0;
+  request.mockImplementation(async (message) => {
+    if (message.op === "sessions.list.batch" && ++batches === 2) throw new Error("timeout");
+    return send(message);
+  });
+  const groups = await listAgentSessionsBatch(manager, ["/one", "/two", "/three"], 5);
+  expect(groups.slice(0, 2).every((group) => group.payload)).toBe(true);
+  expect(groups[2].error?.message).toBe("timeout");
+  expect(request.mock.calls.map(([message]) => message.op)).toEqual(["agent.hello", "sessions.list.batch", "sessions.list.batch"]);
+});
+
+test("a connection replacement after hello rejects the whole old cycle before listing", async () => {
+  const fixture = batchManager();
+  const send = fixture.request.getMockImplementation()!;
+  fixture.request.mockImplementation(async (message) => {
+    const result = await send(message);
+    if (message.op === "agent.hello") fixture.replaceConnection();
+    return result;
+  });
+  await expect(listAgentSessionsBatch(fixture.manager, ["/one"], 5)).rejects.toThrow("connection changed");
+  expect(fixture.request).toHaveBeenCalledTimes(1);
 });

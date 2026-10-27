@@ -1054,6 +1054,7 @@ test("Claude transcript metadata is cached until the file changes", async (t) =>
   const first = await backend.listSessions({ cwd, limit: 10 });
   assert.equal(first.sessions[0].title, "hello");
   assert.equal(first.sessions[0].sourceKind, "cli");
+  assert.deepEqual(first.sessions[0].summary, { contextUsage: null, modelRef: "", reasoningEffort: "", lastReadAt: "" });
   const readsAfterFirst = readFileCalls;
   assert.ok(readsAfterFirst >= 1);
 
@@ -1067,9 +1068,11 @@ test("Claude transcript metadata is cached until the file changes", async (t) =>
   assert.equal(readFileCalls, readsAfterFirst);
 
   // ファイル更新(size/mtime変化)で読み直す
-  await fs.appendFile(transcript, `\n${JSON.stringify({ type: "assistant", uuid: "a1", cwd, message: { content: [{ type: "text", text: "world" }] } })}`);
-  await backend.listSessions({ cwd, limit: 10 });
+  await fs.appendFile(transcript, `\n${JSON.stringify({ type: "assistant", uuid: "a1", cwd, message: { model: "claude-sonnet-4-6", content: [{ type: "text", text: "world" }] } })}`);
+  const fresh = await backend.listSessions({ cwd, limit: 10 });
   assert.ok(readFileCalls > readsAfterFirst);
+  assert.equal(fresh.sessions[0].modelId, "sonnet");
+  assert.deepEqual(fresh.sessions[0].summary, { contextUsage: null, modelRef: "sonnet", reasoningEffort: "", lastReadAt: "" });
 });
 
 test("Claude batch session snapshot scans the transcript catalog once and groups by cwd", async (t) => {
@@ -1872,4 +1875,37 @@ test("Claude control reference is invocation scoped in system prompt and never m
     assert.equal(JSON.stringify(calls[0].options.env).includes("ctx_"), false);
   }
   assert.equal(JSON.stringify({ ...process.env }) === JSON.stringify(environmentBefore), true, "process environment must be unchanged");
+});
+
+test('main-only Claude listing does not spend the 5000-entry budget traversing children', async () => {
+  const root = '/synthetic/projects';
+  const project = `${root}/project`;
+  const mainId = '22222222-2222-4222-8222-222222222222';
+  const outsideId = '33333333-3333-4333-8333-333333333333';
+  const cwd = '/synthetic/workspace';
+  const entry = (name, directory) => ({ name, isDirectory: () => directory, isFile: () => !directory });
+  const raw = JSON.stringify({ type: 'user', cwd, timestamp: '2026-10-27T00:00:00Z', message: { content: 'fixture' } });
+  const directoriesRead = [];
+  const fileSystem = {
+    ...fs,
+    realpath: async (value) => value.endsWith(`${outsideId}.jsonl`) ? `/outside/${outsideId}.jsonl` : value,
+    readdir: async (directory) => {
+      directoriesRead.push(directory);
+      if (directory === root) return [entry('project', true)];
+      if (directory === project) return [entry(SESSION_ID, true), entry(`${outsideId}.jsonl`, false), entry(`${mainId}.jsonl`, false)];
+      if (directory.endsWith('/subagents')) return Array.from({ length: 5000 }, (_, i) => entry(`agent-${i}.jsonl`, false));
+      return [];
+    },
+    stat: async () => ({ isFile: () => true, size: Buffer.byteLength(raw), mtimeMs: 1, mtime: new Date(1) }),
+    readFile: async () => raw,
+  };
+  const backend = createClaudeBackend({ projectsRoot: root, fileSystem, sessionStore: { getBinding: async () => null } });
+  const main = await backend.listSessions({ cwd, limit: 5, includeSubagents: false });
+  assert.deepEqual(main.sessions.map((session) => session.sessionRef.nativeSessionId), [mainId]);
+  assert.equal(directoriesRead.some((directory) => directory.endsWith('/subagents')), false);
+  const all = await backend.listSessionsForDirectories({ cwds: [cwd], includeSubagents: true });
+  assert.equal(all.groups[0].sessions.length, 5000);
+  assert.ok(all.groups[0].sessions.every((session) => session.isSubagent));
+  const child = await backend.readHistory({ sessionRef: { backendId: 'claude', nativeSessionId: 'agent-0' }, limit: 1 });
+  assert.equal(child.items[0].content[0].text, 'fixture');
 });

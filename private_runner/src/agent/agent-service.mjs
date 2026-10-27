@@ -4,6 +4,8 @@ import {
   AGENT_PROTOCOL_VERSION,
   AGENT_TERMINAL_EVENT_TYPES,
   ALL_BACKENDS_SCOPE,
+  SESSION_LIST_BATCH_MAX_DIRECTORIES,
+  SESSION_LIST_BATCH_MAX_BYTES,
   agentError,
   createAgentEvent,
   hashAgentOperationRequest,
@@ -454,12 +456,17 @@ export function createAgentService({
     const activeRun = String(context?.subjectId || "").trim() && session?.sessionRef?.nativeSessionId
       ? getActiveRun(session.sessionRef, context)
       : null;
+    const modelId = String(binding?.modelId || session?.modelId || "").trim();
+    const reasoningEffort = String(binding?.reasoningEffort || session?.reasoningEffort || "").trim();
     return {
       ...session,
+      ...(session?.summary && typeof session.summary === "object" && !Array.isArray(session.summary)
+        ? { summary: { ...session.summary, modelRef: modelId, reasoningEffort, lastReadAt } }
+        : {}),
       // Neutral selection is authoritative until an explicit raw handoff clears it.
       // Native metadata remains the legacy/raw fallback when no stored selection exists.
-      modelId: String(binding?.modelId || session?.modelId || "").trim(),
-      reasoningEffort: String(binding?.reasoningEffort || session?.reasoningEffort || "").trim(),
+      modelId,
+      reasoningEffort,
       ...(updatedAt ? { updatedAt } : {}),
       ...(lastReadAt ? { lastReadAt } : {}),
       ...(activeRun ? { isActive: true } : {}),
@@ -1642,6 +1649,39 @@ export function createAgentService({
           ? { errors: failed.map((entry) => serializeAgentError(entry.error, entry.backendId)) }
           : {}),
       };
+    },
+    async listSessionsBatch(options, context = {}) {
+      if (!options || typeof options !== "object" || Array.isArray(options)
+        || Object.keys(options).some((key) => key !== "cwds" && key !== "limit")
+        || !Array.isArray(options.cwds) || options.cwds.length === 0
+        || options.cwds.length > SESSION_LIST_BATCH_MAX_DIRECTORIES
+        || options.cwds.some((cwd) => typeof cwd !== "string" || !cwd.trim() || cwd.length > 4096)
+        || !Number.isInteger(options.limit) || options.limit < 1 || options.limit > 100
+        || Buffer.byteLength(JSON.stringify(options), "utf8") > SESSION_LIST_BATCH_MAX_BYTES) {
+        throw agentError("turn_rejected", "invalid session list batch");
+      }
+      const groups = Array(options.cwds.length);
+      let next = 0;
+      await Promise.all(Array.from({ length: Math.min(2, groups.length) }, async () => {
+        while (next < groups.length) {
+          const index = next++;
+          const cwd = options.cwds[index].trim();
+          let timeout;
+          try {
+            const deadline = new Promise((_, reject) => {
+              timeout = setTimeout(() => reject(agentError("timeout", "session list timed out")), 30_000);
+            });
+            groups[index] = { cwd, payload: await Promise.race([service.listSessions({
+              backendId: ALL_BACKENDS_SCOPE, cwd, limit: options.limit, includeSubagents: false,
+            }, context), deadline]) };
+          } catch (error) {
+            groups[index] = { cwd, error: serializeAgentError(error) };
+          } finally {
+            clearTimeout(timeout);
+          }
+        }
+      }));
+      return { groups };
     },
     async listSessionSnapshot(options, context = {}) {
       const requestedBackendId = String(options?.backendId || ALL_BACKENDS_SCOPE).trim()

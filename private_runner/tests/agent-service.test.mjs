@@ -2601,3 +2601,85 @@ test("compact reconnects to one operation and replays its real success or failur
   await assert.rejects(service.compactSession(secondInput, context), { message: "native compact failed" });
   assert.deepEqual(compactCalls, ["session-1", "session-2"]);
 });
+
+test("session batch preserves scalar pages and read/title state, bounds work to two, and isolates failure", async () => {
+  const store = sessionStore();
+  store.setDirectoryLastReadAt('/one', '2026-10-27T00:00:00Z');
+  let active = 0;
+  let maxActive = 0;
+  let fail = true;
+  const backend = { backendId: 'claude',
+    getStatus: async () => ({ readiness: { ready: true }, capabilities: { session: { list: true } } }),
+    listSessions: async ({ cwd }) => {
+      active++; maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setImmediate(resolve));
+      active--;
+      if (fail && cwd === '/two') throw new Error('fixture failure');
+      return { sessions: [{ sessionRef: { backendId: 'claude', nativeSessionId: cwd }, canonicalCwd: cwd, title: 'native' }], cursor: 'next-page' };
+    },
+  };
+  const service = createAgentService({ backends: [backend], operationStore: operationStore(), sessionStore: store,
+    resolveCanonicalCwd: async (cwd) => cwd, getSessionTitles: async (refs) => refs.map(() => 'shared title') });
+  const options = { cwds: ['/one', '/two', '/three'], limit: 5 };
+  const context = { subjectId: 'owner' };
+  const result = await service.listSessionsBatch(options, context);
+  assert.equal(maxActive, 2);
+  assert.deepEqual(result.groups[0].payload, await service.listSessions({ cwd: '/one', limit: 5, includeSubagents: false }, context));
+  assert.equal(result.groups[0].payload.sessions[0].lastReadAt, '2026-10-27T00:00:00Z');
+  assert.equal(result.groups[0].payload.sessions[0].title, 'shared title');
+  assert.equal(result.groups[1].error.message, 'fixture failure');
+  assert.ok(result.groups[2].payload);
+  fail = false;
+  assert.ok((await service.listSessionsBatch(options, context)).groups.every((group) => group.payload));
+  for (const invalid of [null, {}, { cwds: [], limit: 5 }, { cwds: ['/one'], limit: 0 },
+    { cwds: ['/one'], limit: 5, cursor: 'forbidden' }, { cwds: Array(65).fill('/one'), limit: 5 },
+    { cwds: ['  '], limit: 5 }, { cwds: [123], limit: 5 },
+    { cwds: Array(10).fill('あ'.repeat(3000)), limit: 5 }]) {
+    await assert.rejects(service.listSessionsBatch(invalid, context), { code: 'turn_rejected' });
+  }
+});
+
+test("a timed-out batch directory does not discard successful groups", async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const backend = { backendId: 'claude', getStatus: async () => ({ readiness: { ready: true }, capabilities: { session: { list: true } } }),
+    listSessions: async ({ cwd }) => cwd === '/slow' ? new Promise(() => {}) : { sessions: [] } };
+  const service = createAgentService({ backends: [backend], operationStore: operationStore(), sessionStore: sessionStore(), resolveCanonicalCwd: async (cwd) => cwd });
+  const pending = service.listSessionsBatch({ cwds: ['/slow', '/fast', '/also-fast'], limit: 5 });
+  await new Promise((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(30_000);
+  const { groups } = await pending;
+  assert.equal(groups[0].error.code, 'timeout');
+  assert.deepEqual(groups[1].payload, { sessions: [] });
+  assert.deepEqual(groups[2].payload, { sessions: [] });
+});
+
+
+test("complete list summaries use final stored model/effort/read state for every backend and stay fresh", async () => {
+  for (const backendId of ["codex", "claude"]) {
+    const ref = { backendId, nativeSessionId: "one" };
+    const store = sessionStore();
+    await store.bind(ref, "/workspace", "neutral", { settings: { modelId: "selected", reasoningEffort: "high" } });
+    store.setDirectoryLastReadAt("/workspace", "2026-10-27T01:00:00Z");
+    const contextUsage = backendId === "codex" ? { usedPct: 35 } : null;
+    const native = { sessionRef: ref, canonicalCwd: "/workspace", modelId: "native", reasoningEffort: "low",
+      lastReadAt: "2026-10-26T00:00:00Z", summary: { contextUsage, modelRef: "native", reasoningEffort: "low", lastReadAt: "" } };
+    const service = createAgentService({ backends: [listBackend(backendId, { sessions: [native] })],
+      sessionStore: store, operationStore: operationStore(), resolveCanonicalCwd: async (cwd) => cwd });
+    const check = async (modelRef, effort, readAt) => {
+      const listed = await service.listSessions({ backendId, cwd: "/workspace" });
+      const row = listed.sessions[0];
+      assert.deepEqual(row.summary, { contextUsage, modelRef, reasoningEffort: effort, lastReadAt: readAt });
+      assert.equal(row.modelId, row.summary.modelRef);
+      assert.equal(row.reasoningEffort, row.summary.reasoningEffort);
+      assert.equal(row.lastReadAt, row.summary.lastReadAt);
+    };
+    await check("selected", "high", "2026-10-27T01:00:00Z");
+    const binding = await store.getBinding(ref);
+    delete binding.modelId;
+    delete binding.reasoningEffort;
+    native.modelId = "native-new";
+    native.reasoningEffort = "medium";
+    store.setDirectoryLastReadAt("/workspace", "2026-10-27T02:00:00Z");
+    await check("native-new", "medium", "2026-10-27T02:00:00Z");
+  }
+});

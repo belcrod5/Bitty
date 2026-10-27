@@ -490,3 +490,21 @@ test("agent handshake advertises learning read and evaluation correction cancell
   assert.ok(sent.at(-1).payload.operations.includes("voice.learning.correction.cancel"));
   assert.ok(sent.at(-1).payload.operations.includes("voice.learning.read"));
 });
+
+test("WS advertises bounded session batching and forwards the authenticated subject", async () => {
+  const sent = [];
+  const received = [];
+  const connection = createAgentWsConnection({ service: {
+    getStatuses: async () => [],
+    listSessionsBatch: async (options, context) => { received.push({ options, context }); return { groups: [{ cwd: '/one', payload: { sessions: [] } }] }; },
+  }, ws: {}, subjectId: 'owner', workspaceAdmission: {}, sendEnvelope: (_ws, envelope) => sent.push(envelope) });
+  connection.handleMessage({ channel: 'agent', op: 'agent.hello', requestId: 'hello' });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(sent[0].payload.operations.includes('sessions.list.batch'));
+  assert.deepEqual(sent[0].payload.sessionListBatch, { maxDirectories: 64, maxBytes: 65536 });
+  connection.handleMessage({ channel: 'agent', op: 'sessions.list.batch', requestId: 'batch', payload: { cwds: ['/one'], limit: 5 } });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(received, [{ options: { cwds: ['/one'], limit: 5 }, context: { subjectId: 'owner' } }]);
+  assert.equal(sent[1].op, 'sessions.list.batch.result');
+  assert.equal(sent[1].requestId, 'batch');
+});

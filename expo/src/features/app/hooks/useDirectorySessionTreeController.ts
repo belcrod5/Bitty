@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type Dispatch, type SetStateAction } from "react";
 import type {
   DirectoryLoadOutcome,
   DirectorySessionSyncReason,
@@ -7,14 +7,10 @@ import type {
   RegisteredDirectoryEntry,
   SessionChildTreeState,
 } from "../types/directorySessions";
+import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
+import type { LlmSessionHistoryBatchGroup, LlmSessionHistoryResult } from "./useLlmSessionExplorer";
 import { IDLE_DIRECTORY_SESSION_SYNC } from "../types/directorySessions";
 import { findDirectoryForSessionTree } from "../utils/sessionHistoryContext";
-
-type FetchSessionHistoryResult = {
-  latestSessionId: string;
-  nextCursor: string;
-  entries: DirectorySessionTreeState["entries"];
-};
 
 type FetchSessionHistoryOptions = {
   limit: number;
@@ -34,7 +30,10 @@ type UseDirectorySessionTreeControllerArgs = {
   fetchSessionHistory: (
     directoryPath: string,
     options?: FetchSessionHistoryOptions
-  ) => Promise<FetchSessionHistoryResult>;
+  ) => Promise<LlmSessionHistoryResult>;
+  fetchSessionHistoryBatch?: (directories: string[], options: FetchSessionHistoryOptions) => Promise<LlmSessionHistoryBatchGroup[]>;
+  runnerWebSocketManager?: RunnerWebSocketManager;
+  connectionScope?: string;
   fetchSessionChildrenHistory: (
     parentSessionIds: string[],
     directoryPath: string,
@@ -45,7 +44,6 @@ type UseDirectorySessionTreeControllerArgs = {
   directorySessionPrefetchTtlMs: number;
   directorySessionPrefetchConcurrency: number;
   registeredDirectories: RegisteredDirectoryEntry[];
-  selectedDirectoryPath: string;
   // 永続設定(runner接続先・登録ディレクトリ)ロード完了前は同期サイクルを開始せず、
   // intentを保留してロード完了時にdrainする(起動直後のensureが空ターゲット・
   // 未認証状態で走って失敗確定するのを防ぐ)。既定trueで既存テスト・呼び出しに影響しない。
@@ -133,13 +131,15 @@ export function useDirectorySessionTreeController({
   setDirectorySessionsById,
   setExpandedDirectoryIds,
   fetchSessionHistory,
+  fetchSessionHistoryBatch,
+  runnerWebSocketManager,
+  connectionScope,
   fetchSessionChildrenHistory,
   emptyDirectorySessionTreeState,
   directorySessionPageSize,
   directorySessionPrefetchTtlMs,
   directorySessionPrefetchConcurrency,
   registeredDirectories,
-  selectedDirectoryPath,
   bootstrapReady = true,
 }: UseDirectorySessionTreeControllerArgs) {
   const initialTargets = buildTargetSnapshot(registeredDirectories);
@@ -152,10 +152,23 @@ export function useDirectorySessionTreeController({
   fetchSessionChildrenHistoryRef.current = fetchSessionChildrenHistory;
   const directorySessionsByIdRef = useRef(directorySessionsById);
   const registeredDirectoriesRef = useRef(initialTargets.targets);
-  const selectedDirectoryPathRef = useRef(normalizeDirectoryPath(selectedDirectoryPath));
-  selectedDirectoryPathRef.current = normalizeDirectoryPath(selectedDirectoryPath);
-  const bootstrapReadyRef = useRef(bootstrapReady);
-  bootstrapReadyRef.current = bootstrapReady;
+  const scopeRef = useRef({ runnerWebSocketManager, connectionScope });
+  if (scopeRef.current.runnerWebSocketManager !== runnerWebSocketManager || scopeRef.current.connectionScope !== connectionScope) {
+    scopeRef.current = { runnerWebSocketManager, connectionScope };
+  }
+  const readConnection = useCallback(() => {
+    const snapshot = runnerWebSocketManager?.getSnapshot();
+    return snapshot ? JSON.stringify([snapshot.connectionState, snapshot.generation, snapshot.connectionId, snapshot.url]) : "";
+  }, [runnerWebSocketManager]);
+  const subscribeConnection = useCallback((listener: () => void) => (
+    runnerWebSocketManager?.subscribeSnapshot(listener) || (() => {})
+  ), [runnerWebSocketManager]);
+  const connection = useSyncExternalStore(subscribeConnection, readConnection, readConnection);
+  const canSync = bootstrapReady && (!runnerWebSocketManager || runnerWebSocketManager.getSnapshot().connectionState === "ready");
+  const bootstrapReadyRef = useRef(canSync);
+  bootstrapReadyRef.current = canSync;
+  const fetchSessionHistoryBatchRef = useRef(fetchSessionHistoryBatch);
+  fetchSessionHistoryBatchRef.current = fetchSessionHistoryBatch;
   const registeredTargetKeyRef = useRef(initialTargets.key);
   const registeredDirectoryPathByIdRef = useRef(
     new Map(initialTargets.targets.map((directory) => [directory.id, directory.path]))
@@ -344,7 +357,8 @@ export function useDirectorySessionTreeController({
   const loadFirstPage = useCallback((
     directory: RegisteredDirectoryEntry,
     mode: "ensure" | "refresh",
-    reason: DirectorySessionSyncReason
+    reason: DirectorySessionSyncReason,
+    cycleFetch?: (directory: string, options: FetchSessionHistoryOptions) => Promise<LlmSessionHistoryResult>
   ): Promise<DirectoryLoadOutcome> => {
     const directoryPath = normalizeDirectoryPath(directory.path);
     const key = `${directory.id}\u0000${directoryPath}`;
@@ -393,6 +407,8 @@ export function useDirectorySessionTreeController({
       });
     }
 
+    const requestScope = scopeRef.current;
+    const requestConnection = requestScope.runnerWebSocketManager?.getSnapshot();
     const generation = nextGeneration(directory.id);
     supersededReasonByDirectoryIdRef.current.set(directory.id, "newer_request");
     const previous = current || emptyDirectorySessionTreeState;
@@ -411,17 +427,34 @@ export function useDirectorySessionTreeController({
 
     let request!: Promise<DirectoryLoadOutcome>;
     request = (async (): Promise<DirectoryLoadOutcome> => {
-      const releaseSlot = await acquireFetchSlot();
+      const releaseSlot = cycleFetch ? () => {} : await acquireFetchSlot();
       try {
         const beforeFetch = currentSupersededOutcome(directory, generation);
         if (beforeFetch) return beforeFetch;
-        const result = await fetchSessionHistoryRef.current(directoryPath, {
+        const result = await (cycleFetch || fetchSessionHistoryRef.current)(directoryPath, {
           limit: directorySessionPageSize,
           includeRunnerSnapshots: true,
         });
         const superseded = currentSupersededOutcome(directory, generation);
         if (superseded) return superseded;
+        if (scopeRef.current !== requestScope) return { status: "superseded", directoryId: directory.id, directoryPath, reason: "newer_request" };
+        const currentConnection = requestScope.runnerWebSocketManager?.getSnapshot();
+        if (requestConnection?.connectionState === "ready" && currentConnection && (
+          currentConnection.connectionState !== "ready" || currentConnection.generation !== requestConnection.generation
+          || currentConnection.connectionId !== requestConnection.connectionId || currentConnection.url !== requestConnection.url
+        )) throw new Error("Session list connection changed");
         const latest = directorySessionsByIdRef.current[directory.id] || previous;
+        const errors = result.partialErrors || [];
+        const failedBackends = new Set(errors.map((error) => String(error.backendId || "")));
+        const received = new Set(result.entries.map((entry) => `${entry.backendId}:${entry.sessionId}`));
+        const entries = errors.length > 0
+          ? [...result.entries, ...latest.entries.filter((entry) => (
+            ((failedBackends.has("") && !result.successfulBackendIds?.includes(entry.backendId)) || failedBackends.has(entry.backendId)) && !received.has(`${entry.backendId}:${entry.sessionId}`)
+          ))]
+          : result.entries;
+        if (errors.length > 0) entries.sort((a, b) => (
+          (new Date(String(b.updatedAt || "")).getTime() || 0) - (new Date(String(a.updatedAt || "")).getTime() || 0)
+        ));
         const state: DirectorySessionTreeState = {
           ...latest,
           loading: false,
@@ -429,16 +462,19 @@ export function useDirectorySessionTreeController({
           loadingMore: false,
           loaded: true,
           fetchedAtMs: Date.now(),
-          error: "",
+          error: errors.map((error) => error.message || error.code || "Session backend failed").join("; "),
           latestSessionId: result.latestSessionId,
-          nextCursor: result.nextCursor,
-          hasMore: Boolean(result.nextCursor),
-          entries: applyReadOverrides(result.entries, readOverrides),
+          nextCursor: errors.length > 0 ? "" : result.nextCursor,
+          hasMore: errors.length === 0 && Boolean(result.nextCursor),
+          entries: applyReadOverrides(entries, readOverrides),
           childrenByParentId: latest.childrenByParentId || {},
         };
         commitTrees({ ...directorySessionsByIdRef.current, [directory.id]: state });
-        return { status: "success", directoryId: directory.id, directoryPath, state };
+        return errors.length > 0
+          ? { status: "failed", directoryId: directory.id, directoryPath, error: state.error, hasUsableData: true }
+          : { status: "success", directoryId: directory.id, directoryPath, state };
       } catch (error) {
+        if (scopeRef.current !== requestScope) return { status: "superseded", directoryId: directory.id, directoryPath, reason: "newer_request" };
         const superseded = currentSupersededOutcome(directory, generation);
         if (superseded) return superseded;
         const latest = directorySessionsByIdRef.current[directory.id] || previous;
@@ -537,6 +573,7 @@ export function useDirectorySessionTreeController({
       !current.hasMore ||
       !current.nextCursor
     ) return;
+    const requestScope = scopeRef.current;
     const generation = generationByDirectoryIdRef.current.get(directoryId) || 0;
     commitTrees({
       ...directorySessionsByIdRef.current,
@@ -550,6 +587,7 @@ export function useDirectorySessionTreeController({
         cursor: current.nextCursor,
       });
       if (
+        scopeRef.current !== requestScope ||
         (generationByDirectoryIdRef.current.get(directoryId) || 0) !== generation ||
         registeredDirectoryPathByIdRef.current.get(directoryId) !== directoryPath
       ) return;
@@ -570,16 +608,16 @@ export function useDirectorySessionTreeController({
           ...latest,
           loadingMore: false,
           fetchedAtMs: Date.now(),
-          error: "",
-          nextCursor: result.nextCursor,
-          hasMore: Boolean(result.nextCursor),
+          error: (result.partialErrors || []).map((error) => error.message || error.code || "Session backend failed").join("; "),
+          nextCursor: result.partialErrors?.length ? "" : result.nextCursor,
+          hasMore: !result.partialErrors?.length && Boolean(result.nextCursor),
           entries: mergedEntries,
         },
       });
     } catch (error) {
       const latest = directorySessionsByIdRef.current[directoryId];
       if (
-        !latest ||
+        !latest || scopeRef.current !== requestScope ||
         (generationByDirectoryIdRef.current.get(directoryId) || 0) !== generation
       ) return;
       commitTrees({
@@ -604,6 +642,7 @@ export function useDirectorySessionTreeController({
     const parentIds = Array.from(new Set(
       parentSessionIdsRaw.map((value) => String(value || "").trim()).filter(Boolean)
     ));
+    const requestScope = scopeRef.current;
     const current = directorySessionsByIdRef.current[directoryId];
     if (parentIds.length <= 0 || !current) return Promise.resolve();
     const joined = parentIds.flatMap((parentId) => {
@@ -638,7 +677,7 @@ export function useDirectorySessionTreeController({
           limit: 50,
           includeRunnerSnapshots: true,
         });
-        if (registeredDirectoryPathByIdRef.current.get(directoryId) !== directoryPath) return;
+        if (scopeRef.current !== requestScope || registeredDirectoryPathByIdRef.current.get(directoryId) !== directoryPath) return;
         const latest = directorySessionsByIdRef.current[directoryId];
         if (!latest) return;
         const loadedChildren = { ...latest.childrenByParentId };
@@ -660,7 +699,7 @@ export function useDirectorySessionTreeController({
       } catch (error) {
         const latest = directorySessionsByIdRef.current[directoryId];
         if (
-          !latest ||
+          !latest || scopeRef.current !== requestScope ||
           registeredDirectoryPathByIdRef.current.get(directoryId) !== directoryPath
         ) return;
         const failedChildren = { ...latest.childrenByParentId };
@@ -727,6 +766,7 @@ export function useDirectorySessionTreeController({
   ): Promise<void> => {
     const sessionId = String(sessionIdRaw || "").trim();
     if (!sessionId) return Promise.resolve();
+    const requestScope = scopeRef.current;
     const targets: Array<{ directoryId: string; directoryPath: string; parentId: string }> = [];
     for (const [directoryId, state] of Object.entries(directorySessionsByIdRef.current)) {
       for (const [parentId, childState] of Object.entries(state.childrenByParentId)) {
@@ -752,14 +792,14 @@ export function useDirectorySessionTreeController({
       let refreshAfterActive!: Promise<void>;
       refreshAfterActive = (async () => {
         await active;
-        while (dirtyChildRefreshKeysRef.current.delete(key)) {
+        while (scopeRef.current === requestScope && dirtyChildRefreshKeysRef.current.delete(key)) {
           await loadSessionChildTrees(directoryId, directoryPath, [parentId]);
         }
       })().finally(() => {
         if (refreshAfterActiveChildByKeyRef.current.get(key) === refreshAfterActive) {
           refreshAfterActiveChildByKeyRef.current.delete(key);
+          dirtyChildRefreshKeysRef.current.delete(key);
         }
-        dirtyChildRefreshKeysRef.current.delete(key);
       });
       refreshAfterActiveChildByKeyRef.current.set(key, refreshAfterActive);
       return refreshAfterActive;
@@ -790,39 +830,64 @@ export function useDirectorySessionTreeController({
       setDirectorySessionSync({ ...initial, phase: "complete", completedAtMs: Date.now() });
       return;
     }
-    let cursor = 0;
-    const workerCount = Math.min(directorySessionPrefetchConcurrency, intent.targets.length);
-    const workers = Array.from({ length: workerCount }, async () => {
-      while (cursor < intent.targets.length) {
-        const target = intent.targets[cursor];
-        cursor += 1;
-        setDirectorySessionSync((current) => current.cycleId !== cycleId ? current : {
+    const runTarget = async (target: RegisteredDirectoryEntry, cycleFetch?: Parameters<typeof loadFirstPage>[3]) => {
+      setDirectorySessionSync((current) => current.cycleId !== cycleId ? current : {
+        ...current,
+        pendingCount: current.pendingCount - 1,
+        activeCount: current.activeCount + 1,
+      });
+      const outcome = await loadFirstPage(target, intent.mode, Array.from(intent.reasons)[0] || "drawer_open", cycleFetch);
+      setDirectorySessionSync((current) => {
+        if (current.cycleId !== cycleId) return current;
+        const succeededCount = current.succeededCount + (outcome.status === "success" ? 1 : 0);
+        const skippedCount = current.skippedCount + (outcome.status === "skipped" ? 1 : 0);
+        const failedCount = current.failedCount + (outcome.status === "failed" ? 1 : 0);
+        const supersededCount = current.supersededCount + (outcome.status === "superseded" ? 1 : 0);
+        const completedCount = succeededCount + skippedCount + failedCount + supersededCount;
+        return {
           ...current,
-          pendingCount: current.pendingCount - 1,
-          activeCount: current.activeCount + 1,
-        });
-        const outcome = await loadFirstPage(target, intent.mode, Array.from(intent.reasons)[0] || "drawer_open");
-        setDirectorySessionSync((current) => {
-          if (current.cycleId !== cycleId) return current;
-          const succeededCount = current.succeededCount + (outcome.status === "success" ? 1 : 0);
-          const skippedCount = current.skippedCount + (outcome.status === "skipped" ? 1 : 0);
-          const failedCount = current.failedCount + (outcome.status === "failed" ? 1 : 0);
-          const supersededCount = current.supersededCount + (outcome.status === "superseded" ? 1 : 0);
-          const completedCount = succeededCount + skippedCount + failedCount + supersededCount;
-          return {
-            ...current,
-            activeCount: current.activeCount - 1,
-            succeededCount,
-            skippedCount,
-            failedCount,
-            supersededCount,
-            completedCount,
-            progress: completedCount / current.totalCount,
-          };
-        });
+          activeCount: current.activeCount - 1,
+          succeededCount,
+          skippedCount,
+          failedCount,
+          supersededCount,
+          completedCount,
+          progress: completedCount / current.totalCount,
+        };
+      });
+    };
+    const batchFetch = fetchSessionHistoryBatchRef.current;
+    if (batchFetch) {
+      const pending = new Map<string, { resolve: (result: LlmSessionHistoryResult) => void; reject: (error: Error) => void }[]>();
+      const collect: NonNullable<Parameters<typeof loadFirstPage>[3]> = (directory) => new Promise((resolve, reject) => {
+        const waiting = pending.get(directory) || [];
+        waiting.push({ resolve, reject });
+        pending.set(directory, waiting);
+      });
+      // Start the existing load boundary before sending: generations, read overrides and joins remain shared.
+      const work = intent.targets.map((target) => runTarget(target, collect));
+      if (pending.size > 0) {
+        try {
+          const groups = await batchFetch([...pending.keys()], { limit: directorySessionPageSize, includeRunnerSnapshots: true });
+          for (const [directory, waiting] of pending) {
+            const group = groups.find((entry) => entry.cwd === directory);
+            for (const waiter of waiting) {
+              if (group?.result) waiter.resolve(group.result);
+              else waiter.reject(group?.error || new Error("Session batch result missing"));
+            }
+          }
+        } catch (error) {
+          const failure = error instanceof Error ? error : new Error(String(error));
+          for (const waiting of pending.values()) for (const waiter of waiting) waiter.reject(failure);
+        }
       }
-    });
-    await Promise.all(workers);
+      await Promise.all(work);
+    } else {
+      let cursor = 0;
+      await Promise.all(Array.from({ length: Math.min(directorySessionPrefetchConcurrency, intent.targets.length) }, async () => {
+        while (cursor < intent.targets.length) await runTarget(intent.targets[cursor++]);
+      }));
+    }
     setDirectorySessionSync((current) => {
       if (current.cycleId !== cycleId) return current;
       const usableCountAfterCycle = intent.targets.filter((target) => (
@@ -844,31 +909,21 @@ export function useDirectorySessionTreeController({
         completedAtMs: Date.now(),
       };
     });
-  }, [directorySessionPrefetchConcurrency, loadFirstPage]);
-
-  const buildOrderedSyncTargets = useCallback(() => {
-    const targetSnapshot = buildTargetSnapshot(registeredDirectoriesRef.current);
-    const selectedPath = selectedDirectoryPathRef.current;
-    const targets = [...targetSnapshot.targets].sort((a, b) => {
-      const aSelected = a.path === selectedPath ? 1 : 0;
-      const bSelected = b.path === selectedPath ? 1 : 0;
-      return bSelected - aSelected;
-    });
-    return { key: targetSnapshot.key, targets };
-  }, []);
+  }, [directorySessionPageSize, directorySessionPrefetchConcurrency, loadFirstPage]);
 
   const startSyncDrain = useCallback(() => {
     // ブートストラップ前はintentを保留したまま開始しない(bootstrapReadyのeffectがdrainする)。
     if (!bootstrapReadyRef.current) return Promise.resolve();
     if (syncDrainPromiseRef.current) return syncDrainPromiseRef.current;
     let drain: Promise<void>;
+    const drainScope = scopeRef.current;
     drain = (async () => {
-      while (queuedSyncIntentRef.current) {
+      while (queuedSyncIntentRef.current && bootstrapReadyRef.current && scopeRef.current === drainScope) {
         const intent = queuedSyncIntentRef.current;
         queuedSyncIntentRef.current = null;
         // ターゲットは実行時点の登録ディレクトリで再構築する(保留中にロードされた
         // ディレクトリ・enqueue後の変更を取り込む)。
-        const ordered = buildOrderedSyncTargets();
+        const ordered = buildTargetSnapshot(registeredDirectoriesRef.current);
         await runSyncCycle({
           ...intent,
           targetKey: ordered.key,
@@ -877,19 +932,21 @@ export function useDirectorySessionTreeController({
         });
       }
     })().finally(() => {
-      activeSyncIntentRef.current = null;
-      if (syncDrainPromiseRef.current === drain) syncDrainPromiseRef.current = null;
+      if (syncDrainPromiseRef.current === drain) {
+        activeSyncIntentRef.current = null;
+        syncDrainPromiseRef.current = null;
+      }
       if (queuedSyncIntentRef.current) void startSyncDrain();
     });
     syncDrainPromiseRef.current = drain;
     return drain;
-  }, [buildOrderedSyncTargets, runSyncCycle]);
+  }, [runSyncCycle]);
 
   const enqueueRegisteredSync = useCallback((
     mode: "ensure" | "refresh",
     reason: DirectorySessionSyncReason
   ) => {
-    const targetSnapshot = buildOrderedSyncTargets();
+    const targetSnapshot = buildTargetSnapshot(registeredDirectoriesRef.current);
     const active = activeSyncIntentRef.current;
     if (
       active &&
@@ -909,15 +966,15 @@ export function useDirectorySessionTreeController({
       targets: targetSnapshot.targets,
     };
     return startSyncDrain();
-  }, [buildOrderedSyncTargets, startSyncDrain]);
+  }, [startSyncDrain]);
   enqueueRegisteredSyncRef.current = enqueueRegisteredSync;
 
   // ブートストラップ完了時、保留中のintentをdrainする(起動前に積まれたscreen_mount等の
   // ensureがロード後の登録ディレクトリで追随する)。
   useEffect(() => {
-    if (!bootstrapReady) return;
+    if (!canSync) return;
     if (queuedSyncIntentRef.current) void startSyncDrain();
-  }, [bootstrapReady, startSyncDrain]);
+  }, [canSync, connection, startSyncDrain]);
 
   const ensureRegisteredDirectorySessions = useCallback((
     reason: DirectorySessionSyncReason
@@ -1001,6 +1058,24 @@ export function useDirectorySessionTreeController({
       transitions,
     });
   }, [prepareDirectorySessionTargetChange, registeredDirectories]);
+
+  const appliedScopeRef = useRef(scopeRef.current);
+  useEffect(() => {
+    if (appliedScopeRef.current === scopeRef.current) return;
+    appliedScopeRef.current = scopeRef.current;
+    for (const directoryId of generationByDirectoryIdRef.current.keys()) nextGeneration(directoryId);
+    inFlightByKeyRef.current.clear();
+    refreshAfterActiveByKeyRef.current.clear();
+    inFlightChildByKeyRef.current.clear();
+    refreshAfterActiveChildByKeyRef.current.clear();
+    dirtyChildRefreshKeysRef.current.clear();
+    activeSyncIntentRef.current = null;
+    syncDrainPromiseRef.current = null;
+    queuedSyncIntentRef.current = null;
+    setDirectorySessionSync({ ...IDLE_DIRECTORY_SESSION_SYNC, cycleId: ++nextCycleIdRef.current });
+    commitTrees({});
+    void enqueueRegisteredSyncRef.current("refresh", "auth_recovery");
+  }, [runnerWebSocketManager, connectionScope, commitTrees, nextGeneration]);
 
   const toggleDirectoryExpanded = useCallback((directoryId: string) => {
     setExpandedDirectoryIds((current) => current.includes(directoryId)

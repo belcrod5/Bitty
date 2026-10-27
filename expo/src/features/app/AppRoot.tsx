@@ -756,7 +756,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   // runner WSの切断理由ログ(runner_ws_closed)。フラップは分単位なので通常は全件残るが、
   // 接続不能時の再試行ストーム(1秒間隔close)ではイベント名単位で1行/秒に抑える。
   const handleRunnerWsDiagEvent = useCallback((event: string, payload: Record<string, unknown>) => {
-    logSessionDiag(event, payload, { throttleMs: 1000, throttleKey: event });
+    logSessionDiag(event, payload, { throttleMs: event === "runner_ws_session_list_sent" ? 0 : 1000, throttleKey: event });
   }, [logSessionDiag]);
   const {
     voicesLoading,
@@ -786,6 +786,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     fetchRunnerSessionMessages,
     fetchLatestSessionForDirectory,
     fetchSessionHistory,
+    fetchSessionHistoryBatch,
     fetchSessionChildrenHistory,
     markRunnerDirectoryRead,
     markRunnerSessionRead,
@@ -2031,13 +2032,15 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     setDirectorySessionsById,
     setExpandedDirectoryIds,
     fetchSessionHistory,
+    fetchSessionHistoryBatch,
+    runnerWebSocketManager,
+    connectionScope: runnerClientStateScopeId,
     fetchSessionChildrenHistory,
     emptyDirectorySessionTreeState: EMPTY_DIRECTORY_SESSION_TREE_STATE,
     directorySessionPageSize: DIRECTORY_SESSION_PAGE_SIZE,
     directorySessionPrefetchTtlMs: DIRECTORY_SESSION_PREFETCH_TTL_MS,
     directorySessionPrefetchConcurrency: DIRECTORY_SESSION_PREFETCH_CONCURRENCY,
     registeredDirectories,
-    selectedDirectoryPath: normalizedLlmDirectoryForRequest(),
     bootstrapReady: settingsLoaded,
   });
   useDirectorySessionSyncRecoveryController({
@@ -5506,7 +5509,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
       requestedTitleHint: titleHint,
       requestedModelRefHint: modelRefHint,
       requestedReasoningEffortHint: reasoningEffortHint,
-    }, { throttleMs: 0 });
+    }, { throttleMs: 0, detailed: true });
     try {
       const restored = await fetchRunnerSessionMessagesCached(sessionId, directory, { backendId });
       const restoredSessionId = parseOptionalSessionId(restored.threadId);
@@ -5573,7 +5576,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
         firstMessagePreview: String(firstConversation?.content || "").slice(0, 80),
         lastMessageRole: lastConversation?.role || "",
         lastMessagePreview: String(lastConversation?.content || "").slice(0, 80),
-      }, { throttleMs: 0 });
+      }, { throttleMs: 0, detailed: true });
       let selectedSessionTitle = titleHint;
       const overrideTitle = formatLlmSessionDisplayTitle(
         runnerSessionValue(sessionTitleOverridesById, backendId, markerSessionId) ||

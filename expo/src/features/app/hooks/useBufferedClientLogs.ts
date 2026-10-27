@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { Platform } from "react-native";
 
 export type BufferedLogEntrySeed = {
@@ -58,9 +58,11 @@ export function useBufferedClientLogs<TEntry extends BufferedLogEntrySeed>(
   const bufferRef = useRef<TEntry[]>([]);
   const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const flushInFlightRef = useRef(false);
-  const [queuedCount, setQueuedCount] = useState(0);
-  const [sentCount, setSentCount] = useState(0);
-  const [status, setStatus] = useState("idle");
+  const mountedRef = useRef(true);
+  const bufferEvictedCountRef = useRef(0);
+  const liveOptionsRef = useRef(options);
+  liveOptionsRef.current = options;
+  const flushRef = useRef<(flushOptions?: FlushOptions) => Promise<void>>(async () => {});
 
   const clearFlushTimer = useCallback(() => {
     if (!flushTimerRef.current) return;
@@ -69,16 +71,19 @@ export function useBufferedClientLogs<TEntry extends BufferedLogEntrySeed>(
   }, []);
 
   const flush = useCallback(async (flushOptions?: FlushOptions) => {
-    if (!enabled) return;
+    if (!enabled || !mountedRef.current) return;
     if (flushInFlightRef.current) return;
     if (!runnerUrl.trim() || !runnerToken.trim()) return;
     if (bufferRef.current.length <= 0) return;
+    const isCurrent = () => mountedRef.current && liveOptionsRef.current.enabled
+      && liveOptionsRef.current.runnerUrl === runnerUrl && liveOptionsRef.current.runnerToken === runnerToken
+      && liveOptionsRef.current.source === source;
     flushInFlightRef.current = true;
     clearFlushTimer();
     try {
-      const maxBatches = Math.max(1, Math.floor(Number(flushOptions?.maxBatches || 1)));
-      let sentTotal = 0;
+      const maxBatches = Math.max(1, Math.floor(Number(flushOptions?.maxBatches ?? 12)));
       for (let batchIndex = 0; batchIndex < maxBatches; batchIndex += 1) {
+        if (!isCurrent()) break;
         const batch = bufferRef.current.slice(0, flushBatchSize);
         if (batch.length <= 0) break;
         const res = await fetch(`${getBaseUrl()}/client-logs`, {
@@ -91,38 +96,37 @@ export function useBufferedClientLogs<TEntry extends BufferedLogEntrySeed>(
             source,
             sessionId: sessionIdRef.current,
             device: `${Platform.OS}:${String(Platform.Version)}`,
-            events: batch,
+            events: [{
+              ...batch[0],
+              payload: {
+                ...batch[0].payload,
+                clientLogGeneratedThroughSeq: seqRef.current,
+                clientLogBufferEvictedCount: bufferEvictedCountRef.current,
+              },
+            }, ...batch.slice(1)],
           }),
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
           throw new Error(data?.message || data?.error || `HTTP ${res.status}`);
         }
-        bufferRef.current.splice(0, batch.length);
-        sentTotal += batch.length;
-        setQueuedCount(bufferRef.current.length);
+        const acknowledged = new Set(batch);
+        bufferRef.current = bufferRef.current.filter((entry) => !acknowledged.has(entry));
       }
-      if (sentTotal > 0) {
-        setSentCount((prev) => prev + sentTotal);
-        setStatus(`sent:${sentTotal}`);
-      } else {
-        setStatus("idle");
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setStatus(`error:${message}`);
-      if (!flushTimerRef.current) {
+    } catch {
+      clearFlushTimer();
+      if (isCurrent()) {
         flushTimerRef.current = setTimeout(() => {
           flushTimerRef.current = null;
-          void flush();
+          void flushRef.current();
         }, Math.max(0, retryMs));
       }
     } finally {
       flushInFlightRef.current = false;
-      if (bufferRef.current.length > 0 && !flushTimerRef.current) {
+      if (mountedRef.current && liveOptionsRef.current.enabled && bufferRef.current.length > 0 && !flushTimerRef.current) {
         flushTimerRef.current = setTimeout(() => {
           flushTimerRef.current = null;
-          void flush();
+          void flushRef.current();
         }, Math.max(0, flushDelayMs));
       }
     }
@@ -138,17 +142,19 @@ export function useBufferedClientLogs<TEntry extends BufferedLogEntrySeed>(
     source,
   ]);
 
+  flushRef.current = flush;
+
   const scheduleFlush = useCallback((delayMs = flushDelayMs) => {
-    if (!enabled) return;
+    if (!enabled || !mountedRef.current) return;
     if (flushTimerRef.current) return;
     flushTimerRef.current = setTimeout(() => {
       flushTimerRef.current = null;
-      void flush();
+      void flushRef.current();
     }, Math.max(0, delayMs));
-  }, [enabled, flush, flushDelayMs]);
+  }, [enabled, flushDelayMs]);
 
   const enqueue = useCallback((event: string, payload: Record<string, unknown>) => {
-    if (!enabled) return null;
+    if (!enabled || !mountedRef.current) return null;
     const eventName = String(event || "").trim() || "unknown";
     const safePayload = sanitizePayload(payload);
     const nextSeq = seqRef.current + 1;
@@ -162,11 +168,10 @@ export function useBufferedClientLogs<TEntry extends BufferedLogEntrySeed>(
     });
     bufferRef.current.push(nextEntry);
     if (bufferRef.current.length > bufferMax) {
-      bufferRef.current.splice(0, bufferRef.current.length - bufferMax);
+      const evictedCount = bufferRef.current.length - bufferMax;
+      bufferRef.current.splice(0, evictedCount);
+      bufferEvictedCountRef.current += evictedCount;
     }
-    const nextQueuedCount = bufferRef.current.length;
-    setQueuedCount(nextQueuedCount);
-    setStatus(`queued:${nextQueuedCount}`);
     if (runnerUrl.trim() && runnerToken.trim()) {
       scheduleFlush(flushDelayMs);
     }
@@ -181,41 +186,25 @@ export function useBufferedClientLogs<TEntry extends BufferedLogEntrySeed>(
     scheduleFlush,
   ]);
 
-  const sendNow = useCallback(async () => {
-    if (!enabled) return;
-    setStatus("sending");
-    await flush({ maxBatches: 12 });
-  }, [enabled, flush]);
-
-  const clearLocal = useCallback(() => {
-    bufferRef.current = [];
-    setQueuedCount(0);
-    setStatus("cleared");
-    clearFlushTimer();
-  }, [clearFlushTimer]);
-
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled) { clearFlushTimer(); return; }
     if (!runnerUrl.trim() || !runnerToken.trim()) return;
     if (bufferRef.current.length <= 0) return;
     scheduleFlush(240);
-  }, [enabled, runnerToken, runnerUrl, scheduleFlush]);
+  }, [clearFlushTimer, enabled, runnerToken, runnerUrl, scheduleFlush]);
 
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
+      mountedRef.current = false;
       clearFlushTimer();
     };
   }, [clearFlushTimer]);
 
   return {
     sessionIdRef,
-    queuedCount,
-    sentCount,
-    status,
     enqueue,
     flush,
-    sendNow,
-    clearLocal,
     clearFlushTimer,
   };
 }

@@ -400,24 +400,6 @@ export function createMenuScreenStyles(theme: VisualTheme) {
     justifyContent: "center",
     backgroundColor: "transparent",
   },
-  appDrawerSessionSync: {
-    gap: 5,
-    marginBottom: 8,
-  },
-  appDrawerSessionSyncTrack: {
-    height: 5,
-    borderRadius: 3,
-    overflow: "hidden",
-    backgroundColor: theme.colors.primaryActionMuted,
-  },
-  appDrawerSessionSyncFill: {
-    height: "100%",
-    backgroundColor: theme.colors.primaryAction,
-  },
-  appDrawerSessionSyncText: {
-    color: theme.colors.textMuted,
-    fontSize: theme.typography.caption.fontSize,
-  },
   appDrawerSessionSyncError: {
     marginBottom: 8,
     color: theme.colors.warningText,

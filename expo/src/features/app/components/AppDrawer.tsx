@@ -22,6 +22,7 @@ import { useVisualTheme } from "../theme/VisualThemeContext";
 import { isLlmSessionUnread, resolveLlmSessionDisplayTitle } from "../utils/llmSession";
 import { runnerSessionValue } from "../utils/runnerClientState";
 import { formatModelRefForDisplay } from "../utils/settingsParsers";
+import { SessionSyncIndicator } from "./SessionSyncIndicator";
 import { AppModal } from "./AppModal";
 import { SessionContextMenu, type SessionContextMenuTarget } from "./SessionContextMenu";
 import {
@@ -33,6 +34,7 @@ import {
   RegisteredDirectoryEntry,
   SessionChildTreeState,
 } from "../types/directorySessions";
+import { useAppShell } from "../contexts/AppShellContext";
 import { useSkiaBoard } from "../contexts/SkiaBoardContext";
 import {
   AppDrawerSearch,
@@ -131,6 +133,7 @@ export const AppDrawer = memo(function AppDrawer({
   onMarkDirectorySessionsRead,
 }: AppDrawerProps) {
   const styles = useAppStyles();
+  const { drawerOpen } = useAppShell();
   const { theme } = useVisualTheme();
   const {
     addDirectory,
@@ -329,6 +332,9 @@ export const AppDrawer = memo(function AppDrawer({
 
   return (
     <SafeAreaView style={styles.appDrawerRoot}>
+      <View style={{ height: 2 }}>
+        <SessionSyncIndicator phase={drawerOpen ? directorySessionSync.phase : undefined} variant="bar" />
+      </View>
       <AppDrawerSearch
         unreadOnly={unreadOnly}
         onToggleUnreadOnly={() => setUnreadOnly((current) => !current)}
@@ -374,31 +380,7 @@ export const AppDrawer = memo(function AppDrawer({
               <Text style={styles.appDrawerAddButtonText}>+ 追加</Text>
             </TouchableOpacity>
           </View>
-          {directorySessionSync.phase === "loading" || directorySessionSync.phase === "refreshing" ? (
-            <View
-              style={styles.appDrawerSessionSync}
-              accessibilityRole="progressbar"
-              accessibilityLabel="登録ディレクトリのセッション同期"
-              accessibilityValue={{
-                min: 0,
-                max: directorySessionSync.totalCount,
-                now: directorySessionSync.completedCount,
-                text: `${directorySessionSync.completedCount}/${directorySessionSync.totalCount}`,
-              }}
-            >
-              <View style={styles.appDrawerSessionSyncTrack}>
-                <View
-                  style={[
-                    styles.appDrawerSessionSyncFill,
-                    { width: `${Math.round(directorySessionSync.progress * 100)}%` },
-                  ]}
-                />
-              </View>
-              <Text style={styles.appDrawerSessionSyncText}>
-                {`${directorySessionSync.phase === "loading" ? "セッション同期中" : "セッション更新中"} ${directorySessionSync.completedCount}/${directorySessionSync.totalCount}`}
-              </Text>
-            </View>
-          ) : directorySessionSync.phase === "partial_error" || directorySessionSync.phase === "error" ? (
+          {directorySessionSync.phase === "partial_error" || directorySessionSync.phase === "error" ? (
             <Text
               style={[
                 styles.appDrawerSessionSyncError,
@@ -407,8 +389,8 @@ export const AppDrawer = memo(function AppDrawer({
               accessibilityRole="alert"
             >
               {directorySessionSync.phase === "error"
-                ? `セッション同期失敗 ${directorySessionSync.failedCount}/${directorySessionSync.totalCount}`
-                : `一部更新失敗 ${directorySessionSync.failedCount}/${directorySessionSync.totalCount}`}
+                ? "セッション同期失敗"
+                : "一部更新失敗"}
             </Text>
           ) : null}
           {registeredDirectories.length <= 0 ? (

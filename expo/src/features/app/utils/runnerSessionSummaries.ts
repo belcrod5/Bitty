@@ -20,6 +20,7 @@ export async function fetchRunnerSessionSummaries(
     directory: string; sessionIds: readonly string[]; backendId?: string; includeFirstUserMessage?: boolean;
   },
   timeoutMs: number,
+  onRequestComplete?: (elapsedMs: number, succeeded: boolean) => void,
 ): Promise<RunnerSessionSummary[]> {
   const baseUrl = String(auth.baseUrl || "").trim().replace(/\/$/, "");
   const token = String(auth.token || "").trim();
@@ -27,6 +28,8 @@ export async function fetchRunnerSessionSummaries(
   const ids = Array.from(new Set(sessionIds.map((id) => String(id || "").trim()).filter(Boolean)));
   const results: RunnerSessionSummary[] = [];
   for (let start = 0; start < ids.length; start += SESSION_SUMMARY_BATCH_SIZE) {
+    const startedAt = Date.now();
+    let succeeded = false;
     const controller = new AbortController();
     let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
     try {
@@ -58,6 +61,7 @@ export async function fetchRunnerSessionSummaries(
       if (!response.ok) {
         throw new Error(String(data.message || data.error || `session summaries fetch failed: HTTP ${response.status}`));
       }
+      succeeded = true;
       for (const raw of Array.isArray(data.sessions) ? data.sessions : []) {
         const record = raw && typeof raw === "object" && !Array.isArray(raw)
           ? raw as Record<string, unknown> : {};
@@ -80,6 +84,7 @@ export async function fetchRunnerSessionSummaries(
       }
     } finally {
       if (timeoutHandle) clearTimeout(timeoutHandle);
+      try { onRequestComplete?.(Math.max(0, Date.now() - startedAt), succeeded); } catch { /* diagnostics only */ }
     }
   }
   return results;

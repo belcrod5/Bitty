@@ -174,3 +174,15 @@ test("an older server can ignore the opt-out flag without losing metadata", asyn
     modelRef: "legacy-model", reasoningEffort: "medium", lastReadAt: "2026-10-26", parentSessionId: "parent",
   });
 });
+
+test("counts each real fetch invocation across chunks without exposing request values or changing failure behavior", async () => {
+  const onRequestComplete = jest.fn();
+  const fetchMock = jest.spyOn(global, "fetch").mockResolvedValue({ ok: true, status: 200, text: async () => JSON.stringify({ sessions: [] }) } as Response);
+  await fetchRunnerSessionSummaries(auth, { directory: "/fixture", sessionIds: Array.from({ length: 101 }, (_, i) => `fixture-${i}`) }, 12_000, onRequestComplete);
+  expect(onRequestComplete).toHaveBeenCalledTimes(2);
+  expect(onRequestComplete.mock.calls.every(([elapsed, ok]) => typeof elapsed === "number" && ok === true)).toBe(true);
+  fetchMock.mockRejectedValue(new Error("offline"));
+  onRequestComplete.mockImplementation(() => { throw new Error("diagnostic failed"); });
+  await expect(fetchRunnerSessionSummaries(auth, { directory: "/fixture", sessionIds: ["one"] }, 12_000, onRequestComplete)).rejects.toThrow("offline");
+  expect(onRequestComplete).toHaveBeenLastCalledWith(expect.any(Number), false);
+});

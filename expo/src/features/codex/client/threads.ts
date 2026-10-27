@@ -11,10 +11,10 @@ import {
   type CodexThreadSourceKind,
 } from "./types";
 import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
-import { ALL_BACKENDS_SCOPE, listAgentSessions, readAgentHistory } from "../../agent/client";
+import { ALL_BACKENDS_SCOPE, listAgentSessions, listAgentSessionsBatch, readAgentHistory } from "../../agent/client";
 import { deriveAgentSessionLiveState } from "../../agent/sessionLiveState";
 
-export async function listCodexAppServerThreads(options: {
+type ThreadListOptions = {
   wsUrl: string;
   wsToken?: string;
   cwd?: string;
@@ -27,13 +27,15 @@ export async function listCodexAppServerThreads(options: {
   rawFallbackBackendId?: string;
   parentSessionIds?: string[];
   onListResponseBytes?: (bytes: number) => void;
-}): Promise<CodexThreadListResult> {
+};
+
+export async function listCodexAppServerThreads(options: ThreadListOptions): Promise<CodexThreadListResult> {
   const limit = Number.isFinite(Number(options.limit))
     ? Math.max(1, Math.min(200, Math.floor(Number(options.limit))))
     : 50;
   const cwd = String(options.cwd || "").trim();
   const cursor = String(options.cursor || "").trim();
-  const sourceKinds = Array.isArray(options.sourceKinds) && options.sourceKinds.length > 0
+  const sourceKinds: CodexThreadSourceKind[] = Array.isArray(options.sourceKinds) && options.sourceKinds.length > 0
     ? options.sourceKinds
     : ["cli", "vscode", "appServer", "exec"];
   if (options.runnerWebSocketManager) {
@@ -61,58 +63,96 @@ export async function listCodexAppServerThreads(options: {
         throw error;
       }
     }
-    if (neutral) {
-      const sessions = Array.isArray(neutral.sessions) ? neutral.sessions : [];
-      const fallbackEntryBackendId = backendId === ALL_BACKENDS_SCOPE ? "codex" : backendId;
-      return {
-        data: sessions.map((raw) => {
-          const item = raw && typeof raw === "object" ? raw as Record<string, any> : {};
-          const entryBackendId = String(item.sessionRef?.backendId || fallbackEntryBackendId);
-          const summary = item.summary;
-          const hasSummary = entryBackendId === "codex" && summary && typeof summary === "object"
-            && !Array.isArray(summary) && Object.prototype.hasOwnProperty.call(summary, "contextUsage")
-            && (summary.contextUsage === null || (typeof summary.contextUsage === "object" && !Array.isArray(summary.contextUsage)))
-            && typeof summary.modelRef === "string"
-            && typeof summary.reasoningEffort === "string" && typeof summary.lastReadAt === "string";
-          return {
-            backendId: entryBackendId,
-            threadId: String(item.sessionRef?.nativeSessionId || ""),
-            parentThreadId: String(item.parentSessionRef?.nativeSessionId || ""),
-            agentRole: "",
-            agentDisplayName: "",
-            preview: String(item.title || ""),
-            modelProvider: entryBackendId,
-            modelRef: String(item.modelId || ""),
-            reasoningEffort: String(item.reasoningEffort || ""),
-            // サーバーの実sourceKindを尊重する("acp"はapp-server由来のためappServerへ
-            // 正規化)。2値へ潰すと限定sourceKinds指定やsource表示の忠実性が失われる。
-            sourceKind: item.isSubagent
-              ? "subAgent"
-              : String(item.sourceKind || "") === "acp"
-                ? "appServer"
-                : String(item.sourceKind || "") || "appServer",
-            cwd: String(item.canonicalCwd || cwd),
-            createdAt: "",
-            updatedAt: String(item.updatedAt || ""),
-            lastReadAt: String(item.lastReadAt || ""),
-            contextUsedPct: null,
-            ...(hasSummary ? { summary } : {}),
-            // read経路(activeRun→active/idle)と同じサーバー発の実行状態。
-            // 欠落させると常に"unknown"となりsubagent実行中カウントが構造的に0になる。
-            threadStatusType: item.isActive === true ? "active" as const : "idle" as const,
-          };
-        }).filter((item) => item.threadId && sourceKinds.includes(item.sourceKind as CodexThreadSourceKind)),
-        nextCursor: String(neutral.cursor || ""),
-        backwardsCursor: "",
-        ...(Array.isArray(neutral.errors) && neutral.errors.length > 0
-          ? { partialErrors: neutral.errors as CodexThreadListResult["partialErrors"] }
-          : {}),
-      };
-    }
+    if (neutral) return agentSessionsToThreads(neutral, cwd, sourceKinds, backendId);
     if (options.backendId && !rawFallbackAllowed) {
       throw new Error("Selected Agent Backend is unavailable");
     }
   }
+  const listed = await listRawCodexAppServerThreads(options, limit, cwd, cursor, sourceKinds);
+  return options.runnerWebSocketManager && options.backendId === ALL_BACKENDS_SCOPE
+    ? { ...listed, successfulBackendIds: ["codex"], partialErrors: [{ code: "backend_unavailable", message: "Agent listing unavailable; raw fallback only" }] }
+    : listed;
+}
+
+function agentSessionsToThreads(neutral: Record<string, unknown>, cwd: string, sourceKinds: CodexThreadSourceKind[], backendId: string): CodexThreadListResult {
+  const sessions = Array.isArray(neutral.sessions) ? neutral.sessions : [];
+  const fallbackEntryBackendId = backendId === ALL_BACKENDS_SCOPE ? "codex" : backendId;
+  return {
+    data: sessions.map((raw) => {
+      const item = raw && typeof raw === "object" ? raw as Record<string, any> : {};
+      const entryBackendId = String(item.sessionRef?.backendId || fallbackEntryBackendId);
+      const summary = item.summary;
+      const hasSummary = summary && typeof summary === "object"
+        && !Array.isArray(summary) && Object.prototype.hasOwnProperty.call(summary, "contextUsage")
+        && (summary.contextUsage === null || (typeof summary.contextUsage === "object" && !Array.isArray(summary.contextUsage)))
+        && typeof summary.modelRef === "string"
+        && typeof summary.reasoningEffort === "string" && typeof summary.lastReadAt === "string";
+      return {
+        backendId: entryBackendId,
+        threadId: String(item.sessionRef?.nativeSessionId || ""),
+        parentThreadId: String(item.parentSessionRef?.nativeSessionId || ""),
+        agentRole: "",
+        agentDisplayName: "",
+        preview: String(item.title || ""),
+        modelProvider: entryBackendId,
+        modelRef: String(item.modelId || ""),
+        reasoningEffort: String(item.reasoningEffort || ""),
+        // サーバーの実sourceKindを尊重する("acp"はapp-server由来のためappServerへ
+        // 正規化)。2値へ潰すと限定sourceKinds指定やsource表示の忠実性が失われる。
+        sourceKind: item.isSubagent
+          ? "subAgent"
+          : String(item.sourceKind || "") === "acp"
+            ? "appServer"
+            : String(item.sourceKind || "") || "appServer",
+        cwd: String(item.canonicalCwd || cwd),
+        createdAt: "",
+        updatedAt: String(item.updatedAt || ""),
+        lastReadAt: String(item.lastReadAt || ""),
+        contextUsedPct: null,
+        ...(hasSummary ? { summary } : {}),
+        // read経路(activeRun→active/idle)と同じサーバー発の実行状態。
+        // 欠落させると常に"unknown"となりsubagent実行中カウントが構造的に0になる。
+        threadStatusType: item.isActive === true ? "active" as const : "idle" as const,
+      };
+    }).filter((item) => item.threadId && sourceKinds.includes(item.sourceKind as CodexThreadSourceKind)),
+    nextCursor: String(neutral.cursor || ""),
+    backwardsCursor: "",
+    ...(Array.isArray(neutral.errors) && neutral.errors.length > 0
+      ? { partialErrors: neutral.errors as CodexThreadListResult["partialErrors"] }
+      : {}),
+  };
+}
+
+export async function listCodexAppServerThreadsBatch(options: ThreadListOptions & { cwds: string[] }): Promise<Array<{
+  cwd: string; result?: CodexThreadListResult; error?: Error;
+}>> {
+  const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 5)));
+  const sourceKinds: CodexThreadSourceKind[] = ["cli", "vscode", "appServer", "exec"];
+  const groups = options.runnerWebSocketManager
+    ? await listAgentSessionsBatch(options.runnerWebSocketManager, options.cwds, limit)
+    : options.cwds.map((cwd) => ({ cwd, payload: null }));
+  const results: Array<{ cwd: string; result?: CodexThreadListResult; error?: Error }> = Array(groups.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(2, groups.length) }, async () => {
+    while (next < groups.length) {
+      const index = next++;
+      const group = groups[index];
+      try {
+        if ("error" in group && group.error) throw group.error;
+        const result = group.payload
+          ? agentSessionsToThreads(group.payload, group.cwd, sourceKinds, ALL_BACKENDS_SCOPE)
+          : { ...await listRawCodexAppServerThreads(options, limit, group.cwd, "", sourceKinds),
+            successfulBackendIds: ["codex"], partialErrors: [{ code: "backend_unavailable", message: "Agent listing unavailable; raw fallback only" }] };
+        results[index] = { cwd: group.cwd, result };
+      } catch (error) {
+        results[index] = { cwd: group.cwd, error: error instanceof Error ? error : new Error(String(error)) };
+      }
+    }
+  }));
+  return results;
+}
+
+function listRawCodexAppServerThreads(options: ThreadListOptions, limit: number, cwd: string, cursor: string, sourceKinds: CodexThreadSourceKind[]): Promise<CodexThreadListResult> {
   return runCodexRpcSession({
     wsUrl: options.wsUrl,
     wsToken: options.wsToken,

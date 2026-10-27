@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 
 export const AGENT_PROTOCOL_VERSION = 2;
+export const SESSION_LIST_BATCH_MAX_DIRECTORIES = 64;
+export const SESSION_LIST_BATCH_MAX_BYTES = 64 * 1024;
 // sessions.listのprovider-neutralスコープ。backendId未指定と等価で、
 // session.list対応の全Backendを集約した一覧を返す。
 export const ALL_BACKENDS_SCOPE = "all";

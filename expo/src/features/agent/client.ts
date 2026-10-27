@@ -11,6 +11,7 @@ import type {
 import { normalizeContextUsageSnapshot } from "../codex/client/helpers";
 import type { RunnerWebSocketManager } from "../runnerWs/RunnerWebSocketManager";
 import type { RunnerWsMessage } from "../runnerWs/types";
+import { utf8ByteLength } from "../ws/networkUsageMetrics";
 import {
   calendarDynamicToolsIncompatible,
   calendarToolResponse,
@@ -66,12 +67,17 @@ function interruptedError() {
   return error;
 }
 
-export async function getAgentBackendStatuses(manager: RunnerWebSocketManager) {
+async function getAgentHello(manager: RunnerWebSocketManager) {
   const response = await manager.request({ channel: "agent", op: "agent.hello" }, { timeoutMs: 10_000 });
-  if (response.channel !== "agent" || response.op !== "agent.ready") return [];
+  if (response.channel !== "agent" || response.op !== "agent.ready") return null;
   const payload = object(response.payload);
-  if (Number(payload.protocolVersion) !== PROTOCOL_VERSION) return [];
-  return Array.isArray(payload.backends) ? payload.backends as BackendStatus[] : [];
+  if (Number(payload.protocolVersion) !== PROTOCOL_VERSION) return null;
+  return payload;
+}
+
+export async function getAgentBackendStatuses(manager: RunnerWebSocketManager) {
+  const payload = await getAgentHello(manager);
+  return Array.isArray(payload?.backends) ? payload.backends as BackendStatus[] : [];
 }
 
 export async function getAgentBackendStatus(manager: RunnerWebSocketManager, backendId: string) {
@@ -858,6 +864,106 @@ export async function listAgentSessions(manager: RunnerWebSocketManager, options
     try { onResponseBytes?.(responseBytes); } catch { /* diagnostics cannot change listing behavior */ }
   }
   return object(response.payload);
+}
+
+export type AgentSessionListGroup = { cwd: string; payload?: Record<string, unknown> | null; error?: Error };
+
+// One invocation is one sync cycle; no readiness or capability cache survives it.
+export async function listAgentSessionsBatch(
+  manager: RunnerWebSocketManager, cwds: string[], limit: number,
+): Promise<AgentSessionListGroup[]> {
+  if (cwds.length === 0) return [];
+  const initial = manager.getSnapshot();
+  const assertCurrent = () => {
+    const current = manager.getSnapshot();
+    if (current.connectionState !== "ready" || current.generation !== initial.generation
+      || current.connectionId !== initial.connectionId || current.url !== initial.url) {
+      throw new Error("Session list connection changed");
+    }
+  };
+  assertCurrent();
+  const hello = await getAgentHello(manager);
+  assertCurrent();
+  if (!hello || !Array.isArray(hello.backends) || hello.backends.length === 0) {
+    return cwds.map((cwd) => ({ cwd, payload: null }));
+  }
+  let supportsBatch = Array.isArray(hello.operations) && hello.operations.includes("sessions.list.batch");
+  const bounds = object(hello.sessionListBatch);
+  const maxDirectories = Math.max(1, Math.min(64, Number(bounds.maxDirectories) || 64));
+  const maxBytes = Math.max(128, Math.min(64 * 1024, Number(bounds.maxBytes) || 64 * 1024));
+  const groups: AgentSessionListGroup[] = [];
+  for (let offset = 0; offset < cwds.length;) {
+    const chunk: string[] = [];
+    while (offset < cwds.length && chunk.length < maxDirectories) {
+      const cwd = cwds[offset];
+      if (utf8ByteLength(JSON.stringify({ cwds: [...chunk, cwd], limit })) > maxBytes) {
+        if (chunk.length > 0) break;
+        throw new Error("Session list directory exceeds batch limit");
+      }
+      chunk.push(cwd);
+      offset++;
+    }
+    assertCurrent();
+    if (supportsBatch) {
+      try {
+        const response = await manager.request({ channel: "agent", op: "sessions.list.batch", payload: { cwds: chunk, limit } }, { timeoutMs: Math.ceil(chunk.length / 2) * 30_000 + 1000 });
+        assertCurrent();
+        const result = object(response.payload);
+        if (response.op === "error" && result.code === "capability_unsupported") {
+          supportsBatch = false;
+        } else if (response.op === "error") {
+          throw new Error(String(result.message || "Session batch failed"));
+        } else {
+          const batch = Array.isArray(result.groups) ? result.groups : [];
+          if (response.channel !== "agent" || response.op !== "sessions.list.batch.result" || batch.length !== chunk.length) {
+            throw new Error("Invalid session batch response");
+          }
+          const parsed: AgentSessionListGroup[] = [];
+          for (let index = 0; index < chunk.length; index++) {
+            const group = object(batch[index]);
+            if (group.cwd !== chunk[index] || (!group.error && !Array.isArray(object(group.payload).sessions))) {
+              throw new Error("Invalid session batch group");
+            }
+            parsed.push(group.error
+              ? { cwd: chunk[index], error: new Error(String(object(group.error).message || "Session list failed")) }
+              : { cwd: chunk[index], payload: object(group.payload) });
+          }
+          groups.push(...parsed);
+          continue;
+        }
+      } catch (error) {
+        assertCurrent();
+        const failure = error instanceof Error ? error : new Error(String(error));
+        groups.push(...chunk.map((cwd) => ({ cwd, error: failure })));
+        continue;
+      }
+    }
+    const results: AgentSessionListGroup[] = Array(chunk.length);
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(2, chunk.length) }, async () => {
+      while (next < chunk.length) {
+        const index = next++;
+        const cwd = chunk[index];
+        try {
+          assertCurrent();
+          const response = await manager.request({ channel: "agent", op: "sessions.list", payload: {
+            backendId: ALL_BACKENDS_SCOPE, cwd, limit, includeSubagents: false,
+          } }, { timeoutMs: 30_000 });
+          assertCurrent();
+          if (response.op === "error") throw new Error(String(object(response.payload).message || "Session list failed"));
+          if (response.channel !== "agent" || response.op !== "sessions.list.result" || !Array.isArray(object(response.payload).sessions)) {
+            throw new Error("Invalid session list response");
+          }
+          results[index] = { cwd, payload: object(response.payload) };
+        } catch (error) {
+          results[index] = { cwd, error: error instanceof Error ? error : new Error(String(error)) };
+        }
+      }
+    }));
+    assertCurrent();
+    groups.push(...results);
+  }
+  return groups;
 }
 
 export async function readAgentHistory(manager: RunnerWebSocketManager, options: {
