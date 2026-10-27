@@ -1450,6 +1450,95 @@
         "The current non-batch server observation occurred after the cycles and does not prove their runtime",
         "Expected legacy fallback is one hello plus per-directory lists; its request count was not measured"
       ]
+    },
+    {
+      "id": "actual-app-post-build-observations",
+      "kind": "observational-client-diagnostics-and-read-only-loopback-probe",
+      "observedAtUtc": "2026-10-27T07:20:01.557694+00:00",
+      "receivedTimestampCutoffUtc": "2026-10-27T07:13:38.432Z",
+      "sourceEventCount": 895,
+      "serverVariant": "startup-sync-worktree",
+      "serverAdvertisesBatch": true,
+      "cycles": [
+        {
+          "startAtUtc": "2026-10-27T07:12:29.561Z",
+          "startCount": 25,
+          "observedDoneCount": 16,
+          "observedRows": 63,
+          "listElapsedMs": [
+            2892
+          ],
+          "observedMaxElapsedMs": 6505,
+          "observedMaxSummaryElapsedMs": 3612,
+          "observedPartialErrorCompletions": 0,
+          "sequenceGaps": [
+            {
+              "first": 135,
+              "last": 269,
+              "count": 135
+            }
+          ]
+        },
+        {
+          "startAtUtc": "2026-10-27T07:13:29.199Z",
+          "startCount": 25,
+          "observedDoneCount": 16,
+          "observedRows": 63,
+          "listElapsedMs": [
+            3520
+          ],
+          "observedMaxElapsedMs": 5964,
+          "observedMaxSummaryElapsedMs": 2444,
+          "observedPartialErrorCompletions": 0,
+          "sequenceGaps": [
+            {
+              "first": 136,
+              "last": 270,
+              "count": 135
+            }
+          ]
+        }
+      ],
+      "readOnlyDirectBatchProbe": {
+        "directories": 25,
+        "successfulGroups": 25,
+        "rows": 99,
+        "errors": 0,
+        "elapsedMs": 859,
+        "receivedEnvelopeBytes": 89055,
+        "route": "local-loopback",
+        "requests": 1,
+        "includesHello": false,
+        "includesHttpSummaries": false,
+        "includesUi": false
+      },
+      "currentServerCapabilities": {
+        "maxBatchDirectories": 64,
+        "maxBatchRequestBytes": 65536,
+        "backendCount": 2,
+        "runtimeDuringEachCycleIndependentlyProven": false
+      },
+      "appWireOperationCounts": null,
+      "appWireBatchExecutionProven": false,
+      "otherDiagnostics": {
+        "connectionErrorCount": 2,
+        "socketClosedCount": 3,
+        "missingRestoreTargetCount": 4,
+        "invalidGitRepositoryCount": 20,
+        "missingGitDirectoryCount": 16,
+        "connectionErrorAndDisconnectionDiagnosticsBeforeCyclesOnly": true,
+        "connectionErrorAndDisconnectionDiagnosticsUtcWindow": "2026-10-27T07:07:45Z/2026-10-27T07:07:46Z"
+      },
+      "limitations": [
+        "Received-timestamp cutoff excludes subsequent user activity",
+        "Completion was not observed for nine directories per cycle; this cannot be classified as fetch failure because each sequence has 135 missing diagnostic events",
+        "Observed maxima and summary intervals do not establish full-cycle or UI completion time",
+        "Existing 240-event buffer bound and deletion after send await are plausible log-loss causes, not proven runtime causes",
+        "Current server capability and the direct probe do not independently measure actual-app WS operation counts",
+        "Direct batch probe is loopback, excludes hello/HTTP summaries/UI and is not mobile startup time",
+        "Missing restore targets do not prove session age; Git diagnostics do not establish session-list batch failure",
+        "No matched before-condition or causal real-app speedup measurement"
+      ]
     }
   ],
   "checksRun": {

@@ -610,3 +610,16 @@ npm test -- --runInBand src/features/app/components/SessionSyncIndicator.test.ts
 npm run typecheck
 npm run typecheck:macos
 ```
+
+### 18.6 ユーザーbuild／Runner再起動後の観測（2026-10-27）
+
+受信時刻`2026-10-27T07:13:38.432Z`（16:13:38.432 JST）以前の895診断eventへ範囲を固定した。後続の操作は含めない。2cycleとも25開始のうち観測できた完了は16・63行で、各client系列に135件のseq欠損がある。32完了の部分失敗flagは0だが、完了を観測できなかった9ディレクトリを一覧取得失敗と判断できない。
+
+| 開始 UTC / JST | listElapsed | 観測最大total | 観測最大summary |
+| --- | ---: | ---: | ---: |
+| 07:12:29.561Z / 16:12:29.561 | 2.892秒 | 6.505秒 | 3.612秒 |
+| 07:13:29.199Z / 16:13:29.199 | 3.520秒 | 5.964秒 | 2.444秒 |
+
+summary区間が長い観測はあるが、欠損を含むためcycle全体やUI描画の完了時間ではない。既存loggerの240件buffer上限と送信await後のbuffer削除は欠損の候補であり、今回のruntime原因と実証したものではない。接続エラー・切断通知は両cycleより前の07:07:45〜46Zに限られた。復元先不在4件はsessionの古さを証明せず、Git診断36件（repository不正20・directory不在16）も一覧batch失敗とは分けて扱う。
+
+観測後の読み取り専用確認では稼働Runnerは今回のworktreeで、helloはbatch対応（上限64directory・64KiB、2backend）だった。同じ25登録先・先頭5件を実WS batch 1要求で直接取得したloopback probeは25成功・99行・error 0、0.859秒、受信envelope 89,055bytes。hello・HTTP補完・UIは含まず、携帯回線での起動時間ではない。実アプリのwire operation数は記録されておらず「2要求で完了」を実測確認したとは言えない。比較条件を揃えた前後測定ではないため因果的な改善秒数は主張しない。集計のみを保存し、code変更・追加build／再起動は行っていない。
