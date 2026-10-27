@@ -85,3 +85,19 @@ test("Escape targets only the top modal and does not fall through when it has no
   expect(closeBack).not.toHaveBeenCalled();
   await screen.unmount();
 });
+
+test("foreground stays above every macOS modal and drawer", async () => {
+  const screen = await render(<AppModalHost foreground={<View testID="foreground" pointerEvents="none" />}>
+    <View testID="drawer" />
+    <AppModal visible testID="first-modal"><Text>First</Text></AppModal>
+    <AppModal visible testID="top-modal"><Text>Top</Text></AppModal>
+  </AppModalHost>);
+  expect(screen.toJSON()).toMatchObject({ children: [
+    { props: { testID: "drawer" } },
+    { props: { testID: "first-modal" } },
+    { props: { testID: "top-modal" } },
+    { props: { testID: "foreground", pointerEvents: "none" } },
+  ] });
+  expect(screen.getAllByTestId("foreground")).toHaveLength(1);
+  await screen.unmount();
+});

@@ -1,4 +1,4 @@
-import { requestRunnerClientState, runnerSessionKey, runnerSessionValue, type RunnerClientState, type RunnerClientStateCache } from "./runnerClientState";
+import { requestRunnerClientState, RunnerClientStateConnectionError, runnerSessionKey, runnerSessionValue, type RunnerClientState, type RunnerClientStateCache } from "./runnerClientState";
 
 test("custom session metadata is isolated by backend", () => {
   const values = {
@@ -149,4 +149,49 @@ describe("conditional client-state requests", () => {
     await expect(requestRunnerClientState({ ...auth, cache })).rejects.toThrow("Runner HTTP 401");
     expect(cache.entry?.etag).toBe('"first"');
   });
+});
+
+describe("client-state transport failures", () => {
+  const auth = { runnerUrl: "http://runner.test", runnerToken: "token" };
+  afterEach(() => { jest.restoreAllMocks(); jest.useRealTimers(); });
+
+  test("a timed-out fetch is a connection error and the existing 12-second timeout is unchanged", async () => {
+    jest.useFakeTimers();
+    jest.spyOn(global, "fetch").mockImplementation((_url, init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new Error("Aborted")));
+    }));
+    const request = requestRunnerClientState(auth);
+    const rejection = expect(request).rejects.toBeInstanceOf(RunnerClientStateConnectionError);
+    jest.advanceTimersByTime(12_000);
+    await rejection;
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  test("a timeout while reading the response is also a connection error", async () => {
+    jest.useFakeTimers();
+    jest.spyOn(global, "fetch").mockImplementation(async (_url, init) => ({
+      ok: true, status: 200,
+      json: () => new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("Aborted")))),
+    } as Response));
+    const request = requestRunnerClientState(auth);
+    const rejection = expect(request).rejects.toBeInstanceOf(RunnerClientStateConnectionError);
+    await Promise.resolve();
+    jest.advanceTimersByTime(12_000);
+    await rejection;
+  });
+
+  test.each([401, 409, 500])("HTTP %s remains a save error", async (status) => {
+    jest.spyOn(global, "fetch").mockResolvedValue({ ok: false, status, json: async () => ({ message: "Save rejected" }) } as Response);
+    await expect(requestRunnerClientState(auth)).rejects.not.toBeInstanceOf(RunnerClientStateConnectionError);
+  });
+});
+
+test("interrupted response bodies are connection failures but malformed JSON stays a save error", async () => {
+  const auth = { runnerUrl: "http://runner.test", runnerToken: "token" };
+  const fetchMock = jest.spyOn(global, "fetch");
+  fetchMock.mockResolvedValueOnce({ ok: true, status: 200, json: async () => { throw new TypeError("Network request failed"); } } as unknown as Response)
+    .mockResolvedValueOnce({ ok: true, status: 200, json: async () => { throw new SyntaxError("Invalid JSON"); } } as unknown as Response);
+  await expect(requestRunnerClientState(auth)).rejects.toBeInstanceOf(RunnerClientStateConnectionError);
+  await expect(requestRunnerClientState(auth)).rejects.not.toBeInstanceOf(RunnerClientStateConnectionError);
+  fetchMock.mockRestore();
 });

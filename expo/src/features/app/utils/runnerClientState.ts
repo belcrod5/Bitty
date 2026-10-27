@@ -24,6 +24,13 @@ export type RunnerClientStateCache = {
   entry?: { url: string; token: string; etag: string; snapshot: RunnerClientState };
 };
 
+export class RunnerClientStateConnectionError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = "RunnerClientStateConnectionError";
+  }
+}
+
 export async function requestRunnerClientState(options: {
   runnerUrl: string;
   runnerToken: string;
@@ -47,16 +54,24 @@ export async function requestRunnerClientState(options: {
       ...(options.operation ? { body: JSON.stringify({ operation: options.operation }) } : {}),
       signal: controller.signal,
     };
-    let response = await fetch(url, {
-      ...init,
-      headers: { ...init.headers, ...(cached ? { "if-none-match": cached.etag } : {}) },
-    });
-    if (!options.operation && response.status === 304) {
-      const etag = response.headers?.get("etag");
-      if (cached && (!etag || etag.replace(/^W\//, "") === cached.etag.replace(/^W\//, ""))) return cached.snapshot;
-      response = await fetch(url, init);
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        ...init,
+        headers: { ...init.headers, ...(cached ? { "if-none-match": cached.etag } : {}) },
+      });
+      if (!options.operation && response.status === 304) {
+        const etag = response.headers?.get("etag");
+        if (cached && (!etag || etag.replace(/^W\//, "") === cached.etag.replace(/^W\//, ""))) return cached.snapshot;
+        response = await fetch(url, init);
+      }
+    } catch (error) {
+      throw new RunnerClientStateConnectionError(error);
     }
-    const payload = await response.json().catch(() => ({}));
+    const payload = await response.json().catch((error) => {
+      if (!(error instanceof SyntaxError)) throw new RunnerClientStateConnectionError(error);
+      return {};
+    });
     if (!response.ok || !payload?.snapshot) throw new Error(String(payload?.message || `Runner HTTP ${response.status}`));
     const snapshot = payload.snapshot as RunnerClientState;
     if (options.cache) {
