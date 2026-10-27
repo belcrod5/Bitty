@@ -580,3 +580,33 @@ cd /Volumes/SSD-500GB-SanDisk/work/bitty-worktree/docs/app-startup-sync-design
 ```
 
 [Runner再起動（token維持）](../private_runner/restart-keep-token.sh)、[iOS実機build](../scripts/ios/build-expo-ios-device.sh)。起動と久しぶりの復帰で最新一覧・popup本文・preview・失敗回復を確認し、同じ端末・経路で前後を測る。本節の検証時点でmain・稼働Runner・実機には未適用。
+
+
+### 18.4 実アプリ診断ログの追加観測（通信方式は未確定）
+
+2026-10-27の`client_auto_logs`から`session_history_fetch_start/done`だけを抽出した。client session内のdirectoryとseqで開始直後の完了を対応付け、`batch: true`の75開始を3cycle・各25登録先の一意な完了へ照合した。欠損・重複・対応途中の再startは0、各cycleの重複除去後は99行、補完要求対象は4 session ID、部分失敗を示す完了flagは0だった。個別session ID・directory・会話内容は保存しない。
+
+| 最初の開始 UTC / JST | listElapsed | 最大total elapsed | 一覧後の尾部 |
+| --- | ---: | ---: | ---: |
+| 05:47:05.638Z / 14:47:05.638 | 6.782秒 | 7.224秒 | 0.442秒 |
+| 05:47:27.625Z / 14:47:27.625 | 1.964秒 | 2.063秒 | 0.099秒 |
+| 05:48:11.755Z / 14:48:11.755 | 4.984秒 | 5.546秒 | 0.562秒 |
+
+listElapsedは各cycle内の25完了で同値、totalは完了payloadの`elapsedMs`最大値、尾部はその差で、HTTP補完だけの時間ではない。一覧区間は最大totalの約89.9〜95.2%を占めたが、通信・server/backend処理・client queue/変換を分離した値ではない。WS接続確立・UI描画・popup本文の最新化時間・本文bytes・実operation数は測っていない。補完対象4 IDもHTTP要求4回という意味ではない。
+`batch: true`はclientの一括取得入口を通った印であり、WS `sessions.list.batch`実行の証拠ではない。3cycle後の14:54 JST頃に行った読み取り専用hello確認では、現在の常駐serverはmain側でprotocol 2だがbatchをadvertiseしていなかった。3cycle当時も同じruntimeだったとは遡及確定できないため、各cycleのserver版・実通信variant・要求数は未確定として保存する。非対応時のhello 1回＋25個別一覧は設計上の期待で、今回の実測要求数ではない。
+この3回だけで改善前後の因果的な速度差や全件batch適用を判断しない。観測・集計のみを追記し、source/UI変更、server再起動、アプリbuildは行っていない。
+
+### 18.5 同期中UIの変更（2026-10-27）
+
+「セッション同期中／更新中」の文字と件数分数を取り除き、drawerのSafeArea内・検索欄の上へ高さ2pxの不定進捗barを固定した。ScrollView外に常時2pxの枠を確保し、開始／終了で検索欄や一覧が上下しない。drawerを閉じている間は、ボード左上の既存44pxメニューボタンの外周に細い回転ringを表示する。loading／refreshingの間だけ表示し、完了・失敗時は消す。部分失敗／失敗の通知は件数なしで維持する。
+
+両表示は既存`directorySessionSync.phase`と`drawerOpen`を使い、取得条件・鮮度判定・通信は変更しない。2用途の`SessionSyncIndicator`だけでtransformアニメーションを共用し、非表示／終了／unmountで停止する。既存のmotion軽減設定が有効または未取得なら静止表示、既存platform別native-driver方針を利用する。新store・依存・timer基盤は追加せず、旧進捗表示と4stylesを削除した。既存Runner接続indicator・未読badge・popup本文の復帰経路は維持する。ChatScreenは現在popup modeのみのため、サイズ切替ボタンにはringを追加しない。
+
+関連Jestは5suite・201件、default／macOS型チェックが成功した。対象は`SessionSyncIndicator`、`AppDrawer`、`SkiaMiniBoardScreen`、既存`ChatScreen.autoRecordingPanel`、既存`RunnerConnectionIndicator`。barがScroll外・文字／分数なし、開閉／終了で表示切替、animation停止／motion軽減、既存popup／接続表示を確認した。ログは`/tmp/bitty-startup-sync-ui-tests.log`、`/tmp/bitty-startup-sync-ui-typecheck.log`、`/tmp/bitty-startup-sync-ui-typecheck-macos.log`。実機の見え方・動きは未確認で、アプリbuild／Runner再起動は行っていない。今回の表示変更による取得時間短縮は主張しない。
+
+```sh
+cd expo
+npm test -- --runInBand src/features/app/components/SessionSyncIndicator.test.tsx src/features/app/components/AppDrawer.test.tsx src/features/app/screens/SkiaMiniBoardScreen.test.tsx src/features/app/screens/ChatScreen.autoRecordingPanel.test.tsx src/features/runnerWs/RunnerConnectionIndicator.test.tsx
+npm run typecheck
+npm run typecheck:macos
+```

@@ -1,3 +1,4 @@
+import { SessionSyncIndicator } from "../components/SessionSyncIndicator";
 import { getPendingVoiceControlSignal } from "../utils/pendingVoiceNavigation";
 import { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from "react";
 import {
@@ -733,7 +734,7 @@ export function SkiaMiniBoardScreen({
   const canvasHostRef = useRef<View | null>(null);
   const selectionOpacity = useSharedValue(1);
   const { width: windowWidth } = useWindowDimensions();
-  const { activeScreen, openDrawer, unreadCount } = useAppShell();
+  const { activeScreen, openDrawer, unreadCount, drawerOpen } = useAppShell();
   const unreadBadgeOpacity = useRef(new Animated.Value(1)).current;
   const [completionFlashing, setCompletionFlashing] = useState(false);
   const runnerWebSocketManager = useRunnerWebSocketManager();
@@ -797,6 +798,7 @@ export function SkiaMiniBoardScreen({
     ? orchestrators.reduce((sum, item) => sum + (item.id === selectedId ? 0 : item.unreadCount || 0), 0) : 0;
   const { registeredDirectories } = useConversation();
   const {
+    directorySync,
     items,
     sections,
     cardTextScale,
@@ -2115,6 +2117,7 @@ export function SkiaMiniBoardScreen({
             accessibilityRole="button"
             accessibilityLabel={unreadCount > 0 ? `ナビゲーションを開く、未読 ${unreadCount}件` : "ナビゲーションを開く"}
           >
+            <SessionSyncIndicator phase={!drawerOpen && activeScreen === "skia_board" ? directorySync.phase : undefined} variant="ring" />
             <Text style={screenStyles.headerButtonText}>☰</Text>
             {unreadCount > 0 || completionFlashing ? (
               <Animated.View

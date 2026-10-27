@@ -1377,6 +1377,79 @@
         "cold means new backend cache, not OS cache",
         "5000-entry boundary and concurrent write races untested"
       ]
+    },
+    {
+      "id": "actual-app-directory-diagnostics",
+      "source": "2026-10-27 filtered client_auto_logs session_history_fetch_start/done events",
+      "method": "Pair within client session and directory by increasing seq; require next matching event to be a completion; persist only safe aggregate values",
+      "batchEntryStarts": 75,
+      "cycles": [
+        {
+          "startedAtUtc": "2026-10-27T05:47:05.638Z",
+          "startedAtJst": "2026-10-27T14:47:05.638+09:00",
+          "batchEntryStarts": 25,
+          "pairedDirectoryCompletions": 25,
+          "uniqueDirectories": 25,
+          "listElapsedMs": 6782,
+          "maxTotalElapsedMs": 7224,
+          "dedupedRows": 99,
+          "summaryRequestedSessions": 4,
+          "partialDirectoryCompletions": 0,
+          "missingOrDuplicatePairs": 0,
+          "maxEnrichmentTailMs": 442,
+          "listShareOfMaxTotalPct": 93.882
+        },
+        {
+          "startedAtUtc": "2026-10-27T05:47:27.625Z",
+          "startedAtJst": "2026-10-27T14:47:27.625+09:00",
+          "batchEntryStarts": 25,
+          "pairedDirectoryCompletions": 25,
+          "uniqueDirectories": 25,
+          "listElapsedMs": 1964,
+          "maxTotalElapsedMs": 2063,
+          "dedupedRows": 99,
+          "summaryRequestedSessions": 4,
+          "partialDirectoryCompletions": 0,
+          "missingOrDuplicatePairs": 0,
+          "maxEnrichmentTailMs": 99,
+          "listShareOfMaxTotalPct": 95.201
+        },
+        {
+          "startedAtUtc": "2026-10-27T05:48:11.755Z",
+          "startedAtJst": "2026-10-27T14:48:11.755+09:00",
+          "batchEntryStarts": 25,
+          "pairedDirectoryCompletions": 25,
+          "uniqueDirectories": 25,
+          "listElapsedMs": 4984,
+          "maxTotalElapsedMs": 5546,
+          "dedupedRows": 99,
+          "summaryRequestedSessions": 4,
+          "partialDirectoryCompletions": 0,
+          "missingOrDuplicatePairs": 0,
+          "maxEnrichmentTailMs": 562,
+          "listShareOfMaxTotalPct": 89.867
+        }
+      ],
+      "clientBatchEntryObserved": true,
+      "wireBatchExecutionProven": false,
+      "wireRequestCounts": null,
+      "serverRevisionDuringCycles": null,
+      "afterCycleServerObservation": {
+        "observedAtApproxJst": "2026-10-27 around 14:54 JST",
+        "runnerWorkingTree": "main",
+        "protocolVersion": 2,
+        "sessionListBatchAdvertised": false,
+        "sameRuntimeDuringCyclesProven": false
+      },
+      "limitations": [
+        "batch:true identifies the client entry point, not the actual WS operation or server variant",
+        "No WS connection-establishment, UI-paint, popup-body freshness, body-byte or operation-count measurement",
+        "summaryRequestedSessions counts session IDs, not HTTP requests",
+        "list interval includes multiple possible costs; network/backend/queue/transform not isolated",
+        "Three cycles without a matched before-condition cannot establish causal before/after speedup",
+        "The current non-batch server observation occurred after the cycles and does not prove their runtime",
+        "Expected legacy fallback is one hello plus per-directory lists; its request count was not measured"
+      ]
     }
   ],
   "checksRun": {
@@ -1405,5 +1478,20 @@
     "appBuildRun": false,
     "runnerRestarted": false,
     "liveAppSpeedupVerified": false
+  },
+  "uiFollowupValidation": {
+    "date": "2026-10-27",
+    "jestSuites": 5,
+    "jestTestsPassed": 201,
+    "defaultTypecheckPassed": true,
+    "macosTypecheckPassed": true,
+    "runtimeSyncBehaviorChanged": false,
+    "newDependencies": false,
+    "drawerBarHeightLayoutPoints": 2,
+    "menuRingTouchTargetChanged": false,
+    "reducedMotionAndAnimationCleanupTested": true,
+    "actualDeviceAppearanceVerified": false,
+    "appBuildRun": false,
+    "runnerRestarted": false
   }
 }

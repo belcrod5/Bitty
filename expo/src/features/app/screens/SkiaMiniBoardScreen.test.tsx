@@ -311,7 +311,7 @@ jest.mock("react-native-gesture-handler", () => {
 });
 
 jest.mock("../contexts/AppShellContext", () => ({
-  useAppShell: () => ({ activeScreen: mockActiveScreen, openDrawer: jest.fn(), unreadCount: mockUnreadCount }),
+  useAppShell: () => ({ activeScreen: mockActiveScreen, drawerOpen: mockDrawerOpen, openDrawer: jest.fn(), unreadCount: mockUnreadCount }),
 }));
 const mockBoardVoiceHandlers = new Map<string, (message: { payload: unknown }) => void>();
 const mockBoardVoiceRequest = jest.fn(async () => ({ op: "voice.orchestrators.list.result", payload: {
@@ -450,9 +450,12 @@ function mockSectionAt(x: number, y: number, width: number, height: number) {
   };
 }
 
+let mockDirectorySyncPhase = "idle";
+let mockDrawerOpen = false;
+
 jest.mock("../hooks/useSkiaMiniChatSessions", () => ({
   useSkiaMiniChatSessions: () => ({
-    directorySync: { phase: "idle", completedCount: 0, totalCount: 0, failedCount: 0 },
+    directorySync: { phase: mockDirectorySyncPhase, completedCount: 0, totalCount: 0, failedCount: 0 },
     hydratingPanelCount: 0,
     panelHydrationErrorCount: 0,
     sessions: mockSessions,
@@ -476,6 +479,8 @@ jest.mock("../hooks/useSkiaMiniChatSessions", () => ({
 
 beforeEach(() => {
   (globalThis as Record<string, unknown>).__skiaBoardFrameCallback = null;
+  mockDirectorySyncPhase = "idle";
+  mockDrawerOpen = false;
   mockRunningSessionCount = 0;
   mockActiveScreen = "skia_board";
   mockUnreadCount = 0;
@@ -2301,6 +2306,30 @@ test("shows the session unread count on navigation and removes it when read", as
   expect(screen.getByLabelText("ナビゲーションを開く")).toBeTruthy();
 });
 
+
+test("shows the navigation sync ring while the drawer is closed and removes it on completion", async () => {
+  mockDirectorySyncPhase = "refreshing";
+  const screen = await render(
+    <SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />
+  );
+  expect(screen.getByTestId("session-sync-ring")).toBeTruthy();
+  expect(screen.getByLabelText("ナビゲーションを開く")).toBeTruthy();
+  mockDrawerOpen = true;
+  await screen.rerender(
+    <SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />
+  );
+  expect(screen.queryByTestId("session-sync-ring")).toBeNull();
+  mockDrawerOpen = false;
+  await screen.rerender(
+    <SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />
+  );
+  expect(screen.getByTestId("session-sync-ring")).toBeTruthy();
+  mockDirectorySyncPhase = "complete";
+  await screen.rerender(
+    <SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />
+  );
+  expect(screen.queryByTestId("session-sync-ring")).toBeNull();
+});
 
 describe("menu completion badge flash", () => {
   const originalAppState = Object.getOwnPropertyDescriptor(AppState, "currentState");
