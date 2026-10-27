@@ -1923,6 +1923,108 @@
         "Detailed-event reduction requires the existing detail switch to be off; verbose mode remains available",
         "The measured owner render reduction does not prove a cause of panel rehydration in the actual app"
       ]
+    },
+    {
+      "id": "normal-diagnostics-two-device-startups",
+      "kind": "frozen-device-diagnostics-post-build-audit",
+      "sourceRun": "20261027_170230_450",
+      "receivedCutoff": "2026-10-27T08:43:41.830Z",
+      "clients": [
+        {
+          "client": 1,
+          "observedEvents": 852,
+          "firstAt": "2026-10-27T08:37:51.629Z",
+          "lastAt": "2026-10-27T08:42:57.976Z",
+          "seqMin": 1,
+          "seqMax": 852,
+          "gaps": [],
+          "evictedMax": 0,
+          "generatedMax": 852,
+          "batchStartCount": 26,
+          "batchStartAt": "2026-10-27T08:37:53.584Z",
+          "batchDone": [
+            {
+              "at": "2026-10-27T08:37:55.759Z",
+              "targetCount": 26,
+              "successfulGroupCount": 26,
+              "failedGroupCount": 0,
+              "partialErrorGroupCount": 0,
+              "rowCount": 104,
+              "listElapsedMs": 2173,
+              "elapsedMs": 2175,
+              "enrichmentElapsedMs": 2,
+              "summaryAuthWaitSumMs": 0,
+              "summaryHttpRequestCount": 0,
+              "summaryHttpElapsedSumMs": 0,
+              "summaryHttpFailedRequestCount": 0
+            }
+          ],
+          "fetchDoneCount": 33,
+          "wireOperations": {
+            "agent.hello": 110,
+            "sessions.list": 60,
+            "sessions.list.batch": 1
+          },
+          "detailedEventCount": 0
+        },
+        {
+          "client": 2,
+          "observedEvents": 407,
+          "firstAt": "2026-10-27T08:42:59.512Z",
+          "lastAt": "2026-10-27T08:43:41.415Z",
+          "seqMin": 1,
+          "seqMax": 511,
+          "gaps": [
+            {
+              "from": 123,
+              "through": 226,
+              "count": 104
+            }
+          ],
+          "evictedMax": 104,
+          "generatedMax": 511,
+          "batchStartCount": 26,
+          "batchStartAt": "2026-10-27T08:43:01.455Z",
+          "batchDone": [],
+          "fetchDoneCount": 0,
+          "wireOperations": {
+            "agent.hello": 85,
+            "sessions.list": 17,
+            "sessions.list.batch": 1
+          },
+          "detailedEventCount": 0
+        }
+      ],
+      "firstClientVerifiedScope": "batch listing/enrichment interval only",
+      "secondClientBatchCompletionObserved": false,
+      "secondClientRowCount": null,
+      "secondClientSummaryHttpRequestCount": null,
+      "secondClientElapsedMs": null,
+      "limitations": [
+        "First-client elapsed starts at directory listing, excludes connection establishment and UI paint, and is not full app startup duration",
+        "Second-client missing completion events prevent conclusions about completion, returned rows, enrichment HTTP count or elapsed time",
+        "Full-client hello/scalar/batch counts include other operations, not only startup first pages",
+        "Observed eviction counts are not generally delivery-loss counts, although both the observed gap and cumulative eviction are 104 in the second client",
+        "Target count is now 26 and conditions differ from older observations; no causal before/after speedup is established",
+        "Unchanged finite buffering does not guarantee completion-event retention for every burst"
+      ],
+      "sourceCodeChanged": false,
+      "agentRanAppBuild": false,
+      "agentRestartedRunner": false,
+      "additionalParentReadOnlyAudit": {
+        "firstClientStartupFirstPageDoneCount": 26,
+        "firstClientLaterScalarFetchDoneCount": 7,
+        "secondClientGapBoundary": {
+          "beforeSequence": 122,
+          "beforeAtUtc": "2026-10-27T08:43:02.082Z",
+          "afterSequence": 227,
+          "afterAtUtc": "2026-10-27T08:43:03.363Z",
+          "generatedThroughSequenceAtMetadata": 466,
+          "bufferEvictedCountAtMetadata": 104
+        },
+        "bufferEvictionOccurred": true,
+        "missingEventTypesKnown": false
+      }
     }
   ],
   "checksRun": {

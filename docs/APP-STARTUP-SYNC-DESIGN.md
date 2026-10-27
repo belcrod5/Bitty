@@ -665,3 +665,16 @@ ack修正済みのhookでも、上限240・送信40の待ち時間中に十分�
 重複するhydrate received／loadedとGit settledの3eventは、既存detailed設定へ移した。start／done／errorと同期集計は維持し、機能処理は変えない。手元の検証設定では詳細が有効だったため、この3eventの削減は既存詳細スイッチをOFFにした検証buildで確認する必要がある。永続local設定は変更しない。詳細OFF時でも極端burst・送信失敗・先頭eventのfilter／切詰め・終了等による観測欠損はあり得るため、累積数値とseqを併せて判定し、完了event未観測を取得失敗とは扱わない。
 
 関連Jestは`useBufferedClientLogs`・`appDiagnostics`・`useGitChangedFilesController`・`useSkiaMiniChatSessions`・`useLlmSessionExplorer`の5suite・99件、default／macOS型チェックが成功した。metadataの送信先頭seq4と元payloadをfreezeした検査、counter単調性、12batch後の待機、unmount・設定切替／復帰・retryを含むlogger境界13件も再成功。旧paced失敗は`/tmp/bitty-log-drain-before.log`、旧render比較は`/tmp/bitty-log-drain-before-render.log`、修正後は`/tmp/bitty-log-drain-after.log`、最終境界検査は`/tmp/bitty-log-drain-counter-check.log`、型チェックは`/tmp/bitty-log-drain-typecheck{,-macos}.log`。安全な集計を第18群へ保存した。実機の変更後capture・追加build・Runner再起動は未実施で、起動秒数短縮は主張しない。
+
+### 18.10 通常ログ版の再build・2回起動の観測（2026-10-27）
+
+run `20261027_170230_450`、受信cutoff `2026-10-27T08:43:41.830Z`（17:43:41.830 JST）で2つの新client系列を監査した。detailedへ移した3eventは両系列とも0件で、通常ログ設定の反映を確認できた。
+
+| 一覧開始 UTC / JST | seq観測／欠損 | 累積eviction | 登録先／batch送信 | 一括完了 |
+| --- | --- | ---: | ---: | --- |
+| 08:37:53.584Z / 17:37:53.584 | 1〜852／0件 | 0 | 26／1回 | 成功26・失敗0・部分失敗0・104行 |
+| 08:43:01.455Z / 17:43:01.455 | 1〜511中407受信／104件 | 104 | 26／1回 | 未観測 |
+
+1回目は一括完了を08:37:55.759Zに記録し、一覧2,173ms・全処理2,175ms・補足2ms・auth待ち0・補足HTTP要求0だった。実アプリのこの一覧処理について、補足再取得なしで104行が返ったことを確認できた。当該先頭ページ26完了は全て記録され、client全期間のfetch done総33には後続の個別取得7件も含む。計時は一覧要求開始からで、WS接続確立・画面描画やアプリ起動全体の時間ではない。以前とは登録先件数等も異なるため、因果的な改善秒数は算出しない。
+
+2回目は26開始と対象26のbatch送信1回を確認できたが、seq123〜226の104件が欠け、累積evictionも104だった。欠損の境界はseq122（08:43:02.082Z）→seq227（08:43:03.363Z）、その後のmetadataは生成済466・eviction104を示し、buffer押し出しの発生自体は確認できた。欠けたevent種類は分からず、先頭ページdone・一括doneは0件で、実完了・返却行数・HTTP 0・所要時間は未確認。完了eventを全条件で保持できたとは言えず、未観測を取得失敗とも扱わない。全client期間の送信数は1回目hello110・個別list60・batch1、2回目hello85・個別list17・batch1で、他機能の操作も含み、起動一覧だけの通信数とは扱わない。安全な集計を第19群へ保存し、今回はcode変更・追加build／再起動を行っていない。
