@@ -456,12 +456,17 @@ export function createAgentService({
     const activeRun = String(context?.subjectId || "").trim() && session?.sessionRef?.nativeSessionId
       ? getActiveRun(session.sessionRef, context)
       : null;
+    const modelId = String(binding?.modelId || session?.modelId || "").trim();
+    const reasoningEffort = String(binding?.reasoningEffort || session?.reasoningEffort || "").trim();
     return {
       ...session,
+      ...(session?.summary && typeof session.summary === "object" && !Array.isArray(session.summary)
+        ? { summary: { ...session.summary, modelRef: modelId, reasoningEffort, lastReadAt } }
+        : {}),
       // Neutral selection is authoritative until an explicit raw handoff clears it.
       // Native metadata remains the legacy/raw fallback when no stored selection exists.
-      modelId: String(binding?.modelId || session?.modelId || "").trim(),
-      reasoningEffort: String(binding?.reasoningEffort || session?.reasoningEffort || "").trim(),
+      modelId,
+      reasoningEffort,
       ...(updatedAt ? { updatedAt } : {}),
       ...(lastReadAt ? { lastReadAt } : {}),
       ...(activeRun ? { isActive: true } : {}),

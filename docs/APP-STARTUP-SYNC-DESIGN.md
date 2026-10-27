@@ -624,3 +624,17 @@ summary区間が長い観測はあるが、欠損を含むためcycle全体やUI
 
 観測後の読み取り専用確認では稼働Runnerは今回のworktreeで、helloはbatch対応（上限64directory・64KiB、2backend）だった。同じ25登録先・先頭5件を実WS batch 1要求で直接取得したloopback probeは25成功・99行・group error 0、0.859秒、受信envelope 89,055bytes。hello・HTTP補完・UIは含まず、携帯回線での起動時間ではない。実アプリのwire operation数は記録されておらず「2要求で完了」を実測確認したとは言えない。比較条件を揃えた前後測定ではないため因果的な改善秒数は主張しない。集計のみを保存し、code変更・追加build／再起動は行っていない。
 追加の別loopback確認ではhello＋batchの2要求で25成功・99行、failed group 0・backend部分失敗0、0.970秒だった。計時開始はWS open後で、接続確立・HTTP補完・UIを除く読み取り専用probeであり、実アプリの通信数を測定したものではない。先の0.859秒probeはhelloを含まない独立結果として残す。
+
+### 18.7 補足再取得の上流修正と診断保持（2026-10-27）
+
+変更前の稼働Runnerへ別の読み取り専用batch probeを行うと、99行中Codex 95行は有効なsummary有り、Claude 4行（2directory）は無しだった（batchのみ0.943秒、接続／hello／HTTP／UIを除外）。後者はclientの補足対象となり、non-Codexの`/session-summaries`は`listAgentSessionSnapshot`を再実行する。その要求では`includeSubagents`が省略されるため、Claudeは既定で子も再列挙する。過去の実アプリ4補足IDのbackendを直接特定した観測ではないが、一覧を取った後で同じ情報を取り直す構造はコードで確認できた。
+
+Claudeが既存一覧のsummary契約を満たすようにし、serviceの既存stored-state適用でsummaryのmodel／effort／readを最終値へ揃えた。contextUsageはClaudeでは従来HTTP補足と同じnull、Codexでは元のcontextUsageを保持する。clientの2箇所にあったCodex限定条件を除き、有効なsummaryをbackend共通で利用する。旧server／raw／欠損・不正summaryのHTTP補足は維持する。補足の非同期化・子取得条件のHTTP側固定・新cache／TTL／protocolは追加しない。
+
+2directory・Claude 4行のhook fixtureを3回ずつ交互測定した。表示結果はdeep-equal、補足HTTP要求は2→0、実elapsed中央値は0.095秒→ミリ秒分解能で0秒だった。これはmock fetch応答に80ms・auth取得に10msを注入したテストで、実通信／実機速度ではない。2directoryは並列なので待ち時間を加算しない。実ファイル更新でClaude modelが変わること、stored設定／readとの一致、null context・旧fallback・子・部分失敗・認証scopeを関連テストで確認した。
+
+loggerは送信前のsliceと成功後の位置指定spliceの間にenqueue／上限処理／clearLocalが入ると、未送信の新entryも削除できた。小bufferの4回帰テストで旧実装2失敗→送信したentry自身だけ削除する2行修正後4成功。上限4・送信2のoverflow例では、保持されるべき4件が旧処理では2件になった。buffer拡大・新queue層は追加せず、既存240件上限の意図したdropは残す。過去の135件欠損がこの競合で起きたと確定したわけではなく、既に失ったログも復元しない。
+
+診断は既存WS `onDiagEvent`からhello／個別list／batchの`socket.send`成功時にoperation・対象件数のみを記録し、このeventだけthrottleを外す。一括完了には1件だけ対象／成功／失敗／部分失敗／行数・一覧時間・補足wall時間・auth待ち合計・HTTP要求数／所要合計／失敗数を記録する。HTTP数は100件chunkごとのfetch呼出単位で、ID数とは別。合計値は並列分を含みwall時間ではない。新eventにはpath／session ID／本文／tokenを含めず、診断observer例外は取得結果へ伝播させない。buffer上限によるdropや途中失敗では完全な記録を保証しない。
+
+Nodeは`agent-service`・`agent-transport`・`claude-backend`・`llm-session-service`の167件、Jestは`useBufferedClientLogs`・`useLlmSessionExplorer`・`runnerSessionSummaries`・`threads`・`RunnerWebSocketManager`・`useDirectorySessionTreeController`の6suite・179件、default／macOS型チェックが成功した（計346件、旧検証と重複加算しない）。旧失敗ログ`/tmp/bitty-buffered-logs-before.log`、修正後`/tmp/bitty-buffered-logs-after.log`、最終`/tmp/bitty-summary-implementation-{jest,node,typecheck,typecheck-macos}.log`。集計とfixture実elapsedは保存JSONの第14〜16群へ追加した。実機の追加build／Runner再起動・変更後の実アプリ速度測定は未実施。

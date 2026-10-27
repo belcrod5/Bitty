@@ -2652,3 +2652,34 @@ test("a timed-out batch directory does not discard successful groups", async (t)
   assert.deepEqual(groups[1].payload, { sessions: [] });
   assert.deepEqual(groups[2].payload, { sessions: [] });
 });
+
+
+test("complete list summaries use final stored model/effort/read state for every backend and stay fresh", async () => {
+  for (const backendId of ["codex", "claude"]) {
+    const ref = { backendId, nativeSessionId: "one" };
+    const store = sessionStore();
+    await store.bind(ref, "/workspace", "neutral", { settings: { modelId: "selected", reasoningEffort: "high" } });
+    store.setDirectoryLastReadAt("/workspace", "2026-10-27T01:00:00Z");
+    const contextUsage = backendId === "codex" ? { usedPct: 35 } : null;
+    const native = { sessionRef: ref, canonicalCwd: "/workspace", modelId: "native", reasoningEffort: "low",
+      lastReadAt: "2026-10-26T00:00:00Z", summary: { contextUsage, modelRef: "native", reasoningEffort: "low", lastReadAt: "" } };
+    const service = createAgentService({ backends: [listBackend(backendId, { sessions: [native] })],
+      sessionStore: store, operationStore: operationStore(), resolveCanonicalCwd: async (cwd) => cwd });
+    const check = async (modelRef, effort, readAt) => {
+      const listed = await service.listSessions({ backendId, cwd: "/workspace" });
+      const row = listed.sessions[0];
+      assert.deepEqual(row.summary, { contextUsage, modelRef, reasoningEffort: effort, lastReadAt: readAt });
+      assert.equal(row.modelId, row.summary.modelRef);
+      assert.equal(row.reasoningEffort, row.summary.reasoningEffort);
+      assert.equal(row.lastReadAt, row.summary.lastReadAt);
+    };
+    await check("selected", "high", "2026-10-27T01:00:00Z");
+    const binding = await store.getBinding(ref);
+    delete binding.modelId;
+    delete binding.reasoningEffort;
+    native.modelId = "native-new";
+    native.reasoningEffort = "medium";
+    store.setDirectoryLastReadAt("/workspace", "2026-10-27T02:00:00Z");
+    await check("native-new", "medium", "2026-10-27T02:00:00Z");
+  }
+});

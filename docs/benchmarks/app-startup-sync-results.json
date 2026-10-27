@@ -1553,6 +1553,131 @@
         "includesUi": false,
         "excludesWsConnect": true
       }
+    },
+    {
+      "id": "pre-inline-summary-current-runner-coverage",
+      "observedAtUtc": "2026-10-27T07:36:18.055Z",
+      "kind": "read-only-loopback-current-data-summary-coverage",
+      "sourceDirectorySelection": "same-25-targets-as-frozen-first-post-build-cycle",
+      "batchElapsedMs": 943,
+      "groupCount": 25,
+      "errorGroups": 0,
+      "limitPerDirectory": 5,
+      "rowCount": 99,
+      "includesConnectionSetup": false,
+      "includesHello": false,
+      "includesHttpSummaries": false,
+      "includesUi": false,
+      "measuredBatchRequestCount": 1,
+      "backendSummaryCounts": {
+        "codex": {
+          "rows": 95,
+          "hasSummary": 95,
+          "validSummary": 95,
+          "withoutValidSummary": 0,
+          "modelIdPresent": 95,
+          "reasoningEffortPresent": 95,
+          "lastReadAtPresent": 95,
+          "directoryCount": 23,
+          "supplementDirectoryCount": 0
+        },
+        "claude": {
+          "rows": 4,
+          "hasSummary": 0,
+          "validSummary": 0,
+          "withoutValidSummary": 4,
+          "modelIdPresent": 4,
+          "reasoningEffortPresent": 0,
+          "lastReadAtPresent": 4,
+          "directoryCount": 2,
+          "supplementDirectoryCount": 2
+        }
+      },
+      "limitations": [
+        "Current-data probe does not identify the backend of historical app-cycle summary requests directly",
+        "Loopback batch latency does not measure mobile startup or enrichment latency",
+        "No session identifiers, directory paths, payload contents or credentials are retained"
+      ]
+    },
+    {
+      "id": "provider-neutral-inline-summary-fixture",
+      "injectedAuthDelayMs": 10,
+      "injectedFetchDelayMs": 80,
+      "rounds": [
+        {
+          "mode": "legacy",
+          "elapsedMs": 95,
+          "httpRequests": 2
+        },
+        {
+          "mode": "inline",
+          "elapsedMs": 0,
+          "httpRequests": 0
+        },
+        {
+          "mode": "inline",
+          "elapsedMs": 0,
+          "httpRequests": 0
+        },
+        {
+          "mode": "legacy",
+          "elapsedMs": 93,
+          "httpRequests": 2
+        },
+        {
+          "mode": "legacy",
+          "elapsedMs": 95,
+          "httpRequests": 2
+        },
+        {
+          "mode": "inline",
+          "elapsedMs": 0,
+          "httpRequests": 0
+        }
+      ],
+      "kind": "hook-fixture-real-elapsed-with-mocked-fetch",
+      "directories": 2,
+      "claudeRows": 4,
+      "roundsPerMode": 3,
+      "alternatingOrder": true,
+      "responsesDeepEqual": true,
+      "legacyMedianElapsedMs": 95,
+      "inlineMedianElapsedMs": 0,
+      "legacyHttpRequestsPerCycle": 2,
+      "inlineHttpRequestsPerCycle": 0,
+      "limitations": [
+        "Synthetic rows and mocked fetch; delays are injected, not mobile network latency",
+        "Elapsed uses Date.now millisecond resolution; zero does not mean zero work",
+        "Two directory enrichments execute concurrently; HTTP durations are not added as wall time",
+        "No actual app, WS/server timing or UI paint measured"
+      ]
+    },
+    {
+      "id": "buffered-log-inflight-ack-regression",
+      "bufferMax": 4,
+      "flushBatchSize": 2,
+      "existingOverflowPolicyChanged": false,
+      "before": {
+        "tests": 4,
+        "passed": 2,
+        "failed": 2,
+        "overflowAckQueuedExpected": 4,
+        "overflowAckQueuedObserved": 2,
+        "clearThenEnqueueAckQueuedExpected": 1,
+        "clearThenEnqueueAckQueuedObserved": 0
+      },
+      "after": {
+        "tests": 4,
+        "passed": 4,
+        "failed": 0
+      },
+      "cases": [
+        "Successful acknowledgement after buffer overflow preserves retained unsent entries",
+        "Successful acknowledgement after clearLocal preserves newly enqueued entries",
+        "Failed acknowledgement after clearLocal preserves newly enqueued entries",
+        "Failed request retries old and new retained entries"
+      ],
+      "historical135EventGapExplainedWithCertainty": false
     }
   ],
   "checksRun": {
@@ -1596,5 +1721,17 @@
     "actualDeviceAppearanceVerified": false,
     "appBuildRun": false,
     "runnerRestarted": false
+  },
+  "summaryFollowupValidation": {
+    "date": "2026-10-27",
+    "base": "348db17",
+    "nodeTestsPassed": 167,
+    "jestSuites": 6,
+    "jestTestsPassed": 179,
+    "defaultTypecheckPassed": true,
+    "macosTypecheckPassed": true,
+    "appBuildRun": false,
+    "runnerRestarted": false,
+    "actualAppImprovementMeasured": false
   }
 }

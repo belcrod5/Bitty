@@ -1112,6 +1112,7 @@ export function createClaudeBackend({
         updatedAt: metadata.stat.mtime.toISOString(),
         title: metadata.title,
         modelId: metadata.modelId,
+        summary: { contextUsage: null, modelRef: metadata.modelId, reasoningEffort: "", lastReadAt: "" },
         sourceKind: "cli",
         isSubagent: Boolean(entry.parentSessionId),
         ...(entry.parentSessionId

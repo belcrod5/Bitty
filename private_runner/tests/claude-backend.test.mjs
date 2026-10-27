@@ -1054,6 +1054,7 @@ test("Claude transcript metadata is cached until the file changes", async (t) =>
   const first = await backend.listSessions({ cwd, limit: 10 });
   assert.equal(first.sessions[0].title, "hello");
   assert.equal(first.sessions[0].sourceKind, "cli");
+  assert.deepEqual(first.sessions[0].summary, { contextUsage: null, modelRef: "", reasoningEffort: "", lastReadAt: "" });
   const readsAfterFirst = readFileCalls;
   assert.ok(readsAfterFirst >= 1);
 
@@ -1067,9 +1068,11 @@ test("Claude transcript metadata is cached until the file changes", async (t) =>
   assert.equal(readFileCalls, readsAfterFirst);
 
   // ファイル更新(size/mtime変化)で読み直す
-  await fs.appendFile(transcript, `\n${JSON.stringify({ type: "assistant", uuid: "a1", cwd, message: { content: [{ type: "text", text: "world" }] } })}`);
-  await backend.listSessions({ cwd, limit: 10 });
+  await fs.appendFile(transcript, `\n${JSON.stringify({ type: "assistant", uuid: "a1", cwd, message: { model: "claude-sonnet-4-6", content: [{ type: "text", text: "world" }] } })}`);
+  const fresh = await backend.listSessions({ cwd, limit: 10 });
   assert.ok(readFileCalls > readsAfterFirst);
+  assert.equal(fresh.sessions[0].modelId, "sonnet");
+  assert.deepEqual(fresh.sessions[0].summary, { contextUsage: null, modelRef: "sonnet", reasoningEffort: "", lastReadAt: "" });
 });
 
 test("Claude batch session snapshot scans the transcript catalog once and groups by cwd", async (t) => {

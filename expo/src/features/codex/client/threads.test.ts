@@ -82,10 +82,10 @@ it("maps an all-backends listing per entry backend and surfaces partial errors",
   expect(mockRunCodexRpcSession).not.toHaveBeenCalled();
 });
 
-it("preserves complete native CLI summaries without replacing the selected model fields", async () => {
+it.each(["codex", "claude"])("preserves complete %s summaries without replacing the selected model fields", async (backendId) => {
   const summary = { contextUsage: null, modelRef: "native-model", reasoningEffort: "high", lastReadAt: "2026-10-26" };
   mockListAgentSessions.mockResolvedValue({ sessions: [{
-    sessionRef: { backendId: "codex", nativeSessionId: "one" }, sourceKind: "cli",
+    sessionRef: { backendId, nativeSessionId: "one" }, sourceKind: "cli",
     modelId: "selected-model", reasoningEffort: "low", summary,
   }] });
   const result = await listCodexAppServerThreads({ wsUrl: "ws://runner", runnerWebSocketManager: {} as never, backendId: "codex" });
@@ -93,10 +93,11 @@ it("preserves complete native CLI summaries without replacing the selected model
 });
 
 it.each([undefined, {}, { contextUsage: null }, { contextUsage: 42, modelRef: "native", reasoningEffort: "high", lastReadAt: "" },
-  { contextUsage: [], modelRef: "native", reasoningEffort: "high", lastReadAt: "" }])(
-  "drops incomplete or malformed summary %j so HTTP fallback remains available", async (summary) => {
+  { contextUsage: [], modelRef: "native", reasoningEffort: "high", lastReadAt: "" }].flatMap((summary) =>
+    ["codex", "claude"].map((backendId) => ({ backendId, summary }))))(
+  "drops incomplete or malformed $backendId summary $summary so HTTP fallback remains available", async ({ backendId, summary }) => {
     mockListAgentSessions.mockResolvedValue({ sessions: [{
-      sessionRef: { backendId: "codex", nativeSessionId: "one" }, sourceKind: "cli", summary,
+      sessionRef: { backendId, nativeSessionId: "one" }, sourceKind: "cli", summary,
     }] });
     const result = await listCodexAppServerThreads({ wsUrl: "ws://runner", runnerWebSocketManager: {} as never, backendId: "codex" });
     expect(result.data[0]).not.toHaveProperty("summary");

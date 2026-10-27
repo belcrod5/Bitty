@@ -166,6 +166,13 @@ type RunnerSessionSnapshot = {
   lastReadAt: string;
 };
 
+type SessionSnapshotMetrics = {
+  authWaitMs: number;
+  httpRequestCount: number;
+  httpElapsedMs: number;
+  httpFailedRequestCount: number;
+};
+
 type FetchSessionHistoryOptions = {
   backendId?: string;
   limit?: number;
@@ -333,7 +340,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
   const emitSessionDiag = useCallback((event: string, payload: Record<string, unknown> = {}) => {
     const eventName = String(event || "").trim();
     if (!eventName) return;
-    onSessionDiagLog?.(eventName, payload);
+    try { onSessionDiagLog?.(eventName, payload); } catch { /* diagnostics must not change session behavior */ }
   }, [onSessionDiagLog]);
 
   const fetchTextWithTimeout = useCallback(async (
@@ -388,13 +395,14 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     directoryRaw?: unknown,
     threads: CodexThreadListEntry[] = [],
     assertCurrent?: () => void,
-  ): Promise<{ snapshots: Map<string, RunnerSessionSnapshot>; requestedCount: number }> => {
+  ): Promise<{ snapshots: Map<string, RunnerSessionSnapshot>; requestedCount: number; metrics: SessionSnapshotMetrics }> => {
+    const metrics: SessionSnapshotMetrics = { authWaitMs: 0, httpRequestCount: 0, httpElapsedMs: 0, httpFailedRequestCount: 0 };
     const startedAt = Date.now();
     const out = new Map<string, RunnerSessionSnapshot>();
     let requestedCount = 0;
     for (const thread of threads) {
-      if ((thread.backendId || "codex") === "codex" && thread.summary) {
-        out.set(runnerSessionKey("codex", thread.threadId), buildRunnerSessionSnapshot(thread.summary));
+      if (thread.summary) {
+        out.set(runnerSessionKey(thread.backendId || "codex", thread.threadId), buildRunnerSessionSnapshot(thread.summary));
       }
     }
     const idsByBackend = new Map<string, string[]>();
@@ -407,10 +415,13 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       if (!ids.includes(id)) ids.push(id);
       idsByBackend.set(backendId, ids);
     }
-    if (idsByBackend.size <= 0) return { snapshots: out, requestedCount };
+    if (idsByBackend.size <= 0) return { snapshots: out, requestedCount, metrics };
     const directory = parseLlmDirectory(directoryRaw ?? normalizedLlmDirectoryForRequest());
     try {
-      const { baseUrl: targetLlmUrl, token } = await getRunnerHttpAuth();
+      const authStartedAt = Date.now();
+      const { baseUrl: targetLlmUrl, token } = await getRunnerHttpAuth().finally(() => {
+        metrics.authWaitMs = Math.max(0, Date.now() - authStartedAt);
+      });
       assertCurrent?.();
       if (assertCurrent && token !== runnerToken.trim()) {
         throw Object.assign(new Error("Session list HTTP authentication changed"), { name: "SessionListConnectionChanged" });
@@ -420,7 +431,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
           hasUrl: Boolean(targetLlmUrl),
           hasToken: Boolean(token),
         });
-        return { snapshots: out, requestedCount };
+        return { snapshots: out, requestedCount, metrics };
       }
       for (const [backendId, sessionIds] of idsByBackend) {
         requestedCount += sessionIds.length;
@@ -428,6 +439,11 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
           { baseUrl: targetLlmUrl, token },
           { directory, backendId, sessionIds, includeFirstUserMessage: false },
           RUNNER_SESSIONS_HTTP_TIMEOUT_MS,
+          (elapsedMs, succeeded) => {
+            metrics.httpRequestCount++;
+            metrics.httpElapsedMs += elapsedMs;
+            if (!succeeded) metrics.httpFailedRequestCount++;
+          },
         );
         for (const item of sessions) {
           out.set(runnerSessionKey(backendId, item.sessionId), buildRunnerSessionSnapshot(item));
@@ -440,7 +456,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
         message: error instanceof Error ? error.message : String(error),
       });
     }
-    return { snapshots: out, requestedCount };
+    return { snapshots: out, requestedCount, metrics };
   }, [emitSessionDiag, getRunnerHttpAuth, normalizedLlmDirectoryForRequest, runnerToken]);
 
   const fetchRunnerSessionSnapshot = useCallback(async (
@@ -896,12 +912,19 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     directory: string, listed: CodexThreadListResult, includeRunnerSnapshots: boolean,
     backendId: string, startedAt: number, assertCurrent: () => void,
     listElapsedMs = Math.max(0, Date.now() - startedAt),
+    batchSnapshotMetrics?: SessionSnapshotMetrics,
   ): Promise<LlmSessionHistoryResult> => {
     assertCurrent();
     const snapshotStartedAt = Date.now();
-    const { snapshots: runnerSnapshotMap, requestedCount: runnerSnapshotRequestedCount } = includeRunnerSnapshots
+    const { snapshots: runnerSnapshotMap, requestedCount: runnerSnapshotRequestedCount, metrics } = includeRunnerSnapshots
       ? await fetchRunnerSessionSnapshots(directory, listed.data, assertCurrent)
-      : { snapshots: new Map<string, RunnerSessionSnapshot>(), requestedCount: 0 };
+      : { snapshots: new Map<string, RunnerSessionSnapshot>(), requestedCount: 0, metrics: null };
+    if (batchSnapshotMetrics && metrics) {
+      batchSnapshotMetrics.authWaitMs += metrics.authWaitMs;
+      batchSnapshotMetrics.httpRequestCount += metrics.httpRequestCount;
+      batchSnapshotMetrics.httpElapsedMs += metrics.httpElapsedMs;
+      batchSnapshotMetrics.httpFailedRequestCount += metrics.httpFailedRequestCount;
+    }
     assertCurrent();
     const runnerSnapshotElapsedMs = Math.max(0, Date.now() - snapshotStartedAt);
     const sessions = listed.data.map((item) => buildLlmSessionHistoryEntry(item, directory, runnerSnapshotMap));
@@ -993,6 +1016,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     assertCurrent();
     const listElapsedMs = Math.max(0, Date.now() - startedAt);
     const results: LlmSessionHistoryBatchGroup[] = Array(groups.length);
+    const snapshotMetrics: SessionSnapshotMetrics = { authWaitMs: 0, httpRequestCount: 0, httpElapsedMs: 0, httpFailedRequestCount: 0 };
     let next = 0;
     await Promise.all(Array.from({ length: Math.min(2, groups.length) }, async () => {
       while (next < groups.length) {
@@ -1002,7 +1026,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
           if (group.error || !group.result) throw group.error || new Error("Session list result missing");
           results[index] = { cwd: group.cwd, result: await finishSessionHistoryPage(
             group.cwd, group.result, historyOptions.includeRunnerSnapshots !== false,
-            ALL_BACKENDS_SCOPE, startedAt, assertCurrent, listElapsedMs,
+            ALL_BACKENDS_SCOPE, startedAt, assertCurrent, listElapsedMs, snapshotMetrics,
           ) };
         } catch (error) {
           results[index] = { cwd: group.cwd, error: error instanceof Error ? error : new Error(String(error)) };
@@ -1010,6 +1034,20 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       }
     }));
     assertCurrent();
+    emitSessionDiag("session_history_batch_done", {
+      targetCount: directories.length,
+      successfulGroupCount: results.filter((group) => group.result).length,
+      failedGroupCount: results.filter((group) => group.error).length,
+      partialErrorGroupCount: results.filter((group) => group.result?.partialErrors?.length).length,
+      rowCount: results.reduce((sum, group) => sum + (group.result?.entries.length || 0), 0),
+      listElapsedMs,
+      elapsedMs: Math.max(0, Date.now() - startedAt),
+      enrichmentElapsedMs: Math.max(0, Date.now() - startedAt - listElapsedMs),
+      summaryAuthWaitSumMs: snapshotMetrics.authWaitMs,
+      summaryHttpRequestCount: snapshotMetrics.httpRequestCount,
+      summaryHttpElapsedSumMs: snapshotMetrics.httpElapsedMs,
+      summaryHttpFailedRequestCount: snapshotMetrics.httpFailedRequestCount,
+    });
     return results;
   }, [captureSessionConnection, codexWsUrl, runnerToken, runnerWebSocketManager, rawFallbackBackendId,
     nearUnlimitedTimeoutMs, finishSessionHistoryPage, emitSessionDiag]);

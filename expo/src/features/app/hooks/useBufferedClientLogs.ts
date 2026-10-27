@@ -98,7 +98,8 @@ export function useBufferedClientLogs<TEntry extends BufferedLogEntrySeed>(
         if (!res.ok) {
           throw new Error(data?.message || data?.error || `HTTP ${res.status}`);
         }
-        bufferRef.current.splice(0, batch.length);
+        const acknowledged = new Set(batch);
+        bufferRef.current = bufferRef.current.filter((entry) => !acknowledged.has(entry));
         sentTotal += batch.length;
         setQueuedCount(bufferRef.current.length);
       }

@@ -953,10 +953,10 @@ describe("reuses successful native summaries from session listings", () => {
     expect(getRunnerHttpAuth).not.toHaveBeenCalled();
   });
 
-  it("requests HTTP only for old, raw, ACP, and non-Codex rows without reusable metadata", async () => {
+  it("requests HTTP only for old, raw, ACP, and provider rows without reusable metadata", async () => {
     mockListCodexAppServerThreads.mockResolvedValue({ data: [
       row("modern", summary), row("old"), { ...row("acp"), sourceKind: "appServer" },
-      { ...row("claude", summary), backendId: "claude" },
+      { ...row("claude"), backendId: "claude" },
     ] as never, nextCursor: "", backwardsCursor: "" });
     const fetchMock = jest.spyOn(global, "fetch").mockImplementation(async (_url, init) => {
       const { sessionIds } = JSON.parse(String(init?.body));
@@ -1111,4 +1111,52 @@ describe('batch history enrichment and connection isolation', () => {
     resolveHttp({ ok: true, status: 200, text: async () => JSON.stringify({ sessions: [{ sessionId: 'one', modelRef: 'old' }] }) } as Response);
     await rejected;
   });
+});
+
+test("complete provider summaries preserve displayed fields while eliminating legacy HTTP enrichment", async () => {
+  jest.useRealTimers();
+  const summary = { contextUsage: null, modelRef: "selected", reasoningEffort: "high", lastReadAt: "2026-10-27T02:00:00Z" };
+  const groups = ["/fixture-a", "/fixture-b"].map((cwd, index) => ({ cwd, result: {
+    data: [0, 1].map((row) => ({ backendId: "claude", threadId: `fixture-${index}-${row}`, sourceKind: "cli", cwd,
+      preview: "fixture", modelRef: summary.modelRef, reasoningEffort: summary.reasoningEffort, lastReadAt: summary.lastReadAt })),
+    nextCursor: "", backwardsCursor: "",
+  } }));
+  const fetch = jest.spyOn(global, "fetch").mockImplementation(async (_url, init) => {
+    const body = JSON.parse(String(init?.body));
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    return { ok: true, status: 200, text: async () => JSON.stringify({ sessions: body.sessionIds.map((sessionId: string) => ({ sessionId, ...summary })) }) } as Response;
+  });
+  const onSessionDiagLog = jest.fn();
+  try {
+    const { result } = await renderExplorerHook({ onSessionDiagLog, getRunnerHttpAuth: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return { baseUrl: "http://runner.test", token: "runner-token" };
+    } });
+    const rounds: Array<{ mode: string; elapsedMs: number; httpRequests: number }> = [];
+    let expected: unknown;
+    for (let round = 0; round < 3; round++) {
+      for (const mode of round % 2 ? ["inline", "legacy"] : ["legacy", "inline"]) {
+        jest.mocked(listCodexAppServerThreadsBatch).mockResolvedValue(groups.map((group) => ({ ...group, result: { ...group.result,
+          data: group.result.data.map((row) => ({ ...row, ...(mode === "inline" ? { summary } : {}) })) as never } })));
+        fetch.mockClear();
+        onSessionDiagLog.mockClear();
+        const startedAt = Date.now();
+        const rows = await result.current.fetchSessionHistoryBatch(groups.map((group) => group.cwd), { limit: 5 });
+        rounds.push({ mode, elapsedMs: Date.now() - startedAt, httpRequests: fetch.mock.calls.length });
+        if (!expected) expected = rows;
+        expect(rows).toEqual(expected);
+        expect(fetch).toHaveBeenCalledTimes(mode === "legacy" ? 2 : 0);
+        const aggregate = onSessionDiagLog.mock.calls.filter(([event]) => event === "session_history_batch_done");
+        expect(aggregate).toHaveLength(1);
+        expect(aggregate[0][1]).toMatchObject({ targetCount: 2, successfulGroupCount: 2, rowCount: 4,
+          summaryHttpRequestCount: mode === "legacy" ? 2 : 0, summaryHttpFailedRequestCount: 0 });
+        if (mode === "legacy") expect(aggregate[0][1].summaryAuthWaitSumMs).toBeGreaterThan(0);
+        else expect(aggregate[0][1].summaryAuthWaitSumMs).toBe(0);
+        expect(JSON.stringify(aggregate)).not.toMatch(/fixture-|selected|2026-10/);
+      }
+    }
+    console.info("inline_summary_fixture_results", JSON.stringify({ injectedAuthDelayMs: 10, injectedFetchDelayMs: 80, rounds }));
+    onSessionDiagLog.mockImplementation(() => { throw new Error("diagnostic failed"); });
+    await expect(result.current.fetchSessionHistoryBatch(groups.map((group) => group.cwd), { limit: 5 })).resolves.toEqual(expected);
+  } finally { fetch.mockRestore(); }
 });

@@ -528,6 +528,12 @@ export class RunnerWebSocketManager {
       throw error;
     }
     this.sentCount += 1;
+    if (message.channel === "agent" && ["agent.hello", "sessions.list", "sessions.list.batch"].includes(message.op)) {
+      const body = message.payload as { cwds?: unknown } | undefined;
+      const targetCount = message.op === "sessions.list.batch" && Array.isArray(body?.cwds)
+        ? body.cwds.length : message.op === "sessions.list" ? 1 : 0;
+      this.emitDiag("runner_ws_session_list_sent", { operation: message.op, targetCount });
+    }
     recordNetworkUsage("runner-ws", utf8ByteLength(payload), 0);
     this.refreshSnapshot();
   }

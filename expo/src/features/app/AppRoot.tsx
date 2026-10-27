@@ -756,7 +756,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   // runner WSの切断理由ログ(runner_ws_closed)。フラップは分単位なので通常は全件残るが、
   // 接続不能時の再試行ストーム(1秒間隔close)ではイベント名単位で1行/秒に抑える。
   const handleRunnerWsDiagEvent = useCallback((event: string, payload: Record<string, unknown>) => {
-    logSessionDiag(event, payload, { throttleMs: 1000, throttleKey: event });
+    logSessionDiag(event, payload, { throttleMs: event === "runner_ws_session_list_sent" ? 0 : 1000, throttleKey: event });
   }, [logSessionDiag]);
   const {
     voicesLoading,

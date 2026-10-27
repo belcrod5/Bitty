@@ -82,7 +82,7 @@ function agentSessionsToThreads(neutral: Record<string, unknown>, cwd: string, s
       const item = raw && typeof raw === "object" ? raw as Record<string, any> : {};
       const entryBackendId = String(item.sessionRef?.backendId || fallbackEntryBackendId);
       const summary = item.summary;
-      const hasSummary = entryBackendId === "codex" && summary && typeof summary === "object"
+      const hasSummary = summary && typeof summary === "object"
         && !Array.isArray(summary) && Object.prototype.hasOwnProperty.call(summary, "contextUsage")
         && (summary.contextUsage === null || (typeof summary.contextUsage === "object" && !Array.isArray(summary.contextUsage)))
         && typeof summary.modelRef === "string"
