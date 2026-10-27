@@ -5232,6 +5232,10 @@ const codexScheduleService = createCodexScheduleService({
   definitionsPath: CODEX_SCHEDULE_DEFINITIONS_PATH,
   runtimePath: CODEX_SCHEDULE_RUNTIME_PATH,
   parseCodexOptions: resolveCodexRequestOptions,
+  validateSessionCwd: (action) => agentService.resolveExecutionCwd({
+    sessionRef: { backendId: "codex", nativeSessionId: action.threadId },
+    cwd: action.cwd,
+  }),
   validateLlmOptions: async (action) => {
     const options = resolveCodexRequestOptions(action.modelRef, action.reasoningEffort);
     await agentService.validateExecutionOptions({

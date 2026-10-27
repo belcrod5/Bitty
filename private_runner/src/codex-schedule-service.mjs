@@ -400,6 +400,7 @@ export function createCodexScheduleService({
   runtimePath,
   parseCodexOptions,
   validateCwd,
+  validateSessionCwd,
   validateLlmOptions,
   onExecutionFailed,
   validateShellScript,
@@ -428,6 +429,9 @@ export function createCodexScheduleService({
     // Deleted targets remain editable and fail only when dispatched.
     if (action.kind === "voice") return;
     await validateCwd(action.cwd);
+    if (action.kind === "llm" && action.threadId && validateSessionCwd) {
+      await validateSessionCwd(action);
+    }
     if (action.kind === "llm" && validateLlmOptions) {
       const previous = definitionsStore.schedules.find((item) => item.id === schedule.id);
       // Existing unsupported models can still be disabled without changing their action.

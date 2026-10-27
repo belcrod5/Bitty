@@ -290,6 +290,23 @@ export function createAgentService({
     return backend;
   }
 
+  async function resolveExecutionCwd({ sessionRef: rawSessionRef, cwd }) {
+    if (!rawSessionRef) return await resolveCanonicalCwd(cwd);
+    const sessionRef = normalizeAgentSessionRef(rawSessionRef);
+    const backend = registry.get(sessionRef.backendId);
+    if (!backend) throw agentError("backend_unavailable", "Agent Backend is unavailable", { backendId: sessionRef.backendId });
+    const canonicalCwd = await resolveNativeSessionCwd(sessionRef, backend);
+    if (cwd) {
+      const requestedCwd = await resolveCanonicalCwd(cwd);
+      if (requestedCwd !== canonicalCwd) {
+        throw agentError("session_cwd_mismatch",
+          `Session working directory (${canonicalCwd}) does not match cwd (${requestedCwd}). Use the session working directory.`,
+          { backendId: sessionRef.backendId });
+      }
+    }
+    return canonicalCwd;
+  }
+
   function publish(run, type, payload = {}) {
     if (run.terminal) return null;
     const event = createAgentEvent({
@@ -728,15 +745,7 @@ export function createAgentService({
     if (!subjectId) throw agentError("turn_rejected", "authenticated subject is required");
     const request = normalizeAgentStartRequest(rawRequest);
     const { backend, status } = await validateExecutionOptions(request);
-    const canonicalCwd = request.sessionRef
-      ? await resolveNativeSessionCwd(request.sessionRef, backend)
-      : await resolveCanonicalCwd(request.cwd);
-    if (request.sessionRef && request.cwd) {
-      const requestedCwd = await resolveCanonicalCwd(request.cwd);
-      if (requestedCwd !== canonicalCwd) {
-        throw agentError("session_cwd_mismatch", "session cwd does not match", { backendId: request.backendId });
-      }
-    }
+    const canonicalCwd = await resolveExecutionCwd(request);
     if (status?.capabilities?.workspace?.admission === true) {
       if (typeof workspaceAdmission?.assertAllowed !== "function") {
         throw agentError("backend_unavailable", "workspace admission is unavailable", { backendId: request.backendId });
@@ -1173,6 +1182,7 @@ export function createAgentService({
     protocolVersion: AGENT_PROTOCOL_VERSION,
     startTurn,
     validateExecutionOptions,
+    resolveExecutionCwd,
     interrupt,
     claimAction,
     respondToAction,
