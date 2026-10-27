@@ -1,0 +1,1409 @@
+{
+  "schemaVersion": 1,
+  "recordedOn": "2026-10-27",
+  "scope": "Curated startup/session-refresh evidence; implementation exists in a dedicated worktree, not applied to live Runner/main",
+  "provenance": "Values from local benchmark JSON or explicitly identified design-document aggregates; raw payloads and temporary per-request records intentionally omitted",
+  "notVerified": [
+    "physical app startup or long-resume end-to-end speedup",
+    "authenticated external tunnel timing (Access login redirects before Runner)",
+    "combined effect of WS request batching and backend scan batching"
+  ],
+  "experiments": [
+    {
+      "id": "startup-simulations",
+      "source": "useStartupSyncExperiment.test.tsx",
+      "kind": "fake-timer; not app elapsed time",
+      "conditions": {
+        "directories": 25,
+        "concurrency": 2,
+        "requestMs": 40
+      },
+      "readyGate": {
+        "readyMs": 100,
+        "baseline": {
+          "requests": 50,
+          "failures": 25,
+          "completedMs": 620
+        },
+        "candidate": {
+          "requests": 25,
+          "failures": 0,
+          "completedMs": 620
+        }
+      },
+      "concurrentHello": {
+        "baseline": {
+          "helloRequests": 2,
+          "listRequests": 2,
+          "completedMs": 80
+        },
+        "candidate": {
+          "helloRequests": 1,
+          "listRequests": 2,
+          "completedMs": 80
+        }
+      },
+      "cacheAlreadyHydrated": {
+        "cold": {
+          "selectedUsableMs": 40,
+          "allFreshMs": 520,
+          "requests": 25
+        },
+        "cachedRestartAndLongResumeBoundary": {
+          "selectedUsableMs": 0,
+          "allFreshMs": 520,
+          "requests": 25
+        },
+        "ttlOnly": {
+          "requests": 0,
+          "completedMs": 0,
+          "latestChangesMissing": true
+        }
+      },
+      "limitations": [
+        "cache initialization excludes disk read and identity isolation",
+        "long resume uses stale-tree remount, not actual AppState",
+        "cached mounted resume already displays existing data"
+      ]
+    },
+    {
+      "id": "index-stat-parallelism",
+      "source": "benchmark-startup-session-index.mjs",
+      "config": {
+        "files": 1000,
+        "directories": 25,
+        "rounds": 5,
+        "statWidth": 8,
+        "osCache": "not flushed",
+        "alternatingFirstVariant": true
+      },
+      "summary": [
+        {
+          "stage": "coldIndex",
+          "baseline": {
+            "medianSeconds": 0.07463837499999994,
+            "minSeconds": 0.06679041700000005,
+            "maxSeconds": 0.089916041
+          },
+          "stat8": {
+            "medianSeconds": 0.06673670800000002,
+            "minSeconds": 0.0566758749999999,
+            "maxSeconds": 0.07288979200000018
+          },
+          "medianSavingSeconds": 0.011400582999999926
+        },
+        {
+          "stage": "unchangedForced",
+          "baseline": {
+            "medianSeconds": 0.01897095799999988,
+            "minSeconds": 0.016917416000000005,
+            "maxSeconds": 0.019839540999999995
+          },
+          "stat8": {
+            "medianSeconds": 0.013920458999999937,
+            "minSeconds": 0.013603542000000062,
+            "maxSeconds": 0.014562583000000018
+          },
+          "medianSavingSeconds": 0.005050498999999945
+        },
+        {
+          "stage": "externalChangesForced",
+          "baseline": {
+            "medianSeconds": 0.01867916699999995,
+            "minSeconds": 0.01800537499999996,
+            "maxSeconds": 0.019526792000000116
+          },
+          "stat8": {
+            "medianSeconds": 0.015589665999999966,
+            "minSeconds": 0.01446854200000007,
+            "maxSeconds": 0.016008458000000017
+          },
+          "medianSavingSeconds": 0.003232167000000004
+        }
+      ],
+      "checks": {
+        "fullResultsEqual": true,
+        "createdAppendedDeletedFresh": true,
+        "concurrentForceKeepsTrailingScan": true
+      },
+      "limitations": [
+        "synthetic only; OS cache not flushed",
+        "paired medianSavingSeconds differs from difference of medians",
+        "scan-time writes and full candidate suite untested"
+      ]
+    },
+    {
+      "id": "claude-unused-child-scan",
+      "source": "benchmark-startup-claude-list.mjs",
+      "fixture": {
+        "main": 25,
+        "children": 1000,
+        "cwds": 25,
+        "concurrency": 2
+      },
+      "runs": [
+        {
+          "run": "initial exploration",
+          "coldSingleRun": {
+            "current": {
+              "seconds": 0.580979167,
+              "counts": {
+                "readdir": 1925,
+                "realpath": 25822,
+                "stat": 675,
+                "readFile": 50
+              }
+            },
+            "candidate": {
+              "seconds": 0.021584749999999986,
+              "counts": {
+                "readdir": 50,
+                "realpath": 823,
+                "stat": 675,
+                "readFile": 50
+              }
+            }
+          },
+          "warmSummary": {
+            "current": {
+              "medianSeconds": 0.5699886670000001,
+              "minSeconds": 0.569396917,
+              "maxSeconds": 0.573102625,
+              "ioCountsPerRound": {
+                "readdir": 1925,
+                "realpath": 25675,
+                "stat": 625,
+                "readFile": 0
+              }
+            },
+            "candidate": {
+              "medianSeconds": 0.016090500000000247,
+              "minSeconds": 0.014950125000000298,
+              "maxSeconds": 0.016817917000000078,
+              "ioCountsPerRound": {
+                "readdir": 50,
+                "realpath": 675,
+                "stat": 625,
+                "readFile": 0
+              }
+            }
+          },
+          "savedSeconds": 0.5538981669999998
+        },
+        {
+          "run": "repo script rerun",
+          "coldSingleRun": {
+            "current": {
+              "seconds": 0.422036625,
+              "counts": {
+                "readdir": 1925,
+                "realpath": 25823,
+                "stat": 675,
+                "readFile": 50
+              }
+            },
+            "candidate": {
+              "seconds": 0.018754457999999998,
+              "counts": {
+                "readdir": 50,
+                "realpath": 823,
+                "stat": 675,
+                "readFile": 50
+              }
+            }
+          },
+          "warmSummary": {
+            "current": {
+              "medianSeconds": 0.41347649999999997,
+              "minSeconds": 0.40963625000000004,
+              "maxSeconds": 0.4157047920000002,
+              "ioCountsPerRound": {
+                "readdir": 1925,
+                "realpath": 25675,
+                "stat": 625,
+                "readFile": 0
+              }
+            },
+            "candidate": {
+              "medianSeconds": 0.012908500000000003,
+              "minSeconds": 0.012678375000000415,
+              "maxSeconds": 0.013619874999999865,
+              "ioCountsPerRound": {
+                "readdir": 50,
+                "realpath": 675,
+                "stat": 625,
+                "readFile": 0
+              }
+            }
+          },
+          "savedSeconds": 0.400568
+        }
+      ],
+      "checks": [
+        "deep-equal main listings in all rounds",
+        "includeSubagents=true returns all 1025",
+        "child readHistory unchanged",
+        "new/updated/deleted main sessions reflected"
+      ],
+      "limitations": [
+        "synthetic fixtures only",
+        "no real app/network startup measurement",
+        "cold means new backend cache, not OS cache",
+        "5000-entry boundary and concurrent write races untested"
+      ]
+    },
+    {
+      "id": "live-single-hello-comparison",
+      "source": "design document section 13; temporary read-only WS probe",
+      "kind": "existing Runner loopback, five alternating warm rounds",
+      "conditions": {
+        "directories": 25,
+        "concurrency": 2,
+        "limit": 5,
+        "includeSubagents": false
+      },
+      "baseline": {
+        "medianSeconds": 0.7706,
+        "minSeconds": 0.7596,
+        "maxSeconds": 0.9509,
+        "helloRequests": 25,
+        "listRequests": 25,
+        "rows": 99,
+        "receivedBytes": 193340
+      },
+      "candidate": {
+        "medianSeconds": 0.746,
+        "minSeconds": 0.7319,
+        "maxSeconds": 0.8309,
+        "helloRequests": 1,
+        "listRequests": 25,
+        "rows": 99,
+        "receivedBytes": 93356
+      },
+      "checks": {
+        "failures": 0,
+        "partialErrors": 0,
+        "identityMatches": 125,
+        "identityComparisons": 125,
+        "fullPayloadMatches": 124,
+        "fullPayloadComparisons": 125
+      },
+      "limitations": [
+        "one full payload difference unexplained; not equivalence guarantee",
+        "candidate slower in one round",
+        "excludes connect, UI and HTTP summaries; not mobile link"
+      ]
+    },
+    {
+      "id": "claude-fresh-batch-enumeration",
+      "source": "benchmark-startup-session-cache.mjs",
+      "fixture": {
+        "directories": 25,
+        "mainSessions": 125,
+        "children": 1000,
+        "concurrencyPerDirectory": 2,
+        "rounds": 5,
+        "warmMetadata": true
+      },
+      "runs": [
+        {
+          "run": "first run",
+          "summary": {
+            "perDirectory": {
+              "medianSeconds": 0.44193262500000013,
+              "minSeconds": 0.428336,
+              "maxSeconds": 0.458200667,
+              "ioCountsPerRound": {
+                "readdir": 3175,
+                "realpath": 28175,
+                "stat": 3125,
+                "readFile": 0
+              }
+            },
+            "freshBatch": {
+              "medianSeconds": 0.025808959000000072,
+              "minSeconds": 0.023907083000000058,
+              "maxSeconds": 0.02988095800000019,
+              "ioCountsPerRound": {
+                "readdir": 127,
+                "realpath": 1126,
+                "stat": 125,
+                "readFile": 0
+              }
+            }
+          }
+        },
+        {
+          "run": "final script rerun",
+          "summary": {
+            "perDirectory": {
+              "medianSeconds": 0.4569606250000002,
+              "minSeconds": 0.4334335000000001,
+              "maxSeconds": 0.48338154199999994,
+              "ioCountsPerRound": {
+                "readdir": 3175,
+                "realpath": 28175,
+                "stat": 3125,
+                "readFile": 0
+              }
+            },
+            "freshBatch": {
+              "medianSeconds": 0.03288295800000003,
+              "minSeconds": 0.023796458999999912,
+              "maxSeconds": 0.03746175000000039,
+              "ioCountsPerRound": {
+                "readdir": 127,
+                "realpath": 1126,
+                "stat": 125,
+                "readFile": 0
+              }
+            }
+          }
+        }
+      ],
+      "conditionalPayloadPrototype": {
+        "fullBodyBytes": 39201,
+        "unchangedBodyBytes": 0,
+        "validator": "sha256 after fresh listing",
+        "networkMeasured": false
+      },
+      "checks": [
+        "raw first-page rows equal excluding cursor",
+        "new session",
+        "updated title",
+        "deleted session",
+        "validator changes after update"
+      ],
+      "limitations": [
+        "Claude only; artificial child count",
+        "batch returns no page cursors or Agent summaries/client titles",
+        "no app, TLS, storage hydration, HTTP or WebSocket timing",
+        "ETag prototype still computes fresh list; no server scan savings"
+      ]
+    },
+    {
+      "id": "http-etag-transport",
+      "source": "benchmark-startup-session-etag-http.mjs",
+      "fixture": {
+        "directories": 25,
+        "mainSessions": 125,
+        "children": 0,
+        "concurrency": 2
+      },
+      "profiles": [
+        {
+          "profile": {
+            "name": "loopback",
+            "delayMs": 0,
+            "bodyBytesPerSecond": 0
+          },
+          "summary": {
+            "full": {
+              "medianSeconds": 0.06362579100000004,
+              "minSeconds": 0.06050491700000003,
+              "maxSeconds": 0.06612179100000003,
+              "medianTotals": {
+                "bytes": 56750,
+                "headerBytesApprox": 9463,
+                "jsonParses": 25,
+                "scanMs": 119.98116599999969,
+                "encodeMs": 0.14537500000028558,
+                "hashMs": 0.08229300000004969
+              },
+              "countsPerRound": {
+                "readdir": 50,
+                "realpath": 3150,
+                "stat": 3125,
+                "readFile": 0
+              }
+            },
+            "conditional": {
+              "medianSeconds": 0.06420987500000001,
+              "minSeconds": 0.06306791699999996,
+              "maxSeconds": 0.06527191700000003,
+              "medianTotals": {
+                "bytes": 0,
+                "headerBytesApprox": 9167,
+                "jsonParses": 0,
+                "scanMs": 121.91375000000016,
+                "encodeMs": 0.14279299999975592,
+                "hashMs": 0.08429200000000492
+              },
+              "countsPerRound": {
+                "readdir": 50,
+                "realpath": 3150,
+                "stat": 3125,
+                "readFile": 0
+              }
+            }
+          }
+        },
+        {
+          "profile": {
+            "name": "controlled",
+            "delayMs": 80,
+            "bodyBytesPerSecond": 125000
+          },
+          "summary": {
+            "full": {
+              "medianSeconds": 1.7136574580000015,
+              "minSeconds": 1.591166083,
+              "maxSeconds": 1.740532332999999,
+              "medianTotals": {
+                "bytes": 56750,
+                "headerBytesApprox": 9446,
+                "jsonParses": 25,
+                "scanMs": 378.0320389999979,
+                "encodeMs": 0.4446260000040638,
+                "hashMs": 0.7640840000021853
+              },
+              "countsPerRound": {
+                "readdir": 50,
+                "realpath": 3150,
+                "stat": 3125,
+                "readFile": 0
+              }
+            },
+            "conditional": {
+              "medianSeconds": 1.251244125000001,
+              "minSeconds": 1.2065967500000006,
+              "maxSeconds": 1.3058490829999991,
+              "medianTotals": {
+                "bytes": 0,
+                "headerBytesApprox": 9148,
+                "jsonParses": 0,
+                "scanMs": 333.3875390000021,
+                "encodeMs": 0.3639980000007199,
+                "hashMs": 0.6541250000018408
+              },
+              "countsPerRound": {
+                "readdir": 50,
+                "realpath": 3150,
+                "stat": 3125,
+                "readFile": 0
+              }
+            }
+          }
+        }
+      ],
+      "checks": [
+        "real HTTP 200/304",
+        "304 has no body or JSON parse",
+        "all snapshots equal",
+        "new/update/delete force fresh 200",
+        "listing failure returns 500, cache preserved, retry recovers"
+      ],
+      "limitations": [
+        "HTTP prototype, not production WebSocket sessions.list",
+        "controlled delay and globally shared 1Mbps body pacing are injected, headers not paced",
+        "scan/hash/serialization totals sum per-request work and can overlap",
+        "header bytes approximate; TCP/TLS/request headers excluded",
+        "loopback, synthetic Claude only; no app, auth, Codex or real mobile link",
+        "both full and conditional modes use the same ETag-capable endpoint and compute a fresh hash",
+        "cold restart without persisted payload requires full 200"
+      ]
+    },
+    {
+      "id": "live-client-state-etag",
+      "source": "existing client-state endpoint; read-only Node fetch",
+      "measuredAt": "2026-10-27T04:00:52.728Z",
+      "profiles": [
+        {
+          "route": "loopback",
+          "modes": {
+            "full": {
+              "count": 7,
+              "medianSeconds": 0.004825499999999991,
+              "minSeconds": 0.00429741700000001,
+              "maxSeconds": 0.0055600000000000024,
+              "statusCounts": {
+                "200": 7
+              },
+              "bodyBytesPerSample": [
+                464432,
+                464432,
+                464432,
+                464432,
+                464432,
+                464432,
+                464432
+              ],
+              "representationChanges": 0,
+              "serverTimingPresent": false
+            },
+            "conditional": {
+              "count": 7,
+              "medianSeconds": 0.004409791999999996,
+              "minSeconds": 0.003747500000000002,
+              "maxSeconds": 0.005674499999999995,
+              "statusCounts": {
+                "304": 7
+              },
+              "bodyBytesPerSample": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "representationChanges": 0,
+              "serverTimingPresent": false
+            }
+          },
+          "medianDifferenceSeconds": 0.00041570799999999554,
+          "medianPairedSavedSeconds": 0.0003459169999999858
+        },
+        {
+          "route": "tunnel",
+          "failed": true,
+          "measuredSamples": 0,
+          "diagnosis": {
+            "manualRedirectStatus": 302,
+            "cloudflareAccessLoginRedirect": true,
+            "runnerJsonReached": false,
+            "authOrNetworkConfigurationChanged": false
+          }
+        }
+      ],
+      "limitations": [
+        "client-state only, not sessions.list or app startup",
+        "Node fetch warm sequential persistent-connection requests",
+        "response body bytes exclude HTTP/TLS framing",
+        "live state can change; no state mutations made",
+        "no server-timing header means scan/serialization/network costs are not independently isolated",
+        "Configured tunnel is protected by Cloudflare Access; ordinary Runner-authenticated request reaches login redirect and cannot measure authenticated tunnel timing"
+      ]
+    },
+    {
+      "id": "live-current-session-list",
+      "source": "existing WS sessions.list; read-only Node client",
+      "measuredAt": "2026-10-27T04:01:54.684Z",
+      "medianSeconds": 0.8358445000000001,
+      "minSeconds": 0.8357120829999999,
+      "maxSeconds": 0.8541802500000001,
+      "tunnel": {
+        "measured": false,
+        "reason": "Existing ingress returns Cloudflare Access login redirect; no authentication or network configuration changed"
+      },
+      "limitations": [
+        "ready-to-all-lists only; excludes connection startup, app rendering, HTTP summary supplement",
+        "Node client warm cache over loopback; not physical mobile link",
+        "bytes are matching response WebSocket envelope bytes, excluding TLS/framing",
+        "no session contents, titles, paths or token persisted"
+      ],
+      "roundCount": 3,
+      "sampleCounts": {
+        "directories": 25,
+        "helloRequests": 25,
+        "listRequests": 25,
+        "rows": 99,
+        "receivedBytes": 193370,
+        "failures": 0,
+        "partialErrors": 0
+      }
+    },
+    {
+      "id": "ws-request-batching",
+      "source": "benchmark-startup-session-ws-batch.mjs",
+      "fixture": {
+        "directories": 25,
+        "mainSessions": 150,
+        "children": 0,
+        "concurrency": 2,
+        "staticReadyStatus": true
+      },
+      "checks": [
+        "full wire payloads equal including cursor, title override and read state",
+        "50 requests become 2 flat or 3 selected-first",
+        "25 fresh service/backend list calls retained",
+        "new/update/delete visible",
+        "one failed directory preserves 24 successes and failed-group cache",
+        "later request recovers without lifetime cache"
+      ],
+      "limitations": [
+        "new batch op exists in this isolated script only",
+        "hello reduction contributes; backend readiness still checked per list",
+        "flat batch delays first selected result until all complete; selected-first adds one request before remaining batch",
+        "80ms server delay is injected per WS request, not measured RTT",
+        "no TLS, app, real user data, Codex summaries or authentication lifecycle",
+        "transport batching and prior backend scan batching were not combined",
+        "byte counts exclude WS framing/TLS and connection startup is excluded",
+        "static readiness fixture does not exercise readiness changes",
+        "one failed directory is tested, not multiple backend partial failures",
+        "cursor equality verified; later pages not independently retrieved",
+        "batch authentication, admission, bounds and protocol negotiation unimplemented"
+      ],
+      "runs": [
+        {
+          "run": "initial two-mode measurement",
+          "profiles": [
+            {
+              "profile": {
+                "name": "loopback",
+                "delayMs": 0
+              },
+              "summary": {
+                "perDirectory": {
+                  "medianSeconds": 0.071971125,
+                  "minSeconds": 0.06882283300000006,
+                  "maxSeconds": 0.08311758299999997,
+                  "selectedMedianSeconds": 0.005396625000000029,
+                  "traffic": {
+                    "requests": 50,
+                    "sentBytes": 6340,
+                    "receivedBytes": 89418
+                  },
+                  "countsPerRound": {
+                    "readdir": 50,
+                    "realpath": 3775,
+                    "stat": 3750,
+                    "readFile": 0,
+                    "backendStatus": 50,
+                    "backendList": 25,
+                    "serviceList": 25
+                  }
+                },
+                "batch": {
+                  "medianSeconds": 0.06369779199999993,
+                  "minSeconds": 0.061878916000000006,
+                  "maxSeconds": 0.07224337500000001,
+                  "selectedMedianSeconds": 0.06369712499999991,
+                  "traffic": {
+                    "requests": 2,
+                    "sentBytes": 2929,
+                    "receivedBytes": 50137
+                  },
+                  "countsPerRound": {
+                    "readdir": 50,
+                    "realpath": 3775,
+                    "stat": 3750,
+                    "readFile": 0,
+                    "backendStatus": 26,
+                    "backendList": 25,
+                    "serviceList": 25
+                  }
+                }
+              }
+            },
+            {
+              "profile": {
+                "name": "controlled",
+                "delayMs": 80
+              },
+              "summary": {
+                "perDirectory": {
+                  "medianSeconds": 2.3492770829999996,
+                  "minSeconds": 2.3403485840000013,
+                  "maxSeconds": 2.379783583999999,
+                  "selectedMedianSeconds": 0.17773983399999999,
+                  "traffic": {
+                    "requests": 50,
+                    "sentBytes": 6340,
+                    "receivedBytes": 89418
+                  },
+                  "countsPerRound": {
+                    "readdir": 50,
+                    "realpath": 3775,
+                    "stat": 3750,
+                    "readFile": 0,
+                    "backendStatus": 50,
+                    "backendList": 25,
+                    "serviceList": 25
+                  }
+                },
+                "batch": {
+                  "medianSeconds": 0.26171520799999964,
+                  "minSeconds": 0.24814320800000134,
+                  "maxSeconds": 0.264975375,
+                  "selectedMedianSeconds": 0.26171429199999874,
+                  "traffic": {
+                    "requests": 2,
+                    "sentBytes": 2929,
+                    "receivedBytes": 50137
+                  },
+                  "countsPerRound": {
+                    "readdir": 50,
+                    "realpath": 3775,
+                    "stat": 3750,
+                    "readFile": 0,
+                    "backendStatus": 26,
+                    "backendList": 25,
+                    "serviceList": 25
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "run": "three-mode follow-up, rotating/reversing order",
+          "profiles": [
+            {
+              "profile": {
+                "name": "loopback",
+                "delayMs": 0
+              },
+              "summary": {
+                "perDirectory": {
+                  "medianSeconds": 0.071602083,
+                  "minSeconds": 0.06955620799999997,
+                  "maxSeconds": 0.07409287499999999,
+                  "selectedMedianSeconds": 0.006011415999999997,
+                  "traffic": {
+                    "requests": 50,
+                    "sentBytes": 6340,
+                    "receivedBytes": 89418
+                  },
+                  "countsPerRound": {
+                    "readdir": 50,
+                    "realpath": 3775,
+                    "stat": 3750,
+                    "readFile": 0,
+                    "backendStatus": 50,
+                    "backendList": 25,
+                    "serviceList": 25
+                  }
+                },
+                "batch": {
+                  "medianSeconds": 0.06977500000000009,
+                  "minSeconds": 0.06670162500000004,
+                  "maxSeconds": 0.07100979200000006,
+                  "selectedMedianSeconds": 0.069774541,
+                  "traffic": {
+                    "requests": 2,
+                    "sentBytes": 2929,
+                    "receivedBytes": 50137
+                  },
+                  "countsPerRound": {
+                    "readdir": 50,
+                    "realpath": 3775,
+                    "stat": 3750,
+                    "readFile": 0,
+                    "backendStatus": 26,
+                    "backendList": 25,
+                    "serviceList": 25
+                  }
+                },
+                "selectedFirst": {
+                  "medianSeconds": 0.06787504200000007,
+                  "minSeconds": 0.06707845799999995,
+                  "maxSeconds": 0.071778459,
+                  "selectedMedianSeconds": 0.0037447919999999612,
+                  "traffic": {
+                    "requests": 3,
+                    "sentBytes": 3000,
+                    "receivedBytes": 50203
+                  },
+                  "countsPerRound": {
+                    "readdir": 50,
+                    "realpath": 3775,
+                    "stat": 3750,
+                    "readFile": 0,
+                    "backendStatus": 26,
+                    "backendList": 25,
+                    "serviceList": 25
+                  }
+                }
+              }
+            },
+            {
+              "profile": {
+                "name": "controlled",
+                "delayMs": 80
+              },
+              "summary": {
+                "perDirectory": {
+                  "medianSeconds": 2.3607840419999992,
+                  "minSeconds": 2.246032833999998,
+                  "maxSeconds": 2.385841125,
+                  "selectedMedianSeconds": 0.17849466699999994,
+                  "traffic": {
+                    "requests": 50,
+                    "sentBytes": 6340,
+                    "receivedBytes": 89418
+                  },
+                  "countsPerRound": {
+                    "readdir": 50,
+                    "realpath": 3775,
+                    "stat": 3750,
+                    "readFile": 0,
+                    "backendStatus": 50,
+                    "backendList": 25,
+                    "serviceList": 25
+                  }
+                },
+                "batch": {
+                  "medianSeconds": 0.2566662500000002,
+                  "minSeconds": 0.25232637500000055,
+                  "maxSeconds": 0.26557799999999954,
+                  "selectedMedianSeconds": 0.2566657919999998,
+                  "traffic": {
+                    "requests": 2,
+                    "sentBytes": 2929,
+                    "receivedBytes": 50137
+                  },
+                  "countsPerRound": {
+                    "readdir": 50,
+                    "realpath": 3775,
+                    "stat": 3750,
+                    "readFile": 0,
+                    "backendStatus": 26,
+                    "backendList": 25,
+                    "serviceList": 25
+                  }
+                },
+                "selectedFirst": {
+                  "medianSeconds": 0.3530782909999998,
+                  "minSeconds": 0.3486362079999999,
+                  "maxSeconds": 0.36005575000000134,
+                  "selectedMedianSeconds": 0.17641408299999967,
+                  "traffic": {
+                    "requests": 3,
+                    "sentBytes": 3000,
+                    "receivedBytes": 50203
+                  },
+                  "countsPerRound": {
+                    "readdir": 50,
+                    "realpath": 3775,
+                    "stat": 3750,
+                    "readFile": 0,
+                    "backendStatus": 26,
+                    "backendList": 25,
+                    "serviceList": 25
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "production-ws-request-batching",
+      "source": "benchmark-startup-session-ws-batch.mjs",
+      "fixture": {
+        "directories": 25,
+        "mainSessions": 150,
+        "children": 0,
+        "concurrency": 2,
+        "staticReadyStatus": true
+      },
+      "runs": [
+        {
+          "conditions": "initial fixed order; overlapped software tests",
+          "profiles": [
+            {
+              "profile": {
+                "name": "loopback",
+                "delayMs": 0
+              },
+              "summary": {
+                "perDirectory": {
+                  "medianSeconds": 0.06886345900000003,
+                  "minSeconds": 0.06850629099999991,
+                  "maxSeconds": 0.06967929099999998,
+                  "selectedMedianSeconds": 0.0054354999999999334,
+                  "traffic": {
+                    "requests": 50,
+                    "sentBytes": 6340,
+                    "receivedBytes": 91418
+                  },
+                  "countsPerRound": {
+                    "readdir": 50,
+                    "realpath": 3775,
+                    "stat": 3750,
+                    "readFile": 0,
+                    "backendStatus": 50,
+                    "backendList": 25,
+                    "serviceList": 25
+                  }
+                },
+                "batch": {
+                  "medianSeconds": 0.06875983299999996,
+                  "minSeconds": 0.06769383400000004,
+                  "maxSeconds": 0.06993875000000002,
+                  "selectedMedianSeconds": 0.06875937499999998,
+                  "traffic": {
+                    "requests": 2,
+                    "sentBytes": 1410,
+                    "receivedBytes": 51607
+                  },
+                  "countsPerRound": {
+                    "readdir": 50,
+                    "realpath": 3775,
+                    "stat": 3750,
+                    "readFile": 0,
+                    "backendStatus": 26,
+                    "backendList": 25,
+                    "serviceList": 25
+                  }
+                }
+              }
+            },
+            {
+              "profile": {
+                "name": "controlled",
+                "delayMs": 80
+              },
+              "summary": {
+                "perDirectory": {
+                  "medianSeconds": 2.291677458,
+                  "minSeconds": 2.219290625,
+                  "maxSeconds": 2.3411945419999993,
+                  "selectedMedianSeconds": 0.17183908299999895,
+                  "traffic": {
+                    "requests": 50,
+                    "sentBytes": 6340,
+                    "receivedBytes": 91418
+                  },
+                  "countsPerRound": {
+                    "readdir": 50,
+                    "realpath": 3775,
+                    "stat": 3750,
+                    "readFile": 0,
+                    "backendStatus": 50,
+                    "backendList": 25,
+                    "serviceList": 25
+                  }
+                },
+                "batch": {
+                  "medianSeconds": 0.25192862500000046,
+                  "minSeconds": 0.23003770799999984,
+                  "maxSeconds": 0.25838429199999885,
+                  "selectedMedianSeconds": 0.2519280419999996,
+                  "traffic": {
+                    "requests": 2,
+                    "sentBytes": 1410,
+                    "receivedBytes": 51607
+                  },
+                  "countsPerRound": {
+                    "readdir": 50,
+                    "realpath": 3775,
+                    "stat": 3750,
+                    "readFile": 0,
+                    "backendStatus": 26,
+                    "backendList": 25,
+                    "serviceList": 25
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "conditions": "fixed order; no overlapping test processes",
+          "profiles": [
+            {
+              "profile": {
+                "name": "loopback",
+                "delayMs": 0
+              },
+              "summary": {
+                "perDirectory": {
+                  "medianSeconds": 0.07313824999999997,
+                  "minSeconds": 0.071147167,
+                  "maxSeconds": 0.07378104200000002,
+                  "selectedMedianSeconds": 0.005478291000000013,
+                  "traffic": {
+                    "requests": 50,
+                    "sentBytes": 6340,
+                    "receivedBytes": 91418
+                  },
+                  "countsPerRound": {
+                    "readdir": 50,
+                    "realpath": 3775,
+                    "stat": 3750,
+                    "readFile": 0,
+                    "backendStatus": 50,
+                    "backendList": 25,
+                    "serviceList": 25
+                  }
+                },
+                "batch": {
+                  "medianSeconds": 0.06986566700000003,
+                  "minSeconds": 0.06752808300000004,
+                  "maxSeconds": 0.07142383300000006,
+                  "selectedMedianSeconds": 0.06986508400000002,
+                  "traffic": {
+                    "requests": 2,
+                    "sentBytes": 1410,
+                    "receivedBytes": 51607
+                  },
+                  "countsPerRound": {
+                    "readdir": 50,
+                    "realpath": 3775,
+                    "stat": 3750,
+                    "readFile": 0,
+                    "backendStatus": 26,
+                    "backendList": 25,
+                    "serviceList": 25
+                  }
+                }
+              }
+            },
+            {
+              "profile": {
+                "name": "controlled",
+                "delayMs": 80
+              },
+              "summary": {
+                "perDirectory": {
+                  "medianSeconds": 2.3408417079999997,
+                  "minSeconds": 2.3142507499999994,
+                  "maxSeconds": 2.373225207999999,
+                  "selectedMedianSeconds": 0.17865229099999988,
+                  "traffic": {
+                    "requests": 50,
+                    "sentBytes": 6340,
+                    "receivedBytes": 91418
+                  },
+                  "countsPerRound": {
+                    "readdir": 50,
+                    "realpath": 3775,
+                    "stat": 3750,
+                    "readFile": 0,
+                    "backendStatus": 50,
+                    "backendList": 25,
+                    "serviceList": 25
+                  }
+                },
+                "batch": {
+                  "medianSeconds": 0.25315995799999835,
+                  "minSeconds": 0.23074274999999944,
+                  "maxSeconds": 0.25621391700000096,
+                  "selectedMedianSeconds": 0.25315941699999894,
+                  "traffic": {
+                    "requests": 2,
+                    "sentBytes": 1410,
+                    "receivedBytes": 51607
+                  },
+                  "countsPerRound": {
+                    "readdir": 50,
+                    "realpath": 3775,
+                    "stat": 3750,
+                    "readFile": 0,
+                    "backendStatus": 26,
+                    "backendList": 25,
+                    "serviceList": 25
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "conditions": "final alternating order; no overlapping test processes",
+          "profiles": [
+            {
+              "profile": {
+                "name": "loopback",
+                "delayMs": 0
+              },
+              "summary": {
+                "perDirectory": {
+                  "medianSeconds": 0.07153266599999995,
+                  "minSeconds": 0.06907350000000008,
+                  "maxSeconds": 0.07406787500000002,
+                  "selectedMedianSeconds": 0.005449041999999992,
+                  "traffic": {
+                    "requests": 50,
+                    "sentBytes": 6340,
+                    "receivedBytes": 91418
+                  },
+                  "countsPerRound": {
+                    "readdir": 50,
+                    "realpath": 3775,
+                    "stat": 3750,
+                    "readFile": 0,
+                    "backendStatus": 50,
+                    "backendList": 25,
+                    "serviceList": 25
+                  }
+                },
+                "batch": {
+                  "medianSeconds": 0.07004304199999996,
+                  "minSeconds": 0.06550237500000003,
+                  "maxSeconds": 0.07162941699999999,
+                  "selectedMedianSeconds": 0.070040417,
+                  "traffic": {
+                    "requests": 2,
+                    "sentBytes": 1410,
+                    "receivedBytes": 51607
+                  },
+                  "countsPerRound": {
+                    "readdir": 50,
+                    "realpath": 3775,
+                    "stat": 3750,
+                    "readFile": 0,
+                    "backendStatus": 26,
+                    "backendList": 25,
+                    "serviceList": 25
+                  }
+                }
+              },
+              "roundOrders": [
+                [
+                  "perDirectory",
+                  "batch"
+                ],
+                [
+                  "batch",
+                  "perDirectory"
+                ],
+                [
+                  "perDirectory",
+                  "batch"
+                ],
+                [
+                  "batch",
+                  "perDirectory"
+                ],
+                [
+                  "perDirectory",
+                  "batch"
+                ]
+              ]
+            },
+            {
+              "profile": {
+                "name": "controlled",
+                "delayMs": 80
+              },
+              "summary": {
+                "perDirectory": {
+                  "medianSeconds": 2.3270572919999997,
+                  "minSeconds": 2.315123625,
+                  "maxSeconds": 2.3418613329999998,
+                  "selectedMedianSeconds": 0.17684608300000038,
+                  "traffic": {
+                    "requests": 50,
+                    "sentBytes": 6340,
+                    "receivedBytes": 91418
+                  },
+                  "countsPerRound": {
+                    "readdir": 50,
+                    "realpath": 3775,
+                    "stat": 3750,
+                    "readFile": 0,
+                    "backendStatus": 50,
+                    "backendList": 25,
+                    "serviceList": 25
+                  }
+                },
+                "batch": {
+                  "medianSeconds": 0.25194129100000007,
+                  "minSeconds": 0.2441881659999999,
+                  "maxSeconds": 0.255817583,
+                  "selectedMedianSeconds": 0.2519401660000003,
+                  "traffic": {
+                    "requests": 2,
+                    "sentBytes": 1410,
+                    "receivedBytes": 51607
+                  },
+                  "countsPerRound": {
+                    "readdir": 50,
+                    "realpath": 3775,
+                    "stat": 3750,
+                    "readFile": 0,
+                    "backendStatus": 26,
+                    "backendList": 25,
+                    "serviceList": 25
+                  }
+                }
+              },
+              "roundOrders": [
+                [
+                  "perDirectory",
+                  "batch"
+                ],
+                [
+                  "batch",
+                  "perDirectory"
+                ],
+                [
+                  "perDirectory",
+                  "batch"
+                ],
+                [
+                  "batch",
+                  "perDirectory"
+                ],
+                [
+                  "perDirectory",
+                  "batch"
+                ]
+              ]
+            }
+          ]
+        }
+      ],
+      "checks": [
+        "full wire payloads equal including cursor, title override and read state",
+        "50 requests become 2 using production batch dispatch",
+        "25 fresh service/backend list calls retained",
+        "new/update/delete visible",
+        "one failed directory preserves 24 successes and failed-group cache",
+        "later request recovers without lifetime cache"
+      ],
+      "limitations": [
+        "same updated production server in both modes; baseline reproduces former 50-request pattern",
+        "hello reduction contributes; backend readiness still checked per list",
+        "first directory-list result waits for the batch; popup body is not measured",
+        "80ms server delay is injected per WS request, not measured RTT",
+        "no TLS, app, real user data, Codex summaries or authentication lifecycle",
+        "transport batching and prior backend scan batching were not combined",
+        "byte counts exclude WS framing/TLS and connection startup is excluded"
+      ]
+    },
+    {
+      "id": "production-claude-unused-child-scan",
+      "source": "benchmark-startup-claude-list.mjs",
+      "fixture": {
+        "main": 25,
+        "children": 1000,
+        "cwds": 25,
+        "concurrency": 2
+      },
+      "baselineConstruction": "Current source with enumeration flag/early skip reverted and old late child filter restored; not an old deployed binary",
+      "runs": [
+        {
+          "conditions": "initial run; overlapped software tests",
+          "coldSingleRun": {
+            "current": {
+              "seconds": 0.563616125,
+              "counts": {
+                "readdir": 1925,
+                "realpath": 25821,
+                "stat": 675,
+                "readFile": 50
+              }
+            },
+            "candidate": {
+              "seconds": 0.019893249999999967,
+              "counts": {
+                "readdir": 50,
+                "realpath": 823,
+                "stat": 675,
+                "readFile": 50
+              }
+            }
+          },
+          "warmSummary": {
+            "current": {
+              "medianSeconds": 0.49654037500000003,
+              "minSeconds": 0.42411620799999994,
+              "maxSeconds": 0.5846128749999998,
+              "ioCountsPerRound": {
+                "readdir": 1925,
+                "realpath": 25675,
+                "stat": 625,
+                "readFile": 0
+              }
+            },
+            "candidate": {
+              "medianSeconds": 0.016142625000000407,
+              "minSeconds": 0.013045000000000072,
+              "maxSeconds": 0.027279416999999966,
+              "ioCountsPerRound": {
+                "readdir": 50,
+                "realpath": 675,
+                "stat": 625,
+                "readFile": 0
+              }
+            }
+          },
+          "savedSeconds": 0.4803977499999996
+        },
+        {
+          "conditions": "final isolated sequential run",
+          "coldSingleRun": {
+            "current": {
+              "seconds": 0.430269583,
+              "counts": {
+                "readdir": 1925,
+                "realpath": 25822,
+                "stat": 675,
+                "readFile": 50
+              }
+            },
+            "candidate": {
+              "seconds": 0.013145374999999945,
+              "counts": {
+                "readdir": 50,
+                "realpath": 822,
+                "stat": 675,
+                "readFile": 50
+              }
+            }
+          },
+          "warmSummary": {
+            "current": {
+              "medianSeconds": 0.42032258300000014,
+              "minSeconds": 0.41544770800000014,
+              "maxSeconds": 0.426528458,
+              "ioCountsPerRound": {
+                "readdir": 1925,
+                "realpath": 25675,
+                "stat": 625,
+                "readFile": 0
+              }
+            },
+            "candidate": {
+              "medianSeconds": 0.013206042000000025,
+              "minSeconds": 0.012759917000000088,
+              "maxSeconds": 0.014369750000000066,
+              "ioCountsPerRound": {
+                "readdir": 50,
+                "realpath": 675,
+                "stat": 625,
+                "readFile": 0
+              }
+            }
+          },
+          "savedSeconds": 0.4071165410000001
+        }
+      ],
+      "checks": [
+        "deep-equal main listings in all rounds",
+        "includeSubagents=true returns all 1025",
+        "child readHistory unchanged",
+        "new/updated/deleted main sessions reflected"
+      ],
+      "limitations": [
+        "synthetic fixtures only",
+        "no real app/network startup measurement",
+        "cold means new backend cache, not OS cache",
+        "5000-entry boundary and concurrent write races untested"
+      ]
+    }
+  ],
+  "checksRun": {
+    "jestSuites": 6,
+    "jestTestsPassed": 97,
+    "defaultTypecheckPassed": true,
+    "baselineIndexTestsPassed": 14,
+    "agentServiceTestsPassed": 57,
+    "standaloneBenchmarkAssertionsPassed": true,
+    "productionBuildRun": false,
+    "runnerRestarted": false
+  },
+  "implementationBase": "d2a0ea5",
+  "implementationChecks": {
+    "base": "d2a0ea5",
+    "baselineNodeTestsPassed": 128,
+    "baselineJestSuites": 5,
+    "baselineJestTestsPassed": 137,
+    "nodeTestsPassed": 132,
+    "jestSuites": 12,
+    "jestTestsPassed": 218,
+    "defaultTypecheckPassed": true,
+    "macosTypecheckPassed": true,
+    "syntaxAndDiffChecksPassed": true,
+    "nativeTestEnvironmentPrepared": true,
+    "appBuildRun": false,
+    "runnerRestarted": false,
+    "liveAppSpeedupVerified": false
+  }
+}

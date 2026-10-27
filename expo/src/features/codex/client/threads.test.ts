@@ -1,6 +1,6 @@
 import { runCodexRpcSession } from "./rpcSession";
-import { listCodexAppServerThreads, readCodexAppServerThread } from "./threads";
-import { listAgentSessions, readAgentHistory } from "../../agent/client";
+import { listCodexAppServerThreads, listCodexAppServerThreadsBatch, readCodexAppServerThread } from "./threads";
+import { listAgentSessions, listAgentSessionsBatch, readAgentHistory } from "../../agent/client";
 
 jest.mock("./rpcSession", () => ({
   ...jest.requireActual("./rpcSession"),
@@ -9,6 +9,7 @@ jest.mock("./rpcSession", () => ({
 jest.mock("../../agent/client", () => ({
   ALL_BACKENDS_SCOPE: "all",
   listAgentSessions: jest.fn(),
+  listAgentSessionsBatch: jest.fn(),
   readAgentHistory: jest.fn(),
 }));
 
@@ -373,4 +374,25 @@ it("keeps active state without loading turns", async () => {
   expect(result.hasRunningTurn).toBe(true);
   expect(result.runningTurn?.summary).toBe("応答生成中");
   expect(rpc).toHaveBeenCalledTimes(1);
+});
+
+it('normalizes batch pages with the same summary, cursor, title and partial error contract', async () => {
+  const summary = { contextUsage: { usedPct: 20 }, modelRef: 'native', reasoningEffort: 'high', lastReadAt: 'read' };
+  jest.mocked(listAgentSessionsBatch).mockResolvedValue([{ cwd: '/workspace', payload: { sessions: [{
+    sessionRef: { backendId: 'codex', nativeSessionId: 'one' }, title: 'shared', sourceKind: 'cli',
+    canonicalCwd: '/workspace', lastReadAt: 'read', summary,
+  }], cursor: 'next', errors: [{ backendId: 'claude', code: 'backend_unavailable' }] } }]);
+  const [group] = await listCodexAppServerThreadsBatch({ wsUrl: 'ws://runner', cwds: ['/workspace'], limit: 5, runnerWebSocketManager: {} as never });
+  expect(group.result).toMatchObject({ nextCursor: 'next', partialErrors: [{ backendId: 'claude' }],
+    data: [{ backendId: 'codex', threadId: 'one', preview: 'shared', lastReadAt: 'read', summary }] });
+  expect(mockListAgentSessions).not.toHaveBeenCalled();
+});
+
+it('marks legacy raw success as Codex-only even for a successful empty batch page', async () => {
+  jest.mocked(listAgentSessionsBatch).mockResolvedValue([{ cwd: '/workspace', payload: null }]);
+  mockRunCodexRpcSession.mockResolvedValue({ data: [], nextCursor: '', backwardsCursor: '' });
+  const [group] = await listCodexAppServerThreadsBatch({ wsUrl: 'ws://runner', cwds: ['/workspace'], limit: 5, runnerWebSocketManager: {} as never });
+  expect(group.result).toMatchObject({ data: [], successfulBackendIds: ['codex'], partialErrors: [{ code: 'backend_unavailable' }] });
+  expect(mockListAgentSessions).not.toHaveBeenCalled();
+  expect(mockRunCodexRpcSession).toHaveBeenCalledTimes(1);
 });

@@ -892,7 +892,7 @@ export function createClaudeBackend({
   // 一覧・履歴解決の元となるtranscriptカタログ。メインセッション(<UUID>.jsonl)に加え、
   // 親セッションディレクトリ配下のサブエージェント(subagents/**/agent-*.jsonl)も列挙する。
   // 返り値: { file, nativeSessionId, parentSessionId }(メインはparentSessionId="")
-  async function transcriptFileEntries() {
+  async function transcriptFileEntries(includeSubagents = true) {
     const root = await projectsRootReal();
     if (!root) return [];
     const projects = (await fileSystem.readdir(root, { withFileTypes: true })).filter((entry) => entry.isDirectory()).slice(0, 2000);
@@ -917,6 +917,7 @@ export function createClaudeBackend({
           if (await addEntry(directory, entry.name, "")) break scan;
           continue;
         }
+        if (includeSubagents === false) continue;
         // サブエージェントは親セッションIDのディレクトリ配下のsubagents/に保存される
         if (!entry.isDirectory() || !SESSION_ID_PATTERN.test(entry.name)) continue;
         const subagentsDirectory = path.join(directory, entry.name, "subagents");
@@ -1099,10 +1100,7 @@ export function createClaudeBackend({
       ? new Set(parentSessionRefs.filter((ref) => ref?.backendId === "claude")
         .map((ref) => String(ref.nativeSessionId || "")))
       : null;
-    for (const entry of await transcriptFileEntries()) {
-      // includeSubagents=falseは未読カウント・Skiaボードingest等のメイン一覧用途。
-      // codex側(llm-cli-session-index)と同じく、明示false時のみ除外する。
-      if (includeSubagents === false && entry.parentSessionId) continue;
+    for (const entry of await transcriptFileEntries(includeSubagents)) {
       if (parentIds && !parentIds.has(entry.parentSessionId)) continue;
       const metadata = await transcriptMetadata(entry.file);
       const sessions = metadata ? sessionsByCwd.get(metadata.realCwd) : null;

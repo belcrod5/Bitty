@@ -1,10 +1,11 @@
 import { renderHook } from "@testing-library/react-native";
-import { listCodexAppServerThreads, readCodexAppServerThread } from "../../codex/codexAppServerClient";
+import { listCodexAppServerThreads, listCodexAppServerThreadsBatch, readCodexAppServerThread } from "../../codex/codexAppServerClient";
 import { readAgentHistory } from "../../agent/client";
 import { buildLlmSessionHistoryEntry, useLlmSessionExplorer } from "./useLlmSessionExplorer";
 
 jest.mock("../../codex/codexAppServerClient", () => ({
   listCodexAppServerThreads: jest.fn(),
+  listCodexAppServerThreadsBatch: jest.fn(),
   readCodexAppServerThread: jest.fn(),
 }));
 jest.mock("../../agent/client", () => ({
@@ -1067,4 +1068,47 @@ test("summary metadata remains scoped when different backends reuse native IDs",
       ["codex", "gpt-test"], ["claude", "sonnet"],
     ]);
   } finally { fetchMock.mockRestore(); }
+});
+
+describe('batch history enrichment and connection isolation', () => {
+  const historyRow = { backendId: 'codex', threadId: 'one', sourceKind: 'cli', cwd: '/workspace', preview: 'one' };
+  const page = { data: [historyRow] as never,
+    nextCursor: 'next', backwardsCursor: '' };
+  afterEach(() => { jest.restoreAllMocks(); jest.mocked(listCodexAppServerThreadsBatch).mockReset(); });
+
+  it('reuses batch native summaries and carries partial backend information without HTTP', async () => {
+    const summary = { contextUsage: { usedPct: 12 }, modelRef: 'fresh', reasoningEffort: 'high', lastReadAt: '2026-10-27T00:00:00Z' };
+    jest.mocked(listCodexAppServerThreadsBatch).mockResolvedValue([{ cwd: '/workspace', result: {
+      ...page, data: [{ ...historyRow, summary }] as never, partialErrors: [{ backendId: 'claude', message: 'unavailable' }],
+    } }, { cwd: '/bad', error: new Error('bad directory') }]);
+    const fetch = jest.spyOn(global, 'fetch').mockRejectedValue(new Error('must not fetch'));
+    const { result } = await renderExplorerHook();
+    const groups = await result.current.fetchSessionHistoryBatch(['/workspace', '/bad'], { limit: 5 });
+    expect(groups[0].result).toMatchObject({ nextCursor: 'next', partialErrors: [{ backendId: 'claude' }],
+      entries: [{ sessionId: 'one', modelRef: 'fresh', contextUsedPct: 12, lastReadAt: summary.lastReadAt }] });
+    expect(groups[1].error?.message).toBe('bad directory');
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(['scalar', 'batch', 'children'])('rejects %s rows when credentials change while HTTP summary is pending', async (mode) => {
+    mockListCodexAppServerThreads.mockResolvedValue(mode === 'children' ? { ...page, data: [{ ...historyRow, parentThreadId: 'parent', sourceKind: 'subAgent' }] as never } : page);
+    jest.mocked(listCodexAppServerThreadsBatch).mockResolvedValue([{ cwd: '/workspace', result: page }]);
+    let resolveHttp!: (response: Response) => void;
+    const fetch = jest.spyOn(global, 'fetch').mockImplementation(() => new Promise((resolve) => { resolveHttp = resolve; }));
+    const { result, rerender } = await renderHook(({ token }: { token: string }) => useLlmSessionExplorer({
+      codexWsUrl: 'ws://runner', runnerToken: token, auxServerBaseUrl: () => 'http://runner',
+      getRunnerHttpAuth: async () => ({ baseUrl: 'http://runner', token }), normalizedLlmDirectoryForRequest: () => '/workspace',
+      defaultLlmDirectory: '/workspace', nearUnlimitedTimeoutMs: 60000, rawFallbackBackendId: 'codex',
+    }), { initialProps: { token: 'old' } });
+    const pending = mode === 'batch'
+      ? result.current.fetchSessionHistoryBatch(['/workspace'], { limit: 5 })
+      : mode === 'children' ? result.current.fetchSessionChildrenHistory(['parent'], '/workspace')
+      : result.current.fetchSessionHistory('/workspace');
+    const rejected = expect(pending).rejects.toThrow('connection changed');
+    for (let step = 0; step < 6 && !fetch.mock.calls.length; step++) await Promise.resolve();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    await rerender({ token: 'new' });
+    resolveHttp({ ok: true, status: 200, text: async () => JSON.stringify({ sessions: [{ sessionId: 'one', modelRef: 'old' }] }) } as Response);
+    await rejected;
+  });
 });
