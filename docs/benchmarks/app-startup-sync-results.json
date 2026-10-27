@@ -1538,7 +1538,20 @@
         "Direct batch probe is loopback, excludes hello/HTTP summaries/UI and is not mobile startup time",
         "Missing restore targets do not prove session age; Git diagnostics do not establish session-list batch failure",
         "No matched before-condition or causal real-app speedup measurement"
-      ]
+      ],
+      "readOnlyHelloAndBatchCompleteProbe": {
+        "requests": 2,
+        "directories": 25,
+        "successfulGroups": 25,
+        "rows": 99,
+        "failedGroups": 0,
+        "partialBackendErrors": 0,
+        "elapsedMs": 970,
+        "includesHello": true,
+        "route": "local-loopback",
+        "includesHttpSummaries": false,
+        "includesUi": false
+      }
     }
   ],
   "checksRun": {
