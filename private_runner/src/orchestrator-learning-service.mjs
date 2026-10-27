@@ -44,7 +44,7 @@ const score = (value) => value === null || Number.isInteger(value) && value >= 0
 
 
 // Single owner of evidence, adoption, skill versions and response delivery records.
-export async function openOrchestratorLearning({ workspace, memoryConversationId, initialThrough, orchestratorId: ownerId, legacyDirectory,
+export async function openOrchestratorLearning({ workspace, memoryConversationId, initialThrough, orchestratorId: ownerId,
   analyze, ledger, isBusy = () => false, onUnreadChanged = () => {}, now = () => Date.now(), limits = {} }) {
   const bounds = { ...LIMITS, ...limits };
   const directory = path.join(workspace, "orchestrator-learning");
@@ -55,7 +55,6 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
   const file = path.join(directory, "state.json");
   let state;
   let initializing = false;
-  let legacyArtifacts = [];
   let serial = Promise.resolve();
   let task = null;
   let timer = null;
@@ -122,38 +121,6 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
         ? [{ from: 1, through: initialThrough, reason: "before_observation" }] : [],
       batch: null, lastStartedAt: 0 };
     initializing = true;
-    if (legacyDirectory && ownerId) {
-      state.migration = { legacyRetained: true, importedCandidates: 0, skippedCandidates: 0, memory: "started_empty" };
-      const legacyStat = await fs.lstat(legacyDirectory).catch((error) => error.code === "ENOENT" ? null : Promise.reject(error));
-      if (legacyStat) {
-        if (!legacyStat.isDirectory() || legacyStat.isSymbolicLink()) throw fail("learning_store_invalid", "Unsafe legacy learning directory");
-        const handle = await fs.open(path.join(legacyDirectory, "state.json"), constants.O_RDONLY | constants.O_NOFOLLOW);
-        let legacy;
-        try {
-          if (!(await handle.stat()).isFile() || (await handle.stat()).size > bounds.stateBytes) throw fail("learning_store_invalid", "Invalid legacy learning file");
-          legacy = JSON.parse(await handle.readFile("utf8"));
-        } finally { await handle.close(); }
-        if (!record(legacy) || !Array.isArray(legacy.candidates)) throw fail("learning_store_invalid", "Invalid legacy learning state");
-        let owned = legacy.candidates.filter((item) => record(item) && item.scope?.orchestratorId === ownerId
-          && Array.isArray(item.evidence) && item.evidence.length && item.evidence.every((source) => source?.orchestratorId === ownerId));
-        // A replacement is attributable only when its entire predecessor chain is attributable.
-        let previousSize;
-        do {
-          previousSize = owned.length;
-          const ids = new Set(owned.map((item) => item.id));
-          owned = owned.filter((item) => !item.replaces || item.replaces.every((id) => ids.has(id)));
-        } while (owned.length !== previousSize);
-        state.candidates = structuredClone(owned).map((item) => ({ ...item, scope: { orchestratorId: ownerId },
-          evidence: item.evidence.map((source) => ({ ...source, memoryConversationId })) }));
-        if (typeof legacy.settings?.model === "string" && typeof legacy.settings?.effort === "string") {
-          state.settings = { model: legacy.settings.model, effort: legacy.settings.effort, settingsRevision: 1 };
-        }
-        state.migration = { legacyRetained: true, importedCandidates: owned.length,
-          skippedCandidates: legacy.candidates.length - owned.length, memory: "started_empty" };
-        legacyArtifacts = state.candidates.flatMap((item) => [item.published, item.previousPublished].filter(Boolean)
-          .map((artifact) => ({ id: item.id, ...artifact })));
-      }
-    }
   }
 
   // Additive migration: old observation snapshots remain readable.
@@ -174,39 +141,7 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
     || state.cleanup.some((id) => !UUID.test(id))
     || ["evaluations", "corrections", "changes", "uses", "proposals", "excluded", "requests"].some((key) => state[key].some((entry) => !record(entry))))
     throw fail("learning_store_invalid", "Invalid learning lifecycle metadata");
-  if (initializing) {
-    for (const artifact of legacyArtifacts) {
-      const sourceDirectory = path.join(legacyDirectory, "skills", artifact.id);
-      for (const folder of [path.join(legacyDirectory, "skills"), sourceDirectory]) {
-        const stat = await fs.lstat(folder);
-        if (!stat.isDirectory() || stat.isSymbolicLink()) throw fail("learning_skill_modified", "Unsafe legacy skill directory");
-      }
-      const source = await fs.open(path.join(sourceDirectory, `${artifact.version}.md`), constants.O_RDONLY | constants.O_NOFOLLOW);
-      let markdown;
-      try {
-        const stat = await source.stat();
-        if (!stat.isFile() || stat.size > 16_000 || stat.nlink !== 1) throw fail("learning_skill_modified", "Invalid legacy skill artifact");
-        markdown = await source.readFile("utf8");
-        if (digest(markdown) !== artifact.hash) throw fail("learning_skill_modified", "Legacy skill artifact was modified");
-      } finally { await source.close(); }
-      const target = path.join(await skillDirectory(artifact.id), `${artifact.version}.md`);
-      await fs.writeFile(target, markdown, { flag: "wx", mode: 0o600 }).catch(async (cause) => {
-        if (cause.code !== "EEXIST") throw cause;
-        const existing = await fs.open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
-        try { if (digest(await existing.readFile("utf8")) !== artifact.hash) throw fail("learning_skill_modified", "Imported skill artifact differs"); }
-        finally { await existing.close(); }
-      });
-      const imported = await fs.open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
-      try {
-        const stat = await imported.stat();
-        if (!stat.isFile() || stat.nlink !== 1) throw fail("learning_skill_modified", "Invalid imported skill artifact");
-        await imported.sync();
-      } finally { await imported.close(); }
-      const folder = await fs.open(path.dirname(target), "r");
-      try { await folder.sync(); } finally { await folder.close(); }
-    }
-    await save(state);
-  }
+  if (initializing) await save(state);
   const changedAt = () => new Date(now()).toISOString();
   const activeCorrection = (item) => !item.cancelledAt && (item.score !== null || Boolean(item.reason?.trim()));
   const pendingCorrection = (item) => activeCorrection(item) && !item.resolution;
@@ -696,7 +631,7 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
         pendingCount: state.pending.length, candidates: structuredClone(state.candidates), gaps: structuredClone(state.gaps),
         evaluations: structuredClone(state.evaluations.map((entry) => ({ ...entry, corrections: state.corrections.filter((correction) => correction.evaluationId === entry.id) }))),
         changes: structuredClone(state.changes), uses: structuredClone(state.uses), proposals: structuredClone(state.proposals),
-        requests: structuredClone(state.requests), ...(state.migration ? { migration: structuredClone(state.migration) } : {}), autoPublish: false,
+        requests: structuredClone(state.requests), autoPublish: false,
         usage: await ledger.status(), outputLimitEnforced: false };
     },
     async decide({ items, action, reason = "" }) {

@@ -20,7 +20,6 @@ type LearningStatus = {
   gaps: { from: number; through: number; reason: string }[];
   error: { code: string; message: string } | null;
   outputLimitEnforced: boolean;
-  migration?: { legacyRetained: boolean; importedCandidates: number; skippedCandidates: number; memory: string };
   retry?: { batchId: string; settingsRevision: number; attempts: number; ceiling: number } | null;
   evaluations?: LearningEvaluation[];
   changes?: { id: string; at: string; action: string; actor: string; reason: string;
@@ -202,7 +201,6 @@ export function OrchestratorLearningPanel({ request: sendRequest, orchestrator }
           <Text style={[dashboard.caption, { color: colors.textMuted }]}>{status.pendingCount}件の会話が分析待ち</Text></View>
       </View>
       {status.error ? <Text accessibilityRole="alert" style={styles.settingsErrorText}>{status.error.message}</Text> : null}
-      {status.migration?.legacyRetained ? <Text style={styles.settingsFooterText}>旧共有メモリーは保管し、帰属を確認できた学習だけ引き継ぎました。メモリーはこのチャット専用に新しく蓄積します。</Text> : null}
       {status.status === "retry_exhausted" && status.retry ? <>
         <Text style={styles.settingsFooterText}>当日の予算を維持し、現在のモデル設定でもう一度だけ試します。</Text>
         {button("保留した分析を1回再試行", "retry", { batchId: status.retry.batchId, settingsRevision: status.retry.settingsRevision }, !status.settings.model)}

@@ -170,7 +170,6 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
   async function openContext(id) {
     const directory = id === "main" ? root : path.join(orchestratorRoot, id);
     const service = createVoiceContextService({ rootDir: directory, createClient, orchestratorId: id,
-      legacyWorkspaceRoot: path.join(path.dirname(root), "workspaces"),
       getOrchestratorName: () => registry.orchestrators.find((item) => item.id === id)?.name,
       taskChecklistPath: `task-checklists/${id}.md`,
       onChecklistChanged: (conversationId) => onChecklistChanged?.({ orchestratorId: id, logicalConversationId: conversationId }),
@@ -190,10 +189,6 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
     try {
       const workspace = await service.getWorkspaceDirectory();
       const memoryStore = await service.getMemoryStore();
-      if (!memoryStore) {
-        learningErrors.set(id, { code: "orchestrator_isolation_pending", message: "Finish or interrupt legacy work before isolation." });
-        return;
-      }
       learningMemoryIds.set(id, memoryStore.conversationId);
       const learningDirectory = path.join(workspace, "orchestrator-learning");
       await fs.mkdir(learningDirectory, { mode: 0o700 }).catch((error) => { if (error.code !== "EEXIST") throw error; });
@@ -206,7 +201,6 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
       const directory = id === "main" ? root : path.join(orchestratorRoot, id);
       const active = JSON.parse(await safeFile(path.join(directory, "active.json")));
       const learning = await openOrchestratorLearning({ workspace, orchestratorId: id,
-        legacyDirectory: active.legacyWorkspaceDirectory ? path.join(active.legacyWorkspaceDirectory, "orchestrator-learning") : undefined,
         memoryConversationId: memoryStore.conversationId, initialThrough: memoryStore.lastPairSeq,
         analyze: (args) => service.analyzeLearning(args), ledger,
         isBusy: () => [...reservations].some((key) => key.startsWith(`${id}:`)),
@@ -226,7 +220,6 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
     if (!registry.orchestrators.some((item) => item.id === id)) throw failure("Orchestrator was not found", "not_found");
     const service = contexts.get(id);
     if (!service) return openContext(id);
-    if (learningErrors.get(id)?.code === "orchestrator_isolation_pending") await openLearning(id, service);
     return service;
   }
 
@@ -423,7 +416,6 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
           throw failure("Voice operation ID belongs to another orchestrator", "operation_conflict");
         }
         const memoryStore = await service.getMemoryStore();
-        if (!memoryStore) throw failure("Finish or interrupt legacy work before isolation", "session_busy");
         if (memoryStore.remainingCapacity < 1 && !reservations.has(reservation)) {
           try { await service.status(message.payload?.logicalConversationId, operationId); }
           catch { throw failure("Voice memory is awaiting a successful update", "voice_memory_full"); }

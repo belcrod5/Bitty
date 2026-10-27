@@ -40,6 +40,8 @@ process.env.CLI_SESSION_INDEX_PATH = path.join(tempRoot, "cli-index.json");
 
 const { __TESTING__ } = await import("../src/server-runtime.mjs?sessions-read-endpoint");
 const { server } = __TESTING__;
+// This fixture exercises session counts; voice state belongs to its own temporary-store tests.
+__TESTING__.voiceContextService.unreadCount = async () => 0;
 
 test.after(() => fs.rm(tempRoot, { recursive: true, force: true }));
 

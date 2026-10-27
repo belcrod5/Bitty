@@ -250,6 +250,8 @@ export function readVoiceEventState(buffer, prunedThroughPairSeq = 0) {
   const events = readEvents(buffer, prunedThroughPairSeq, true).events;
   const snapshot = snapshots(events);
   return { pairs: snapshot.pairs,
+    unresolvedOperationIds: [...snapshot.byId.values()].filter((state) => !["completed", "failed", "interrupted", "preflight_failed"].includes(state.status))
+      .map((state) => state.clientOperationId),
     completedPairs: [...snapshot.byId.values()].filter((state) => state.status === "completed").map((state) => ({
       pairSeq: state.pairSeq, clientOperationId: state.clientOperationId, user: state.userText,
       assistant: state.text, completedAt: state.assistantAt })),
@@ -287,7 +289,7 @@ function boundedEvents(events, durableThroughPairSeq) {
 const visibleBytes = (pairs, input, instructions) => bytes(instructions) + bytes(input)
   + pairs.reduce((size, pair) => size + bytes(pair.user) + bytes(pair.assistant), 0);
 
-export function createVoiceContextService({ rootDir, createClient: clientFactory, orchestratorId, legacyWorkspaceRoot, managedSessions,
+export function createVoiceContextService({ rootDir, createClient: clientFactory, orchestratorId, managedSessions,
   hasOutstandingActivity, taskChecklistPath, onChecklistChanged, getOrchestratorName, onDurablePair, learningContext }) {
   if (orchestratorId !== undefined && orchestratorId !== "main" && !UUID.test(orchestratorId)) throw new TypeError("Invalid orchestrator ID");
   const root = path.resolve(rootDir);
@@ -715,15 +717,6 @@ export function createVoiceContextService({ rootDir, createClient: clientFactory
     if (closed) throw invalid("not_found", "Voice context is closed");
     if (loaded) {
       if (storeFailure) throw storeFailure;
-      if (orchestratorId && active.isolationVersion !== 1) {
-        await reconcileUnresolved();
-        if (!active.pendingDispatch && ![...byId.values()].some((state) => ["running", "unknown"].includes(state.status))
-          && !await hasOutstandingActivity?.(active.nativeThreadId)
-          && !await hasNativeDescendantActivity(active.nativeThreadId)) {
-          loaded = false;
-          return load();
-        }
-      }
       await clearPreviousConversation();
       return;
     }
@@ -766,14 +759,16 @@ export function createVoiceContextService({ rootDir, createClient: clientFactory
         throw invalid("voice_store_corrupt", "Voice active conversation is missing from an existing store");
       }
       fresh = true;
-      active = { logicalConversationId: randomUUID(), contextMode: CONTEXT_MODE };
+      active = { logicalConversationId: randomUUID(), contextMode: CONTEXT_MODE,
+        ...(orchestratorId ? { isolationVersion: 1, memoryConversationId: randomUUID(), memoryFloorPairSeq: 0 } : {}) };
+    }
+    if (orchestratorId && active.isolationVersion !== 1) {
+      throw invalid("orchestrator_preparation_required", "Stop Runner and run prepare-orchestrator-isolation.mjs before opening existing orchestration data");
     }
     if (!UUID.test(active?.logicalConversationId) || active?.contextMode !== CONTEXT_MODE
       || active.isolationVersion !== undefined && active.isolationVersion !== 1
       || active.isolationVersion === 1 && (!UUID.test(active.memoryConversationId)
         || !Number.isSafeInteger(active.memoryFloorPairSeq) || active.memoryFloorPairSeq < 0)
-      || active.legacyWorkspaceDirectory !== undefined && (typeof active.legacyWorkspaceDirectory !== "string"
-        || !legacyWorkspaceRoot || active.legacyWorkspaceDirectory !== path.join(legacyWorkspaceRoot, active.workspaceConversationId || active.logicalConversationId))
       || (active.workspaceInitialized !== undefined && active.workspaceInitialized !== true)
       || (active.workspaceConversationId !== undefined && !UUID.test(active.workspaceConversationId))
       || (active.previousConversationId !== undefined && (!UUID.test(active.previousConversationId)
@@ -846,9 +841,8 @@ export function createVoiceContextService({ rootDir, createClient: clientFactory
       || (active.nativeChecklistCompletionVersion !== undefined && active.nativeChecklistCompletionVersion !== CHECKLIST_COMPLETION_VERSION)) {
       throw invalid("voice_store_corrupt", "Voice active conversation is invalid");
     }
-    const isolating = Boolean(orchestratorId && active.isolationVersion !== 1);
-    await ownedDirectory(workspaceRoot, !active.workspaceInitialized || isolating);
-    const workspace = await ownedDirectory(workspacePath(), !active.workspaceInitialized || isolating);
+    await ownedDirectory(workspaceRoot, !active.workspaceInitialized);
+    const workspace = await ownedDirectory(workspacePath(), !active.workspaceInitialized);
     if (taskChecklistPath) await fs.mkdir(path.join(workspace, "task-checklists"), { mode: 0o700 })
       .catch((error) => { if (error.code !== "EEXIST") throw error; });
     if (!active.workspaceInitialized) {
@@ -889,71 +883,6 @@ export function createVoiceContextService({ rootDir, createClient: clientFactory
     events = parsed.events;
     await fs.chmod(eventFile, 0o600);
     ({ byId, pairs } = snapshots(events));
-    if (isolating) {
-      if (active.pendingDispatch || [...byId.values()].some((state) => ["running", "unknown"].includes(state.status))
-        || await hasOutstandingActivity?.(active.nativeThreadId)
-        || await hasNativeDescendantActivity(active.nativeThreadId)) {
-        // Keep status and explicit interrupt reachable; no model context or memory is opened yet.
-        loaded = true;
-        return;
-      }
-      const next = { ...active, isolationVersion: 1, memoryConversationId: randomUUID(),
-        memoryFloorPairSeq: Math.max(active.prunedThroughPairSeq || 0, pairs.at(-1)?.pairSeq || 0),
-        nativeThreadId: null, parentGeneration: (active.parentGeneration || 0) + 1,
-        completedOnParent: 0, contextLimitReached: false };
-      if (!fresh && legacyWorkspaceRoot) next.legacyWorkspaceDirectory = path.join(legacyWorkspaceRoot,
-        active.workspaceConversationId || active.logicalConversationId);
-      for (const key of ["nativeTurnId", "pendingSwitch", "pendingConfirmation", "learningSnapshot", "nativeLearningEnabled",
-        "nativeCalendarReadEnabled", "nativeAgentsEnabled", "nativeChecklistWriteEnabled", "nativeChecklistCompletionEnabled", "nativeChecklistCompletionVersion"]) delete next[key];
-      if (next.legacyWorkspaceDirectory && taskChecklistPath) {
-        const sourceDirectory = path.join(next.legacyWorkspaceDirectory, "task-checklists");
-        const sourceStat = await fs.lstat(sourceDirectory).catch((error) => error.code === "ENOENT" ? null : Promise.reject(error));
-        if (sourceStat) {
-          for (const folder of [next.legacyWorkspaceDirectory, sourceDirectory]) {
-            const stat = await fs.lstat(folder);
-            if (!stat.isDirectory() || stat.isSymbolicLink()) throw invalid("voice_store_corrupt", "Unsafe legacy checklist directory");
-          }
-          const copyOwnedChecklistFile = async (source, target, maximumBytes) => {
-            const handle = await fs.open(source, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
-              .catch((error) => error.code === "ENOENT" ? null : Promise.reject(error));
-            if (!handle) return;
-            let content;
-            try {
-              const before = await handle.stat();
-              if (!before.isFile() || before.size > maximumBytes) throw invalid("voice_store_corrupt", "Invalid legacy checklist file");
-              content = await handle.readFile();
-              if (content.length > maximumBytes) throw invalid("voice_store_corrupt", "Legacy checklist file grew while reading");
-            } finally { await handle.close(); }
-            await fs.writeFile(target, content, { flag: "wx", mode: 0o600 }).catch(async (error) => {
-              if (error.code !== "EEXIST") throw error;
-              const stat = await fs.lstat(target);
-              if (!stat.isFile() || stat.isSymbolicLink() || !(await fs.readFile(target)).equals(content)) {
-                throw invalid("voice_store_corrupt", "Imported checklist differs");
-              }
-            });
-            const imported = await fs.open(target, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
-            try { await imported.sync(); } finally { await imported.close(); }
-            await syncDirectory(path.dirname(target));
-          };
-          await copyOwnedChecklistFile(path.join(sourceDirectory, `${checklistId}.md`), path.join(workspace, taskChecklistPath), MAX_CHECKLIST_BYTES);
-          const completed = checklistId === "main" ? "completed" : `completed-${checklistId}`;
-          const archives = path.join(sourceDirectory, completed);
-          const archiveStat = await fs.lstat(archives).catch((error) => error.code === "ENOENT" ? null : Promise.reject(error));
-          if (archiveStat) {
-            if (!archiveStat.isDirectory() || archiveStat.isSymbolicLink()) throw invalid("voice_store_corrupt", "Unsafe legacy checklist archives");
-            const destination = await ownedDirectory(path.join(workspace, "task-checklists", completed));
-            for (const name of await fs.readdir(archives)) if (name.endsWith(".json") && CHECKLIST_ARCHIVE_ID.test(name.slice(0, -5))) {
-              await copyOwnedChecklistFile(path.join(archives, name), path.join(destination, name), MAX_CHECKLIST_BYTES * 6 + 1024);
-              await readChecklistArchive(name.slice(0, -5));
-            }
-          }
-        }
-      }
-      await fs.rename(path.join(directory, "memory-pending.json"), path.join(directory, "memory-pending-before-isolation.json"))
-        .catch((error) => { if (error.code !== "ENOENT") throw error; });
-      await atomicWrite(activeFile, JSON.stringify(next));
-      active = next;
-    }
     // Existing stores start read. A completion saved before a crash is recovered from
     // the event log before bounded history can discard it.
     const completedEvents = events.filter((event) => event.type === "completed");
@@ -1071,7 +1000,6 @@ export function createVoiceContextService({ rootDir, createClient: clientFactory
       storedMessageCount: byId.size + pairs.length,
       unsummarizedMessageCount: remaining.length * 2,
       memoryCharacterCount: memoryStore?.memoryCharacterCount || 0,
-      ...(orchestratorId && active.isolationVersion !== 1 ? { isolationPending: true } : {}),
       topicJudgeDurationMs: active.topicJudgeMetrics?.durationMs ?? null,
       topicJudgeContextUsagePercent: active.topicJudgeMetrics?.contextUsagePercent ?? null,
     };
@@ -1132,7 +1060,7 @@ export function createVoiceContextService({ rootDir, createClient: clientFactory
 
   async function hasNativeDescendantActivity(rootThreadId) {
     if (!rootThreadId) return false;
-    const client = await (orchestratorId && active.isolationVersion !== 1 ? clientFactory() : createClient());
+    const client = await createClient();
     try {
       await client.openPromise;
       await client.request("initialize", {
@@ -1149,8 +1077,7 @@ export function createVoiceContextService({ rootDir, createClient: clientFactory
         let read;
         try { read = await client.request("thread/read", { threadId, includeTurns: true }, 30000); }
         catch (error) {
-          if ((terminal || orchestratorId && active.isolationVersion !== 1 && threadId === rootThreadId)
-            && /^(?:thread not found|no rollout found for thread id)\b/i.test(String(error?.message))) continue;
+          if (terminal && /^(?:thread not found|no rollout found for thread id)\b/i.test(String(error?.message))) continue;
           throw error;
         }
         if (read?.thread?.id !== threadId) return true;
@@ -1191,7 +1118,7 @@ export function createVoiceContextService({ rootDir, createClient: clientFactory
     // Pre-journal versions can leave dispatching without a native ID. Only an
     // explicit interrupt may abandon that unresolvable legacy operation.
     if (!threadId) return { status: interrupt ? "interrupted" : "unknown" };
-    const client = await (orchestratorId && active.isolationVersion !== 1 ? clientFactory() : createClient());
+    const client = await createClient();
     try {
       await client.openPromise;
       await client.request("initialize", {
@@ -1308,8 +1235,7 @@ export function createVoiceContextService({ rootDir, createClient: clientFactory
         await saveActive({ ...active, pendingDispatch: candidate }, "Voice recovered dispatch could not be synced");
       }
       if (inspected.status === "completed" && candidate?.newParent) await commitParentDispatch(candidate);
-      if (inspected.status === "completed" && taskChecklistPath && active.checklistReadPending !== false
-        && (!orchestratorId || active.isolationVersion === 1)) {
+      if (inspected.status === "completed" && taskChecklistPath && active.checklistReadPending !== false) {
         await append(state.clientOperationId, "failed", { code: "checklist_read_required" });
       } else if (inspected.status === "completed") {
         await append(state.clientOperationId, "completed", {
@@ -2865,7 +2791,6 @@ export function createVoiceContextService({ rootDir, createClient: clientFactory
       if (orchestratorId) { const { onCalendarToolCall, ...ownedHooks } = hooks; hooks = ownedHooks; }
       return exclusive(async () => {
         await load();
-        if (orchestratorId && active.isolationVersion !== 1) throw invalid("session_busy", "Finish or interrupt the legacy operation before starting isolated work");
         const payload = message?.payload;
         const id = payload?.clientOperationId;
         const text = payload?.input?.blocks?.[0]?.text;

@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
+import net from "node:net";
 import path from "node:path";
 import test from "node:test";
 import { createCodexScheduleService } from "../src/codex-schedule-service.mjs";
 import { createVoiceContextService } from "../src/voice-context-service.mjs";
 import { createVoiceOrchestratorService } from "../src/voice-orchestrator-service.mjs";
+import { prepareOrchestratorIsolation } from "../scripts/prepare-orchestrator-isolation.mjs";
 
 function fakeCodex({ hold = false, failSummary = false, failTurn = false, approval = false,
   checklistWrites = [], archiveReads = [], failModelList = () => false } = {}) {
@@ -118,6 +120,14 @@ async function fixture(t, options) {
     createClient: codex.createClient, getAgentService: options?.getAgentService,
     subjectId: "voice-owner", onCompleted: options?.onCompleted,
     onChecklistChanged: options?.onChecklistChanged, activity: options?.activity }) };
+}
+
+async function prepareLegacy(rootDir, apply = true) {
+  const server = net.createServer();
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  await new Promise((resolve) => server.close(resolve));
+  return prepareOrchestratorIsolation({ rootDir, runnerPort: port, codexPort: port, apply });
 }
 
 async function turn(service, orchestratorId, conversationId, text, operationId = randomUUID()) {
@@ -380,12 +390,13 @@ test("clearing one memory switches only its own retained native parent", async (
   assert.equal(JSON.parse(await fs.readFile(files[1], "utf8")).pendingSwitch, undefined);
 });
 
-test("main migration retains history without sharing its old memory or workspace", async (t) => {
+test("offline preparation assigns old memory to main and keeps new specialists empty", async (t) => {
   const { rootDir, codex, service } = await fixture(t);
   const legacy = createVoiceContextService({ rootDir, createClient: codex.createClient });
   const main = await legacy.open();
   const old = await turn(legacy, undefined, main.logicalConversationId, "old main");
   assert.equal((await old.finished).status, "completed");
+  await prepareLegacy(rootDir);
   assert.deepEqual((await service.list()).orchestrators.map(({ id }) => id), ["main"]);
   assert.equal((await service.history("main")).messages[0].text, "old main");
   assert.deepEqual((await service.history("main")).taskChecklist, { status: "missing" });
@@ -421,7 +432,7 @@ test("main migration retains history without sharing its old memory or workspace
   assert.ok(codex.calls.some(({ method, params }) => method === "thread/resume"
     && params.developerInstructions.includes("task-checklists/main.md")));
   const recent = JSON.parse(await fs.readFile(path.join(rootDir, "workspace", "voice-memory", "recent.json"), "utf8"));
-  assert.deepEqual(recent.map(({ user }) => user), ["main again"]);
+  assert.deepEqual(recent.map(({ user }) => user), ["old main", "main again"]);
   const childRecent = JSON.parse(await fs.readFile(path.join(rootDir, "orchestrators", created.id, "workspace", "voice-memory", "recent.json"), "utf8"));
   assert.deepEqual(childRecent.map(({ user }) => user), ["other only"]);
   assert.deepEqual(JSON.parse(await fs.readFile(path.join(workspaces[0], "voice-memory", "recent.json"), "utf8")).map(({ user }) => user), ["old main"]);
@@ -968,6 +979,7 @@ test("first observation startup prepares usage storage and excludes pre-existing
   const opened = await legacy.open();
   const prior = await turn(legacy, undefined, opened.logicalConversationId, "Before learning existed");
   assert.equal((await prior.finished).status, "completed");
+  await prepareLegacy(rootDir);
   const service = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
   const initial = await service.learningStatus();
   assert.equal(initial.status, "unconfigured");
@@ -1113,7 +1125,7 @@ test("each chat exposes only its own unread learning and rejects sibling item ma
     && call.params.developerInstructions?.startsWith("Analyze supplied")).length, 0);
 });
 
-test("legacy unknown remains inspectable and explicitly interruptible before isolation", async (t) => {
+test("runtime refuses old stores without migration side effects, and offline preparation refuses unfinished work", async (t) => {
   const { rootDir, codex, service } = await fixture(t);
   const legacy = createVoiceContextService({ rootDir, createClient: codex.createClient });
   const opened = await legacy.open();
@@ -1122,18 +1134,18 @@ test("legacy unknown remains inspectable and explicitly interruptible before iso
     { type: "accepted", text: "legacy unresolved" }, { type: "dispatching" },
     { type: "unknown", code: "runner_restarted_result_unknown" },
   ].map((event, index) => ({ seq: index + 1, at: new Date().toISOString(), clientOperationId: operationId, ...event }));
-  await fs.writeFile(path.join(rootDir, opened.logicalConversationId, "events.jsonl"),
-    `${events.map((event) => JSON.stringify(event)).join("\n")}\n`);
-  assert.equal((await service.list()).orchestrators.length, 1);
-  assert.equal((await service.status("main", opened.logicalConversationId, operationId)).status, "unknown");
-  assert.equal((await service.getSettings("main")).isolationVersion, 0);
-  assert.equal((await service.learningStatus()).error.code, "orchestrator_isolation_pending");
-  await assert.rejects(turn(service, "main", opened.logicalConversationId, "new work"), { code: "session_busy" });
-  assert.equal(codex.calls.filter((call) => call.method === "turn/start").length, 0);
-  assert.equal((await service.interrupt("main", opened.logicalConversationId, operationId)).status, "interrupted");
+  const file = path.join(rootDir, opened.logicalConversationId, "events.jsonl");
+  await fs.writeFile(file, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`);
+  const before = await fs.readFile(path.join(rootDir, "active.json"), "utf8");
+  await assert.rejects(service.list(), { code: "orchestrator_preparation_required" });
+  assert.equal(await fs.readFile(path.join(rootDir, "active.json"), "utf8"), before);
+  await assert.rejects(fs.stat(path.join(rootDir, "workspace")), { code: "ENOENT" });
+  await assert.rejects(prepareLegacy(rootDir), /unresolved operations/);
+  assert.equal(codex.calls.length, 0, "the isolated runtime never contacts the old shared App Server");
+  events.push({ seq: 4, at: new Date().toISOString(), clientOperationId: operationId, type: "interrupted", code: "explicit_interrupt" });
+  await fs.writeFile(file, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`);
+  await prepareLegacy(rootDir);
   assert.equal((await service.getSettings("main")).isolationVersion, 1);
-  assert.equal((await service.learningStatus()).status, "unconfigured");
-  assert.equal((await (await turn(service, "main", opened.logicalConversationId, "isolated work")).finished).status, "completed");
 });
 
 test("new specialists use canonical defaults and expose no inherited external or Runner tools", async (t) => {
@@ -1164,7 +1176,7 @@ test("new specialists use canonical defaults and expose no inherited external or
   }
 });
 
-test("migration retains exact own To Do archives and leaves mixed memory inactive and unchanged", async (t) => {
+test("offline preparation retains all old To Do files and mixed memory in main only", async (t) => {
   const { rootDir, codex, service } = await fixture(t);
   const legacy = createVoiceContextService({ rootDir, createClient: codex.createClient });
   const opened = await legacy.open();
@@ -1176,21 +1188,23 @@ test("migration retains exact own To Do archives and leaves mixed memory inactiv
   await fs.mkdir(path.join(taskDirectory, "completed"), { recursive: true });
   const markdown = "- [x] Own completed task\n";
   await fs.writeFile(path.join(taskDirectory, "main.md"), markdown);
-  await fs.writeFile(path.join(taskDirectory, `${randomUUID()}.md`), "- [ ] Other task\n");
+  const otherTask = `${randomUUID()}.md`;
+  await fs.writeFile(path.join(taskDirectory, otherTask), "- [ ] Other task\n");
   const archiveId = `${Date.now()}-${randomUUID()}`;
   const archive = { archiveId, completedAt: new Date().toISOString(), markdown,
     sourceHash: createHash("sha256").update(markdown).digest("hex"), sourcePath: "task-checklists/main.md",
     workspaceId: opened.logicalConversationId };
   await fs.writeFile(path.join(taskDirectory, "completed", `${archiveId}.json`), JSON.stringify(archive));
+  await prepareLegacy(rootDir);
   await service.list();
   const ownedWorkspace = path.join(rootDir, "workspace");
   assert.deepEqual((await service.history("main")).taskChecklist, { status: "present", markdown });
   assert.deepEqual(JSON.parse(await fs.readFile(path.join(ownedWorkspace, "task-checklists", "completed", `${archiveId}.json`), "utf8")), archive);
-  assert.deepEqual((await fs.readdir(path.join(ownedWorkspace, "task-checklists"))).sort(), ["completed", "main.md"]);
+  assert.deepEqual((await fs.readdir(path.join(ownedWorkspace, "task-checklists"))).sort(), ["completed", "main.md", otherTask].sort());
   assert.equal(await fs.readFile(path.join(workspace, "voice-memory", "recent.json"), "utf8"), before);
   assert.equal((await service.learningStatus()).pendingCount, 0);
   assert.equal((await (await turn(service, "main", opened.logicalConversationId, "New own request")).finished).status, "completed");
   const ownPairs = JSON.parse(await fs.readFile(path.join(ownedWorkspace, "voice-memory", "recent.json"), "utf8"));
-  assert.deepEqual(ownPairs.map((pair) => pair.user), ["New own request"]);
+  assert.deepEqual(ownPairs.map((pair) => pair.user), ["Old own conversation", "Other chat secret", "New own request"]);
   assert.equal(codex.calls.some((call) => call.method === "thread/inject_items"), false);
 });
