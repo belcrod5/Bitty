@@ -31,7 +31,7 @@ type UseDirectorySessionTreeControllerArgs = {
     directoryPath: string,
     options?: FetchSessionHistoryOptions
   ) => Promise<LlmSessionHistoryResult>;
-  fetchSessionHistoryBatch?: (directories: string[], options: FetchSessionHistoryOptions) => Promise<LlmSessionHistoryBatchGroup[]>;
+  fetchSessionHistoryBatch: (directories: string[], options: FetchSessionHistoryOptions) => Promise<LlmSessionHistoryBatchGroup[]>;
   runnerWebSocketManager?: RunnerWebSocketManager;
   connectionScope?: string;
   fetchSessionChildrenHistory: (
@@ -449,7 +449,7 @@ export function useDirectorySessionTreeController({
         const received = new Set(result.entries.map((entry) => `${entry.backendId}:${entry.sessionId}`));
         const entries = errors.length > 0
           ? [...result.entries, ...latest.entries.filter((entry) => (
-            ((failedBackends.has("") && !result.successfulBackendIds?.includes(entry.backendId)) || failedBackends.has(entry.backendId)) && !received.has(`${entry.backendId}:${entry.sessionId}`)
+            (failedBackends.has("") || failedBackends.has(entry.backendId)) && !received.has(`${entry.backendId}:${entry.sessionId}`)
           ))]
           : result.entries;
         if (errors.length > 0) entries.sort((a, b) => (
@@ -857,37 +857,30 @@ export function useDirectorySessionTreeController({
       });
     };
     const batchFetch = fetchSessionHistoryBatchRef.current;
-    if (batchFetch) {
-      const pending = new Map<string, { resolve: (result: LlmSessionHistoryResult) => void; reject: (error: Error) => void }[]>();
-      const collect: NonNullable<Parameters<typeof loadFirstPage>[3]> = (directory) => new Promise((resolve, reject) => {
-        const waiting = pending.get(directory) || [];
-        waiting.push({ resolve, reject });
-        pending.set(directory, waiting);
-      });
-      // Start the existing load boundary before sending: generations, read overrides and joins remain shared.
-      const work = intent.targets.map((target) => runTarget(target, collect));
-      if (pending.size > 0) {
-        try {
-          const groups = await batchFetch([...pending.keys()], { limit: directorySessionPageSize, includeRunnerSnapshots: true });
-          for (const [directory, waiting] of pending) {
-            const group = groups.find((entry) => entry.cwd === directory);
-            for (const waiter of waiting) {
-              if (group?.result) waiter.resolve(group.result);
-              else waiter.reject(group?.error || new Error("Session batch result missing"));
-            }
+    const pending = new Map<string, { resolve: (result: LlmSessionHistoryResult) => void; reject: (error: Error) => void }[]>();
+    const collect: NonNullable<Parameters<typeof loadFirstPage>[3]> = (directory) => new Promise((resolve, reject) => {
+      const waiting = pending.get(directory) || [];
+      waiting.push({ resolve, reject });
+      pending.set(directory, waiting);
+    });
+    // Start the existing load boundary before sending: generations, read overrides and joins remain shared.
+    const work = intent.targets.map((target) => runTarget(target, collect));
+    if (pending.size > 0) {
+      try {
+        const groups = await batchFetch([...pending.keys()], { limit: directorySessionPageSize, includeRunnerSnapshots: true });
+        for (const [directory, waiting] of pending) {
+          const group = groups.find((entry) => entry.cwd === directory);
+          for (const waiter of waiting) {
+            if (group?.result) waiter.resolve(group.result);
+            else waiter.reject(group?.error || new Error("Session batch result missing"));
           }
-        } catch (error) {
-          const failure = error instanceof Error ? error : new Error(String(error));
-          for (const waiting of pending.values()) for (const waiter of waiting) waiter.reject(failure);
         }
+      } catch (error) {
+        const failure = error instanceof Error ? error : new Error(String(error));
+        for (const waiting of pending.values()) for (const waiter of waiting) waiter.reject(failure);
       }
-      await Promise.all(work);
-    } else {
-      let cursor = 0;
-      await Promise.all(Array.from({ length: Math.min(directorySessionPrefetchConcurrency, intent.targets.length) }, async () => {
-        while (cursor < intent.targets.length) await runTarget(intent.targets[cursor++]);
-      }));
     }
+    await Promise.all(work);
     setDirectorySessionSync((current) => {
       if (current.cycleId !== cycleId) return current;
       const usableCountAfterCycle = intent.targets.filter((target) => (
@@ -909,7 +902,7 @@ export function useDirectorySessionTreeController({
         completedAtMs: Date.now(),
       };
     });
-  }, [directorySessionPageSize, directorySessionPrefetchConcurrency, loadFirstPage]);
+  }, [directorySessionPageSize, loadFirstPage]);
 
   const startSyncDrain = useCallback(() => {
     // ブートストラップ前はintentを保留したまま開始しない(bootstrapReadyのeffectがdrainする)。

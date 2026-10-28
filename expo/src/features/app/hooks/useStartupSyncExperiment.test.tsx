@@ -29,26 +29,22 @@ async function runDirectoryScenario(gateOnReady: boolean) {
   let ready = false;
   let requests = 0;
   let failures = 0;
-  const fetchSessionHistory = async (directory: string) => {
+  const fetchSessionHistoryBatch = async (paths: string[]) => {
     requests += 1;
     if (!ready) {
       failures += 1;
       throw new Error("runner_ws_inactive");
     }
     await delay();
-    const entry: LlmSessionHistoryEntry = {
-      backendId: "codex", sessionId: directory, parentSessionId: "", directory,
-      updatedAt: "2026-10-27T00:00:00Z", lastReadAt: "", source: "cli", cwd: directory,
-      firstUserMessage: "latest", agentRole: "", agentDisplayName: "", contextUsedPct: 12,
-      modelRef: "current-model", reasoningEffort: "low",
-    };
-    return { latestSessionId: directory, nextCursor: "", entries: [entry] };
+    return paths.map((directory) => ({ cwd: directory, result: {
+      latestSessionId: directory, nextCursor: "", entries: [cacheExperimentEntry(directory, "new", "latest")],
+    } }));
   };
   const { result, rerender, unmount } = await renderHook(({ wsReady }: { wsReady: boolean }) => {
     const [trees, setTrees] = useState<Record<string, DirectorySessionTreeState>>({});
     const controller = useDirectorySessionTreeController({
       directorySessionsById: trees, setDirectorySessionsById: setTrees, setExpandedDirectoryIds: () => {},
-      fetchSessionHistory, fetchSessionChildrenHistory: async () => ({}),
+      fetchSessionHistory: jest.fn(), fetchSessionHistoryBatch, fetchSessionChildrenHistory: async () => ({}),
       emptyDirectorySessionTreeState: emptyTree, directorySessionPageSize: 5,
       directorySessionPrefetchTtlMs: 60_000, directorySessionPrefetchConcurrency: 2,
       registeredDirectories: directories,
@@ -64,7 +60,7 @@ async function runDirectoryScenario(gateOnReady: boolean) {
     await rerender({ wsReady: true });
     // Baseline recovery is immediate on ready; deliberately add no artificial retry penalty.
     if (!gateOnReady) await act(async () => { void result.current.controller.ensureRegisteredDirectorySessions("auth_recovery"); });
-    await act(async () => { await jest.advanceTimersByTimeAsync(13 * REQUEST_MS); });
+    await act(async () => { await jest.advanceTimersByTimeAsync(REQUEST_MS); });
     const sync = result.current.controller.directorySessionSync;
     expect(sync).toMatchObject({ phase: "complete", succeededCount: 25, failedCount: 0 });
     return {
@@ -79,12 +75,12 @@ async function runDirectoryScenario(gateOnReady: boolean) {
 test("simulation: ready gating avoids failed requests without inventing a speed gain", async () => {
   const baseline = await runDirectoryScenario(false);
   const gated = await runDirectoryScenario(true);
-  expect(baseline).toMatchObject({ requests: 50, failures: 25, completedMs: 620 });
-  expect(gated).toMatchObject({ requests: 25, failures: 0, completedMs: 620 });
+  expect(baseline).toMatchObject({ requests: 2, failures: 1, completedMs: 140 });
+  expect(gated).toMatchObject({ requests: 1, failures: 0, completedMs: 140 });
   expect(gated.entries).toEqual(baseline.entries);
   expect(gated.entries).toHaveLength(25);
   console.info("SIMULATION ready gate", {
-    assumptions: { readyMs: READY_MS, requestMs: REQUEST_MS, directories: 25, concurrency: 2 },
+    assumptions: { readyMs: READY_MS, requestMs: REQUEST_MS, directories: 25, batchRequestsPerCycle: 1 },
     baseline: { requests: baseline.requests, failures: baseline.failures, completedMs: baseline.completedMs },
     gated: { requests: gated.requests, failures: gated.failures, completedMs: gated.completedMs },
   });
@@ -182,10 +178,13 @@ async function runCacheScenario(cacheAgeMs: number | null, forceRefresh = false)
     if (firstUsableMs === null && trees[directories[0].id]?.loaded) firstUsableMs = Date.now() - startedAt;
     const controller = useDirectorySessionTreeController({
       directorySessionsById: trees, setDirectorySessionsById: setTrees, setExpandedDirectoryIds: () => {},
-      fetchSessionHistory: async (directory) => {
+      fetchSessionHistory: jest.fn(),
+      fetchSessionHistoryBatch: async (paths) => {
         requests += 1;
         await delay();
-        return { latestSessionId: `${directory}/new`, nextCursor: "", entries: latest(directory) };
+        return paths.map((directory) => ({ cwd: directory,
+          result: { latestSessionId: `${directory}/new`, nextCursor: "", entries: latest(directory) },
+        }));
       },
       fetchSessionChildrenHistory: async () => ({}), emptyDirectorySessionTreeState: emptyTree,
       directorySessionPageSize: 5, directorySessionPrefetchTtlMs: 60_000,
@@ -221,7 +220,7 @@ test("simulation: hydrated list cache displays immediately, but latest refresh s
   // The same stale-tree boundary represents an in-memory tree after a long suspension.
   const longResume = await runCacheScenario(10 * 60_000, true);
   for (const run of [cold, cachedRestart, longResume]) {
-    expect(run).toMatchObject({ completedMs: 520, requests: 25 });
+    expect(run).toMatchObject({ completedMs: 40, requests: 1 });
     expect(run.entries).toEqual(run.expectedLatest); // update, create and delete all reflected
   }
   expect(cold).toMatchObject({ firstUsableMs: 40, phaseDuringRequest: "loading" });
@@ -231,7 +230,7 @@ test("simulation: hydrated list cache displays immediately, but latest refresh s
   const summary = ({ firstUsableMs, completedMs, requests, phaseDuringRequest }: Awaited<ReturnType<typeof runCacheScenario>>) =>
     ({ firstUsableMs, completedMs, requests, phaseDuringRequest });
   console.info("SIMULATION list cache", {
-    assumptions: { requestMs: REQUEST_MS, directories: 25, concurrency: 2, cacheAlreadyHydrated: true },
+    assumptions: { requestMs: REQUEST_MS, directories: 25, batchRequestsPerCycle: 1, cacheAlreadyHydrated: true },
     cold: summary(cold), cachedRestart: summary(cachedRestart), longResume: summary(longResume),
   });
 });
@@ -242,6 +241,6 @@ test("simulation: a TTL-only cache skips requests and misses changes until expli
   expect(skipped.entries).not.toEqual(skipped.expectedLatest);
   expect(skipped.entries.some((entry) => entry.sessionId.endsWith("/deleted"))).toBe(true);
   const refreshed = await runCacheScenario(10_000, true);
-  expect(refreshed).toMatchObject({ firstUsableMs: 0, completedMs: 520, requests: 25 });
+  expect(refreshed).toMatchObject({ firstUsableMs: 0, completedMs: 40, requests: 1 });
   expect(refreshed.entries).toEqual(refreshed.expectedLatest);
 });

@@ -74,6 +74,18 @@ function post(baseUrl, body, authorization = "Bearer test-runner-token") {
   });
 }
 
+test("removed GET /sessions listing returns 404", async () => {
+  await withServer(async (baseUrl) => {
+    const url = new URL(`${baseUrl}/sessions`);
+    url.searchParams.set("directory", directory);
+    url.searchParams.set("source", "all");
+    url.searchParams.set("limit", "5");
+    const response = await fetch(url, { headers: { authorization: "Bearer test-runner-token" } });
+    assert.equal(response.status, 404);
+    assert.deepEqual(await response.json(), { error: "not_found" });
+  });
+});
+
 test("POST /session-summaries requires runner authentication", async () => {
   await withServer(async (baseUrl) => {
     const response = await post(baseUrl, JSON.stringify({

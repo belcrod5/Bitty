@@ -208,7 +208,6 @@ export type CodexThreadListResult = {
   data: CodexThreadListEntry[];
   nextCursor: string;
   backwardsCursor: string;
-  successfulBackendIds?: string[];
   // all-backendsスコープでの部分失敗診断。成功Backendの一覧は保持される。
   partialErrors?: Array<{ code?: string; backendId?: string; message?: string; retryable?: boolean }>;
 };

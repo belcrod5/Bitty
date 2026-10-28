@@ -1,11 +1,11 @@
 # Bitty 起動と初回同期の設計
 
 作成日: 2026-10-27
-状態: 専用worktreeで実装・自動テスト済み（2026-10-27）。main・稼働Runner・実機には未適用。
+状態: 起動同期改善はmainへ統合・実機確認済み。アプリの旧版一覧互換とサーバーの未使用一覧APIの削除を専用worktreeで検証中（2026-10-28）。
 調査開始の基準: `e891073`。実装の統合基準: `d2a0ea5`（既存の接続indicator改善を維持）。前提: [作業手順](GIT-WORKTREE.md)、[前回の改善結果](初回セッション同期-改善計画.md)。
 
-実装済み: WS readyでのintent開始、cycle内hello 1回、上限付き全登録先batch、旧server fallback、接続・認証scope分離、部分失敗の表示保持と再取得、Claudeの不要な子列挙の削除。最新の実装・検証記録は第18節。
-未実装: 永続一覧cache、一覧ETag、内部の全登録先走査を1回へまとめる変更。既存メモリcacheは維持し、実機の起動・復帰速度は未検証。
+実装済み: WS readyでのintent開始、cycle内hello 1回、上限付き全登録先batch、接続・認証scope分離、部分失敗の表示保持と再取得、Claudeの不要な子列挙の削除。最新の実装・検証記録は第18節。
+未実装: 永続一覧cache、一覧ETag、内部の全登録先走査を1回へまとめる変更。既存メモリcacheは維持する。実機で確認した一覧区間と限界は第18節に記録する。
 
 ## 1 目的と採用する方向
 
@@ -14,7 +14,7 @@
 キャッシュを表示できたことだけで、最新同期が完了したことにはしない。
 
 次の主施策は、最新取得を維持し、全登録先の先頭ページ一覧を既存WebSocketの1つのbatch要求にまとめることである。特定directoryの先行取得は追加しない。表示中popupの本文は既存の独立したhydrate・resume・live経路で最新化し、一覧batchの完了を待たせない。登録先そのもののHTTP `client-state`取得とは区別する。
-単一batchの上限内で25登録先をすべて実取得する通常成功時は、hello 1回＋一覧batch 1回の計2要求を想定する。実取得対象なしなら0要求。上限超過・TTL skip・失敗回復・旧serverへのfallbackでは要求数が変わる。`llmDirectory`やpopupから一覧の優先先を選ぶ処理、作業directoryの変更、新しい優先制御層は不要とする。
+単一batchの上限内で25登録先をすべて実取得する通常成功時は、hello 1回＋一覧batch 1回の計2要求を想定する。実取得対象なしなら0要求。上限超過・TTL skip・失敗回復では要求数が変わる。`llmDirectory`やpopupから一覧の優先先を選ぶ処理、作業directoryの変更、新しい優先制御層は不要とする。
 全登録先の先頭ページ、limit、cursor、summary、title、read state、部分失敗の既存契約を維持する。取得対象を表示中だけに狭めず、画面ごとの再試行や独自cacheを増やさない。
 最初の変更ではservice内部の25回のfresh取得を維持してよい。Claudeの不要な子列挙の削除と、同じ全体走査の繰り返しを減らす修正は、その後に独立して検証する。通信をまとめるだけで走査も減るとは扱わない。
 
@@ -129,12 +129,12 @@ ready時は保留intentを一度drainし、screen_mountとauth_recoveryなど同
 一覧を使う画面ごとにready待ちやタイマーを追加しない。
 通常のコールド起動でready前の一覧要求がなくなることを合格条件とし、秒単位の効果は実測で判断する。
 
-### 5.2 同期cycle内の互換性確認を1回にする
+### 5.2 同期cycle内の現行protocol確認を1回にする
 
 実取得対象がある同期cycleでは、同じmanager・URL・token・接続generationのhelloを1回だけ行い、そのcycleの一覧要求に必要なprotocolとbatch対応を確認する。登録先ごとに同じhelloを繰り返さない。
 結果の利用範囲はそのcycle内の同一接続に限定し、cycle終了・失敗、URL/token/generation変更で破棄する。途中で接続が変われば古い応答を適用せず、既存の回復経路で新しいcycleを確認し直す。
 これはbackend readinessやモデル一覧を接続期間中ずっと固定するcacheではない。Agent serviceは各一覧でbackend状態を新しく確認し、UIのモデルカタログなど別用途のhelloは既存の更新契機を保つ。
-旧protocolとraw fallbackの契約は維持する。batch非対応なら、確認済みの互換性情報を使いつつ、既存の登録先ごとの一覧要求へ戻す。fallbackのために新しいpollや再試行タイマーを追加しない。
+一覧同期は現行Agent protocolとbatch対応を必須とする。非対応・不正hello・backend広告なしは失敗として返し、個別一覧やraw Codex一覧へ退行しない。通信失敗は既存の回復経路で扱い、新しいpollや再試行タイマーを追加しない。
 第11節の進行中helloだけを共有する試案とは異なり、今回は全登録先の一覧を取得する1つのcycleを確認単位とする。
 
 ### 5.3 全登録先の一覧を1つのWS要求にまとめる
@@ -148,13 +148,13 @@ ready時は保留intentを一度drainし、screen_mountとauth_recoveryなど同
 | 既存の境界 | 変更する責務 |
 | --- | --- |
 | 一覧controller | intentの併合、対象revision、進捗・error・tree適用を維持し、全実取得対象をまとめて渡す。画面側に取得判断を複製しない |
-| Agent client | cycleのhello結果でbatch対応を確認し、既存WSで送受信する。未対応serverでは同じ一覧契約の個別要求に戻す |
+| Agent client | cycleのhello結果でbatch対応を確認し、既存WSで送受信する。未対応serverはエラーにし、個別要求への切替を行わない |
 | Agent WS transport | 認証済み接続のsubjectと既存の要求制約を維持し、batchの入力形式・件数・サイズを検証してserviceへ渡す。ここへ一覧の合成や再試行判断を持ち込まない |
 | Agent service | まずは既存`listSessions`を対象ごとに並列2で呼び、独立した結果とerrorをまとめる。backend状態・cursor・summary・title・read stateの責務を再実装しない |
 
 `listSessionSnapshot`はunpagedで、現行一覧とsummary・title・cursorなどの契約が揃わないため、先頭ページAPIの代用品にしない。最初から一覧基盤を置き換えず、既存のservice呼出を1つのwire要求にまとめる最小の変更にする。
 既存の一覧が持つ認証・subject・cwdの可視範囲をbatchでも広げない。現在`service.listSessions`がexecution用`workspaceAdmission.assertAllowed`を呼ぶ実装ではないことも踏まえ、最適化のついでに別の厳しいadmission policyを追加しない。
-batch非対応が事前に分かる場合は最初から個別要求にし、未対応errorでも既に成功した対象は再取得しない。受理後のtimeout・切断では全対象へ即座に再送せず、既存の失敗・世代・対象別回復に従う。新しいタイマーや二重の回復層を作らない。
+batch非対応や未対応errorは失敗として保持し、個別要求へ再送しない。先行chunkの成功は保持する。受理後のtimeout・切断では全対象へ即座に再送せず、既存の失敗・世代・対象別回復に従う。新しいタイマーや二重の回復層を作らない。
 
 ## 6 キャッシュの扱い
 
@@ -189,7 +189,7 @@ cacheから表示した木は「表示可能」だが「今回の取得成功」
 - ボードingestの30秒間隔、一覧の60秒TTLも既存の範囲として扱う。ボードGETだけを全一覧の最新確認の代用にしない。
 - 新規・更新・削除・rename、同じサイズの更新、圧縮ファイルへの置換を隔離フィクスチャで検証する。mtime・size一致だけの既存検出限界を新たな鮮度保証に使わない。
 - 一覧の先頭ページ成功は、そのページの置換を意味する。続きページを取得していないことと、セッションが削除されたことを区別する。
-- backend部分失敗やraw fallbackを完全なall-backends最新結果として固定しない。成功backendの表示を残し、未確認backendを再取得できることを保つ。
+- backend部分失敗を完全なall-backends最新結果として固定しない。成功backendの表示を残し、未確認backendを再取得できることを保つ。
 - 登録先削除・path変更では、既存のtarget revisionとgenerationによる古い応答の破棄を維持する。
 - Runner変更時の一覧分離は、`useRunnerClientState`の登録先リセットと一覧controllerの更新順序を検証する。同一pathが両Runnerにある場合も古い応答を適用しないことを確認し、既存のtarget revisionだけで保護されるとは仮定しない。永続cache追加の前提条件とする。
 - 会話復元はlive observerと送信中turnを優先する。起動・復帰・一覧更新が本文を巻き戻したり、承認待ちを解除したりしない。
@@ -211,7 +211,7 @@ cacheから表示した木は「表示可能」だが「今回の取得成功」
 | 本文・子一覧・Git・モデル等の同時間帯の要求とbytes | 必要な通信と資源競合を分ける |
 
 1. 既存診断へ必要な起点と完了だけを補い、表示中popup本文の最新適用・カードpreview表示・全一覧完了・実要求数の基準を揃える。同時に第9節の契約テストを用意する。新しい監視基盤は作らない。
-2. 第5.3節のWS batchを実装する。接続が実行可能になるまで既存intentを保留し、cycle内のhello 1回と全実取得対象のbatchにまとめ、directory別の先行取得は作らない。既存popup本文の取得とlive復旧を一覧待ちにしない。全登録先の範囲、部分失敗・回復、認証とsubject、入力制約、旧server fallbackを維持する。最初は内部25回のfresh一覧取得を残してよい。
+2. 第5.3節のWS batchを実装する。接続が実行可能になるまで既存intentを保留し、cycle内のhello 1回と全実取得対象のbatchにまとめ、directory別の先行取得は作らない。既存popup本文の取得とlive復旧を一覧待ちにしない。全登録先の範囲、部分失敗・回復、認証とsubject、入力制約を維持し、旧serverへの一覧fallbackは削除する。最初は内部25回のfresh一覧取得を残してよい。
 3. backendの重複I/Oを別変更で減らす。Claudeの不要な子列挙を入口で省く案は5000件境界・走査中競合・symlink・既存回帰suiteで確認する。複数登録先が同じ全体走査を繰り返す部分も、最小のbackend境界で同じfresh走査を共有できるか検証する。index force更新の後続走査契約を崩さない。
 4. 同じ実機・経路・対象数・稼働revisionで変更前後を測る。popup本文の最新化、カードpreview、全登録先完了、要求数・bytes・失敗を比較し、loopbackや人工80ms条件の値を実機効果として使わない。通信整理と走査整理の効果は別々に確認する。
 5. その結果で必要ならETagと永続一覧cacheを別々に検討する。前者は変更なし本文の転送・parse削減、後者は復元表示が目的で、fresh取得や実機改善の代わりにはしない。cold起動でsnapshotを復元できなければETagだけでは初回本文を省けない。
@@ -225,9 +225,9 @@ cacheから表示した木は「表示可能」だが「今回の取得成功」
 | --- | --- |
 | controllerと接続準備 | 設定済み・WS未readyでは送信しない。readyで保留を1回実行し、保留中の対象変更を反映する。一覧の先行directoryを追加せず、全実取得対象を1つのbatchへ渡す。既存popup本文の直接取得とlive復旧を妨げない |
 | cycleのhello | 同一cycle・同一接続で1回。失敗後は再確認し、manager・URL・token・generation変更をまたいで結果を流用しない。各一覧のbackend readinessはfreshに確認し、別用途のカタログ更新を止めない |
-| WS batchとfallback | 単一batch上限内の25対象を全取得する通常成功時は2要求、実取得対象なしなら0要求。作業directory・popup状態で要求を分けず、切替だけで進行中cycleを再実行しない。非対応serverは個別一覧に戻し、成功済みを再取得しない。受理後timeoutで一律二重送信しない |
+| WS batchと非対応時の失敗 | 単一batch上限内の25対象を全取得する通常成功時は2要求、実取得対象なしなら0要求。作業directory・popup状態で要求を分けず、切替だけで進行中cycleを再実行しない。非対応serverはエラーにし、個別一覧やraw一覧へ退行しない。成功済みを再取得しない。受理後timeoutで一律二重送信しない |
 | 一覧の内容 | 全登録先の先頭limit 5、独立cursorと実際の次ページ、Codex/Claudeの並び順と最新summary、共有title、read state、成功空一覧を維持する。登録先単位と複数backendの部分失敗・次回回復を確認する |
-| transportと競合 | 既存の認証・subject・cwd可視範囲、batch形式・件数・サイズ制限、未知operation・旧protocol・raw fallback。切断、再接続、認証変更、登録先削除・path変更中のbatch応答を誤適用しない |
+| transportと競合 | 既存の認証・subject・cwd可視範囲、batch形式・件数・サイズ制限、未知operation・旧protocolはエラーにする。切断、再接続、認証変更、登録先削除・path変更中のbatch応答を誤適用しない |
 | 会話とボード | 既知のpopup本文は一覧未完了でも直接取得・resumeできる。起動復元とresumeの競合回避、送信中turn、承認待ち、未読・既読、カード名、親子一覧、一覧外の配置カード、部分backend失敗を維持し、batchの資源競合・結果適用集中で本文更新やpreviewを壊さない |
 | backendの走査変更 | 外部CLIの追加・更新・削除、同時write、index forceの後続走査、5000件境界・symlink・metadata更新検出。WS batchだけで走査削減済みとはしない |
 | 後続でcacheを追加する場合 | cold起動でも最新要求。cache無・破損・上限超過、cacheとnetworkの逆順完了、削除、異なるRunner/backend/path、保存中kill、失敗時の表示保持。ETag非対応・304と保存本文不一致・取得失敗も確認する |
@@ -248,10 +248,10 @@ LANとTunnel、アプリcold/端末cache有無、Runner cold/warmを分け、そ
 ## 10 設計レビューで確定する事項
 
 一覧の最新確認は既存の全登録先・先頭ページの範囲を維持し、全実取得対象をWS batchにする方針とする。directory優先を追加せず、popup本文の最新化は既存の独立経路を維持する。HTTPのETag導入や永続一覧cacheを先に必須化せず、可視カードだけに対象を縮めない。
-WS実装前に、batchのadvertiseと非対応fallback、要求形式と上限、登録先・backend別errorの表現、既存の認証・subject・cwd可視範囲、接続・対象変更時の破棄をレビューする。prototypeはこれらの本番契約を検証済みとはしない。
+WS実装前に、batchのadvertiseと非対応時の明示エラー、要求形式と上限、登録先・backend別errorの表現、既存の認証・subject・cwd可視範囲、接続・対象変更時の破棄をレビューする。prototypeはこれらの本番契約を検証済みとはしない。
 backend走査の共有は独立レビューとし、unpaged snapshotで一覧契約を置き換えない。永続cacheを後から採用する段階でのみ安全なRunner識別を確定する。性能目標は統一実機計測で決める。
 
-以下の第11〜17節は実装前の実験時点の結果と判断を残した記録である。現行設計は第5.3節・第8節、実装済みの差分と検証は第18節に従う。アプリへの反映後の動作・速度・実機表示は未検証であり、前回資料のテスト結果を今回の検証結果として扱わない。
+以下の第11〜17節は実装前の実験時点の結果と判断を残した記録である。現行設計は第5.3節・第8節、実装済みの差分と検証は第18節に従う。本節の実装前prototypeは本番契約の検証ではない。実機の確認済み範囲は第18.12節、今回の旧版互換削除後の実機動作は未確認であり、前回資料の結果を今回の検証結果として扱わない。
 
 ## 11 ビルドなしで行った小さい比較実験
 
@@ -708,3 +708,38 @@ run `20261027_170230_450`、受信cutoff `2026-10-27T09:56:01.795Z`（18:56:01.7
 各系列の初診断から15秒では、cache hitは35／36回（各34 session、差分0は33／35回）、hydrate開始と完了は34／35回（各34 session）だった。panel・session・directoryの組は34／35種で各組1回、同一組のhydrate重複とsupersededは両系列0だった。15秒内の観測eventは388／396件。以前の2回目には32 sessionでcache hit62回・superseded28回・seq欠損104件があったが、今回は対象数・条件が異なるため、修正による因果的な秒数差は断定しない。cache hitの1／2回の反復も別callerを含み、不要再取得とは断定しない。cache hitにもfreshな差分通信がある。detailedへ移した3eventは今回も両系列0件だった。
 
 全系列のWS送信はhello78・個別list35・batch1と、hello77・個別list33・batch1で、他機能を含み、起動一覧だけの通信数ではない。各系列にrestore error1件・Git error9件も記録されたが、一覧の成功集計とは分けて扱う。約1.94秒は一覧開始からの処理区間で、WS接続・UI描画・アプリ起動全体の時間ではない。今回は観測範囲内で完了まで欠損なく確認できたが、任意条件でのログ配送保証はしない。安全な元集計を第21群へ保存し、code変更・追加build／Runner再起動は行っていない。
+
+
+### 18.13 一覧同期の旧版互換経路を削除（2026-10-28）
+
+旧版対応不要という方針に合わせ、一覧のbatch非対応時に個別一覧へ再送する分岐と、Agent一覧からraw `thread/list`へ退行する処理を削除した。controllerのbatch取得を必須にし、任意callbackによる旧cycle経路も削除した。raw一覧専用helper・transport引数・`successfulBackendIds`の型と適用配線も不要となる。上記の過去節にある旧server/raw一覧fallback維持は当時の設計・観測記録で、現行方針は本節と第5節が優先する。
+
+現行Agentの個別一覧はページング・子一覧・最新1件取得で使うため維持する。HTTP補足も現行ACP・CLI読取失敗等のsummary欠損と一覧外カードの解決に必要で、旧互換だけの処理ではない。会話本文のraw read・turnも今回の一覧削除に含めない。新しい設定・互換adapter・抽象層・依存は追加しない。
+
+非対応hello／空backend広告は明示エラー、batch側の未対応error／timeoutは対象groupの失敗として返し、先行chunkの成功を保持する。接続generation・認証scope・対象変更時の破棄、backend部分失敗時の既存表示保持、個別追加ページ・子取得・HTTP補足を関連契約テストで確認する。現行batch成功時の通信数を変える最適化ではなく、不要な実装と失敗時の別方式への再送を削る変更であり、速度向上は主張しない。
+
+関連JestはAgent client・thread一覧変換・一覧controller・Explorer・同期実験の5suite／152件、既存server契約はagent service・transport・Claude backendの133件、default／macOS型チェックと`git diff --check`が成功した。非対応protocol、空backend広告、batch未対応error、不正group長・cwd・sessions型、後半chunk失敗、接続切替で旧方式へ再送しないことも確認した。同期実験fixtureは現行の1batch応答へ更新しており、過去に保存した人工測定値を変更せず、新しい実機性能測定とも扱わない。実機build・Runner再起動はエージェントでは行っておらず、削除後の実機確認は未実施。
+
+### 18.14 サーバー側の未使用一覧APIを削除（2026-10-28）
+
+受付と現行callerを照合し、旧HTTP一覧 `GET /sessions` を削除した。現行アプリ・CLIからの呼出しはなく、repo内の参照は過去の設計記録と独立した合成HTTP benchmarkのみだった。第18.13節までの削除はアプリ側であり、この受付は残っていた。過去の設計書にある `/sessions` 維持方針は本節で変更する。
+
+現行Agentの個別・batch一覧が使う内部 `listLlmSessions` は維持する。HTTP `GET /agent/sessions` は `bitty-session` CLIの一覧、`sessions.list` はページング・子一覧・最新1件、`/session-summaries`・`/session-messages`・既読APIは現行取得で使うため削除しない。raw `thread/list` は汎用RPC中継で通るが、旧一覧専用の受付実装ではないため、今回その中継へ新しい禁止分岐は追加しない。
+
+未使用routeの削除だけとし、転送・互換adapter・設定は追加しない。サーバー変更を含むため、反映には対象worktreeのRunner再起動が必要。第18.13節のアプリ変更が未反映ならアプリbuildも必要である。実機build・Runner再起動はエージェントでは行わない。
+
+関連Nodeテストはsummary・本文差分・既読endpoint、Agent service・transport、CLIの6file／115件が成功した。認証付きqueryで旧一覧が404になるtestは、旧routeを一時復元した状態では200が返り失敗し、削除後に成功することを確認した。現行 `/agent/sessions` の一覧・summary、個別／batch一覧、CLI一覧、既読・本文取得の既存契約を維持した。`git diff --check`も成功。ログは `/tmp/bitty-unused-listing-server-tests.log`、`/tmp/bitty-unused-listing-regression-{before,after}.log`。実機反映後の確認は未実施である。
+
+実行コマンド（repo root）:
+
+```sh
+node --test private_runner/tests/session-summaries-endpoint.test.mjs private_runner/tests/session-messages-delta-endpoint.test.mjs private_runner/tests/sessions-read-endpoint.test.mjs private_runner/tests/agent-service.test.mjs private_runner/tests/agent-transport.test.mjs private_runner/tests/bitty-session-cli.test.mjs
+node --test --test-name-pattern='removed GET /sessions' private_runner/tests/session-summaries-endpoint.test.mjs
+git diff --check
+```
+
+### 18.15 未使用API削除後の稼働Runner確認（2026-10-28）
+
+ユーザーによるRunner再起動後、許可を得てlocalhostへ読み取り専用の確認を行った。確認時刻は `2026-10-28T09:03:40.120Z`（18:03:40.120 JST）。health・client-stateは200、削除した `GET /sessions` はquery付きでも404／`not_found`、Agent helloはprotocol 2・2backendだった。登録26先の一覧batchは1要求・105行・978msで、失敗group・部分失敗はともに0だった。
+
+現行の個別Agent一覧は16ms／1行、HTTP `/agent/sessions` は200・17ms／1行、summary取得は200・10ms／1行で成功した。安全な集計は `/tmp/bitty-live-sync-check-result.json`、確認scriptは `/tmp/bitty-live-sync-check.cjs`。この時間はlocalhostのAPI区間であり、アプリ起動全体やUI表示時間、変更による因果的な前後差を示さない。削除後の新アプリbuildは未確認で、エージェント自身によるRunner再起動・アプリbuildは行っていない。

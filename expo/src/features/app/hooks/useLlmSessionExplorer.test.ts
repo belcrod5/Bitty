@@ -13,6 +13,7 @@ jest.mock("../../agent/client", () => ({
   readAgentHistory: jest.fn(),
 }));
 
+const mockListingManager = {} as NonNullable<Parameters<typeof useLlmSessionExplorer>[0]["runnerWebSocketManager"]>;
 const mockListCodexAppServerThreads = jest.mocked(listCodexAppServerThreads);
 const mockReadCodexAppServerThread = jest.mocked(readCodexAppServerThread);
 const mockReadAgentHistory = jest.mocked(readAgentHistory);
@@ -34,7 +35,7 @@ function renderExplorerHook(overrides: {
     defaultLlmDirectory: "/workspace",
     nearUnlimitedTimeoutMs: 60_000,
     rawFallbackBackendId: "codex",
-    runnerWebSocketManager: overrides.runnerWebSocketManager,
+    runnerWebSocketManager: overrides.runnerWebSocketManager ?? mockListingManager,
     onSessionDiagLog: overrides.onSessionDiagLog,
   }));
 }
@@ -953,7 +954,7 @@ describe("reuses successful native summaries from session listings", () => {
     expect(getRunnerHttpAuth).not.toHaveBeenCalled();
   });
 
-  it("requests HTTP only for old, raw, ACP, and provider rows without reusable metadata", async () => {
+  it("requests HTTP only for ACP and provider rows without reusable metadata", async () => {
     mockListCodexAppServerThreads.mockResolvedValue({ data: [
       row("modern", summary), row("old"), { ...row("acp"), sourceKind: "appServer" },
       { ...row("claude"), backendId: "claude" },
@@ -1099,6 +1100,7 @@ describe('batch history enrichment and connection isolation', () => {
       codexWsUrl: 'ws://runner', runnerToken: token, auxServerBaseUrl: () => 'http://runner',
       getRunnerHttpAuth: async () => ({ baseUrl: 'http://runner', token }), normalizedLlmDirectoryForRequest: () => '/workspace',
       defaultLlmDirectory: '/workspace', nearUnlimitedTimeoutMs: 60000, rawFallbackBackendId: 'codex',
+      runnerWebSocketManager: mockListingManager,
     }), { initialProps: { token: 'old' } });
     const pending = mode === 'batch'
       ? result.current.fetchSessionHistoryBatch(['/workspace'], { limit: 5 })
@@ -1113,7 +1115,7 @@ describe('batch history enrichment and connection isolation', () => {
   });
 });
 
-test("complete provider summaries preserve displayed fields while eliminating legacy HTTP enrichment", async () => {
+test("complete provider summaries preserve displayed fields while eliminating redundant HTTP enrichment", async () => {
   jest.useRealTimers();
   const summary = { contextUsage: null, modelRef: "selected", reasoningEffort: "high", lastReadAt: "2026-10-27T02:00:00Z" };
   const groups = ["/fixture-a", "/fixture-b"].map((cwd, index) => ({ cwd, result: {
