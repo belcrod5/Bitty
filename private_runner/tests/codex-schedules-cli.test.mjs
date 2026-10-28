@@ -6,6 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { createAgentService } from "../src/agent/agent-service.mjs";
+import { operationStore, sessionStore } from "./agent-service-fixtures.mjs";
 
 const ID = "11111111-1111-4111-8111-111111111111";
 const SOURCE_CLI = path.resolve(
@@ -208,6 +210,49 @@ test("HTTP errors retain only bounded messages unrelated to token and input stri
     message: "baseRevision must be a non-negative integer",
     requestId: ID,
   });
+});
+
+test("CLI preserves the required session directory on create and update cwd mismatches", async (t) => {
+  const parent = "/Volumes/SSD-500GB-SanDisk/work/家";
+  const child = `${parent}/生活費調査_261024`;
+  const agent = createAgentService({
+    backends: [{ backendId: "codex", resolveSessionCwd: async () => parent }],
+    operationStore: operationStore(), sessionStore: sessionStore(),
+    workspaceAdmission: { assertAllowed: async () => {} },
+    resolveCanonicalCwd: async (cwd) => cwd,
+  });
+  const listener = await listen(async (req, res) => {
+    const body = await readBody(req);
+    const action = body.schedule || body.patch;
+    try {
+      await agent.resolveExecutionCwd({
+        sessionRef: { backendId: "codex", nativeSessionId: action.threadId }, cwd: action.cwd,
+      });
+      assert.fail("The child directory must be rejected");
+    } catch (error) {
+      assert.equal(error.code, "session_cwd_mismatch");
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "invalid_codex_schedules", message: error.message }));
+    }
+  });
+  t.after(listener.close);
+  const cli = await makeCliRoot(t, [
+    "RUNNER_TOKEN_FILE=private_runner/secrets/token", `RUNNER_PORT=${listener.port}`,
+  ].join("\n"));
+  const action = { cwd: child, threadId: "thread-existing", prompt: "private prompt" };
+  for (const [args, input] of [
+    [["create"], { requestId: ID, baseRevision: 0, schedule: action }],
+    [["update", ID], { baseRevision: 0, patch: action }],
+  ]) {
+    const result = await runCli(cli.cli, args, { input: JSON.stringify(input) });
+    assert.equal(result.code, 2);
+    const payload = JSON.parse(result.stderr);
+    assert.equal(payload.error, "invalid_codex_schedules");
+    assert.match(payload.message, /cwd does not match/);
+    assert.ok(payload.message.includes(`Set cwd to ${parent}`));
+    assert.equal(result.stderr.includes(child), false);
+    assert.equal(result.stderr.includes(action.prompt), false);
+  }
 });
 
 test("CLI rejects 2xx objects without ok true and never echoes unknown error payloads", async (t) => {

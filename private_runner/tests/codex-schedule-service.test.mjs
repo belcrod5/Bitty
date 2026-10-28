@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { createAgentService } from "../src/agent/agent-service.mjs";
+import { createScheduledCodexTurnStarter } from "../src/codex-scheduled-turn.mjs";
 import { operationStore, sessionStore } from "./agent-service-fixtures.mjs";
 
 import { createCodexScheduleHttpHandler } from "../src/codex-schedule-http.mjs";
@@ -69,6 +70,7 @@ async function makeHarness(options = {}) {
     validateCwd: options.validateCwd || (async (cwd) => {
       if (!(await fs.stat(cwd)).isDirectory()) throw new Error("not a directory");
     }),
+    validateSessionCwd: options.validateSessionCwd,
     validateShellScript: options.validateShellScript || (async () => {}),
     startScheduledCodexTurn: options.startScheduledCodexTurn || (async () => ({
       threadId: "thread-1",
@@ -1049,6 +1051,108 @@ test("schedule saves use the live Agent model/effort validator without changing 
   await assert.rejects(harness.service.patchSchedule(id, { baseRevision: 2, patch: { enabled: true } }),
     (error) => error.code === "capability_unsupported");
   await harness.service.replaceSchedules({ baseRevision: 2, schedules: [definition({ enabled: false })] });
+});
+
+test("existing-chat saves reject cwd mismatches atomically and dispatch rechecks the same contract", async (t) => {
+  const sessions = sessionStore();
+  const sessionRef = { backendId: "codex", nativeSessionId: "thread-existing" };
+  let sessionCwd;
+  let resolutions = 0;
+  const agent = createAgentService({
+    backends: [{
+      backendId: "codex",
+      getStatus: async () => ({ available: true, readiness: { ready: true }, capabilities: {
+        model: { select: true, effort: true },
+        action: { policyProfiles: [{ id: "codex-on-request" }] },
+      } }),
+      resolveSessionCwd: async (ref) => {
+        resolutions += 1;
+        if (ref.nativeSessionId !== sessionRef.nativeSessionId) {
+          throw Object.assign(new Error("Session was not found"), { code: "session_not_found" });
+        }
+        return sessionCwd;
+      },
+      startTurn: async () => assert.fail("Saving and mismatched execution must never start a backend turn"),
+    }],
+    operationStore: operationStore(), sessionStore: sessions,
+    workspaceAdmission: { assertAllowed: async () => {} },
+    resolveCanonicalCwd: (cwd) => fs.realpath(cwd),
+  });
+  const harness = await makeHarness({
+    validateSessionCwd: (action) => agent.resolveExecutionCwd({
+      sessionRef: { backendId: "codex", nativeSessionId: action.threadId }, cwd: action.cwd,
+    }),
+    startScheduledCodexTurn: createScheduledCodexTurnStarter({ agentService: agent, subjectId: "owner" }),
+  });
+  t.after(() => fs.rm(harness.directory, { recursive: true, force: true }));
+  const parent = path.join(harness.directory, "家");
+  const child = path.join(parent, "生活費調査_261024");
+  const alias = path.join(harness.directory, "home-link");
+  await fs.mkdir(child, { recursive: true });
+  await fs.symlink(parent, alias);
+  const canonicalParent = await fs.realpath(parent);
+  const canonicalChild = await fs.realpath(child);
+  sessionCwd = parent;
+  // New-chat schedules have no session constraint.
+  const { id, ...input } = definition({ cwd: child });
+  await harness.service.createSchedule({ baseRevision: 0, schedule: input }, id);
+  assert.equal(resolutions, 0);
+  const before = await harness.service.snapshot();
+  const storedDefinitions = await fs.readFile(harness.definitionsPath, "utf8");
+  const storedRuntime = await fs.readFile(harness.runtimePath, "utf8");
+  for (const patch of [
+    { threadId: sessionRef.nativeSessionId },
+    { threadId: sessionRef.nativeSessionId, enabled: false },
+    { threadId: "missing-thread" },
+  ]) {
+    for (const save of [
+      () => harness.service.createSchedule({ baseRevision: 1, schedule: { ...input, ...patch } }, ID_B),
+      () => harness.service.patchSchedule(id, { baseRevision: 1, patch }),
+      () => harness.service.replaceSchedules({ baseRevision: 1, schedules: [
+        definition({ name: "Must not persist", cwd: child }),
+        definition({ id: ID_B, cwd: child, ...patch }),
+      ] }),
+    ]) {
+      await assert.rejects(save(), (error) => {
+        if (patch.threadId === "missing-thread") return error.code === "session_not_found";
+        assert.equal(error.code, "session_cwd_mismatch");
+        assert.ok(error.message.includes(canonicalParent));
+        assert.match(error.message, /Set cwd to/);
+        assert.equal(error.message.includes(canonicalChild), false);
+        return true;
+      });
+      assert.deepEqual(await harness.service.snapshot(), before);
+      assert.equal(await fs.readFile(harness.definitionsPath, "utf8"), storedDefinitions);
+      assert.equal(await fs.readFile(harness.runtimePath, "utf8"), storedRuntime);
+    }
+  }
+  let response;
+  const handler = createCodexScheduleHttpHandler({
+    service: harness.service, runnerToken: "secret",
+    parseAuthToken: () => "secret",
+    readJsonBody: async () => ({ baseRevision: 1, patch: { threadId: sessionRef.nativeSessionId } }),
+    json: (_res, status, payload) => { response = { status, payload }; },
+  });
+  await handler({ method: "PATCH" }, {}, `/codex-schedules/${id}`);
+  assert.equal(response.status, 400);
+  assert.equal(response.payload.error, "invalid_codex_schedules");
+  assert.ok(response.payload.message.includes(canonicalParent));
+  assert.match(response.payload.message, /Set cwd to/);
+  // A symlink and dot segments identify the same workspace as the native cwd.
+  const cwd = `${alias}/.`;
+  await harness.service.patchSchedule(id, { baseRevision: 1, patch: { cwd, threadId: sessionRef.nativeSessionId } });
+  await harness.service.createSchedule({ baseRevision: 2, schedule: { ...input, cwd, threadId: sessionRef.nativeSessionId, enabled: false } }, ID_B);
+  await harness.service.replaceSchedules({ baseRevision: 3, schedules: [definition({ cwd, threadId: sessionRef.nativeSessionId })] });
+  assert.equal(await sessions.getBinding(sessionRef), null);
+  assert.equal(await sessions.getMode(sessionRef), null);
+  // A session can change after saving: execution must still reject a mismatch.
+  sessionCwd = child;
+  harness.currentClock.set("2026-08-14T00:00:00.000Z");
+  await harness.service.evaluate();
+  const dispatch = (await harness.service.snapshot()).schedules[0].lastDispatch;
+  assert.equal(dispatch.status, "failed");
+  assert.equal(dispatch.errorCode, "session_cwd_mismatch");
+  assert.equal(await sessions.getBinding(sessionRef), null);
 });
 
 test("dispatch rejection and missing start IDs report one failure per occurrence", async (t) => {
