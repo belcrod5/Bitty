@@ -1307,7 +1307,9 @@ const {
 const pushDeviceStore = createPushDeviceStore(PUSH_DEVICE_STORE_PATH);
 const apnsClient = PUSH_ENABLED
   ? createApnsClient({
-    keyPath: APNS_KEY_PATH,
+    // Imported runtimes can exercise push hooks with a mocked sendToDevice,
+    // but only a started Runner may load the signing key and deliver to APNs.
+    keyPath: RUNNER_SKIP_SERVER_START ? "" : APNS_KEY_PATH,
     keyId: APNS_KEY_ID,
     teamId: APPLE_TEAM_ID,
     topic: APNS_TOPIC,
