@@ -33,7 +33,7 @@ export async function prepareOrchestratorRuntime(client, { workspaceDirectory, c
     const profile = { filesystem: { ":minimal": "read", ":workspace_roots": readOnly ? "read" : "write" },
       network: { enabled: false } };
     return { permissions, runtimeWorkspaceRoots: [workspace], config: {
-      permissions: { [permissions]: profile },
+      permissions: { [permissions]: profile }, default_permissions: permissions,
       project_doc_max_bytes: 0,
       skills: { config: skills },
       features: { memories: false, hooks: false, apps: false, plugins: false, remote_plugin: false,

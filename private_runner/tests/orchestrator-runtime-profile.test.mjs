@@ -38,6 +38,7 @@ test("each profile grants only its owned workspace and removes inherited knowled
   const runtime = await prepareOrchestratorRuntime(f.client, { workspaceDirectory: f.workspace, cwd: f.workspace });
   const canonical = await fs.realpath(f.workspace);
   assert.deepEqual(runtime.runtimeWorkspaceRoots, [canonical]);
+  assert.equal(runtime.config.default_permissions, runtime.permissions);
   assert.deepEqual(runtime.config.permissions[runtime.permissions], {
     filesystem: { ":minimal": "read", ":workspace_roots": "write" }, network: { enabled: false },
   });
@@ -65,6 +66,7 @@ test("summary and learning profiles retain restricted reads without a writable w
   const nested = path.join(f.workspace, "summary"); await fs.mkdir(nested);
   const runtime = await prepareOrchestratorRuntime(f.client, { workspaceDirectory: f.workspace, cwd: nested, readOnly: true });
   assert.equal(runtime.config.permissions[runtime.permissions].filesystem[":workspace_roots"], "read");
+  assert.equal(runtime.config.default_permissions, runtime.permissions);
   assert.doesNotThrow(() => assertOrchestratorRuntime(response(runtime, true), runtime));
 });
 

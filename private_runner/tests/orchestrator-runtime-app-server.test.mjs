@@ -64,11 +64,12 @@ test("real App Servers isolate prompt, file access and durable sessions across o
     await fs.mkdir(codexHome, { recursive: true });
     await fs.writeFile(path.join(codexHome, "config.toml"), [
       'model_provider="owned_mock"', 'model="gpt-6-sol"',
+      ...(workspace === aWorkspace ? ['default_permissions="owned"'] : []),
       '[model_providers.owned_mock]', 'name="Owned Mock"', `base_url="http://127.0.0.1:${mock.address().port}/v1"`,
       'wire_api="responses"', 'requires_openai_auth=false', 'request_max_retries=0', 'stream_max_retries=0',
-      '[permissions.owned.filesystem]', '":minimal"="read"', '":workspace_roots"="write"',
-      '[permissions.owned.network]', 'enabled=false',
-    ].join("\n").replace('[model_providers.owned_mock]', 'default_permissions="owned"\n[model_providers.owned_mock]'));
+      ...(workspace === aWorkspace ? ['[permissions.owned.filesystem]', '":minimal"="read"', '":workspace_roots"="write"',
+        '[permissions.owned.network]', 'enabled=false'] : []),
+    ].join("\n"));
   }
   const token = `eyJhbGciOiJub25lIn0.${Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600,
     "https://api.openai.com/auth": { chatgpt_account_id: "mock-account", chatgpt_plan_type: "plus" } })).toString("base64url")}.mock`;
@@ -81,21 +82,50 @@ test("real App Servers isolate prompt, file access and durable sessions across o
   const options = (id, workspaceDirectory) => ({ orchestratorId: id, workspaceDirectory, turnCompletionTimeoutMs: 10_000 });
   const a = await manager.createClient(options("main", aWorkspace));
   const aInfo = await initialize(a);
-  const b = await manager.createClient(options(OTHER, bWorkspace));
+  let b = await manager.createClient(options(OTHER, bWorkspace));
   const bInfo = await initialize(b);
   assert.notEqual(aInfo.codexHome, bInfo.codexHome);
   assert.equal(await fs.stat(path.join(aInfo.codexHome, "auth.json")).then(() => true, () => false), false);
+  // The second home matches production: no preconfigured permissions/default profile.
+  const bProfile = await prepareOrchestratorRuntime(b, { workspaceDirectory: bWorkspace, cwd: bWorkspace });
+  const bThread = await b.request("thread/start", { cwd: await fs.realpath(bWorkspace), ...bProfile,
+    ephemeral: false, approvalPolicy: "never", model: "gpt-6-sol" }, 10_000);
+  assertOrchestratorRuntime(bThread, bProfile);
+  assert.deepEqual(await b.request("mcpServerStatus/list", { threadId: bThread.thread.id, cursor: null }, 10_000), { data: [], nextCursor: null });
+  const bReadOnly = await prepareOrchestratorRuntime(b, { workspaceDirectory: bWorkspace, cwd: bWorkspace, readOnly: true });
+  const preflight = await b.request("thread/start", { cwd: await fs.realpath(bWorkspace), ...bReadOnly,
+    ephemeral: false, approvalPolicy: "on-request", model: "gpt-6-sol" }, 10_000);
+  assertOrchestratorRuntime(preflight, bReadOnly);
+  assert.deepEqual(await b.request("mcpServerStatus/list", { threadId: preflight.thread.id, cursor: null }, 10_000), { data: [], nextCursor: null });
+  const bCompletion = b.waitForTurnCompletion();
+  const bTurn = await b.request("turn/start", { threadId: preflight.thread.id, input: [{ type: "text", text: "OWNER_B_READ_ONLY_INPUT" }] }, 10_000);
+  bCompletion.expect({ threadId: preflight.thread.id, turnId: bTurn.turn.id });
+  await bCompletion.promise;
+  b.close();
+  b = await manager.createClient(options(OTHER, bWorkspace));
+  await initialize(b);
+  const bResumed = await b.request("thread/resume", { threadId: preflight.thread.id, cwd: await fs.realpath(bWorkspace), ...bProfile,
+    approvalPolicy: "on-request", model: "gpt-6-sol" }, 10_000);
+  assertOrchestratorRuntime(bResumed, bProfile);
+  assert.deepEqual(await b.request("mcpServerStatus/list", { threadId: bResumed.thread.id, cursor: null }, 10_000), { data: [], nextCursor: null });
+  const bReplyCompletion = b.waitForTurnCompletion();
+  const bReply = await b.request("turn/start", { threadId: bResumed.thread.id, input: [{ type: "text", text: "OWNER_B_CURRENT_INPUT" }] }, 10_000);
+  bReplyCompletion.expect({ threadId: bResumed.thread.id, turnId: bReply.turn.id });
+  await bReplyCompletion.promise;
+  const bHistory = await b.request("thread/read", { threadId: bResumed.thread.id, includeTurns: true }, 10_000);
+  assert.equal(bHistory.thread.turns.at(-1).status, "completed");
   const runtime = await prepareOrchestratorRuntime(a, { workspaceDirectory: aWorkspace, cwd: aWorkspace });
   const started = await a.request("thread/start", { cwd: await fs.realpath(aWorkspace), ...runtime,
     ephemeral: false, approvalPolicy: "never", developerInstructions: "OWNER_A_ONLY", model: "gpt-6-sol" }, 10_000);
   assertOrchestratorRuntime(started, runtime);
   const threadId = started.thread.id;
+  assert.deepEqual(await a.request("mcpServerStatus/list", { threadId, cursor: null }, 10_000), { data: [], nextCursor: null });
   const completion = a.waitForTurnCompletion();
   const turn = await a.request("turn/start", { threadId, input: [{ type: "text", text: "OWNER_A_CURRENT_INPUT" }] }, 10_000);
   completion.expect({ threadId, turnId: turn.turn.id });
   await completion.promise;
-  assert.equal(requests.length, 1);
-  const prompt = JSON.stringify(requests[0]);
+  assert.equal(requests.length, 3);
+  const prompt = JSON.stringify(requests[2]);
   assert.equal(prompt.includes("OWNER_A_SKILL"), true);
   for (const sentinel of ["OWNER_B_SKILL", "GLOBAL_SKILL_SENTINEL", "GLOBAL_CONFIG_SENTINEL", "ANCESTOR_INSTRUCTION_SENTINEL", "DO_NOT_INHERIT"]) {
     assert.equal(prompt.includes(sentinel), false, sentinel);
@@ -104,6 +134,7 @@ test("real App Servers isolate prompt, file access and durable sessions across o
   const summary = await a.request("thread/start", { cwd: await fs.realpath(aWorkspace), ...summaryRuntime,
     ephemeral: true, approvalPolicy: "never", model: "gpt-6-sol" }, 10_000);
   assertOrchestratorRuntime(summary, summaryRuntime);
+  assert.deepEqual(await a.request("mcpServerStatus/list", { threadId: summary.thread.id, cursor: null }, 10_000), { data: [], nextCursor: null });
   await assert.rejects(b.request("thread/read", { threadId, includeTurns: true }, 10_000));
   const inside = path.join(aWorkspace, "inside-marker"), outside = path.join(bWorkspace, "outside-marker");
   await fs.writeFile(inside, "INSIDE_ALLOWED"); await fs.writeFile(outside, "OUTSIDE_SECRET");
