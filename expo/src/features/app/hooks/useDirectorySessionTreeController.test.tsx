@@ -52,6 +52,16 @@ const workspaceDirectory = {
   markerColor: "none" as const,
 };
 
+// Existing per-directory response fixtures describe the groups returned by one batch.
+function batchGroups(fetchPage: jest.Mock) {
+  return async (directories: string[], options: { limit: number; includeRunnerSnapshots?: boolean }) => Promise.all(
+    directories.map(async (cwd): Promise<LlmSessionHistoryBatchGroup> => {
+      try { return { cwd, result: await fetchPage(cwd, options) }; }
+      catch (error) { return { cwd, error: error instanceof Error ? error : new Error(String(error)) }; }
+    })
+  );
+}
+
 function useTestController(params: {
   registeredDirectories?: typeof workspaceDirectory[];
   initialTrees?: Record<string, DirectorySessionTreeState>;
@@ -70,7 +80,7 @@ function useTestController(params: {
     setDirectorySessionsById,
     setExpandedDirectoryIds: jest.fn(),
     fetchSessionHistory: params.fetchSessionHistory,
-    fetchSessionHistoryBatch: params.fetchSessionHistoryBatch,
+    fetchSessionHistoryBatch: params.fetchSessionHistoryBatch || batchGroups(params.fetchSessionHistory),
     runnerWebSocketManager: params.runnerWebSocketManager,
     connectionScope: params.connectionScope,
     fetchSessionChildrenHistory: params.fetchSessionChildrenHistory || jest.fn(async () => ({})),
@@ -132,6 +142,7 @@ test("does not let a stale directory fetch overwrite a read mutation made while 
       setDirectorySessionsById,
       setExpandedDirectoryIds: jest.fn(),
       fetchSessionHistory: jest.fn(() => fetchResult.promise),
+      fetchSessionHistoryBatch: batchGroups(jest.fn(() => fetchResult.promise)),
       fetchSessionChildrenHistory: jest.fn(async () => ({})),
       emptyDirectorySessionTreeState: emptyState,
       directorySessionPageSize: 5,
@@ -205,6 +216,7 @@ test("applies a read completed while an unknown load-more page is in flight", as
       setDirectorySessionsById,
       setExpandedDirectoryIds: jest.fn(),
       fetchSessionHistory: jest.fn(() => fetchResult.promise),
+      fetchSessionHistoryBatch: batchGroups(jest.fn(() => fetchResult.promise)),
       fetchSessionChildrenHistory: jest.fn(async () => ({})),
       emptyDirectorySessionTreeState: emptyState,
       directorySessionPageSize: 5,
@@ -282,6 +294,11 @@ test("load-more re-sorts merged entries by updatedAt across composite page bound
         nextCursor: "",
         entries: [page2Mid],
       })),
+      fetchSessionHistoryBatch: batchGroups(jest.fn(async () => ({
+        latestSessionId: "codex-mid",
+        nextCursor: "",
+        entries: [page2Mid],
+      }))),
       fetchSessionChildrenHistory: jest.fn(async () => ({})),
       emptyDirectorySessionTreeState: emptyState,
       directorySessionPageSize: 5,
@@ -318,6 +335,7 @@ test("does not let a stale child fetch overwrite a read completed while loading"
       setDirectorySessionsById,
       setExpandedDirectoryIds: jest.fn(),
       fetchSessionHistory: jest.fn(),
+      fetchSessionHistoryBatch: batchGroups(jest.fn()),
       fetchSessionChildrenHistory: jest.fn(async (parentIds: string[]) => ({
         [parentIds[0]]: await childResult.promise,
       })),
@@ -391,6 +409,7 @@ test("defers a pre-bootstrap ensure and drains it with the directories loaded la
       setDirectorySessionsById,
       setExpandedDirectoryIds: jest.fn(),
       fetchSessionHistory,
+      fetchSessionHistoryBatch: batchGroups(fetchSessionHistory),
       fetchSessionChildrenHistory: jest.fn(async () => ({})),
       emptyDirectorySessionTreeState: emptyState,
       directorySessionPageSize: 5,
@@ -521,71 +540,26 @@ test("keeps shared sync actions stable while using the latest fetch implementati
   expect(latestFetch).toHaveBeenCalledTimes(1);
 });
 
-test("caps registered directory fetches at the shared global concurrency", async () => {
+test("sends every registered target through one batch without invoking scalar fetch", async () => {
   const directories = ["one", "two", "three"].map((id) => ({
-    id,
-    path: `/${id}`,
-    displayName: id,
-    markerColor: "none" as const,
+    id, path: `/${id}`, displayName: id, markerColor: "none" as const,
   }));
-  const pendingByPath = new Map(directories.map((directory) => [
-    directory.path,
-    deferred<{
-      latestSessionId: string;
-      nextCursor: string;
-      entries: LlmSessionHistoryEntry[];
-    }>(),
-  ]));
-  let active = 0;
-  let maxActive = 0;
-  const fetchSessionHistory = jest.fn(async (path: string) => {
-    active += 1;
-    maxActive = Math.max(maxActive, active);
-    const value = await pendingByPath.get(path)!.promise;
-    active -= 1;
-    return value;
-  });
+  const fetchSessionHistory = jest.fn();
+  const pending = deferred<LlmSessionHistoryBatchGroup[]>();
+  const batch = jest.fn(() => pending.promise);
   const { result } = await renderHook(() => useTestController({
-    concurrency: 2,
-    fetchSessionHistory,
-    registeredDirectories: directories,
+    concurrency: 2, fetchSessionHistory, fetchSessionHistoryBatch: batch, registeredDirectories: directories,
   }));
-
   let sync!: Promise<void>;
+  await act(async () => { sync = result.current.controller.ensureRegisteredDirectorySessions("drawer_open"); });
+  expect(batch).toHaveBeenCalledTimes(1);
+  expect(batch.mock.calls[0]).toEqual([["/one", "/three", "/two"], { limit: 5, includeRunnerSnapshots: true }]);
+  expect(fetchSessionHistory).not.toHaveBeenCalled();
   await act(async () => {
-    sync = result.current.controller.ensureRegisteredDirectorySessions("drawer_open");
-    await Promise.resolve();
-  });
-  expect(fetchSessionHistory).toHaveBeenCalledTimes(2);
-  expect(maxActive).toBe(2);
-
-  pendingByPath.get("/one")!.resolve({
-    latestSessionId: "one-session",
-    nextCursor: "",
-    entries: [{ ...session("", "one-session"), directory: "/one" }],
-  });
-  await act(async () => {
-    await Promise.resolve();
-    await Promise.resolve();
-  });
-  expect(fetchSessionHistory).toHaveBeenCalledTimes(3);
-  expect(maxActive).toBe(2);
-
-  for (const path of ["/two", "/three"]) {
-    pendingByPath.get(path)!.resolve({
-      latestSessionId: `${path.slice(1)}-session`,
-      nextCursor: "",
-      entries: [],
-    });
-  }
-  await act(async () => {
+    pending.resolve(directories.map(({ path: cwd }) => ({ cwd, result: { latestSessionId: "", nextCursor: "", entries: [] } })));
     await sync;
   });
-  expect(result.current.controller.directorySessionSync).toMatchObject({
-    phase: "complete",
-    totalCount: 3,
-    completedCount: 3,
-  });
+  expect(result.current.controller.directorySessionSync).toMatchObject({ phase: "complete", totalCount: 3, completedCount: 3 });
 });
 
 test("ensure retries a failed refresh even when preserved data is still fresh", async () => {
@@ -1503,17 +1477,6 @@ test("partial backend results keep only failed backend rows and remain retryable
   expect(result.current.controller.directorySessionSync.phase).toBe('complete');
 });
 
-test("a raw successful empty scope deletes that backend but retains unconfirmed backend rows", async () => {
-  const claude = { ...session('', 'claude-old'), backendId: 'claude' };
-  const { result } = await renderHook(() => useTestController({
-    initialTrees: { workspace: { ...emptyState, loaded: true, fetchedAtMs: Date.now(), entries: [session(), claude] } },
-    fetchSessionHistory: jest.fn(async () => ({ latestSessionId: '', nextCursor: '', entries: [],
-      successfulBackendIds: ['codex'], partialErrors: [{ message: 'raw fallback only' }] })),
-  }));
-  await act(async () => { await result.current.controller.refreshRegisteredDirectorySessions('manual_refresh'); });
-  expect(result.current.directorySessionsById.workspace.entries).toEqual([claude]);
-  expect(result.current.controller.directorySessionSync.phase).toBe('partial_error');
-});
 
 test("WS ready drains an intent queued while connecting", async () => {
   let snapshot = { connectionState: 'connecting', generation: 1, connectionId: 'one', url: 'ws://runner' };

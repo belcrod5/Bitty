@@ -29,9 +29,8 @@ it("forwards list response byte observation only to the neutral listing", async 
     onResponseBytes?.(234);
     return { sessions: [] };
   });
-  const result = await listCodexAppServerThreads({
-    wsUrl: "ws://runner", cwd: "/workspace", runnerWebSocketManager: {} as never,
-    backendId: "all", rawFallbackBackendId: "codex", onListResponseBytes,
+  const result = await listCodexAppServerThreads({ cwd: "/workspace", runnerWebSocketManager: {} as never,
+    backendId: "all", onListResponseBytes,
   });
   expect(result.data).toEqual([]);
   expect(onListResponseBytes).toHaveBeenCalledWith(234);
@@ -62,11 +61,9 @@ it("maps an all-backends listing per entry backend and surfaces partial errors",
   });
 
   const result = await listCodexAppServerThreads({
-    wsUrl: "ws://runner",
     cwd: "/workspace",
     runnerWebSocketManager: {} as never,
     backendId: "all",
-    rawFallbackBackendId: "codex",
   });
 
   expect(mockListAgentSessions).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ backendId: "all" }), undefined);
@@ -88,7 +85,7 @@ it.each(["codex", "claude"])("preserves complete %s summaries without replacing 
     sessionRef: { backendId, nativeSessionId: "one" }, sourceKind: "cli",
     modelId: "selected-model", reasoningEffort: "low", summary,
   }] });
-  const result = await listCodexAppServerThreads({ wsUrl: "ws://runner", runnerWebSocketManager: {} as never, backendId: "codex" });
+  const result = await listCodexAppServerThreads({ runnerWebSocketManager: {} as never, backendId: "codex" });
   expect(result.data[0]).toMatchObject({ modelRef: "selected-model", reasoningEffort: "low", summary });
 });
 
@@ -99,68 +96,23 @@ it.each([undefined, {}, { contextUsage: null }, { contextUsage: 42, modelRef: "n
     mockListAgentSessions.mockResolvedValue({ sessions: [{
       sessionRef: { backendId, nativeSessionId: "one" }, sourceKind: "cli", summary,
     }] });
-    const result = await listCodexAppServerThreads({ wsUrl: "ws://runner", runnerWebSocketManager: {} as never, backendId: "codex" });
+    const result = await listCodexAppServerThreads({ runnerWebSocketManager: {} as never, backendId: "codex" });
     expect(result.data[0]).not.toHaveProperty("summary");
   },
 );
 
-it("falls back to the raw codex listing when the all-backends scope fails while the runner WS is ready", async () => {
-  const onListResponseBytes = jest.fn();
-  mockListAgentSessions.mockRejectedValue(new Error("agent channel unavailable"));
-  mockRunCodexRpcSession.mockImplementation(async (options) => options.run(jest.fn(async () => ({
-    data: [],
-    nextCursor: "",
-    backwardsCursor: "",
-  })) as never));
-
-  const result = await listCodexAppServerThreads({
-    wsUrl: "ws://runner",
-    cwd: "/workspace",
-    runnerWebSocketManager: { getSnapshot: () => ({ connectionState: "ready", generation: 1 }) } as never,
-    backendId: "all",
-    rawFallbackBackendId: "codex",
-    onListResponseBytes,
-  });
-
-  expect(mockRunCodexRpcSession).toHaveBeenCalledTimes(1);
-  expect(result.data).toEqual([]);
-  expect(onListResponseBytes).not.toHaveBeenCalled();
-});
-
-it("does not degrade the all-backends listing to raw codex while the runner WS is not ready", async () => {
-  // raw退行を許すとCodexのみの一覧が「完全な成功」としてキャッシュされ、
-  // 非Codexセッションが欠落したまま固定される(起動直後の実機症状)。
+it.each(["all", "codex"])("does not retry a failed %s listing through raw RPC", async (backendId) => {
   mockListAgentSessions.mockRejectedValue(new Error("runner_ws_inactive"));
-
-  await expect(listCodexAppServerThreads({
-    wsUrl: "ws://runner",
-    cwd: "/workspace",
-    runnerWebSocketManager: { getSnapshot: () => ({ connectionState: "connecting", generation: 1 }) } as never,
-    backendId: "all",
-    rawFallbackBackendId: "codex",
-  })).rejects.toThrow("runner_ws_inactive");
+  await expect(listCodexAppServerThreads({ runnerWebSocketManager: {} as never, backendId }))
+    .rejects.toThrow("runner_ws_inactive");
   expect(mockRunCodexRpcSession).not.toHaveBeenCalled();
 });
 
-it("still degrades a codex-scoped listing to raw when the runner WS is not ready", async () => {
-  // 単一Codexスコープのraw退行は同じCodexデータ源への退行で欠落を生まない。
-  mockListAgentSessions.mockRejectedValue(new Error("runner_ws_inactive"));
-  mockRunCodexRpcSession.mockImplementation(async (options) => options.run(jest.fn(async () => ({
-    data: [],
-    nextCursor: "",
-    backwardsCursor: "",
-  })) as never));
-
-  const result = await listCodexAppServerThreads({
-    wsUrl: "ws://runner",
-    cwd: "/workspace",
-    runnerWebSocketManager: { getSnapshot: () => ({ connectionState: "connecting", generation: 1 }) } as never,
-    backendId: "codex",
-    rawFallbackBackendId: "codex",
-  });
-
-  expect(mockRunCodexRpcSession).toHaveBeenCalledTimes(1);
-  expect(result.data).toEqual([]);
+it("rejects an unavailable Agent backend without raw RPC", async () => {
+  mockListAgentSessions.mockResolvedValue(null);
+  await expect(listCodexAppServerThreads({ runnerWebSocketManager: {} as never, backendId: "codex" }))
+    .rejects.toThrow("unavailable");
+  expect(mockRunCodexRpcSession).not.toHaveBeenCalled();
 });
 
 it("keeps the server-reported sourceKind and normalizes acp to appServer", async () => {
@@ -174,11 +126,9 @@ it("keeps the server-reported sourceKind and normalizes acp to appServer", async
   });
 
   const result = await listCodexAppServerThreads({
-    wsUrl: "ws://runner",
     cwd: "/workspace",
     runnerWebSocketManager: {} as never,
     backendId: "all",
-    rawFallbackBackendId: "codex",
     sourceKinds: ["cli", "vscode", "appServer", "exec"],
   });
 
@@ -194,11 +144,9 @@ it("requests subagents from the server when subAgent source kinds are included",
   mockListAgentSessions.mockResolvedValue({ sessions: [] });
 
   await listCodexAppServerThreads({
-    wsUrl: "ws://runner",
     cwd: "/workspace",
     runnerWebSocketManager: {} as never,
     backendId: "all",
-    rawFallbackBackendId: "codex",
     sourceKinds: ["subAgent", "subAgentReview"],
   });
 
@@ -225,11 +173,9 @@ it("maps the server-reported isActive to a threadStatusType per listing entry", 
   });
 
   const result = await listCodexAppServerThreads({
-    wsUrl: "ws://runner",
     cwd: "/workspace",
     runnerWebSocketManager: {} as never,
     backendId: "all",
-    rawFallbackBackendId: "codex",
     sourceKinds: ["subAgent"],
   });
 
@@ -383,17 +329,18 @@ it('normalizes batch pages with the same summary, cursor, title and partial erro
     sessionRef: { backendId: 'codex', nativeSessionId: 'one' }, title: 'shared', sourceKind: 'cli',
     canonicalCwd: '/workspace', lastReadAt: 'read', summary,
   }], cursor: 'next', errors: [{ backendId: 'claude', code: 'backend_unavailable' }] } }]);
-  const [group] = await listCodexAppServerThreadsBatch({ wsUrl: 'ws://runner', cwds: ['/workspace'], limit: 5, runnerWebSocketManager: {} as never });
+  const [group] = await listCodexAppServerThreadsBatch({ cwds: ['/workspace'], limit: 5, runnerWebSocketManager: {} as never });
   expect(group.result).toMatchObject({ nextCursor: 'next', partialErrors: [{ backendId: 'claude' }],
     data: [{ backendId: 'codex', threadId: 'one', preview: 'shared', lastReadAt: 'read', summary }] });
   expect(mockListAgentSessions).not.toHaveBeenCalled();
 });
 
-it('marks legacy raw success as Codex-only even for a successful empty batch page', async () => {
-  jest.mocked(listAgentSessionsBatch).mockResolvedValue([{ cwd: '/workspace', payload: null }]);
-  mockRunCodexRpcSession.mockResolvedValue({ data: [], nextCursor: '', backwardsCursor: '' });
-  const [group] = await listCodexAppServerThreadsBatch({ wsUrl: 'ws://runner', cwds: ['/workspace'], limit: 5, runnerWebSocketManager: {} as never });
-  expect(group.result).toMatchObject({ data: [], successfulBackendIds: ['codex'], partialErrors: [{ code: 'backend_unavailable' }] });
+it('keeps a failed batch group as an error without raw RPC', async () => {
+  const error = new Error('batch failed');
+  jest.mocked(listAgentSessionsBatch).mockResolvedValue([{ cwd: '/workspace', error }]);
+  const [group] = await listCodexAppServerThreadsBatch({ cwds: ['/workspace'], runnerWebSocketManager: {} as never });
+  expect(group.error).toBe(error);
+  expect(group.result).toBeUndefined();
   expect(mockListAgentSessions).not.toHaveBeenCalled();
-  expect(mockRunCodexRpcSession).toHaveBeenCalledTimes(1);
+  expect(mockRunCodexRpcSession).not.toHaveBeenCalled();
 });

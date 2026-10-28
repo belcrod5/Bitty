@@ -843,7 +843,7 @@ export async function listAgentSessions(manager: RunnerWebSocketManager, options
     statuses = [status];
   } else {
     // all-backendsスコープはBackendごとのreadinessをserviceが個別に扱う。
-    // agent channel自体が使えない場合のみnull(raw fallback)へ落とす。
+    // agent channelが使えない場合はcallerが一覧取得失敗として扱う。
     statuses = await getAgentBackendStatuses(manager);
     if (statuses.length === 0) return null;
   }
@@ -866,7 +866,7 @@ export async function listAgentSessions(manager: RunnerWebSocketManager, options
   return object(response.payload);
 }
 
-export type AgentSessionListGroup = { cwd: string; payload?: Record<string, unknown> | null; error?: Error };
+export type AgentSessionListGroup = { cwd: string; payload?: Record<string, unknown>; error?: Error };
 
 // One invocation is one sync cycle; no readiness or capability cache survives it.
 export async function listAgentSessionsBatch(
@@ -885,9 +885,11 @@ export async function listAgentSessionsBatch(
   const hello = await getAgentHello(manager);
   assertCurrent();
   if (!hello || !Array.isArray(hello.backends) || hello.backends.length === 0) {
-    return cwds.map((cwd) => ({ cwd, payload: null }));
+    throw new Error("Agent session listing is unavailable");
   }
-  let supportsBatch = Array.isArray(hello.operations) && hello.operations.includes("sessions.list.batch");
+  if (!Array.isArray(hello.operations) || !hello.operations.includes("sessions.list.batch")) {
+    throw new Error("Runner does not support session list batching");
+  }
   const bounds = object(hello.sessionListBatch);
   const maxDirectories = Math.max(1, Math.min(64, Number(bounds.maxDirectories) || 64));
   const maxBytes = Math.max(128, Math.min(64 * 1024, Number(bounds.maxBytes) || 64 * 1024));
@@ -904,64 +906,31 @@ export async function listAgentSessionsBatch(
       offset++;
     }
     assertCurrent();
-    if (supportsBatch) {
-      try {
-        const response = await manager.request({ channel: "agent", op: "sessions.list.batch", payload: { cwds: chunk, limit } }, { timeoutMs: Math.ceil(chunk.length / 2) * 30_000 + 1000 });
-        assertCurrent();
-        const result = object(response.payload);
-        if (response.op === "error" && result.code === "capability_unsupported") {
-          supportsBatch = false;
-        } else if (response.op === "error") {
-          throw new Error(String(result.message || "Session batch failed"));
-        } else {
-          const batch = Array.isArray(result.groups) ? result.groups : [];
-          if (response.channel !== "agent" || response.op !== "sessions.list.batch.result" || batch.length !== chunk.length) {
-            throw new Error("Invalid session batch response");
-          }
-          const parsed: AgentSessionListGroup[] = [];
-          for (let index = 0; index < chunk.length; index++) {
-            const group = object(batch[index]);
-            if (group.cwd !== chunk[index] || (!group.error && !Array.isArray(object(group.payload).sessions))) {
-              throw new Error("Invalid session batch group");
-            }
-            parsed.push(group.error
-              ? { cwd: chunk[index], error: new Error(String(object(group.error).message || "Session list failed")) }
-              : { cwd: chunk[index], payload: object(group.payload) });
-          }
-          groups.push(...parsed);
-          continue;
-        }
-      } catch (error) {
-        assertCurrent();
-        const failure = error instanceof Error ? error : new Error(String(error));
-        groups.push(...chunk.map((cwd) => ({ cwd, error: failure })));
-        continue;
+    try {
+      const response = await manager.request({ channel: "agent", op: "sessions.list.batch", payload: { cwds: chunk, limit } }, { timeoutMs: Math.ceil(chunk.length / 2) * 30_000 + 1000 });
+      assertCurrent();
+      const result = object(response.payload);
+      if (response.op === "error") throw new Error(String(result.message || "Session batch failed"));
+      const batch = Array.isArray(result.groups) ? result.groups : [];
+      if (response.channel !== "agent" || response.op !== "sessions.list.batch.result" || batch.length !== chunk.length) {
+        throw new Error("Invalid session batch response");
       }
+      const parsed: AgentSessionListGroup[] = [];
+      for (let index = 0; index < chunk.length; index++) {
+        const group = object(batch[index]);
+        if (group.cwd !== chunk[index] || (!group.error && !Array.isArray(object(group.payload).sessions))) {
+          throw new Error("Invalid session batch group");
+        }
+        parsed.push(group.error
+          ? { cwd: chunk[index], error: new Error(String(object(group.error).message || "Session list failed")) }
+          : { cwd: chunk[index], payload: object(group.payload) });
+      }
+      groups.push(...parsed);
+    } catch (error) {
+      assertCurrent();
+      const failure = error instanceof Error ? error : new Error(String(error));
+      groups.push(...chunk.map((cwd) => ({ cwd, error: failure })));
     }
-    const results: AgentSessionListGroup[] = Array(chunk.length);
-    let next = 0;
-    await Promise.all(Array.from({ length: Math.min(2, chunk.length) }, async () => {
-      while (next < chunk.length) {
-        const index = next++;
-        const cwd = chunk[index];
-        try {
-          assertCurrent();
-          const response = await manager.request({ channel: "agent", op: "sessions.list", payload: {
-            backendId: ALL_BACKENDS_SCOPE, cwd, limit, includeSubagents: false,
-          } }, { timeoutMs: 30_000 });
-          assertCurrent();
-          if (response.op === "error") throw new Error(String(object(response.payload).message || "Session list failed"));
-          if (response.channel !== "agent" || response.op !== "sessions.list.result" || !Array.isArray(object(response.payload).sessions)) {
-            throw new Error("Invalid session list response");
-          }
-          results[index] = { cwd, payload: object(response.payload) };
-        } catch (error) {
-          results[index] = { cwd, error: error instanceof Error ? error : new Error(String(error)) };
-        }
-      }
-    }));
-    assertCurrent();
-    groups.push(...results);
   }
   return groups;
 }

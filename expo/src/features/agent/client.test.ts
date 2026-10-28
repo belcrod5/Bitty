@@ -1314,16 +1314,51 @@ test("a list cycle performs one hello and one bounded batch; later cycles rechec
   expect(request).toHaveBeenCalledTimes(4);
 });
 
-test("an older Agent Runner uses scalar lists with the same hello and keeps per-directory errors", async () => {
+test("rejects an older Agent Runner without sending scalar lists", async () => {
   const { manager, request } = batchManager([]);
+  await expect(listAgentSessionsBatch(manager, ["/one", "/two"], 5)).rejects.toThrow("does not support");
+  expect(request.mock.calls.map(([message]) => message.op)).toEqual(["agent.hello"]);
+});
+
+test("a rejected batch is not replayed as scalar requests", async () => {
+  const { manager, request } = batchManager();
   const send = request.getMockImplementation()!;
-  request.mockImplementation(async (message) => message.op === "sessions.list" && message.payload.cwd === "/bad"
-    ? { channel: "agent", op: "error", payload: { message: "bad directory" } } as any : send(message));
-  const groups = await listAgentSessionsBatch(manager, ["/one", "/bad", "/three"], 5);
-  expect(groups[0].payload).toEqual({ sessions: [{ title: "/one" }] });
-  expect(groups[1].error?.message).toBe("bad directory");
-  expect(groups[2].payload).toBeDefined();
-  expect(request.mock.calls.map(([message]) => message.op)).toEqual(["agent.hello", "sessions.list", "sessions.list", "sessions.list"]);
+  request.mockImplementation(async (message) => message.op === "sessions.list.batch"
+    ? { channel: "agent", op: "error", payload: { code: "capability_unsupported", message: "unsupported" } } as never
+    : send(message));
+  const groups = await listAgentSessionsBatch(manager, ["/one", "/two"], 5);
+  expect(groups.every((group) => group.error?.message === "unsupported")).toBe(true);
+  expect(request.mock.calls.map(([message]) => message.op)).toEqual(["agent.hello", "sessions.list.batch"]);
+});
+
+test("an empty backend advertisement fails instead of enabling raw listing", async () => {
+  const { manager, request } = batchManager();
+  request.mockResolvedValue({ channel: "agent", op: "agent.ready", payload: { protocolVersion: 2, backends: [], operations: ["sessions.list.batch"] } } as never);
+  await expect(listAgentSessionsBatch(manager, ["/one"], 5)).rejects.toThrow("unavailable");
+  expect(request).toHaveBeenCalledTimes(1);
+});
+
+test.each([
+  { groups: [] },
+  { groups: [{ cwd: "/other", payload: { sessions: [] } }] },
+  { groups: [{ cwd: "/one", payload: { sessions: {} } }] },
+])("rejects malformed batch responses without retrying another listing API: %j", async (payload) => {
+  const { manager, request } = batchManager();
+  const send = request.getMockImplementation()!;
+  request.mockImplementation(async (message) => message.op === "sessions.list.batch"
+    ? { channel: "agent", op: "sessions.list.batch.result", payload } as never : send(message));
+  const [group] = await listAgentSessionsBatch(manager, ["/one"], 5);
+  expect(group.error?.message).toMatch(/Invalid session batch/);
+  expect(group.payload).toBeUndefined();
+  expect(request.mock.calls.map(([message]) => message.op)).toEqual(["agent.hello", "sessions.list.batch"]);
+});
+
+test("rejects an incompatible protocol instead of starting a legacy listing", async () => {
+  const { manager, request } = batchManager();
+  request.mockResolvedValue({ channel: "agent", op: "agent.ready", payload: { protocolVersion: 1,
+    backends: [{ backendId: "codex" }], operations: ["sessions.list.batch"] } } as never);
+  await expect(listAgentSessionsBatch(manager, ["/one"], 5)).rejects.toThrow("unavailable");
+  expect(request).toHaveBeenCalledTimes(1);
 });
 
 test("a failed later chunk keeps earlier results and never replays the cycle as scalar", async () => {

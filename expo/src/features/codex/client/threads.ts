@@ -1,6 +1,5 @@
 import {
   isThreadNotLoadedError,
-  normalizeThreadListEntry,
   normalizeThreadReadEntry,
 } from "./helpers";
 import { runCodexRpcSession } from "./rpcSession";
@@ -15,16 +14,12 @@ import { ALL_BACKENDS_SCOPE, listAgentSessions, listAgentSessionsBatch, readAgen
 import { deriveAgentSessionLiveState } from "../../agent/sessionLiveState";
 
 type ThreadListOptions = {
-  wsUrl: string;
-  wsToken?: string;
+  runnerWebSocketManager: RunnerWebSocketManager;
   cwd?: string;
   limit?: number;
   cursor?: string;
   sourceKinds?: CodexThreadSourceKind[];
-  timeoutMs?: number;
-  runnerWebSocketManager?: RunnerWebSocketManager;
   backendId?: string;
-  rawFallbackBackendId?: string;
   parentSessionIds?: string[];
   onListResponseBytes?: (bytes: number) => void;
 };
@@ -38,40 +33,14 @@ export async function listCodexAppServerThreads(options: ThreadListOptions): Pro
   const sourceKinds: CodexThreadSourceKind[] = Array.isArray(options.sourceKinds) && options.sourceKinds.length > 0
     ? options.sourceKinds
     : ["cli", "vscode", "appServer", "exec"];
-  if (options.runnerWebSocketManager) {
-    const backendId = String(options.backendId || "codex");
-    // all-backendsスコープはBackend固有障害でも一覧全体を失わないよう、
-    // raw fallback(Codexのみ)への退行を許可する。
-    const rawFallbackAllowed = backendId === options.rawFallbackBackendId || backendId === ALL_BACKENDS_SCOPE;
-    // メイン一覧(subAgent系を含まないsourceKinds)はサーバー側でsubagentを
-    // 除外してからページングする。クライアント側の後段フィルタに任せると
-    // 「limit=5返ってきたのに表示は3件」のようにページサイズが崩れる。
-    const includeSubagents = sourceKinds.some((kind) => String(kind).startsWith("subAgent"));
-    let neutral = null;
-    try {
-      neutral = await listAgentSessions(options.runnerWebSocketManager, { backendId, cwd, cursor, limit, includeSubagents, ...(options.parentSessionIds ? { parentSessionIds: options.parentSessionIds } : {}) }, options.onListResponseBytes);
-    } catch (error) {
-      if (!rawFallbackAllowed) throw error;
-      // WS未接続(コールド起動等)の一時失敗でall-backendsをraw退行させると、
-      // Codexのみの一覧が「完全な成功」としてキャッシュされ非Codexセッションが
-      // 欠落したまま固定される。未接続なら失敗のまま返し、WS ready後の
-      // 再同期(useDirectorySessionSyncRecoveryController)に任せる。
-      if (
-        backendId === ALL_BACKENDS_SCOPE &&
-        options.runnerWebSocketManager.getSnapshot?.().connectionState !== "ready"
-      ) {
-        throw error;
-      }
-    }
-    if (neutral) return agentSessionsToThreads(neutral, cwd, sourceKinds, backendId);
-    if (options.backendId && !rawFallbackAllowed) {
-      throw new Error("Selected Agent Backend is unavailable");
-    }
-  }
-  const listed = await listRawCodexAppServerThreads(options, limit, cwd, cursor, sourceKinds);
-  return options.runnerWebSocketManager && options.backendId === ALL_BACKENDS_SCOPE
-    ? { ...listed, successfulBackendIds: ["codex"], partialErrors: [{ code: "backend_unavailable", message: "Agent listing unavailable; raw fallback only" }] }
-    : listed;
+  const backendId = String(options.backendId || "codex");
+  const includeSubagents = sourceKinds.some((kind) => String(kind).startsWith("subAgent"));
+  const neutral = await listAgentSessions(options.runnerWebSocketManager, {
+    backendId, cwd, cursor, limit, includeSubagents,
+    ...(options.parentSessionIds ? { parentSessionIds: options.parentSessionIds } : {}),
+  }, options.onListResponseBytes);
+  if (!neutral) throw new Error("Selected Agent Backend is unavailable");
+  return agentSessionsToThreads(neutral, cwd, sourceKinds, backendId);
 }
 
 function agentSessionsToThreads(neutral: Record<string, unknown>, cwd: string, sourceKinds: CodexThreadSourceKind[], backendId: string): CodexThreadListResult {
@@ -128,61 +97,11 @@ export async function listCodexAppServerThreadsBatch(options: ThreadListOptions 
 }>> {
   const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 5)));
   const sourceKinds: CodexThreadSourceKind[] = ["cli", "vscode", "appServer", "exec"];
-  const groups = options.runnerWebSocketManager
-    ? await listAgentSessionsBatch(options.runnerWebSocketManager, options.cwds, limit)
-    : options.cwds.map((cwd) => ({ cwd, payload: null }));
-  const results: Array<{ cwd: string; result?: CodexThreadListResult; error?: Error }> = Array(groups.length);
-  let next = 0;
-  await Promise.all(Array.from({ length: Math.min(2, groups.length) }, async () => {
-    while (next < groups.length) {
-      const index = next++;
-      const group = groups[index];
-      try {
-        if ("error" in group && group.error) throw group.error;
-        const result = group.payload
-          ? agentSessionsToThreads(group.payload, group.cwd, sourceKinds, ALL_BACKENDS_SCOPE)
-          : { ...await listRawCodexAppServerThreads(options, limit, group.cwd, "", sourceKinds),
-            successfulBackendIds: ["codex"], partialErrors: [{ code: "backend_unavailable", message: "Agent listing unavailable; raw fallback only" }] };
-        results[index] = { cwd: group.cwd, result };
-      } catch (error) {
-        results[index] = { cwd: group.cwd, error: error instanceof Error ? error : new Error(String(error)) };
-      }
-    }
-  }));
-  return results;
-}
-
-function listRawCodexAppServerThreads(options: ThreadListOptions, limit: number, cwd: string, cursor: string, sourceKinds: CodexThreadSourceKind[]): Promise<CodexThreadListResult> {
-  return runCodexRpcSession({
-    wsUrl: options.wsUrl,
-    wsToken: options.wsToken,
-    timeoutMs: options.timeoutMs ?? NEAR_UNLIMITED_TIMEOUT_MS,
-    clientName: "expo-ios-thread-list",
-    clientTitle: "Expo iOS Thread List",
-    traceId: "thread_list",
-    runnerWebSocketManager: options.runnerWebSocketManager,
-    run: async (rpc) => {
-      const result = await rpc<Record<string, unknown>>("thread/list", {
-        limit,
-        sortKey: "updated_at",
-        sortDirection: "desc",
-        useStateDbOnly: true,
-        sourceKinds,
-        archived: false,
-        ...(cursor ? { cursor } : {}),
-        ...(cwd ? { cwd } : {}),
-      });
-      const itemsRaw = Array.isArray((result as any)?.data) ? ((result as any).data as unknown[]) : [];
-      const data = itemsRaw
-        .map((item) => normalizeThreadListEntry(item))
-        .filter((item): item is NonNullable<ReturnType<typeof normalizeThreadListEntry>> => !!item)
-        .map((item) => ({ ...item, backendId: "codex", modelRef: "" }));
-      return {
-        data,
-        nextCursor: String((result as any)?.nextCursor || ""),
-        backwardsCursor: String((result as any)?.backwardsCursor || ""),
-      };
-    },
+  const groups = await listAgentSessionsBatch(options.runnerWebSocketManager, options.cwds, limit);
+  return groups.map((group) => {
+    if (group.error) return { cwd: group.cwd, error: group.error };
+    if (!group.payload) return { cwd: group.cwd, error: new Error("Session batch result missing") };
+    return { cwd: group.cwd, result: agentSessionsToThreads(group.payload, group.cwd, sourceKinds, ALL_BACKENDS_SCOPE) };
   });
 }
 

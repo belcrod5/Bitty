@@ -137,7 +137,6 @@ export type LlmSessionHistoryResult = {
   latestSessionId: string;
   nextCursor: string;
   partialErrors?: CodexThreadListResult["partialErrors"];
-  successfulBackendIds?: string[];
 };
 
 export type LlmSessionHistoryBatchGroup = { cwd: string; result?: LlmSessionHistoryResult; error?: Error };
@@ -806,19 +805,14 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
   const fetchLatestSessionForDirectory = useCallback(async (
     directoryRaw?: unknown
   ): Promise<{ sessionId: string; backendId: string } | null> => {
-    const targetCodexWsUrl = codexWsUrl.trim();
     const directory = parseLlmDirectory(directoryRaw ?? normalizedLlmDirectoryForRequest());
-    if (!targetCodexWsUrl) return null;
+    if (!runnerWebSocketManager) return null;
     const listed = await listCodexAppServerThreads({
-      wsUrl: targetCodexWsUrl,
-      wsToken: runnerToken.trim(),
       cwd: directory,
       limit: 1,
       sourceKinds: [...MAIN_THREAD_SOURCE_KINDS],
-      timeoutMs: Math.min(nearUnlimitedTimeoutMs, SESSION_HISTORY_RPC_TIMEOUT_MS),
       runnerWebSocketManager,
       backendId: ALL_BACKENDS_SCOPE,
-      rawFallbackBackendId,
     });
     const latest = listed.data[0];
     const sessionId = parseOptionalSessionId(latest?.threadId);
@@ -827,7 +821,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       sessionId,
       backendId: String(latest?.backendId || "codex").trim() || "codex",
     };
-  }, [codexWsUrl, nearUnlimitedTimeoutMs, normalizedLlmDirectoryForRequest, rawFallbackBackendId, runnerToken, runnerWebSocketManager]);
+  }, [normalizedLlmDirectoryForRequest, runnerWebSocketManager]);
 
   const loadDirectoryExplorer = useCallback(async (pathRaw?: unknown) => {
     const targetLlmUrl = auxServerBaseUrl();
@@ -951,7 +945,6 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       latestSessionId: sessions[0]?.sessionId || "",
       nextCursor: String(listed.nextCursor || "").trim(),
       ...(listed.partialErrors?.length ? { partialErrors: listed.partialErrors } : {}),
-      ...(listed.successfulBackendIds ? { successfulBackendIds: listed.successfulBackendIds } : {}),
     };
   }, [emitSessionDiag, fetchRunnerSessionSnapshots]);
 
@@ -968,10 +961,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     // directory一覧は「選択中Provider」ではなく「そのdirectoryの全Backend統合」が既定。
     // 呼び出し元がbackendIdを明示した時だけ単一Backendに絞る。
     const backendId = String(historyOptions?.backendId || ALL_BACKENDS_SCOPE).trim() || ALL_BACKENDS_SCOPE;
-    const targetCodexWsUrl = codexWsUrl.trim();
-    if (!targetCodexWsUrl && backendId === rawFallbackBackendId) {
-      throw new Error("Codex WS URL が未設定です");
-    }
+    if (!runnerWebSocketManager) throw new Error("Runner WebSocket is required for session listing");
     const assertCurrent = captureSessionConnection();
     const startedAt = Date.now();
     emitSessionDiag("session_history_fetch_start", {
@@ -982,26 +972,23 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       includeRunnerSnapshots,
     });
     const listed = await listCodexAppServerThreads({
-      wsUrl: targetCodexWsUrl,
-      wsToken: runnerToken.trim(),
       cwd: directory,
       limit,
       cursor,
       sourceKinds: historyOptions?.includeSubagents
         ? [...MAIN_THREAD_SOURCE_KINDS, ...SUBAGENT_THREAD_SOURCE_KINDS]
         : [...MAIN_THREAD_SOURCE_KINDS],
-      timeoutMs: Math.min(nearUnlimitedTimeoutMs, SESSION_HISTORY_RPC_TIMEOUT_MS),
       runnerWebSocketManager,
       backendId,
-      rawFallbackBackendId,
     });
     return finishSessionHistoryPage(directory, listed, includeRunnerSnapshots, backendId, startedAt, assertCurrent);
-  }, [codexWsUrl, runnerToken, emitSessionDiag, nearUnlimitedTimeoutMs, normalizedLlmDirectoryForRequest,
-    runnerWebSocketManager, rawFallbackBackendId, captureSessionConnection, finishSessionHistoryPage]);
+  }, [emitSessionDiag, normalizedLlmDirectoryForRequest, runnerWebSocketManager,
+    captureSessionConnection, finishSessionHistoryPage]);
 
   const fetchSessionHistoryBatch = useCallback(async (
     directories: string[], historyOptions: { limit: number; includeRunnerSnapshots?: boolean },
   ): Promise<LlmSessionHistoryBatchGroup[]> => {
+    if (!runnerWebSocketManager) throw new Error("Runner WebSocket is required for session listing");
     const assertCurrent = captureSessionConnection();
     const startedAt = Date.now();
     for (const directory of directories) emitSessionDiag("session_history_fetch_start", {
@@ -1009,9 +996,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       includeRunnerSnapshots: historyOptions.includeRunnerSnapshots !== false,
     });
     const groups = await listCodexAppServerThreadsBatch({
-      wsUrl: codexWsUrl.trim(), wsToken: runnerToken.trim(), cwds: directories,
-      limit: historyOptions.limit, runnerWebSocketManager, rawFallbackBackendId,
-      timeoutMs: Math.min(nearUnlimitedTimeoutMs, SESSION_HISTORY_RPC_TIMEOUT_MS),
+      cwds: directories, limit: historyOptions.limit, runnerWebSocketManager,
     });
     assertCurrent();
     const listElapsedMs = Math.max(0, Date.now() - startedAt);
@@ -1049,8 +1034,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       summaryHttpFailedRequestCount: snapshotMetrics.httpFailedRequestCount,
     });
     return results;
-  }, [captureSessionConnection, codexWsUrl, runnerToken, runnerWebSocketManager, rawFallbackBackendId,
-    nearUnlimitedTimeoutMs, finishSessionHistoryPage, emitSessionDiag]);
+  }, [captureSessionConnection, runnerWebSocketManager, finishSessionHistoryPage, emitSessionDiag]);
 
   const fetchSessionChildrenHistory = useCallback(async (
     parentSessionIdsRaw: unknown[],
@@ -1069,10 +1053,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       ? Math.max(1, Math.min(100, Math.floor(Number(historyOptions?.limit))))
       : 50;
     const includeRunnerSnapshots = historyOptions?.includeRunnerSnapshots !== false;
-    const targetCodexWsUrl = codexWsUrl.trim();
-    if (!targetCodexWsUrl) {
-      throw new Error("Codex WS URL が未設定です");
-    }
+    if (!runnerWebSocketManager) throw new Error("Runner WebSocket is required for session listing");
     const assertCurrent = captureSessionConnection();
     const startedAt = Date.now();
     emitSessionDiag("session_child_history_fetch_start", {
@@ -1091,16 +1072,12 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     try {
       while (true) {
         const listed = await listCodexAppServerThreads({
-          wsUrl: targetCodexWsUrl,
-          wsToken: runnerToken.trim(),
           cwd: directory,
           limit,
           cursor,
           sourceKinds: [...SUBAGENT_THREAD_SOURCE_KINDS],
-          timeoutMs: Math.min(nearUnlimitedTimeoutMs, SESSION_HISTORY_RPC_TIMEOUT_MS),
           runnerWebSocketManager,
           backendId: ALL_BACKENDS_SCOPE,
-          rawFallbackBackendId,
           parentSessionIds,
           onListResponseBytes: (bytes) => {
             sessionsListReceivedBytes += bytes;
@@ -1169,13 +1146,9 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       sessions.filter((session) => session.parentSessionId === parentSessionId),
     ]));
   }, [
-    runnerToken,
-    codexWsUrl,
     emitSessionDiag,
     fetchRunnerSessionSnapshots,
-    nearUnlimitedTimeoutMs,
     normalizedLlmDirectoryForRequest,
-    rawFallbackBackendId,
     runnerWebSocketManager,
     captureSessionConnection,
   ]);
