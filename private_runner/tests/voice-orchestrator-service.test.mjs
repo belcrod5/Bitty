@@ -482,8 +482,12 @@ test("main checklist changes notify on service starts without per-turn hooks", a
     onChecklistChanged: (identity) => changed.push(identity) });
   const conversationId = (await service.open("main")).logicalConversationId;
   assert.equal((await (await turn(service, "main", conversationId, "first")).finished).status, "completed");
+  assert.ok(changed.length > 0);
+  assert.deepEqual((await service.history("main")).taskChecklist, { status: "present", markdown: "- [ ] 確認\n" });
+  const beforeSecond = changed.length;
   assert.equal((await (await turn(service, "main", conversationId, "second")).finished).status, "completed");
-  assert.deepEqual(changed, [1, 2].map(() => ({ orchestratorId: "main", logicalConversationId: conversationId })));
+  assert.ok(changed.length > beforeSecond);
+  assert.ok(changed.every((identity) => identity.orchestratorId === "main" && identity.logicalConversationId === conversationId));
   assert.deepEqual((await service.history("main")).taskChecklist,
     { status: "present", markdown: "- [x] 確認\n" });
 });

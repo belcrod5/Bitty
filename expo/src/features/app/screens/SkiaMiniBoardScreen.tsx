@@ -100,6 +100,7 @@ import { USE_NATIVE_ANIMATION_DRIVER } from "../utils/animationDriver";
 import { useReduceMotionEnabled } from "../hooks/useReduceMotionEnabled";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { VoiceConversationScreen, type VoiceConversationPlayback } from "./VoiceConversationScreen";
+import { VoiceConsultationScreen } from "./VoiceConsultationScreen";
 import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 import {
   SKIA_BOARD_MAX_TEXT_SCALE,
@@ -776,6 +777,7 @@ export function SkiaMiniBoardScreen({
   const activeScreenRef = useRef(activeScreen);
   activeScreenRef.current = activeScreen;
   const [voiceOpen, setVoiceOpen] = useState(false);
+  const [consultationOpen, setConsultationOpen] = useState(false);
   const [voiceControlSignal, setVoiceControlSignal] = useState<AbortSignal | undefined>();
   const [voiceTargetId, setVoiceTargetId] = useState("");
   const [voiceOpenSequence, setVoiceOpenSequence] = useState(0);
@@ -2173,7 +2175,7 @@ export function SkiaMiniBoardScreen({
               <TouchableOpacity
                 testID="skia-board-voice-conversation"
                 style={screenStyles.toolButton}
-                onPress={() => { setVoiceControlSignal(undefined); setVoiceTargetId(""); setVoiceOpenSequence((current) => current + 1); setVoiceOpen(true); }}
+                onPress={() => { setVoiceControlSignal(undefined); setVoiceTargetId(""); setVoiceOpenSequence((current) => current + 1); setConsultationOpen(false); setVoiceOpen(true); }}
                 accessibilityRole="button"
                 accessibilityLabel="音声会話"
               >
@@ -2188,6 +2190,10 @@ export function SkiaMiniBoardScreen({
                 </View> : null}
               </TouchableOpacity>
             ) : null}
+            <TouchableOpacity testID="skia-board-consultation" style={screenStyles.toolButton}
+              accessibilityRole="button" accessibilityLabel="相談" onPress={() => { setVoiceOpen(false); setConsultationOpen(true); }}>
+              <Ionicons name="people-outline" size={23} color={theme.colors.iconSecondary} />
+            </TouchableOpacity>
           </View>
           <View pointerEvents="box-none" style={screenStyles.usageSafeArea} testID="skia-board-usage-safe-area">
             <View style={screenStyles.usagePill} testID="skia-board-usage-pill">
@@ -2210,6 +2216,7 @@ export function SkiaMiniBoardScreen({
         <VoiceConversationScreen key={voiceOpenSequence} {...voicePlayback} initialOrchestratorId={voiceTargetId} initialControlSignal={voiceControlSignal}
           onClose={() => setVoiceOpen(false)} />
       ) : null}
+      {consultationOpen ? <VoiceConsultationScreen onClose={() => setConsultationOpen(false)} /> : null}
       <SessionContextMenu
         target={sessionContextMenuTarget}
         onClose={() => setSessionContextMenuTarget(null)}

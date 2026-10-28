@@ -47,6 +47,7 @@ import {
 import { createCodexAppServerClient } from "./codex-app-server-client.mjs";
 import { createOrchestratorRuntime } from "./orchestrator-runtime.mjs";
 import { createVoiceOrchestratorService } from "./voice-orchestrator-service.mjs";
+import { createVoiceConsultationService } from "./voice-consultation-service.mjs";
 import { createStreamTtsSegments, TTS_SEGMENT_BOUNDARY } from "./stream-tts-segments.mjs";
 import { convertTtsAudioToMp3 } from "./tts-audio.mjs";
 import { createVoiceRequestBridge } from "./voice-request-bridge.mjs";
@@ -5230,22 +5231,40 @@ const startScheduledCodexTurn = createScheduledCodexTurnStarter({
   dynamicToolResponse: (request) => runnerInitiatedCalendarResponse(request),
 });
 const scheduledVoiceApprovals = createVoiceRequestBridge({
-  send: ({ requestId, operationId, method, params, threadId, turnId, orchestratorId, orchestratorName }) => {
+  send: ({ requestId, operationId, method, params, threadId, turnId, orchestratorId, orchestratorName, startedAtMs }) => {
     let sent = false;
     for (const client of runnerWsActiveClients) {
       if (sendRunnerWsEnvelope(client, {
-        channel: "agent", op: "voice.approval.request", operationId, streamId: operationId,
-        payload: { requestId, method, params, threadId, turnId, orchestratorId, orchestratorName },
+        channel: "agent", op: method === "item/tool/call" ? "voice.calendar.request"
+          : method === "item/tool/requestUserInput" ? "voice.userInput.request" : "voice.approval.request", operationId, streamId: operationId,
+        payload: { requestId, method, params, threadId, turnId, orchestratorId, orchestratorName, startedAtMs },
       })) sent = true;
     }
     return sent;
   },
-  onResolved: ({ requestId, operationId, orchestratorId }) => {
+  onResolved: ({ requestId, operationId, orchestratorId, method }) => {
     for (const client of runnerWsActiveClients) {
-      sendRunnerWsEnvelope(client, { channel: "agent", op: "voice.approval.resolved",
+      sendRunnerWsEnvelope(client, { channel: "agent", op: method === "item/tool/call" ? "voice.calendar.resolved"
+        : method === "item/tool/requestUserInput" ? "voice.userInput.resolved" : "voice.approval.resolved",
         operationId, payload: { requestId, orchestratorId } });
     }
   },
+});
+const consultationService = createVoiceConsultationService({
+  rootDir: path.join(WORKSPACE_ROOT, "private_runner/logs/consultations"),
+  orchestrators: voiceContextService,
+  onChanged: (room) => {
+    for (const client of runnerWsActiveClients) sendRunnerWsEnvelope(client, {
+      channel: "agent", op: "voice.consultations.changed", payload: room,
+    });
+  },
+  requestApproval: async ({ operationId, orchestratorId, request, signal }) => {
+    const { orchestrators } = await voiceContextService.list();
+    return scheduledVoiceApprovals.request(operationId, request, orchestratorId,
+      orchestrators.find((item) => item.id === orchestratorId)?.name || "", signal);
+  },
+  requestUserInput: ({ operationId, orchestratorId, request, signal }) =>
+    scheduledVoiceApprovals.request(operationId, request, orchestratorId, "", signal),
 });
 const codexScheduleService = createCodexScheduleService({
   definitionsPath: CODEX_SCHEDULE_DEFINITIONS_PATH,
@@ -7182,7 +7201,8 @@ runnerWsServer.on("connection", (ws, req) => {
     if (message.channel !== "agent") return false;
     if (message.op === "voice.userInput.respond" || message.op === "voice.calendar.respond") {
       const requestId = String(message.payload?.requestId || "");
-      const accepted = voiceRequests.respond(message.operationId, requestId, message.payload?.result);
+      const accepted = voiceRequests.respond(message.operationId, requestId, message.payload?.result)
+        || scheduledVoiceApprovals.respond(message.operationId, requestId, message.payload?.result);
       sendRunnerWsEnvelope(ws, {
         channel: "agent", op: `${message.op}.result`, requestId: message.requestId || "",
         operationId: message.operationId, payload: { requestId, accepted },
@@ -7201,6 +7221,25 @@ runnerWsServer.on("connection", (ws, req) => {
         channel: "agent", op: "voice.approval.decision.result", requestId: message.requestId || "",
         operationId: message.operationId, payload: { requestId },
       });
+      return true;
+    }
+    if (message.op.startsWith("voice.consultations.")) {
+      const payload = message.payload || {};
+      const methods = {
+        "voice.consultations.list": () => consultationService.list(),
+        "voice.consultations.get": () => consultationService.get(payload.roomId),
+        "voice.consultations.create": () => consultationService.create(payload),
+        "voice.consultations.resume": () => consultationService.resume(payload.roomId),
+        "voice.consultations.stop": () => consultationService.stop(payload.roomId),
+        "voice.consultations.supplement": () => consultationService.supplement(payload.roomId, payload),
+        "voice.consultations.configure": () => consultationService.configure(payload.roomId, payload),
+        "voice.consultations.reset": () => consultationService.confirmReset(payload.roomId, payload.decision),
+      };
+      const work = methods[message.op];
+      if (!work) { sendVoiceError(message, { code: "turn_rejected", message: "Unknown consultation operation" }); return true; }
+      void Promise.resolve().then(work).then((result) => sendRunnerWsEnvelope(ws, {
+        channel: "agent", op: `${message.op}.result`, requestId: message.requestId || "", payload: result,
+      })).catch((error) => sendVoiceError(message, error));
       return true;
     }
     const orchestratorId = message.payload?.orchestratorId || "main";
@@ -7230,9 +7269,9 @@ runnerWsServer.on("connection", (ws, req) => {
     }
     if (message.op === "voice.open" || message.op === "voice.status" || message.op === "voice.history") {
       const operation = message.op === "voice.open"
-        ? voiceContextService.open(orchestratorId)
-        : message.op === "voice.history" ? voiceContextService.history(orchestratorId)
-          : voiceContextService.status(orchestratorId, message.payload?.logicalConversationId, message.payload?.clientOperationId);
+        ? voiceContextService.open(orchestratorId, message.payload?.conversationKey)
+        : message.op === "voice.history" ? voiceContextService.history(orchestratorId, message.payload?.conversationKey)
+          : voiceContextService.status(orchestratorId, message.payload?.logicalConversationId, message.payload?.clientOperationId, message.payload?.conversationKey);
       void operation.then((payload) => {
         const job = resolveRunnerWsTtsOperationJob(payload.clientOperationId);
         sendRunnerWsEnvelope(ws, {
@@ -7244,7 +7283,7 @@ runnerWsServer.on("connection", (ws, req) => {
     }
     if (message.op === "voice.task-checklist.complete.respond") {
       void voiceContextService.respondToChecklistCompletion(orchestratorId,
-        message.payload?.sourceHash, message.payload?.version, message.payload?.decision).then((payload) => {
+        message.payload?.sourceHash, message.payload?.version, message.payload?.decision, message.payload?.conversationKey).then((payload) => {
         sendRunnerWsEnvelope(ws, { channel: "agent", op: "voice.task-checklist.complete.respond.result",
           requestId: message.requestId || "", payload: { ...payload, orchestratorId } });
       }).catch((error) => sendVoiceError(message, error));
@@ -7260,7 +7299,7 @@ runnerWsServer.on("connection", (ws, req) => {
       return true;
     }
     if (message.op === "voice.turn.interrupt") {
-      void voiceContextService.interrupt(orchestratorId, message.payload?.logicalConversationId, message.payload?.clientOperationId)
+      void voiceContextService.interrupt(orchestratorId, message.payload?.logicalConversationId, message.payload?.clientOperationId, message.payload?.conversationKey)
         .then((payload) => {
           const job = resolveRunnerWsTtsOperationJob(payload.clientOperationId);
           if (job && job.status !== "completed" && job.status !== "failed" && job.status !== "cancelled") {
@@ -7280,7 +7319,7 @@ runnerWsServer.on("connection", (ws, req) => {
         parentGeneration: message.payload?.parentGeneration,
         turnSeq: message.payload?.turnSeq,
         decision: message.payload?.decision,
-      }).then((payload) => sendRunnerWsEnvelope(ws, {
+      }, message.payload?.conversationKey).then((payload) => sendRunnerWsEnvelope(ws, {
         channel: "agent", op: "voice.session-reset.respond.result",
         requestId: message.requestId || "", operationId: message.operationId || "", payload,
       })).catch((error) => sendVoiceError(message, error));

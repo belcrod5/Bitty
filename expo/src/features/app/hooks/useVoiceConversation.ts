@@ -612,7 +612,7 @@ export function useVoiceConversation(
   useEffect(() => {
     return manager.subscribe({ channel: "agent", op: "voice.task-checklist.changed" }, (message) => {
       const payload = payloadOf(message);
-      if (payload.orchestratorId === orchestratorId && payload.logicalConversationId === conversationIdRef.current) {
+      if (payload.orchestratorId === orchestratorId) {
         void refreshHistory();
       }
     });

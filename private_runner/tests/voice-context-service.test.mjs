@@ -4862,10 +4862,12 @@ test("learning exclusions keep the latest ten-pair window without backfilling ol
   const service = createVoiceContextService({ rootDir, createClient: codex.createClient,
     learningContext: { retrieve: async () => ({ contextRevision: 2, selectedDigest: "empty", items: [], instruction: "", excludedPairSeqs: [14] }),
       delivered: async () => {}, recordRead: async () => {} } });
-  await complete(service, conversation, "continue");
-  const injected = codex.calls.find(({ method }) => method === "thread/inject_items");
-  assert.deepEqual(injected.params.items.filter(({ role }) => role === "user").map(({ content }) => content[0].text),
-    [6, 7, 8, 9, 10, 11, 12, 13, 15].map((index) => `user-${index}`));
+  try {
+    await complete(service, conversation, "continue");
+    const injected = codex.calls.find(({ method }) => method === "thread/inject_items");
+    assert.deepEqual(injected.params.items.filter(({ role }) => role === "user").map(({ content }) => content[0].text),
+      [6, 7, 8, 9, 10, 11, 12, 13, 15].map((index) => `user-${index}`));
+  } finally { await service.close(); }
 });
 
 test("unavailable learning does not replay conversation with unknown exclusions", async (t) => {

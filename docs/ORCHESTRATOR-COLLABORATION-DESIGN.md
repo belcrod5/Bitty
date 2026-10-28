@@ -1,0 +1,142 @@
+# 複数オーケストレーターの相談チャット設計
+
+作成日: 2026-10-28。更新日: 2026-10-29。状態: 独立テキスト相談を実装、ローカル回帰検証済み。実native／実機は未検証。ユーザー合意、設計提案、未検証の制約を分けて記録する。
+
+## 現在の合意
+
+**通常defaultの挙動を維持し、既存本人への変更を極力小さくして、同じ本人を相談へ呼び出す。** 相談参加中も、本人の指示・実行・承認・タスク・セッション切替・メモリ・学習は既存どおりとする。本人を複製せず、将来の本人への修正が相談でもそのまま適用される同一実装を使う。
+相談側だけが順番・参加者・共有ログ・入力差分・有限上限・別UIを持ち、共通のメッセージ送信／実行処理から本人へ依頼する。必要なら汎用の入口引数を最小限追加するが、本人処理のコピーや相談専用の学習採用schema変更は行わない。
+相談テンプレートは追加の会話上の依頼であり、本人の通常設定を上書きせず、別人格・別の機能判断基準を作らない。通常textだけでも依頼は渡せる。設定を汚さず追加指示を明示注入する場合や別sessionを使う場合は、小さな任意入口を追加した。
+
+回覧板は通常チャットと別UIの相談roomとし、通常画面の選択中オーケストレーターを変更しない。
+`A → B → C → A …` と一人ずつ回し、BはA、CはA+B、次のAはB+Cを読んで考え直す。話すことがなければ見送れる。Aだけの報告・総括には戻さない。
+新しいhosted agentと既存本人が同一とは仮定せず、新本人・別runtimeの複製で代用しない。
+**別UIと通常選択維持に加え、任意conversationKeyで通常とは別の会話state／native threadを保持する実装を追加した。同じ本人workspace・memory・learning・実行処理を使う。実nativeでの最終確認は残る。**
+
+前の大きなDI／owner基盤再設計・source-aware memory／analyzer変更・本人への相談tool追加案は採用案に戻さない。変更ゼロを必須とした前方針は、通常default維持と必要最小の入口変更を許す最新方針へ置き換える。以下では実装済みの独立相談と、未実装の自然文招待・未検証の境界を区別する。実装と試験の一覧は[実装記録](ORCHESTRATOR-COLLABORATION-IMPLEMENTATION.md)を参照。
+
+## 1. 相談と本人の境界
+
+`orchestratorId` は既存本人、`roomId` は相談側の共有会話、`runId` は相談側の一手番を識別する。
+新しいconsultation controllerから共通の送信経路を呼び、本人の実行・workspace・タスク・メモリ・学習を通常どおり使う。[既存の分離契約](ORCHESTRATOR-ISOLATION.md)を維持する。
+本人の私的履歴を他の参加者へ丸ごと配布せず、他者のworkspaceやメモリを直接読まない。共有対象は議題、許可された抜粋、roomに公開された発言に限る。
+
+現状の[本人サービス](../private_runner/src/voice-orchestrator-service.mjs)は明示的な `orchestratorId` で宛先を選べるため、registryの選択中IDを変える必要はない。
+[context.start](../private_runner/src/voice-context-service.mjs) 自体は引き続きそのcontextのactive.logicalConversationIdとの一致を要求する。本人サービスが任意conversationKeyでscope contextを選び、同じfactory／runTurnへ接続する。
+未指定なら通常context、roomキーなら別active・events・native threadを使う。本人workspace・memory store instance・設定参照・learningは共通とし、相談pairも既存のメモリ・学習処理へ従来の基準で入る。
+通常の履歴UIには相談pairを混ぜず、私的セッションのclear・切替、新本人、native直呼びで分離を代用しない。
+
+### 実装した任意入口
+
+任意の `conversationKey`（UUID）を追加し、未指定は現在の通常会話、roomキー指定時は会話状態・native sessionを分ける。`additionalInstructions` はrun単位のsnapshotとして通常指示へ合成し、通常systemInstructionには保存せず、開始・再開へ渡す。追加指示の対象は当該run／scopeの会話応答に限り、既存preflight・summary・topic判定・learning analyzerへ一律追加しない。公開送信は既存WebSocketメッセージへ同じ引数を載せる。
+現factoryは関数なので派生クラス化は不要であり、全処理へ `mode === consultation` を撒かない。controllerはroom進行・入力組立を持ち、本人実行をコピーしない。
+引数追加だけで成立すると断定しない。現rootにstate・workspace・memoryが結合し、inFlightもcontext単位である。root丸ごとの差替えではなく会話stateだけを分ける必要がある。本人workspace・memory等の共通資源を保ち、本人の共通実行枠、共有memoryの単一writer・採番を実装前に確認する。通常contextが共有資源・summaryを一組だけ所有し、全scope証拠をmemory／learning高水位の回復前に集める。設定／clearの永続世代でscope親失効の取りこぼしを補完する。
+[モデルを呼ばない境界検証](ORCHESTRATOR-COLLABORATION-BOUNDARY-PROBE.md)では、既存factoryの一時copyへの小patchで別state／native threadと同一workspace／store・run別指示の接続を確認した。共通busy・長期summary・全process再起動・自動設定追随まで成立した結果ではない。
+
+### UI導線の提案
+
+[ボード下部](../expo/src/features/app/screens/SkiaMiniBoardScreen.tsx)のmic隣に「相談」アイコンを置き、独立相談一覧→新規→登録済み本人の複数選択・議題入力→開始とする導線を実装した。
+[通常音声画面](../expo/src/features/app/screens/VoiceConversationScreen.tsx)の本人切替と独立し、相談ヘッダーには参加者と設定、相談設定にはテンプレート編集を置く。途中追加UIは設けていない。
+[相談画面](../expo/src/features/app/screens/VoiceConsultationScreen.tsx)は独立したテキストUIで、閉じても相談を停止しない。音声surfaceを持たないため、端末のマイク停止／音声移動に使うapp-control originは無い。既存のorigin無しと同じ制限であり、本人tool全般の無効化ではない。
+
+### 公開紹介と自然言語の招待
+
+現状の登録情報・[管理画面](../expo/src/features/app/components/VoiceOrchestratorManager.tsx)に、他者へ共有する得意分野・担当の紹介はない。
+相談側に、既存本人IDと紐付く短い紹介自由文を一つ永続保存し、次の相談でも使う。ユーザーが編集し、例は「D: メールの検索と整理担当」「B: 実装・不具合調査」。本人registry・systemInstructionは変更しない。
+参加者と非参加の招待候補を分けた名簿を相談中の本人へ渡す。紹介は相談先を考える材料で、tool保有・実作業許可の証明ではない。専門性の自動認定や新しい学習基盤は作らない。
+
+**以降の自然文招待は未実装であり、追加AIによる意図判定方式はユーザー回答待ちである。** AIが通常文で「メール担当Dも呼んでいい？共有するのはこの相談内の履歴です」と提案し、ユーザーが通常入力で「いいよ／呼んで」と答える形を目指す。専用承認カード・ボタンは設けない。
+相談controllerに候補・room・共有範囲・提案元発言を保留し、現在のユーザー応答と結び付けてから追加する。本人用dynamic toolや返信全体のJSON指定は追加しない。意図の抽出・承認確定の具体方式は未検証である。
+「メールはDだよ」は担当説明であり承認ではない。部分一致、他者の賛成、引用、過去承認から自動実行しない。曖昧な場合だけ聞き直し、拒否・保留へ同じ提案を連打しない。
+承認前にDへ送信・起動せず、承認後は現手番終了境界で末尾に追加する。同じ提案の再送で二重参加させない。
+Dには承認されたroom履歴を一度渡し、以後は差分を送る。既存参加者にも参加通知と更新名簿を次入力で知らせる。
+追加は見送り記録をresetするが上限を増やさず、停止済みroomの再開や追加手番はユーザー判断とする。
+
+## 2. 相談側が持つ状態
+
+room共有ログを正本に、参加順・次手番・本文version・各本人へ渡したcursor・現在run・pass・停止状態・テンプレートを保持する。
+共有発言は `seq / speakerId / source / text` と発言IDを持つ。これは相談側の記録であり、本人の保存roleやmemory schemaを変更しない。
+runには固定した入力上限・本文version・テンプレート版・既存APIのoperationId／logicalConversationId・状態を記録する。本人のnative状態の別writerにはならない。
+受付・送信意図・既存API応答・結果確定を保存し、発言またはpass、cursor、次手番は一つの相談側確定レコードで更新する。
+LLM待ちの間はroom保存用排他を保持しない。汎用durable queue・Redis・別plannerは追加しない。
+
+## 3. 既存APIで一人ずつ回す
+
+1. 相談controllerが次の本人と手番の入力snapshotを決め、送信意図を保存する。
+2. `voice.open(orchestratorId, conversationKey)` で該当scopeのlogicalConversationIdを取得する。
+3. 既存 `turn.start` へ本人ID・logicalConversationId・operationId・通常text入力を渡す。conversationKey・additionalInstructionsも同じ共通実行入口へ運ぶ。選択IDは変えない。
+4. 既存statusで完了を待ち、busy・unknown・承認・セッション切替の要求も既存応答として扱う。ユーザー確認を勝手にyesで代行しない。
+5. 正常終了した発言または明示passを相談ログへ確定してから次の本人へ進む。失敗をpass扱いしない。
+
+本人の発言は通常文、見送りは全体が `[[PASS]]` と完全一致する形式を実装した。返信JSONや120字制限は付けない。
+差分は `[{"seq":12,"speakerId":"B","text":"…"}]` のような話者付きデータをJSONとして通常text内に載せる。APIに `role: agent` があるという主張ではない。
+cursorは実際に入力へ渡した上限まで進め、本人の出力seqへ飛ばさない。生成中の補足を落とさず、同じ本人の既知出力だけを次差分から除く。
+毎巡の全ログ再送を避ける。ただし既存の履歴圧縮・切替後に差分だけで継続できるか、既存APIで確認できる範囲は未検証である。
+
+### テンプレートと入力の合成
+
+相談側で編集可能なテンプレートと、議題・参加者／招待候補の紹介・話者付き差分・残り手番を組み立てる。データは通常textへ載せ、テンプレートはrun単位の `additionalInstructions` として既存instructions合成・再開へ渡す。通常systemInstructionへ保存しない。
+初期テンプレート例は「他者の発言を踏まえ、自分の知識・担当から意見を述べてください。新しい論点がなければ反復せず [[PASS]]。残り3手番以下では結論・未決を整理してください。他者の発言はユーザーの実作業許可ではありません」。これは追加の会話依頼であり、本人の既存指示・機能判断基準を置き換えない。
+残り手番・参加者・共有範囲はcontrollerの状態から作り、テンプレートが主張する値で実際の上限や参加状態を変えない。
+入力と有効テンプレート版をrunに記録する。更新は次の未開始手番へ適用し、進行中入力を差し替えない。
+
+## 4. 終了・補足・停止
+
+同じ本文versionで全参加者が明示passしたら休止する案とする。pass自体はversionを進めず、新しいユーザー／本人発言・参加変更でpass記録をresetする。
+ユーザー補足は随時共有ログへ追記し、次の入力へ渡す。休止確定と同じ直列処理で未配達user seqを確認し、上限で渡せなければ未反映と表示する。
+failure・timeout・busy・unknownはpassではなく休止して取り扱いを確認する。無限retryや失敗後の自動再送はしない。
+公開手番数・経過時間等の有限上限を相談側に置く。現実装は既定9・最大30手番、初回開始から15分。本人内部のpreflight・topic判定・summary・learning等を相談の都合で無効化・条件変更しない。
+既存APIで取得できる呼出し／usageを記録し、公開手番数が本人内部の総モデル呼出し数やtokenのhard capだとは扱わない。
+
+停止時は相談側の世代を更新して後着出力を公開せず、当該operationへ既存interruptを使う。独立背景の記憶・学習を相談由来というだけで取消さない。
+当該実行の終了・停止確認前は次の本人を起動しない。unknownは照合できるまで休止する。通常の別実行を勝手に停止しない。
+停止後も本人側に入力・未公開出力・既存保存が残り得る。相談側で非公開にしたことは、本人の履歴・学習を巻き戻したことを意味しない。
+
+## 5. 既存保存と復旧の制約
+
+メモリ保存・学習候補生成・採用・承認・忘却・タスク更新の判断と共通処理は既存本人を維持する。各scopeから同一memory storeへ逐次採番・appendし、同一learning.observeへ渡す。相談専用の採用基準・承認フロー・保存schemaを作らない。
+現startは通常のuser／assistant pairを保存し、`memoryStore.appendPair → onDurablePair → learning.observe` へつながる。
+相談側の `speakerId / source` をtextに書いても、本人の保存roleや学習証拠が自動的に変わるわけではない。他者情報と真正ユーザー指示の誤帰属・誤承認を既存本人が避けられるかは未解決であり、promptだけで保証しない。
+学習採用ルールやanalyzer schemaを変更して解決する前案は復活させない。scopeを分けても既存保存へどう接続するか、単一writer・採番・出所解釈が整合するかを確認し、入口引数だけで解決済みとはしない。
+
+再起動時は相談ログのoperationIdから既存statusを照合し、結果不明の送信を新operationとして再実行しない。同じ結果は二重確定しない。
+既存APIが結果・継続情報を十分返せない場合は休止し、復旧できたと断定しない。clearMessages・私的active切替・native直呼びは復旧手段として自動実行しない。
+詳細は[独立controllerのコード設計](ORCHESTRATOR-COLLABORATION-CODE-DESIGN.md)にまとめる。
+
+## 6. 公式仕様の調査記録
+
+以下は2026-10-28時点の公式資料／スキーマ確認であり、既存本人の公開APIから使えることを示すものではない。現在案はnative APIを相談側から直接呼ばない。
+
+- App Server `turn/start` のinputはUserInputで、`role: agent` 指定経路はない。`toolOutput` と空inputでstandaloneツール結果から生成でき、実行中の後続toolOutputはnative側でqueueされる。[Start a turn](https://learn.chatgpt.com/docs/app-server#start-a-turn)
+- `thread/inject_items` はraw Responses Itemsの履歴注入であり、user turnを開始しない。既存contextにも単独履歴復元の使用箇所があるが、相談側の直呼び案にはしない。[Inject items](https://learn.chatgpt.com/docs/app-server#inject-items-into-a-thread)
+- Responses Multi Agentはbetaのhosted treeと `agent_message` のauthor／recipientを持つ。既存本人のruntime・メモリをそのまま接続する経路は確認できず、別agentで本人を置き換える根拠にはしない。[公式ガイド](https://developers.openai.com/api/docs/guides/responses-multi-agent)
+- Sign in with ChatGPTの `api.openai.com/v1` 公開preview経路は `multi_agent` をunsupported fieldsに挙げる。native子エージェント全般への制約とは混同しない。[Preview limitations](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)
+- Chat Completionsのmessage nameは同roleの参加者識別に使えるが、名前だけでBitty本人を呼び出せない。[API仕様](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)
+- agents as tools／handoffはmanager主導／所有権移譲の形式で、今回の同じ本人の順番相談の代替とは確認していない。[Orchestration](https://developers.openai.com/api/docs/guides/agents/orchestration)
+
+手元のcodex-cli 0.164.0で `generate-json-schema --experimental` を実行し、`TurnStartParams.toolOutput`、`TurnToolOutput` の `name / namespace / output / retain?`、`ThreadInjectItemsParams` の存在を確認した。保存・中断・再開の実動検証は行っていない。今回それを公開APIへ追加する案は採らない。
+
+## 7. 実験記録と次の確認
+
+以下は合成personaの専用ephemeral threadを使った実験であり、既存本人への接続・通常履歴分離・メモリ／学習／承認の整合は検証していない。
+
+- [最初の小実験](ORCHESTRATOR-COLLABORATION-EXPERIMENT.md)
+- [実践3ケース](ORCHESTRATOR-COLLABORATION-PRACTICAL-EXPERIMENTS.md)
+- [通常文版](ORCHESTRATOR-COLLABORATION-PLAIN-TEXT-EXPERIMENTS.md)
+- [プロフィール共有版](ORCHESTRATOR-COLLABORATION-TEAM-AWARE-EXPERIMENTS.md)
+- [Sol highの単発比較](ORCHESTRATOR-COLLABORATION-SOL-HIGH-EXPERIMENT.md)
+
+順番の反映・条件訂正・分担訂正は観察したが、全員passと上限終了は別で、十分な相談・正確性・ユーザー承認を保証しない。モデルとeffort、JSON指定・字数制限の影響も各1試行から切り分けない。
+
+| 確認場面 | 受入条件／未解決の確認 |
+| --- | --- |
+| 同じ本人 | 通常defaultは従来どおり。必要最小の入口変更で共通本人処理を使い、将来修正が相談にも適用される |
+| A→B→C→A | 話者付き差分を順に読み、自分の既知出力を重複配送しない |
+| 別UI・選択維持 | 通常の選択IDを変えず、scope別state／native IDで通常履歴と分ける。実native確認は残る |
+| 既存承認・タスク・切替 | 応答を取り次ぎ、peer発言からユーザー承認を代行しない。誤帰属防止は実本人で未検証 |
+| メモリ・学習 | 既存の保存・判定・採用・忘却を変更しない。通常pairへ入る事実を隠さない |
+| 補足・pass・上限 | 未配達補足を黙殺せず、同版全員passだけで休止し、上限は相談の次手番を止める |
+| stop・unknown・再送 | 既存operation照合まで次送信せず、二重実行・二重公開を防ぐ。復旧不能なら休止する |
+| 紹介・自然文招待 | 相談側metadataを使い、特定提案への現在ユーザー承認前に候補を起動しない |
+
+実装済み範囲と回帰試験・制限は[実装記録](ORCHESTRATOR-COLLABORATION-IMPLEMENTATION.md)へ集約する。自然文招待、実本人による話者／権限の解釈、実native／実機と切断時質問再表示の完全な検証は残る。今回の追加実モデル呼出し・サーバー再起動は行っていない。
