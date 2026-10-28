@@ -737,3 +737,9 @@ node --test private_runner/tests/session-summaries-endpoint.test.mjs private_run
 node --test --test-name-pattern='removed GET /sessions' private_runner/tests/session-summaries-endpoint.test.mjs
 git diff --check
 ```
+
+### 18.15 未使用API削除後の稼働Runner確認（2026-10-28）
+
+ユーザーによるRunner再起動後、許可を得てlocalhostへ読み取り専用の確認を行った。確認時刻は `2026-10-28T09:03:40.120Z`（18:03:40.120 JST）。health・client-stateは200、削除した `GET /sessions` はquery付きでも404／`not_found`、Agent helloはprotocol 2・2backendだった。登録26先の一覧batchは1要求・105行・978msで、失敗group・部分失敗はともに0だった。
+
+現行の個別Agent一覧は16ms／1行、HTTP `/agent/sessions` は200・17ms／1行、summary取得は200・10ms／1行で成功した。安全な集計は `/tmp/bitty-live-sync-check-result.json`、確認scriptは `/tmp/bitty-live-sync-check.cjs`。この時間はlocalhostのAPI区間であり、アプリ起動全体やUI表示時間、変更による因果的な前後差を示さない。削除後の新アプリbuildは未確認で、エージェント自身によるRunner再起動・アプリbuildは行っていない。
