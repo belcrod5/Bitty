@@ -128,6 +128,13 @@ async function nativeFixture(t, requests, parents, childToolThreadId) {
     let listener = () => {};
     let handler = () => undefined;
     let finish;
+    let checklistRead = false;
+    const started = (thread, params) => ({ thread, ...(params.permissions ? {
+      activePermissionProfile: { id: params.permissions }, runtimeWorkspaceRoots: params.runtimeWorkspaceRoots,
+      instructionSources: [], sandbox: params.config.permissions[params.permissions].filesystem[":workspace_roots"] === "read"
+        ? { type: "readOnly", networkAccess: false }
+        : { type: "workspaceWrite", networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: true, writableRoots: [] },
+    } : {}) });
     return {
       openPromise: Promise.resolve(),
       notify() {},
@@ -137,15 +144,18 @@ async function nativeFixture(t, requests, parents, childToolThreadId) {
       waitForTurnCompletion() { return { expect() {}, promise: new Promise((resolve) => { finish = resolve; }) }; },
       async request(method, params) {
         if (method === "config/read") return { config: { mcp_servers: {} } };
+        if (method === "skills/list") return { data: [{ cwd: params.cwds[0], skills: [], errors: [] }] };
         if (method === "modelProvider/capabilities/read") return { namespaceTools: true };
         if (method === "model/list") return { data: [{ model: "gpt-6-luna", supportedReasoningEfforts: [{ reasoningEffort: "low" }] }] };
         if (method === "thread/start") {
           if (params.approvalPolicy !== "never" && responseThreadStarts++ > 0) root = randomUUID();
-          return { thread: { id: root, ephemeral: params.ephemeral } };
+          checklistRead = params.developerInstructions?.includes("新しい親セッションでは");
+          return started({ id: root, ephemeral: params.ephemeral }, params);
         }
         if (method === "thread/resume") {
           root = params.threadId;
-          return { thread: { id: root, ephemeral: false } };
+          checklistRead = params.developerInstructions?.includes("新しい親セッションでは");
+          return started({ id: root, ephemeral: false }, params);
         }
         if (method === "mcpServerStatus/list") return { data: [], nextCursor: null };
         if (method === "thread/read") {
@@ -156,6 +166,15 @@ async function nativeFixture(t, requests, parents, childToolThreadId) {
         if (method === "turn/start") {
           const turnId = randomUUID();
           queueMicrotask(async () => {
+            if (checklistRead) {
+              const callId = randomUUID();
+              listener("item/started", { threadId: root, turnId, item: { id: callId, type: "dynamicToolCall", status: "inProgress" } });
+              const read = await handler({ method: "item/tool/call", params: {
+                threadId: root, turnId, callId, namespace: "task_checklist", tool: "read_task_checklist", arguments: {},
+              } });
+              if (read.success) listener("item/completed", { threadId: root, turnId,
+                item: { id: callId, type: "dynamicToolCall", status: "completed" } });
+            }
             for (const threadId of requests) {
               const result = await handler({ id: randomUUID(), method: "item/commandExecution/requestApproval",
                 params: { threadId, turnId: randomUUID(), command: "true" } });

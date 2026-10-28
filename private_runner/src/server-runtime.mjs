@@ -45,6 +45,7 @@ import {
   getCodexTurnEventIdentity,
 } from "./codex-turn-execution.mjs";
 import { createCodexAppServerClient } from "./codex-app-server-client.mjs";
+import { createOrchestratorRuntime } from "./orchestrator-runtime.mjs";
 import { createVoiceOrchestratorService } from "./voice-orchestrator-service.mjs";
 import { createStreamTtsSegments, TTS_SEGMENT_BOUNDARY } from "./stream-tts-segments.mjs";
 import { convertTtsAudioToMp3 } from "./tts-audio.mjs";
@@ -4973,9 +4974,19 @@ function createCodexRpcClient({
   upstreamToken = CODEX_WS_PROXY_UPSTREAM_TOKEN,
   authRefreshHandler,
   bypassAuthGate = false,
+  orchestratorId,
+  workspaceDirectory,
 } = {}) {
   const authLease = bypassAuthGate ? null : codexAuthService.acquireLease();
   const usageAccount = bypassAuthGate ? null : captureCodexUsageAccount();
+  if (orchestratorId) {
+    return orchestratorRuntime.createClient({ orchestratorId, workspaceDirectory, signal,
+      onClose: () => authLease?.(), turnCompletionTimeoutMs: NEAR_UNLIMITED_TIMEOUT_MS,
+    }).then((client) => {
+      if (usageAccount) client.addNotificationListener((method, params) => observeCodexUsageNotification(usageAccount, method, params));
+      return client;
+    }).catch((error) => { authLease?.(); throw error; });
+  }
   try {
     const client = createCodexAppServerClient({
       signal,
@@ -4993,6 +5004,11 @@ function createCodexRpcClient({
   }
 }
 
+const orchestratorRuntime = createOrchestratorRuntime({
+  rootDir: path.join(WORKSPACE_ROOT, "private_runner/logs/voice_context/v1"),
+  codexBin: CODEX_BIN, resolveAuth: resolveCodexResponseAuth,
+});
+
 function broadcastVoiceChecklistChanged({ orchestratorId, logicalConversationId }) {
   if (orchestratorId === "main") widgetRefreshNotifier.changed();
   for (const client of runnerWsActiveClients) {
@@ -5004,6 +5020,7 @@ function broadcastVoiceChecklistChanged({ orchestratorId, logicalConversationId 
 const voiceContextService = createVoiceOrchestratorService({
   rootDir: path.join(WORKSPACE_ROOT, "private_runner/logs/voice_context/v1"),
   createClient: (options) => createCodexRpcClient(options),
+  disposeRuntime: (id) => orchestratorRuntime.dispose(id),
   getAgentService: () => agentService,
   subjectId: () => agentOwnerSubjectId,
   activity: orchestratorActivity,
@@ -7291,14 +7308,16 @@ runnerWsServer.on("connection", (ws, req) => {
       return true;
     }
     if (["voice.learning.status", "voice.learning.read", "voice.learning.configure", "voice.learning.usage", "voice.learning.price.configure", "voice.learning.decide", "voice.learning.change", "voice.learning.correct", "voice.learning.correction.cancel", "voice.learning.forget", "voice.learning.proposal", "voice.learning.delivery", "voice.learning.retry"].includes(message.op)) {
-      const operation = message.op === "voice.learning.status" ? voiceContextService.learningStatus()
-        : message.op === "voice.learning.configure" ? voiceContextService.configureLearning(message.payload || {})
-        : message.op === "voice.learning.usage" ? voiceContextService.learningUsage(message.payload || {})
-        : message.op === "voice.learning.price.configure" ? voiceContextService.configureLearningPrice(message.payload?.snapshot ?? null)
+      const learningPayload = { ...message.payload };
+      delete learningPayload.orchestratorId;
+      const operation = message.op === "voice.learning.status" ? voiceContextService.learningStatus(orchestratorId)
+        : message.op === "voice.learning.configure" ? voiceContextService.configureLearning(learningPayload, orchestratorId)
+        : message.op === "voice.learning.usage" ? voiceContextService.learningUsage(learningPayload, orchestratorId)
+        : message.op === "voice.learning.price.configure" ? voiceContextService.configureLearningPrice(message.payload?.snapshot ?? null, orchestratorId)
         : message.op === "voice.learning.delivery" ? voiceContextService.learningDelivery(message.payload || {})
-        : voiceContextService.manageLearning(message.op.split(".").at(-1), message.payload || {});
+        : voiceContextService.manageLearning(message.op.split(".").at(-1), learningPayload, orchestratorId);
       void operation.then((payload) => sendRunnerWsEnvelope(ws, { channel: "agent", op: `${message.op}.result`,
-        requestId: message.requestId || "", payload })).catch((error) => sendVoiceError(message, error));
+        requestId: message.requestId || "", payload: { ...payload, orchestratorId } })).catch((error) => sendVoiceError(message, error));
       return true;
     }
     if (["voice.settings", "voice.settings.update", "voice.memory.clear", "voice.messages.clear"].includes(message.op)) {
@@ -7309,7 +7328,7 @@ runnerWsServer.on("connection", (ws, req) => {
           message.payload?.effort, message.payload?.systemInstruction,
           message.payload?.topicModel, message.payload?.topicEffort,
           message.payload?.overviewModel, message.payload?.overviewEffort);
-      } else if (message.op === "voice.memory.clear") operation = voiceContextService.clearMemory();
+      } else if (message.op === "voice.memory.clear") operation = voiceContextService.clearMemory(orchestratorId);
       else operation = voiceContextService.clearMessages(orchestratorId);
       void operation.then((payload) => {
         sendRunnerWsEnvelope(ws, { channel: "agent", op: `${message.op}.result`,
@@ -10261,7 +10280,8 @@ if (!RUNNER_SKIP_SERVER_START) {
     localHttpsServer?.close();
     codexScheduleService.stop();
     codexAuthService.markUnready();
-    void codexAuthService.shutdown()
+    void orchestratorRuntime.shutdown()
+      .then(() => codexAuthService.shutdown())
       .catch(() => {})
       .finally(() => releaseCodexAuthOwnerLock())
       .finally(() => agentRuntime.close())

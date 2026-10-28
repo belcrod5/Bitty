@@ -26,6 +26,7 @@ const models = [
   { modelId: "model-b", label: "Model B", effortOptions: ["medium", "high"] },
 ];
 const initialStatus = () => ({
+  orchestratorId: "main",
   settings: { model: "", effort: "", settingsRevision: 4 }, status: "unconfigured", enabled: false,
   observedThrough: 10, processedThrough: 8, pendingCount: 2,
   candidates: [{ id: "candidate-1", version: 1, status: "candidate", kind: "preference", content: "報告を短くする",
@@ -43,10 +44,74 @@ const initialStatus = () => ({
 });
 const orchestrators = [{ id: "main", name: "メイン", icon: "" }];
 
+test("a specialist sends its owner for learning, usage, read marks and settings", async () => {
+  const specialist = { id: "specialist", name: "専門家", icon: "" };
+  const status = { ...initialStatus(), orchestratorId: specialist.id, unreadCount: 1 };
+  status.candidates[0].scope = { orchestratorId: specialist.id };
+  const api = mockApi(status);
+  const request = jest.fn(async (op: string, payload?: Record<string, unknown>) =>
+    op === "voice.learning.read" ? status : api(op, payload));
+  const screen = await render(<OrchestratorLearningPanel request={request} orchestrator={specialist} />);
+  await waitFor(() => expect(request).toHaveBeenCalledWith("voice.learning.read", {
+    orchestratorId: specialist.id, items: [{ id: "candidate-1", version: 1 }],
+  }));
+  await fireEvent.press(screen.getByLabelText("学習の設定"));
+  await fireEvent.press(screen.getByTestId("select-学習・評価用モデル"));
+  await fireEvent.press(screen.getByTestId("learning-settings-save"));
+  await waitFor(() => expect(request).toHaveBeenCalledWith("voice.learning.configure", {
+    orchestratorId: specialist.id, model: "model-b", effort: "medium", settingsRevision: 4,
+  }));
+  expect(request.mock.calls.some(([op]) => op === "voice.learning.usage")).toBe(true);
+  expect(request.mock.calls.every(([, payload]) => payload?.orchestratorId === specialist.id)).toBe(true);
+  await screen.unmount();
+});
+
+test("switching keyed owners discards delayed status from the old chat", async () => {
+  let finishOld!: (value: Record<string, unknown>) => void;
+  const pending = new Promise<Record<string, unknown>>((resolve) => { finishOld = resolve; });
+  const request = jest.fn(async (op: string, payload?: Record<string, unknown>) => {
+    if (op === "voice.learning.status" && payload?.orchestratorId === "main") return pending;
+    if (op === "voice.settings") return { models };
+    if (op === "voice.learning.usage") return { orchestratorId: payload?.orchestratorId || "main", calls: [], days: {}, retention: { createdAt: null }, aggregateGranularity: "UTC-day" };
+    const status = initialStatus();
+    status.candidates = [{ ...status.candidates[0], content: "専門家だけの記憶", scope: { orchestratorId: "specialist" } }];
+    return { ...status, orchestratorId: "specialist" };
+  });
+  const screen = await render(<OrchestratorLearningPanel key="main" request={request} orchestrator={orchestrators[0]} />);
+  await screen.rerender(<OrchestratorLearningPanel key="specialist" request={request}
+    orchestrator={{ id: "specialist", name: "専門家", icon: "" }} />);
+  await waitFor(() => screen.getByText("専門家だけの記憶"));
+  await act(async () => { finishOld({ ...initialStatus(), orchestratorId: "main" }); await pending; });
+  expect(screen.queryByText("報告を短くする")).toBeNull();
+  expect(screen.getByText("専門家だけの記憶")).toBeTruthy();
+  await screen.unmount();
+});
+
+test("a response for a different owner is rejected before rendering or marking it read", async () => {
+  const request = jest.fn(async (op: string): Promise<Record<string, unknown>> => op === "voice.settings"
+    ? { models, orchestratorId: "specialist" } : { ...initialStatus(), orchestratorId: "main", unreadCount: 1 });
+  const screen = await render(<OrchestratorLearningPanel request={request}
+    orchestrator={{ id: "specialist", name: "専門家", icon: "" }} />);
+  await waitFor(() => screen.getByText("別のオーケストレータの応答を受信しました。"));
+  expect(screen.queryByText("報告を短くする")).toBeNull();
+  expect(request.mock.calls.some(([op]) => op === "voice.learning.read")).toBe(false);
+  await screen.unmount();
+});
+
+test("a global legacy learning response cannot be displayed as isolated expert data", async () => {
+  const { orchestratorId, ...legacyStatus } = initialStatus();
+  const request = jest.fn(async (op: string): Promise<Record<string, unknown>> =>
+    op === "voice.settings" ? { models } : legacyStatus);
+  const screen = await render(<OrchestratorLearningPanel request={request} orchestrator={orchestrators[0]} />);
+  await waitFor(() => screen.getByText("オーケストレータ別の応答を確認できません。Runnerを更新してください。"));
+  expect(screen.queryByText("報告を短くする")).toBeNull();
+  await screen.unmount();
+});
+
 function mockApi(status = initialStatus()) {
   return jest.fn(async (op: string, payload?: Record<string, unknown>): Promise<Record<string, unknown>> => {
     if (op === "voice.settings") return { models };
-    if (op === "voice.learning.usage") return { calls: [], days: {}, retention: { createdAt: null }, aggregateGranularity: "UTC-day" };
+    if (op === "voice.learning.usage") return { orchestratorId: payload?.orchestratorId || "main", calls: [], days: {}, retention: { createdAt: null }, aggregateGranularity: "UTC-day" };
     if (op === "voice.learning.status") return status;
     if (op === "voice.learning.configure") return { ...status,
       settings: { model: payload?.model, effort: payload?.effort, settingsRevision: 5 } };
@@ -56,10 +121,10 @@ function mockApi(status = initialStatus()) {
 
 test("shows observed candidates, evidence, excluded input and missing usage without inventing zero", async () => {
   const request = mockApi();
-  const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  const screen = await render(<OrchestratorLearningPanel request={request} orchestrator={orchestrators[0]} />);
   await fireEvent.press(screen.getByLabelText("学習の設定"));
   await waitFor(() => screen.getByText("報告を短くする"));
-  expect(screen.getByText("学習・評価用モデルは全オーケストレータ共通")).toBeTruthy();
+  expect(screen.getByText("学習・評価用モデルと予算はこのオーケストレータ専用です。")).toBeTruthy();
   expect(screen.queryByText("根拠：1件のやりとり")).toBeNull();
   await fireEvent.press(screen.getByLabelText("詳細・管理: 報告を短くする"));
   expect(screen.getByText("根拠：1件のやりとり")).toBeTruthy();
@@ -74,15 +139,15 @@ test("shows observed candidates, evidence, excluded input and missing usage with
   await screen.unmount();
 });
 
-test("saves independent shared model and effort with the settings revision", async () => {
+test("saves this orchestrator model and effort with the settings revision", async () => {
   const request = mockApi();
-  const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  const screen = await render(<OrchestratorLearningPanel request={request} orchestrator={orchestrators[0]} />);
   await fireEvent.press(screen.getByLabelText("学習の設定"));
   await waitFor(() => screen.getByText("報告を短くする"));
   await fireEvent.press(screen.getByTestId("select-学習・評価用モデル"));
   await fireEvent.press(screen.getByTestId("select-学習・評価用エフォート"));
   await fireEvent.press(screen.getByTestId("learning-settings-save"));
-  await waitFor(() => expect(request).toHaveBeenCalledWith("voice.learning.configure", {
+  await waitFor(() => expect(request).toHaveBeenCalledWith("voice.learning.configure", { orchestratorId: "main",
     model: "model-b", effort: "high", settingsRevision: 4,
   }));
   expect(screen.getByText("設定を保存しました。")).toBeTruthy();
@@ -93,7 +158,7 @@ test("unavailable stored model remains visible and cannot silently fall back", a
   const status = initialStatus();
   status.settings = { model: "retired-model", effort: "high", settingsRevision: 4 };
   const request = mockApi(status);
-  const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  const screen = await render(<OrchestratorLearningPanel request={request} orchestrator={orchestrators[0]} />);
   await fireEvent.press(screen.getByLabelText("学習の設定"));
   await waitFor(() => screen.getByText("選択中のモデル・エフォートは現在利用できません。別の設定を選んでください。"));
   expect(screen.getByTestId("select-学習・評価用モデル").props.accessibilityValue.text).toBe("retired-model");
@@ -103,7 +168,7 @@ test("unavailable stored model remains visible and cannot silently fall back", a
 
 test("failed configuration stays unsaved and the user can refresh a conflicting revision", async () => {
   const request = mockApi();
-  const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  const screen = await render(<OrchestratorLearningPanel request={request} orchestrator={orchestrators[0]} />);
   await fireEvent.press(screen.getByLabelText("学習の設定"));
   await waitFor(() => screen.getByText("報告を短くする"));
   await fireEvent.press(screen.getByTestId("select-学習・評価用モデル"));
@@ -120,7 +185,7 @@ test("failed configuration stays unsaved and the user can refresh a conflicting 
 test("a failed load is reported and can be retried", async () => {
   const request = mockApi();
   request.mockRejectedValueOnce(new Error("接続を確認してください"));
-  const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  const screen = await render(<OrchestratorLearningPanel request={request} orchestrator={orchestrators[0]} />);
   await fireEvent.press(screen.getByLabelText("学習の設定"));
   await waitFor(() => screen.getByText("接続を確認してください"));
   await fireEvent.press(screen.getByTestId("learning-status-refresh"));
@@ -134,7 +199,7 @@ test("partial measurements and estimated costs stay separate by currency", async
   status.usage.today = { ...status.usage.today, partialCalls: 1, missingCalls: 0,
     inputTokens: 0, outputTokens: 120,
     estimatedCosts: [{ currency: "USD", amount: 0.01 }, { currency: "JPY", amount: 2 }] };
-  const screen = await render(<OrchestratorLearningPanel request={mockApi(status)} orchestrators={orchestrators} />);
+  const screen = await render(<OrchestratorLearningPanel request={mockApi(status)} orchestrator={orchestrators[0]} />);
   await fireEvent.press(screen.getByLabelText("学習の設定"));
   await waitFor(() => screen.getByLabelText("今日の予算と計測の詳細"));
   await fireEvent.press(screen.getByLabelText("今日の予算と計測の詳細"));
@@ -151,14 +216,14 @@ test("clearing the selected model stops analysis without silently selecting a re
   status.settings = { model: "model-b", effort: "high", settingsRevision: 4 };
   status.enabled = true;
   const request = mockApi(status);
-  const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  const screen = await render(<OrchestratorLearningPanel request={request} orchestrator={orchestrators[0]} />);
   await fireEvent.press(screen.getByLabelText("学習の設定"));
   await waitFor(() => screen.getByText("報告を短くする"));
   await fireEvent(screen.getByTestId("select-学習・評価用モデル"), "longPress");
   expect(screen.getByTestId("select-学習・評価用モデル").props.accessibilityValue.text).toBe("");
   expect(screen.getByTestId("select-学習・評価用エフォート").props.accessibilityValue.text).toBe("");
   await fireEvent.press(screen.getByTestId("learning-settings-save"));
-  await waitFor(() => expect(request).toHaveBeenCalledWith("voice.learning.configure", {
+  await waitFor(() => expect(request).toHaveBeenCalledWith("voice.learning.configure", { orchestratorId: "main",
     model: "", effort: "", settingsRevision: 4,
   }));
   expect(screen.getByTestId("select-学習・評価用モデル").props.accessibilityValue.text).toBe("");
@@ -174,7 +239,7 @@ test("a failed model catalog preserves status and lets the user stop analysis", 
     if (op === "voice.settings") throw new Error("catalog unavailable");
     return api(op, payload);
   });
-  const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  const screen = await render(<OrchestratorLearningPanel request={request} orchestrator={orchestrators[0]} />);
   await fireEvent.press(screen.getByLabelText("学習の設定"));
   await waitFor(() => screen.getByText("モデル一覧を取得できません。"));
   expect(screen.getByText("会話を学習中")).toBeTruthy();
@@ -183,7 +248,7 @@ test("a failed model catalog preserves status and lets the user stop analysis", 
   expect(screen.getByTestId("learning-settings-save")).toBeDisabled();
   await fireEvent(screen.getByTestId("select-学習・評価用モデル"), "longPress");
   await fireEvent.press(screen.getByTestId("learning-settings-save"));
-  await waitFor(() => expect(request).toHaveBeenCalledWith("voice.learning.configure", {
+  await waitFor(() => expect(request).toHaveBeenCalledWith("voice.learning.configure", { orchestratorId: "main",
     model: "", effort: "", settingsRevision: 4,
   }));
   expect(screen.getByText("設定を保存しました。")).toBeTruthy();
@@ -195,7 +260,7 @@ test("persisted learning errors remain visible when usage cannot be loaded", asy
   const request = jest.fn(async (op: string): Promise<Record<string, unknown>> => op === "voice.settings"
     ? { models } : { ...initialStatus(), status: "paused", usage: null,
       error: { code: "learning_state_invalid", message: "学習データを読み込めません。" } });
-  const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  const screen = await render(<OrchestratorLearningPanel request={request} orchestrator={orchestrators[0]} />);
   await fireEvent.press(screen.getByLabelText("学習の設定"));
   await waitFor(() => screen.getByText("学習データを読み込めません。"));
   expect(screen.getByText("利用量を取得できません。")).toBeTruthy();
@@ -207,19 +272,19 @@ test("bulk adoption sends exact item versions and failures keep decisions unsave
   const status = initialStatus();
   const request = jest.fn(async (op: string, payload?: Record<string, unknown>): Promise<Record<string, unknown>> => {
     if (op === "voice.settings") return { models };
-    if (op === "voice.learning.usage") return { calls: [], days: {}, retention: { createdAt: null }, aggregateGranularity: "UTC-day" };
+    if (op === "voice.learning.usage") return { orchestratorId: "main", calls: [], days: {}, retention: { createdAt: null }, aggregateGranularity: "UTC-day" };
     if (op === "voice.learning.status") return status;
     if (op === "voice.learning.decide") throw new Error("版が変更されています");
     throw new Error(`unexpected ${op}`);
   });
-  const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  const screen = await render(<OrchestratorLearningPanel request={request} orchestrator={orchestrators[0]} />);
   await fireEvent.press(screen.getByLabelText("学習の設定"));
   await waitFor(() => screen.getByLabelText("まとめて操作"));
   await fireEvent.press(screen.getByLabelText("まとめて操作"));
   await fireEvent.press(screen.getByLabelText("一括操作の対象に選択: 報告を短くする"));
   await fireEvent.press(screen.getByLabelText("選んだ候補を採用"));
   await waitFor(() => expect(screen.getByText("版が変更されています")).toBeTruthy());
-  expect(request).toHaveBeenCalledWith("voice.learning.decide", { items: [{ id: "candidate-1", version: 1 }], action: "adopt" });
+  expect(request).toHaveBeenCalledWith("voice.learning.decide", { orchestratorId: "main", items: [{ id: "candidate-1", version: 1 }], action: "adopt" });
   expect(screen.getByLabelText("一括操作の対象に選択: 報告を短くする").props.accessibilityState.checked).toBe(true);
   await screen.unmount();
 });
@@ -229,7 +294,7 @@ test("provisional score and user corrections are distinct; an empty optional rea
     reason: "確認不足", unknowns: "満足は未確認", at: "2026-10-20T12:00:00Z", period: { from: null, until: null },
     scope: { orchestratorId: "main" }, corrections: [] }] };
   const request = jest.fn(async (op: string): Promise<Record<string, unknown>> => op === "voice.settings" ? { models } : status);
-  const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  const screen = await render(<OrchestratorLearningPanel request={request} orchestrator={orchestrators[0]} />);
   await fireEvent.press(screen.getByLabelText("学習の設定"));
   await waitFor(() => screen.getByLabelText("評価の一覧を表示"));
   await fireEvent.press(screen.getByLabelText("評価の一覧を表示"));
@@ -237,7 +302,7 @@ test("provisional score and user corrections are distinct; an empty optional rea
   await fireEvent.press(screen.getByLabelText("評価を変更"));
   await fireEvent.changeText(screen.getByLabelText("訂正点数: 短い報告"), "55");
   await fireEvent.press(screen.getByLabelText("評価を保存"));
-  await waitFor(() => expect(request).toHaveBeenCalledWith("voice.learning.correct", { evaluationId: "evaluation-1", version: 1, score: 55, reason: "" }));
+  await waitFor(() => expect(request).toHaveBeenCalledWith("voice.learning.correct", { orchestratorId: "main", evaluationId: "evaluation-1", version: 1, score: 55, reason: "" }));
   await screen.unmount();
 });
 
@@ -245,7 +310,7 @@ test("all-learning forgetting is available with no candidates and requires the e
   const status = { ...initialStatus(), candidates: [] };
   const request = jest.fn(async (op: string): Promise<Record<string, unknown>> => op === "voice.settings" ? { models } : status);
   const alert = jest.spyOn(Alert, "alert").mockImplementation(() => {});
-  const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  const screen = await render(<OrchestratorLearningPanel request={request} orchestrator={orchestrators[0]} />);
   await fireEvent.press(screen.getByLabelText("学習の設定"));
   await waitFor(() => screen.getByLabelText("データの管理・診断"));
   await fireEvent.press(screen.getByLabelText("データの管理・診断"));
@@ -254,7 +319,7 @@ test("all-learning forgetting is available with no candidates and requires the e
   expect(request).not.toHaveBeenCalledWith("voice.learning.forget", expect.anything());
   expect(alert).toHaveBeenCalled();
   await act(async () => { alert.mock.calls[0][2]?.find((entry) => entry.style === "destructive")?.onPress?.(); });
-  await waitFor(() => expect(request).toHaveBeenCalledWith("voice.learning.forget", { all: true }));
+  await waitFor(() => expect(request).toHaveBeenCalledWith("voice.learning.forget", { orchestratorId: "main", all: true }));
   alert.mockRestore(); await screen.unmount();
 });
 
@@ -262,17 +327,17 @@ test("exhausted analysis retry uses the exact batch and settings revision withou
   const status = { ...initialStatus(), status: "retry_exhausted", settings: { model: "model-a", effort: "low", settingsRevision: 4 },
     retry: { batchId: "batch-exhausted", settingsRevision: 4, attempts: 3, ceiling: 3 } };
   const request = jest.fn(async (op: string): Promise<Record<string, unknown>> => op === "voice.settings" ? { models } : status);
-  const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  const screen = await render(<OrchestratorLearningPanel request={request} orchestrator={orchestrators[0]} />);
   await fireEvent.press(screen.getByLabelText("学習の設定"));
   await waitFor(() => screen.getByLabelText("保留した分析を1回再試行"));
   await fireEvent.press(screen.getByLabelText("保留した分析を1回再試行"));
-  await waitFor(() => expect(request).toHaveBeenCalledWith("voice.learning.retry", { batchId: "batch-exhausted", settingsRevision: 4 }));
+  await waitFor(() => expect(request).toHaveBeenCalledWith("voice.learning.retry", { orchestratorId: "main", batchId: "batch-exhausted", settingsRevision: 4 }));
   await screen.unmount();
 });
 
 test("default view has no bulk checkboxes or change form; selecting alone never writes", async () => {
   const request = mockApi();
-  const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  const screen = await render(<OrchestratorLearningPanel request={request} orchestrator={orchestrators[0]} />);
   await fireEvent.press(screen.getByLabelText("学習の設定"));
   await waitFor(() => screen.getByText("報告を短くする"));
   expect(screen.queryByRole("checkbox")).toBeNull();
@@ -299,7 +364,14 @@ test.each([
   status.candidates = Array.from({ length: count }, (_, i) => ({ ...template, id: `item-${i}`, content: `方針${i}`,
     status: active && i === 0 ? "active" : "candidate", scope: { orchestratorId: mixedChats && i === 0 ? "other" : "main" } }));
   const request = mockApi(status);
-  const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  const screen = await render(<OrchestratorLearningPanel request={request} orchestrator={orchestrators[0]} />);
+  if (mixedChats) {
+    await waitFor(() => screen.getByText("学習状態を読み込めません。"));
+    expect(screen.queryByText("方針0")).toBeNull();
+    expect(screen.queryByLabelText("まとめて操作")).toBeNull();
+    await screen.unmount();
+    return;
+  }
   await fireEvent.press(screen.getByLabelText("学習の設定"));
   await waitFor(() => screen.getByLabelText("まとめて操作"));
   await fireEvent.press(screen.getByLabelText("まとめて操作"));
@@ -320,11 +392,11 @@ test("failed change request preserves selection and draft; success clears mode a
   let fail = true;
   const request = jest.fn(async (op: string): Promise<Record<string, unknown>> => {
     if (op === "voice.settings") return { models };
-    if (op === "voice.learning.usage") return { calls: [], days: {}, retention: { createdAt: null }, aggregateGranularity: "UTC-day" };
+    if (op === "voice.learning.usage") return { orchestratorId: "main", calls: [], days: {}, retention: { createdAt: null }, aggregateGranularity: "UTC-day" };
     if (op === "voice.learning.change" && fail) throw new Error("通信に失敗しました");
     return status;
   });
-  const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  const screen = await render(<OrchestratorLearningPanel request={request} orchestrator={orchestrators[0]} />);
   await fireEvent.press(screen.getByLabelText("学習の設定"));
   await waitFor(() => screen.getByLabelText("まとめて操作"));
   await fireEvent.press(screen.getByLabelText("まとめて操作"));
@@ -336,7 +408,7 @@ test("failed change request preserves selection and draft; success clears mode a
   await waitFor(() => screen.getByText("通信に失敗しました"));
   expect(screen.getByRole("checkbox").props.accessibilityState.checked).toBe(true);
   expect(screen.getByLabelText("学習の編集・統合・廃止の希望").props.value).toBe("3行以内に変更");
-  expect(request).toHaveBeenCalledWith("voice.learning.change", { items: [{ id: "candidate-1", version: 1 }], instruction: "3行以内に変更" });
+  expect(request).toHaveBeenCalledWith("voice.learning.change", { orchestratorId: "main", items: [{ id: "candidate-1", version: 1 }], instruction: "3行以内に変更" });
   fail = false;
   await fireEvent.press(screen.getByLabelText("修正案の作成を依頼"));
   await waitFor(() => expect(screen.queryByRole("checkbox")).toBeNull());
@@ -346,7 +418,7 @@ test("failed change request preserves selection and draft; success clears mode a
 
 test("refresh with removed items clears stale bulk selection and draft", async () => {
   const status = initialStatus(); const request = mockApi(status);
-  const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  const screen = await render(<OrchestratorLearningPanel request={request} orchestrator={orchestrators[0]} />);
   await fireEvent.press(screen.getByLabelText("学習の設定"));
   await waitFor(() => screen.getByLabelText("まとめて操作"));
   await fireEvent.press(screen.getByLabelText("まとめて操作")); await fireEvent.press(screen.getByRole("checkbox"));
@@ -366,14 +438,14 @@ test("closing details while an evaluation save is pending keeps the parent write
   const pending = new Promise<Record<string, unknown>>((resolve) => { complete = resolve; });
   const request = jest.fn(async (op: string): Promise<Record<string, unknown>> => {
     if (op === "voice.settings") return { models };
-    if (op === "voice.learning.usage") return { calls: [], days: {}, retention: { createdAt: null }, aggregateGranularity: "UTC-day" };
+    if (op === "voice.learning.usage") return { orchestratorId: "main", calls: [], days: {}, retention: { createdAt: null }, aggregateGranularity: "UTC-day" };
     if (op === "voice.learning.correct") return pending;
     return status;
   });
-  const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  const screen = await render(<OrchestratorLearningPanel request={request} orchestrator={orchestrators[0]} />);
   await waitFor(() => screen.getByLabelText("評価の一覧を表示")); await fireEvent.press(screen.getByLabelText("評価の一覧を表示")); await fireEvent.press(screen.getByLabelText("評価を変更"));
   await fireEvent.changeText(screen.getByLabelText("訂正点数: 短い報告"), "55"); await fireEvent.press(screen.getByLabelText("評価を保存"));
-  await waitFor(() => expect(request).toHaveBeenCalledWith("voice.learning.correct", { evaluationId: "evaluation-pending", version: 1, score: 55, reason: "" }));
+  await waitFor(() => expect(request).toHaveBeenCalledWith("voice.learning.correct", { orchestratorId: "main", evaluationId: "evaluation-pending", version: 1, score: 55, reason: "" }));
   await fireEvent.press(screen.getByLabelText("会話のふりかえりを閉じる")); expect(screen.queryByText("短い報告")).toBeNull();
   await act(async () => { complete({ ...status, evaluations: [{ ...evaluation, corrections: [{ id: "correction-saved", score: 55, reason: "", at: "2026-10-21T12:00:00Z" }] }] }); await pending; });
   await fireEvent.press(screen.getByLabelText("評価の一覧を表示")); expect(screen.getByText("55 / 100")).toBeTruthy();
@@ -386,8 +458,8 @@ test("opening marks only retrieved candidate versions as read, without adopting 
   const api = mockApi(status);
   const request = jest.fn(async (op: string, payload?: Record<string, unknown>) =>
     op === "voice.learning.read" ? status : api(op, payload));
-  const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
-  await waitFor(() => expect(request).toHaveBeenCalledWith("voice.learning.read", {
+  const screen = await render(<OrchestratorLearningPanel request={request} orchestrator={orchestrators[0]} />);
+  await waitFor(() => expect(request).toHaveBeenCalledWith("voice.learning.read", { orchestratorId: "main",
     items: [{ id: "candidate-1", version: 1 }],
   }));
   expect(request.mock.calls.filter(([op]) => op === "voice.learning.decide")).toHaveLength(0);
@@ -397,14 +469,14 @@ test("opening marks only retrieved candidate versions as read, without adopting 
 
 test("a failed or abandoned load never marks knowledge read; old runners receive no read request", async () => {
   const api = mockApi();
-  const screen = await render(<OrchestratorLearningPanel request={api} orchestrators={orchestrators} />);
+  const screen = await render(<OrchestratorLearningPanel request={api} orchestrator={orchestrators[0]} />);
   await waitFor(() => screen.getByText("報告を短くする"));
   expect(api.mock.calls.some(([op]) => op === "voice.learning.read")).toBe(false);
   await screen.unmount();
   let resolveStatus!: (value: Record<string, unknown>) => void;
   const pending = new Promise<Record<string, unknown>>((resolve) => { resolveStatus = resolve; });
   const request = jest.fn(async (op: string) => op === "voice.learning.status" ? pending : { models });
-  const abandoned = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  const abandoned = await render(<OrchestratorLearningPanel request={request} orchestrator={orchestrators[0]} />);
   await abandoned.unmount();
   await act(async () => resolveStatus({ ...initialStatus(), unreadCount: 1 }));
   expect(request.mock.calls.some(([op]) => op === "voice.learning.read")).toBe(false);
@@ -412,7 +484,7 @@ test("a failed or abandoned load never marks knowledge read; old runners receive
     if (op === "voice.learning.status") throw new Error("offline");
     return { models };
   });
-  const errorScreen = await render(<OrchestratorLearningPanel request={failed} orchestrators={orchestrators} />);
+  const errorScreen = await render(<OrchestratorLearningPanel request={failed} orchestrator={orchestrators[0]} />);
   await waitFor(() => errorScreen.getByText("offline"));
   expect(failed.mock.calls.some(([op]) => op === "voice.learning.read")).toBe(false);
   await errorScreen.unmount();
@@ -423,7 +495,7 @@ test("updates are grouped in their current card before pagination, with candidat
   const original = { ...status.candidates[0], id: "original", status: "active", content: "現在の報告方針" };
   const update = { ...status.candidates[0], id: "update", content: "更新した報告方針", replaces: [original.id], replacementVersions: [{ id: original.id, version: original.version }] };
   status.candidates = [original, ...Array.from({ length: 4 }, (_, index) => ({ ...original, id: `other-${index}`, content: `別の方針${index}` })), update];
-  const request = mockApi(status); const screen = await render(<OrchestratorLearningPanel request={request} orchestrators={orchestrators} />);
+  const request = mockApi(status); const screen = await render(<OrchestratorLearningPanel request={request} orchestrator={orchestrators[0]} />);
   await waitFor(() => screen.getByLabelText(`更新案1件を見る: ${original.content}`));
   expect(screen.queryByText(update.content)).toBeNull(); expect(screen.queryByLabelText("学習の次のページ")).toBeNull();
   await fireEvent.press(screen.getByLabelText(`更新案1件を見る: ${original.content}`));
@@ -443,7 +515,7 @@ test("stale updates stay visible rather than disappearing under a current card",
   const status = initialStatus(); const original = { ...status.candidates[0], id: "original", status: "active", version: 4 };
   const update = { ...status.candidates[0], id: "update", content: "古い更新案", replaces: [original.id], replacementVersions: [{ id: original.id, version: 3 }] };
   status.candidates = [original, update];
-  const screen = await render(<OrchestratorLearningPanel request={mockApi(status)} orchestrators={orchestrators} />);
+  const screen = await render(<OrchestratorLearningPanel request={mockApi(status)} orchestrator={orchestrators[0]} />);
   await waitFor(() => screen.getByText(update.content)); expect(screen.queryByLabelText(`更新案1件を見る: ${original.content}`)).toBeNull();
   await fireEvent.press(screen.getByLabelText(`更新内容を見る: ${update.content}`));
   expect(screen.getByLabelText(`この案に更新: ${update.content}`)).toBeDisabled(); await screen.unmount();

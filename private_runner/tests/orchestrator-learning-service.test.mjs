@@ -366,19 +366,14 @@ test("forgetting an ancestor removes the entire successor chain, including activ
   assert.equal((await f.service.retrieve({ orchestratorId: "main", input: "Version" })).items.length, 0);
 });
 
-test("shared edit candidates inherit the adopted scope instead of losing their shared publication boundary", async (t) => {
-  let count = 0;
-  const f = await fixture(t, { analyze: async ({ input }) => { const value = JSON.parse(input); count++;
-    return { text: JSON.stringify({ candidates: [candidate(1, { content: `Shared ${count}`,
-      ...(value.feedback.length ? { replaces: value.feedback[0].items.map((item) => item.id) } : {}) })],
-      corrections: value.feedback.map((entry) => ({ id: entry.id, reason: "Shared edit requested", candidateIndex: 0 })) }) }; } });
-  await configure(f.service); await f.service.observe([f.pair(1)]); await f.service.runDue();
-  let item = (await f.service.status()).candidates[0]; await f.service.decide({ items: [ref(item)], action: "adopt" });
-  item = (await f.service.status()).candidates[0]; await f.service.decide({ items: [ref(item)], action: "share" });
-  item = (await f.service.status()).candidates[0]; await f.service.requestChange({ items: [ref(item)], instruction: "Improve shared steps" });
-  await f.service.runDue(); const draft = (await f.service.status()).candidates.find((entry) => entry.status === "candidate");
-  assert.equal(draft.scope.shared, true); await f.service.decide({ items: [ref(draft)], action: "adopt" });
-  assert.equal((await f.service.status()).candidates.find((entry) => entry.status === "active").scope.shared, true);
+test("learning cannot be shared across orchestrators", async (t) => {
+  const f = await fixture(t);
+  let [item] = await seed(f, [candidate(1)]);
+  await f.service.decide({ items: [ref(item)], action: "adopt" });
+  item = (await f.service.status()).candidates[0];
+  await assert.rejects(f.service.decide({ items: [ref(item)], action: "share" }), { code: "learning_request_invalid" });
+  assert.deepEqual((await f.service.retrieve({ orchestratorId: randomUUID(), input: item.content })).items, []);
+  assert.equal((await f.service.status()).candidates[0].scope.shared, undefined);
 });
 
 test("natural user feedback is linked to the exact proposal and cannot use assistant quotes or silence", async (t) => {

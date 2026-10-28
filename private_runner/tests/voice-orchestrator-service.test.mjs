@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
+import net from "node:net";
 import path from "node:path";
 import test from "node:test";
 import { createCodexScheduleService } from "../src/codex-schedule-service.mjs";
 import { createVoiceContextService } from "../src/voice-context-service.mjs";
 import { createVoiceOrchestratorService } from "../src/voice-orchestrator-service.mjs";
+import { prepareOrchestratorIsolation } from "../scripts/prepare-orchestrator-isolation.mjs";
 
 function fakeCodex({ hold = false, failSummary = false, failTurn = false, approval = false,
   checklistWrites = [], archiveReads = [], failModelList = () => false } = {}) {
@@ -18,6 +20,12 @@ function fakeCodex({ hold = false, failSummary = false, failTurn = false, approv
     let resolveCompletion = () => {};
     let summary = false;
     let serverHandler = () => {};
+    const started = (thread, params) => ({ thread, ...(params.permissions ? {
+      activePermissionProfile: { id: params.permissions }, runtimeWorkspaceRoots: params.runtimeWorkspaceRoots,
+      instructionSources: [], sandbox: params.config.permissions[params.permissions].filesystem[":workspace_roots"] === "read"
+        ? { type: "readOnly", networkAccess: false }
+        : { type: "workspaceWrite", networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: true, writableRoots: [] },
+    } : {}) });
     return {
       openPromise: Promise.resolve(), notify() {}, close() { resolveCompletion(); },
       addNotificationListener(next) { listener = next; return () => { listener = () => {}; }; },
@@ -31,18 +39,19 @@ function fakeCodex({ hold = false, failSummary = false, failTurn = false, approv
           { model: "another-model", displayName: "Another", supportedReasoningEfforts: [{ reasoningEffort: "high" }] },
         ], nextCursor: null };
         if (method === "config/read") return { config: { mcp_servers: {} } };
+        if (method === "skills/list") return { data: [{ cwd: params.cwds[0], skills: [], errors: [] }] };
         if (method === "mcpServerStatus/list") return { data: [], nextCursor: null };
         if (method === "thread/start") {
           summary = params.approvalPolicy === "never";
           const thread = { id: randomUUID(), ephemeral: params.ephemeral, turns: [],
             checklistRead: params.developerInstructions?.includes("新しい親セッションでは") };
           threads.set(thread.id, thread);
-          return { thread };
+          return started(thread, params);
         }
         if (method === "thread/resume") {
           const thread = threads.get(params.threadId);
           thread.checklistRead = params.developerInstructions?.includes("新しい親セッションでは");
-          return { thread };
+          return started(thread, params);
         }
         if (method === "thread/read") return { thread: threads.get(params.threadId) };
         if (method === "turn/start") {
@@ -111,6 +120,14 @@ async function fixture(t, options) {
     createClient: codex.createClient, getAgentService: options?.getAgentService,
     subjectId: "voice-owner", onCompleted: options?.onCompleted,
     onChecklistChanged: options?.onChecklistChanged, activity: options?.activity }) };
+}
+
+async function prepareLegacy(rootDir, apply = true) {
+  const server = net.createServer();
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  await new Promise((resolve) => server.close(resolve));
+  return prepareOrchestratorIsolation({ rootDir, runnerPort: port, codexPort: port, apply });
 }
 
 async function turn(service, orchestratorId, conversationId, text, operationId = randomUUID()) {
@@ -357,7 +374,7 @@ test("unread count survives bounded history pruning and a lost count checkpoint"
   assert.equal(await recovered.unreadState("main"), 1);
 });
 
-test("shared memory clear also drops every retained native parent", async (t) => {
+test("clearing one memory switches only its own retained native parent", async (t) => {
   const { rootDir, service, codex } = await fixture(t);
   const child = await service.create("other");
   for (const id of ["main", child.id]) {
@@ -368,19 +385,18 @@ test("shared memory clear also drops every retained native parent", async (t) =>
   for (const file of files) assert.ok(JSON.parse(await fs.readFile(file, "utf8")).nativeThreadId);
   const restarted = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
   await restarted.clearMemory();
-  for (const file of files) {
-    const active = JSON.parse(await fs.readFile(file, "utf8"));
-    assert.ok(active.nativeThreadId);
-    assert.equal(active.pendingSwitch.reason, "memory");
-  }
+  const active = JSON.parse(await fs.readFile(files[0], "utf8"));
+  assert.equal(active.pendingSwitch.reason, "memory");
+  assert.equal(JSON.parse(await fs.readFile(files[1], "utf8")).pendingSwitch, undefined);
 });
 
-test("main migration switches its legacy parent; each orchestrator shares one workspace", async (t) => {
+test("offline preparation assigns old memory to main and keeps new specialists empty", async (t) => {
   const { rootDir, codex, service } = await fixture(t);
   const legacy = createVoiceContextService({ rootDir, createClient: codex.createClient });
   const main = await legacy.open();
   const old = await turn(legacy, undefined, main.logicalConversationId, "old main");
   assert.equal((await old.finished).status, "completed");
+  await prepareLegacy(rootDir);
   assert.deepEqual((await service.list()).orchestrators.map(({ id }) => id), ["main"]);
   assert.equal((await service.history("main")).messages[0].text, "old main");
   assert.deepEqual((await service.history("main")).taskChecklist, { status: "missing" });
@@ -397,14 +413,14 @@ test("main migration switches its legacy parent; each orchestrator shares one wo
   assert.equal((await b.finished).status, "completed");
 
   const injections = codex.calls.filter(({ method }) => method === "thread/inject_items");
-  assert.equal(injections.length, 1);
+  assert.equal(injections.length, 0, "legacy transcripts remain visible without entering the new model context");
   const turns = codex.calls.filter(({ method }) => method === "turn/start");
   assert.notEqual(turns[0].params.threadId, turns[2].params.threadId);
   assert.equal(turns[1].params.threadId, turns[2].params.threadId);
   assert.notEqual(turns[0].params.threadId, turns[1].params.threadId);
   const workspaces = codex.calls.filter(({ method, params }) => method === "thread/start"
     && params.approvalPolicy === "on-request").map(({ params }) => params.cwd);
-  assert.equal(new Set(workspaces).size, 1);
+  assert.equal(new Set(workspaces).size, 3, "legacy, main, and specialist workspaces are distinct");
   assert.ok(codex.calls.some(({ method, params }) => method === "thread/start"
     && params.approvalPolicy === "on-request" && params.model === "another-model"
     && params.developerInstructions.includes("Research carefully.")));
@@ -415,8 +431,11 @@ test("main migration switches its legacy parent; each orchestrator shares one wo
   assert.equal(childThread.params.dynamicTools?.some((tool) => tool.name === "task_checklist"), true);
   assert.ok(codex.calls.some(({ method, params }) => method === "thread/resume"
     && params.developerInstructions.includes("task-checklists/main.md")));
-  const recent = JSON.parse(await fs.readFile(path.join(workspaces[0], "voice-memory", "recent.json"), "utf8"));
-  assert.deepEqual(recent.map(({ user }) => user), ["old main", "other only", "main again"]);
+  const recent = JSON.parse(await fs.readFile(path.join(rootDir, "workspace", "voice-memory", "recent.json"), "utf8"));
+  assert.deepEqual(recent.map(({ user }) => user), ["old main", "main again"]);
+  const childRecent = JSON.parse(await fs.readFile(path.join(rootDir, "orchestrators", created.id, "workspace", "voice-memory", "recent.json"), "utf8"));
+  assert.deepEqual(childRecent.map(({ user }) => user), ["other only"]);
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(workspaces[0], "voice-memory", "recent.json"), "utf8")).map(({ user }) => user), ["old main"]);
   assert.deepEqual((await service.history(created.id)).messages.map(({ text }) => text), ["other only", "reply:other only"]);
   assert.deepEqual((await service.history(created.id)).taskChecklist, { status: "missing" });
 
@@ -469,7 +488,7 @@ test("main checklist changes notify on service starts without per-turn hooks", a
     { status: "present", markdown: "- [x] 確認\n" });
 });
 
-test("shared memory clear checks every orchestrator before mutating memory", async (t) => {
+test("clearing memory checks only its owner and leaves a busy sibling unchanged", async (t) => {
   let busyId = "";
   const activity = { hasOutstanding: ({ orchestratorId }) => orchestratorId === busyId,
     registerRoot: () => () => {} };
@@ -488,15 +507,18 @@ test("shared memory clear checks every orchestrator before mutating memory", asy
   const registryBefore = await fs.readFile(path.join(rootDir, "orchestrators.json"), "utf8");
   await assert.rejects(service.update(child.id, { name: "変更不可", icon: "" }), { code: "session_busy" });
   assert.equal(await fs.readFile(path.join(rootDir, "orchestrators.json"), "utf8"), registryBefore);
-  await assert.rejects(service.clearMemory(), { code: "session_busy" });
+  await assert.rejects(service.clearMemory(child.id), { code: "session_busy" });
   assert.equal(await fs.readFile(memoryFile, "utf8"), before);
   assert.equal(await fs.readFile(path.join(rootDir, "active.json"), "utf8"), mainActiveBefore);
+  const childBefore = await fs.readFile(path.join(rootDir, "orchestrators", child.id, "active.json"), "utf8");
+  await service.clearMemory("main");
+  assert.equal(await fs.readFile(path.join(rootDir, "orchestrators", child.id, "active.json"), "utf8"), childBefore);
   await assert.rejects(service.remove(child.id), { code: "session_busy" });
   busyId = "";
   await service.clearMemory();
 });
 
-test("deletion and clear preserve shared memory and the main workspace", async (t) => {
+test("deleting a specialist removes its workspace and preserves the main workspace", async (t) => {
   const { rootDir, codex, service } = await fixture(t);
   const main = await service.open("main");
   const other = await service.create("一時");
@@ -508,7 +530,8 @@ test("deletion and clear preserve shared memory and the main workspace", async (
   await service.remove(other.id);
   const workspace = codex.calls.find(({ method, params }) => method === "thread/start"
     && params.approvalPolicy === "on-request").params.cwd;
-  assert.equal((await fs.stat(path.join(workspace, "voice-memory", "recent.json"))).isFile(), true);
+  await assert.rejects(fs.stat(workspace), { code: "ENOENT" });
+  assert.equal((await fs.stat(path.join(rootDir, "workspace", "voice-memory", "index.md"))).isFile(), true);
   assert.equal((await service.open("main")).logicalConversationId, main.logicalConversationId);
   assert.deepEqual((await service.list()).orchestrators.map(({ id }) => id), ["main"]);
   const recovered = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
@@ -545,34 +568,22 @@ test("registry recovery after main clear uses the persisted memory stream identi
   assert.deepEqual((await recovered.history("main")).messages, []);
 });
 
-test("a pending completion reserves the final raw memory slot across contexts", async (t) => {
+test("simultaneous chats have independent durable memory sequences and capacity", async (t) => {
   const { rootDir, codex, service } = await fixture(t, { hold: true, failSummary: true });
-  const legacy = createVoiceContextService({ rootDir, createClient: codex.createClient });
-  const main = await legacy.open();
-  const events = [];
-  for (let pairSeq = 1; pairSeq <= 39; pairSeq++) {
-    const clientOperationId = randomUUID();
-    const add = (type, extra = {}) => events.push({ seq: events.length + 1, at: new Date().toISOString(),
-      clientOperationId, type, ...extra });
-    add("accepted", { text: `seed-${pairSeq}` });
-    add("dispatching");
-    add("native_started", { threadId: randomUUID(), turnId: randomUUID() });
-    add("completed", { pairSeq, text: `answer-${pairSeq}` });
-  }
-  await fs.writeFile(path.join(rootDir, main.logicalConversationId, "events.jsonl"),
-    `${events.map((event) => JSON.stringify(event)).join("\n")}\n`);
-  await fs.rm(path.join(path.dirname(rootDir), "workspaces", main.logicalConversationId, "voice-memory"),
-    { recursive: true });
-  await service.list();
+  const main = await service.open("main");
   const other = await service.create("二人目");
   const opened = await service.open(other.id);
-  const pending = await turn(service, other.id, opened.logicalConversationId, "last slot");
-  await assert.rejects(turn(service, "main", main.logicalConversationId, "too many"), { code: "voice_memory_full" });
-  await waitFor(() => codex.releases.length > 0);
+  const pending = await turn(service, other.id, opened.logicalConversationId, "other evidence");
+  const mainPending = await turn(service, "main", main.logicalConversationId, "main evidence");
+  await waitFor(() => codex.releases.length === 2);
   for (const release of codex.releases.splice(0)) release();
   assert.equal((await pending.finished).status, "completed");
-  const history = await service.history(other.id);
-  assert.deepEqual(history.messages.map(({ text }) => text), ["last slot", "reply:last slot"]);
+  assert.equal((await mainPending.finished).status, "completed");
+  for (const [id, user] of [["main", "main evidence"], [other.id, "other evidence"]]) {
+    const directory = id === "main" ? rootDir : path.join(rootDir, "orchestrators", id);
+    const pairs = JSON.parse(await fs.readFile(path.join(directory, "workspace", "voice-memory", "recent.json"), "utf8"));
+    assert.deepEqual(pairs.map((pair) => ({ pairSeq: pair.pairSeq, user: pair.user })), [{ pairSeq: 1, user }]);
+  }
 });
 
 test("a child log's incomplete final line is recovered on restart", async (t) => {
@@ -827,7 +838,8 @@ test("checklist writes, archives, completion state and cached overviews stay wit
     id === "main" ? rootDir : path.join(rootDir, "orchestrators", id), "task-checklist-overview.json"))
     .then(() => true, () => false)))).every(Boolean));
   for (const id of owners) {
-    assert.equal(await fs.readFile(path.join(workspace, "task-checklists", `${id}.md`), "utf8"), markdown);
+    const ownedWorkspace = path.join(id === "main" ? rootDir : path.join(rootDir, "orchestrators", id), "workspace");
+    assert.equal(await fs.readFile(path.join(ownedWorkspace, "task-checklists", `${id}.md`), "utf8"), markdown);
     await fs.writeFile(path.join(id === "main" ? rootDir : path.join(rootDir, "orchestrators", id),
       "task-checklist-overview.json"), JSON.stringify({ sourceHash, markdown: `- [x] overview:${id}` }));
   }
@@ -848,9 +860,9 @@ test("checklist writes, archives, completion state and cached overviews stay wit
     assert.deepEqual((await reloaded.history(id)).taskChecklist, { status: "present", markdown: "" });
   }
   assert.equal(await fs.readFile(path.join(workspace, "task-checklists/main.md"), "utf8"), markdown);
-  const childDirectory = path.join(workspace, "task-checklists", `completed-${child.id}`);
+  const childDirectory = path.join(rootDir, "orchestrators", child.id, "workspace", "task-checklists", `completed-${child.id}`);
   const childArchiveId = (await fs.readdir(childDirectory))[0].slice(0, -5);
-  const siblingArchiveId = (await fs.readdir(path.join(workspace, "task-checklists", `completed-${sibling.id}`)))[0].slice(0, -5);
+  const siblingArchiveId = (await fs.readdir(path.join(rootDir, "orchestrators", sibling.id, "workspace", "task-checklists", `completed-${sibling.id}`)))[0].slice(0, -5);
   const childArchive = JSON.parse(await fs.readFile(path.join(childDirectory, `${childArchiveId}.json`), "utf8"));
   assert.equal(childArchive.sourcePath, `task-checklists/${child.id}.md`);
   assert.equal(childArchive.markdown, markdown);
@@ -878,16 +890,12 @@ test("checklist writes, archives, completion state and cached overviews stay wit
 test("existing non-main parents switch and read their own checklist before resuming work", async (t) => {
   const { rootDir, codex, service } = await fixture(t);
   const child = await service.create("既存");
-  const main = createVoiceContextService({ rootDir, createClient: codex.createClient,
-    taskChecklistPath: "task-checklists/main.md" });
-  await main.open();
-  const legacy = createVoiceContextService({ rootDir: path.join(rootDir, "orchestrators", child.id),
-    createClient: codex.createClient, sharedWorkspaceDirectory: await main.getWorkspaceDirectory(),
-    sharedMemoryStore: await main.getMemoryStore() });
-  const opened = await legacy.open();
-  assert.equal((await (await turn(legacy, undefined, opened.logicalConversationId, "legacy work")).finished).status, "completed");
-  const oldActive = JSON.parse(await fs.readFile(path.join(rootDir, "orchestrators", child.id, "active.json"), "utf8"));
-  assert.equal(oldActive.nativeChecklistWriteEnabled, undefined);
+  const opened = await service.open(child.id);
+  assert.equal((await (await turn(service, child.id, opened.logicalConversationId, "legacy work")).finished).status, "completed");
+  const activeFile = path.join(rootDir, "orchestrators", child.id, "active.json");
+  const oldActive = JSON.parse(await fs.readFile(activeFile, "utf8"));
+  delete oldActive.nativeChecklistWriteEnabled;
+  await fs.writeFile(activeFile, JSON.stringify(oldActive));
   const reloaded = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
   const offset = codex.calls.length;
   assert.equal((await (await turn(reloaded, child.id, opened.logicalConversationId, "new work")).finished).status, "completed");
@@ -910,7 +918,7 @@ test("checklist paths accept only an orchestrator ID in the fixed directory", ()
   }
 });
 
-test("shared observation records completed pairs from both chats and settings stay workspace-owned", async (t) => {
+test("learning observations, settings and usage stay with their own orchestrator", async (t) => {
   const { service, codex } = await fixture(t);
   const main = await service.open("main");
   const child = await service.create("Research");
@@ -919,11 +927,14 @@ test("shared observation records completed pairs from both chats and settings st
   await (await turn(service, child.id, childOpen.logicalConversationId, "Compare two options")).finished;
   const status = await service.learningStatus();
   assert.equal(status.status, "unconfigured");
-  assert.equal(status.pendingCount, 2); assert.equal(status.observedThrough, 2);
+  assert.equal(status.pendingCount, 1); assert.equal(status.observedThrough, 1);
+  const childStatus = await service.learningStatus(child.id);
+  assert.equal(childStatus.pendingCount, 1); assert.equal(childStatus.observedThrough, 1);
   const before = await service.getSettings("main");
   const configured = await service.configureLearning({ model: "another-model", effort: "high", settingsRevision: 1 });
   assert.deepEqual(configured.settings, { model: "another-model", effort: "high", settingsRevision: 2 });
   assert.equal((await service.getSettings("main")).model, before.model);
+  assert.deepEqual((await service.learningStatus(child.id)).settings, childStatus.settings);
   await assert.rejects(service.configureLearning({ model: "another-model", effort: "high", settingsRevision: 1 }), { code: "learning_settings_conflict" });
   await service.configureLearning({ model: "", effort: "", settingsRevision: 2 });
   assert.equal(codex.calls.filter((call) => call.method === "thread/start" && call.params.developerInstructions?.startsWith("Analyze supplied")).length, 0);
@@ -933,8 +944,7 @@ test("observation restart recovers completed sources after observer storage was 
   const { rootDir, service, codex } = await fixture(t);
   const main = await service.open("main");
   await (await turn(service, "main", main.logicalConversationId, "Recover this source")).finished;
-  const workspace = (await fs.readdir(path.join(path.dirname(rootDir), "workspaces")))[0];
-  const file = path.join(path.dirname(rootDir), "workspaces", workspace, "orchestrator-learning", "state.json");
+  const file = path.join(rootDir, "workspace", "orchestrator-learning", "state.json");
   const saved = JSON.parse(await fs.readFile(file, "utf8"));
   saved.pending = []; saved.observedThrough = 0;
   await fs.writeFile(file, JSON.stringify(saved));
@@ -955,8 +965,7 @@ test("corrupt learning state pauses learning while ordinary conversations still 
   const active = JSON.parse(await fs.readFile(activeFile, "utf8"));
   await fs.writeFile(activeFile, JSON.stringify({ ...active, learningSnapshot: { contextRevision: 1, selectedDigest: "prior-policy",
     items: [{ id: randomUUID(), version: 1 }] } }));
-  const workspace = (await fs.readdir(path.join(path.dirname(rootDir), "workspaces")))[0];
-  await fs.writeFile(path.join(path.dirname(rootDir), "workspaces", workspace, "orchestrator-learning", "state.json"), "{}");
+  await fs.writeFile(path.join(rootDir, "workspace", "orchestrator-learning", "state.json"), "{}");
   const restarted = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
   assert.equal((await restarted.learningStatus()).status, "paused");
   const cleared = await (await turn(restarted, "main", main.logicalConversationId, "Still respond")).finished;
@@ -970,6 +979,7 @@ test("first observation startup prepares usage storage and excludes pre-existing
   const opened = await legacy.open();
   const prior = await turn(legacy, undefined, opened.logicalConversationId, "Before learning existed");
   assert.equal((await prior.finished).status, "completed");
+  await prepareLegacy(rootDir);
   const service = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
   const initial = await service.learningStatus();
   assert.equal(initial.status, "unconfigured");
@@ -983,7 +993,7 @@ test("first observation startup prepares usage storage and excludes pre-existing
   assert.equal(status.pendingCount, 1); assert.equal(status.observedThrough, 2);
 });
 
-test("recovery scan waits for a concurrent completion's durable observation", async (t) => {
+test("one chat completion does not advance another chat learning cursor", async (t) => {
   const { rootDir, service, codex } = await fixture(t, { hold: true });
   const main = await service.open("main");
   const child = await service.create("Other");
@@ -1013,7 +1023,7 @@ test("recovery scan waits for a concurrent completion's durable observation", as
   await paused;
   const secondPromise = turn(service, child.id, childOpened.logicalConversationId, "Concurrent request");
   await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.equal(reads, 0, "scan must not enter while pair persistence owns the serialization boundary");
+  assert.ok(reads > 0, "operation ownership can be scanned without advancing another chat learning cursor");
   resume();
   assert.equal((await first.finished).status, "completed");
   const second = await secondPromise;
@@ -1043,8 +1053,7 @@ test("learning management facade connects bulk adoption, publication, response d
   const { rootDir, service, codex } = await fixture(t);
   const main = await service.open("main");
   await (await turn(service, "main", main.logicalConversationId, "Prefer short reports")).finished;
-  const workspace = (await fs.readdir(path.join(path.dirname(rootDir), "workspaces")))[0];
-  const file = path.join(path.dirname(rootDir), "workspaces", workspace, "orchestrator-learning", "state.json");
+  const file = path.join(rootDir, "workspace", "orchestrator-learning", "state.json");
   const saved = JSON.parse(await fs.readFile(file, "utf8"));
   const id = randomUUID();
   saved.candidates.push({ id, version: 1, status: "candidate", kind: "procedure", content: "Check reports", conditions: "This chat only",
@@ -1076,38 +1085,126 @@ test("learning management facade connects bulk adoption, publication, response d
   assert.equal((await restarted.learningDelivery({ orchestratorId: "main", operationId: completed.clientOperationId })).delivery, null);
 });
 
-test("main metadata combines all new learning, read broadcasts without deadlock, and versions stay independent", async (t) => {
+test("each chat exposes only its own unread learning and rejects sibling item management", async (t) => {
   const { rootDir, service, codex } = await fixture(t);
   const main = await service.open("main");
   const child = await service.create("Research");
   await (await turn(service, "main", main.logicalConversationId, "Prefer concise reports")).finished;
-  const workspace = (await fs.readdir(path.join(path.dirname(rootDir), "workspaces")))[0];
-  const file = path.join(path.dirname(rootDir), "workspaces", workspace, "orchestrator-learning", "state.json");
-  const saved = JSON.parse(await fs.readFile(file, "utf8"));
-  const items = ["main", child.id].map((orchestratorId) => ({ id: randomUUID(), version: 2, readVersion: 1,
-    status: "candidate", kind: "preference", content: `Concise ${orchestratorId}`, conditions: "Reports",
-    reason: "Synthetic request", scope: { orchestratorId }, evidence: [{ ...saved.pending[0], user: undefined, assistant: undefined }],
-    createdAt: new Date().toISOString() }));
-  saved.candidates.push(...items);
-  await fs.writeFile(file, JSON.stringify(saved));
+  const opened = await service.open(child.id);
+  await (await turn(service, child.id, opened.logicalConversationId, "Compare options")).finished;
+  const items = [];
+  for (const orchestratorId of ["main", child.id]) {
+    const directory = orchestratorId === "main" ? rootDir : path.join(rootDir, "orchestrators", orchestratorId);
+    const file = path.join(directory, "workspace", "orchestrator-learning", "state.json");
+    const saved = JSON.parse(await fs.readFile(file, "utf8"));
+    const item = { id: randomUUID(), version: 2, readVersion: 1,
+      status: "candidate", kind: "preference", content: `Concise ${orchestratorId}`, conditions: "Reports",
+      reason: "Synthetic request", scope: { orchestratorId }, evidence: [{ ...saved.pending[0], user: undefined, assistant: undefined }],
+      createdAt: new Date().toISOString() };
+    saved.candidates.push(item); items.push(item);
+    await fs.writeFile(file, JSON.stringify(saved));
+  }
   const broadcasts = [];
   const restarted = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient,
     onLearningUnreadChanged: async () => broadcasts.push(await restarted.list()) });
-  const list = await restarted.list();
-  assert.equal(list.orchestrators.find((item) => item.id === "main").learningUnreadCount, 2);
-  assert.equal(list.orchestrators.find((item) => item.id === child.id).learningUnreadCount, undefined);
-  assert.equal(await restarted.unreadCount(), 1, "only the one completed reply is counted, not the two learning items");
+  assert.deepEqual((await restarted.list()).orchestrators.map((item) => item.learningUnreadCount), [1, 1]);
+  assert.equal(await restarted.unreadCount(), 2, "learning does not add to reply unread count");
   await restarted.manageLearning("read", { items: [{ id: items[0].id, version: 1 }] });
-  assert.equal((await restarted.learningStatus()).unreadCount, 2, "stale displayed versions cannot clear newer ones");
+  assert.equal((await restarted.learningStatus()).unreadCount, 1, "stale displayed versions cannot clear newer ones");
+  await assert.rejects(restarted.manageLearning("decide", { items: [{ id: items[1].id, version: 2 }], action: "adopt" }), { code: "learning_conflict" });
   const state = await restarted.manageLearning("read", { items: [{ id: items[0].id, version: 2 }] });
-  assert.equal(state.unreadCount, 1);
-  assert.ok(state.candidates.every((item) => item.status === "candidate"));
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.equal(broadcasts.at(-1).orchestrators.find((item) => item.id === "main").learningUnreadCount, 1);
+  assert.equal(state.unreadCount, 0);
+  assert.ok(state.candidates.every((item) => item.scope.orchestratorId === "main"));
+  await waitFor(() => broadcasts.length > 0);
+  assert.deepEqual(broadcasts.at(-1).orchestrators.map((item) => item.learningUnreadCount), [0, 1]);
   const recovered = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
-  assert.equal((await recovered.list()).orchestrators.find((item) => item.id === "main").learningUnreadCount, 1);
-  await recovered.manageLearning("forget", { items: items.map(({ id, version }) => ({ id, version })) });
-  assert.equal((await recovered.list()).orchestrators.find((item) => item.id === "main").learningUnreadCount, 0);
+  assert.deepEqual((await recovered.list()).orchestrators.map((item) => item.learningUnreadCount), [0, 1]);
+  await recovered.manageLearning("forget", { items: [{ id: items[0].id, version: 2 }] });
+  assert.equal((await recovered.learningStatus(child.id)).candidates[0].id, items[1].id);
   assert.equal(codex.calls.filter((call) => call.method === "thread/start"
     && call.params.developerInstructions?.startsWith("Analyze supplied")).length, 0);
+});
+
+test("runtime refuses old stores without migration side effects, and offline preparation refuses unfinished work", async (t) => {
+  const { rootDir, codex, service } = await fixture(t);
+  const legacy = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  const opened = await legacy.open();
+  const operationId = randomUUID();
+  const events = [
+    { type: "accepted", text: "legacy unresolved" }, { type: "dispatching" },
+    { type: "unknown", code: "runner_restarted_result_unknown" },
+  ].map((event, index) => ({ seq: index + 1, at: new Date().toISOString(), clientOperationId: operationId, ...event }));
+  const file = path.join(rootDir, opened.logicalConversationId, "events.jsonl");
+  await fs.writeFile(file, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`);
+  const before = await fs.readFile(path.join(rootDir, "active.json"), "utf8");
+  await assert.rejects(service.list(), { code: "orchestrator_preparation_required" });
+  assert.equal(await fs.readFile(path.join(rootDir, "active.json"), "utf8"), before);
+  await assert.rejects(fs.stat(path.join(rootDir, "workspace")), { code: "ENOENT" });
+  await assert.rejects(prepareLegacy(rootDir), /unresolved operations/);
+  assert.equal(codex.calls.length, 0, "the isolated runtime never contacts the old shared App Server");
+  events.push({ seq: 4, at: new Date().toISOString(), clientOperationId: operationId, type: "interrupted", code: "explicit_interrupt" });
+  await fs.writeFile(file, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`);
+  await prepareLegacy(rootDir);
+  assert.equal((await service.getSettings("main")).isolationVersion, 1);
+});
+
+test("new specialists use canonical defaults and expose no inherited external or Runner tools", async (t) => {
+  const { rootDir, service, codex } = await fixture(t);
+  await service.open("main");
+  await service.update("main", { name: "main expert", icon: "", systemInstruction: "Main-only expertise", model: "another-model", effort: "high" });
+  const child = await service.create("Independent");
+  const settings = await service.getSettings(child.id);
+  assert.equal(settings.isolationVersion, 1);
+  assert.equal(settings.systemInstruction, settings.defaults.systemInstruction);
+  assert.equal(settings.model, settings.defaults.model);
+  assert.notEqual(settings.systemInstruction, (await service.getSettings("main")).systemInstruction);
+  const conversation = await service.open(child.id);
+  const operationId = randomUUID();
+  let finish;
+  const finished = new Promise((resolve) => { finish = resolve; });
+  await service.start({ operationId, payload: { orchestratorId: child.id, backendId: "codex",
+    logicalConversationId: conversation.logicalConversationId, clientOperationId: operationId,
+    input: { blocks: [{ type: "text", text: "Own task" }] } } }, finish, async () => "decline", {
+    onCalendarToolCall: async () => { throw new Error("External tool must not be exposed"); },
+  });
+  assert.equal((await finished).status, "completed");
+  const threads = codex.calls.filter((call) => call.method === "thread/start");
+  for (const { params } of threads) {
+    assert.equal(params.dynamicTools?.some((tool) => ["voice_subagent", "iphone_calendar"].includes(tool.name)), false);
+    assert.equal(params.config.web_search, "disabled");
+    assert.deepEqual(params.runtimeWorkspaceRoots, [await fs.realpath(path.join(rootDir, "orchestrators", child.id, "workspace"))]);
+  }
+});
+
+test("offline preparation retains all old To Do files and mixed memory in main only", async (t) => {
+  const { rootDir, codex, service } = await fixture(t);
+  const legacy = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  const opened = await legacy.open();
+  await (await turn(legacy, undefined, opened.logicalConversationId, "Old own conversation")).finished;
+  const workspace = await legacy.getWorkspaceDirectory();
+  await (await legacy.getMemoryStore()).appendPair({ pairSeq: 2, user: "Other chat secret", assistant: "Other answer" });
+  const before = await fs.readFile(path.join(workspace, "voice-memory", "recent.json"), "utf8");
+  const taskDirectory = path.join(workspace, "task-checklists");
+  await fs.mkdir(path.join(taskDirectory, "completed"), { recursive: true });
+  const markdown = "- [x] Own completed task\n";
+  await fs.writeFile(path.join(taskDirectory, "main.md"), markdown);
+  const otherTask = `${randomUUID()}.md`;
+  await fs.writeFile(path.join(taskDirectory, otherTask), "- [ ] Other task\n");
+  const archiveId = `${Date.now()}-${randomUUID()}`;
+  const archive = { archiveId, completedAt: new Date().toISOString(), markdown,
+    sourceHash: createHash("sha256").update(markdown).digest("hex"), sourcePath: "task-checklists/main.md",
+    workspaceId: opened.logicalConversationId };
+  await fs.writeFile(path.join(taskDirectory, "completed", `${archiveId}.json`), JSON.stringify(archive));
+  await prepareLegacy(rootDir);
+  await service.list();
+  const ownedWorkspace = path.join(rootDir, "workspace");
+  assert.deepEqual((await service.history("main")).taskChecklist, { status: "present", markdown });
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(ownedWorkspace, "task-checklists", "completed", `${archiveId}.json`), "utf8")), archive);
+  assert.deepEqual((await fs.readdir(path.join(ownedWorkspace, "task-checklists"))).sort(), ["completed", "main.md", otherTask].sort());
+  assert.equal(await fs.readFile(path.join(workspace, "voice-memory", "recent.json"), "utf8"), before);
+  assert.equal((await service.learningStatus()).pendingCount, 0);
+  assert.equal((await (await turn(service, "main", opened.logicalConversationId, "New own request")).finished).status, "completed");
+  const ownPairs = JSON.parse(await fs.readFile(path.join(ownedWorkspace, "voice-memory", "recent.json"), "utf8"));
+  assert.deepEqual(ownPairs.map((pair) => pair.user), ["Old own conversation", "Other chat secret", "New own request"]);
+  assert.equal(codex.calls.some((call) => call.method === "thread/inject_items"), false);
 });

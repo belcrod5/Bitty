@@ -28,7 +28,7 @@ async function initializeCodexClient(client, clientName) {
 }
 
 export async function listCodexModelsFromAppServer(createClient, clientName) {
-  const client = createClient({});
+  const client = await createClient({});
   const catalog = [];
   const seenCursors = new Set();
   let cursor = "";

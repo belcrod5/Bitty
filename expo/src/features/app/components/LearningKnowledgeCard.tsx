@@ -62,7 +62,7 @@ function LearningUpdateReview({ updates, knowledge, chatName, orchestratorId, bu
         {sources.map((source, index) => <View key={proposal.replaces![index]} style={styles.original}>
           {source ? <>
             <Text style={[styles.title, { color: colors.textSecondary }]}>{source.content}</Text>
-            <Text style={[styles.caption, { color: colors.textMuted }]}>使う範囲：{source.scope.shared ? "全チャット" : source.scope.orchestratorId === orchestratorId ? `${chatName}限定` : "別のチャット限定"}</Text>
+            <Text style={[styles.caption, { color: colors.textMuted }]}>使う範囲：{source.scope.orchestratorId === orchestratorId ? `${chatName}限定` : "別のチャット限定"}</Text>
             <Text style={[styles.caption, { color: colors.textMuted }]}>適用：{source.conditions || "条件なし"}</Text>
             {JSON.stringify(source.matchTerms || []) !== JSON.stringify(proposal.matchTerms || []) ? <Text style={[styles.caption, { color: colors.textMuted }]}>関連する言葉：{source.matchTerms?.join("、") || "指定なし"}</Text> : null}
             {JSON.stringify(source.targetConstraints || []) !== JSON.stringify(proposal.targetConstraints || []) ? <Text style={[styles.caption, { color: colors.textMuted }]}>確認対象：{source.targetConstraints?.join("、") || "指定なし"}</Text> : null}
@@ -75,7 +75,7 @@ function LearningUpdateReview({ updates, knowledge, chatName, orchestratorId, bu
         <View style={styles.comparisonHeading}><Ionicons name="sparkles-outline" size={17} color={colors.accent} />
           <Text style={[styles.comparisonLabel, { color: colors.accent }]}>{sources.length > 1 ? "まとめて更新後" : "更新後"}</Text></View>
         <Text style={[styles.title, { color: colors.textPrimary }]}>{proposal.content}</Text>
-        <Text style={[styles.caption, { color: colors.textSecondary }]}>使う範囲：{proposal.scope.shared ? "全チャット" : proposal.scope.orchestratorId === orchestratorId ? `${chatName}限定` : "別のチャット限定"}</Text>
+        <Text style={[styles.caption, { color: colors.textSecondary }]}>使う範囲：{proposal.scope.orchestratorId === orchestratorId ? `${chatName}限定` : "別のチャット限定"}</Text>
         <Text style={[styles.caption, { color: colors.textSecondary }]}>適用：{proposal.conditions || "条件なし"}</Text>
         {sources.some((source) => JSON.stringify(source?.matchTerms || []) !== JSON.stringify(proposal.matchTerms || [])) ? <Text style={[styles.caption, { color: colors.textSecondary }]}>関連する言葉：{proposal.matchTerms?.join("、") || "指定なし"}</Text> : null}
         {sources.some((source) => JSON.stringify(source?.targetConstraints || []) !== JSON.stringify(proposal.targetConstraints || [])) ? <Text style={[styles.caption, { color: colors.textSecondary }]}>確認対象：{proposal.targetConstraints?.join("、") || "指定なし"}</Text> : null}
@@ -110,21 +110,20 @@ export function LearningKnowledgeCard({ item, knowledge, chatName, selecting, se
     { text: "キャンセル", style: "cancel" }, { text: "再開する", onPress: () => { void manage("decide", { ...references, action: "restore" }); } },
   ]);
   const tone = item.status === "active" ? tones.info : null;
-  const action = (label: string, operation: string, payload: Record<string, unknown>, confirmation?: "forget" | "share") => {
+  const action = (label: string, operation: string, payload: Record<string, unknown>, confirmDelete = false) => {
     const disabled = busy;
     return <Pressable key={label} accessibilityRole="button" accessibilityLabel={`${label}: ${item.content}`} disabled={disabled}
       onPress={() => {
-        if (confirmation) Alert.alert(
-          confirmation === "forget" ? "この学習を削除" : "全チャットで使う",
-          confirmation === "forget" ? "この学習と、編集・統合で関連する保存版を削除します。元の会話は残ります。"
-            : "この学習を全チャットで、条件に応じて回答に使います。", [
+        if (confirmDelete) Alert.alert(
+          "この学習を削除",
+          "この学習と、編集・統合で関連する保存版を削除します。元の会話は残ります。", [
           { text: "キャンセル", style: "cancel" },
-          { text: confirmation === "forget" ? "削除する" : "適用する", style: confirmation === "forget" ? "destructive" : "default", onPress: () => { void manage(operation, payload); } },
+          { text: "削除する", style: "destructive", onPress: () => { void manage(operation, payload); } },
         ]);
         else if (isUpdate && operation === "decide" && payload.action === "adopt") setReviewing(true);
         else void manage(operation, payload);
       }} style={({ pressed }) => [styles.action, { opacity: disabled ? 0.4 : pressed ? 0.6 : 1 }]}>
-      <Text style={[styles.actionText, { color: confirmation === "forget" ? tones.danger.foreground : colors.accent }]}>{label}</Text>
+      <Text style={[styles.actionText, { color: confirmDelete ? tones.danger.foreground : colors.accent }]}>{label}</Text>
     </Pressable>;
   };
   return <><View accessibilityElementsHidden={reviewing} importantForAccessibility={reviewing ? "no-hide-descendants" : "auto"} style={[styles.card, { backgroundColor: colors.surface, borderColor: selected ? colors.accent : colors.borderSubtle }]}>
@@ -138,7 +137,7 @@ export function LearningKnowledgeCard({ item, knowledge, chatName, selecting, se
           <Text style={[styles.status, { color: tone?.foreground || colors.textSecondary,
             backgroundColor: tone?.background || colors.surfaceMuted }]}>{isUpdate ? "更新案" : knowledgeState(item.status)}</Text>
           <Text style={[styles.caption, { color: colors.textSecondary }]}>{item.skill ? item.published ? "専用スキル" : "専用スキル案" : KIND_LABELS[item.kind] || "学習"}</Text>
-          <Text style={[styles.caption, { color: colors.textMuted }]}>{item.scope.shared ? "全チャット" : `${chatName}限定`}</Text>
+          <Text style={[styles.caption, { color: colors.textMuted }]}>{chatName}限定</Text>
           {item.skill ? <Ionicons name="library-outline" size={13} color={colors.textMuted} accessibilityLabel="専用スキル" /> : null}
         </View>
         <Text style={[styles.title, { color: colors.textPrimary }]}>{item.content}</Text>
@@ -172,7 +171,7 @@ export function LearningKnowledgeCard({ item, knowledge, chatName, selecting, se
     </Pressable> : null}
     {expanded ? <View style={[styles.details, { borderColor: colors.borderSubtle }]}>
       {item.status === "active" ? <Text style={[styles.caption, { color: colors.textSecondary }]}>条件に合う回答で参照します。毎回使うとは限りません。</Text> : null}
-      <Text style={[styles.caption, { color: colors.textSecondary }]}>{KIND_LABELS[item.kind] || item.kind} · 元のチャット：{chatName} · {item.scope.shared ? "全チャット共通" : `${chatName}限定`} · 第{item.version}版</Text>
+      <Text style={[styles.caption, { color: colors.textSecondary }]}>{KIND_LABELS[item.kind] || item.kind} · 元のチャット：{chatName} · {chatName}限定 · 第{item.version}版</Text>
       {item.action === "retire" && item.conditions ? <Text style={[styles.caption, { color: colors.textSecondary }]}>適用条件：{item.conditions}</Text> : null}
       {item.replaces?.length ? <Text style={[styles.caption, { color: colors.textSecondary }]}>{item.action === "retire" ? "停止" : "更新"}対象：{item.replaces.length}件の既存方針</Text> : null}
       {item.matchTerms?.length ? <Text style={[styles.caption, { color: colors.textSecondary }]}>関連する言葉：{item.matchTerms.join("、")}</Text> : null}
@@ -186,10 +185,9 @@ export function LearningKnowledgeCard({ item, knowledge, chatName, selecting, se
       <View style={styles.actions}>
         {item.status === "candidate" ? action("見送る", "decide", { ...references, action: "reject" }) : null}
         {item.status === "active" ? <>
-          {!item.scope.shared ? action("全チャットで使う", "decide", { ...references, action: "share" }, "share") : null}
           {item.skill && !item.published ? action("専用スキルとして保存", "decide", { ...references, action: "publish" }) : null}
         </> : null}
-        {action("学習を削除", "forget", references, "forget")}
+        {action("学習を削除", "forget", references, true)}
       </View>
     </View> : null}
   </View>

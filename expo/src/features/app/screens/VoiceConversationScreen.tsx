@@ -518,7 +518,7 @@ function VoiceConversationSession({
                       contentContainerStyle={{ alignItems: "center", paddingRight: 12 }}>
                       {orchestrators.map((item) => (
                         <Pressable key={item.id} testID={`voice-orchestrator-${item.id}`}
-                          accessibilityRole="button" accessibilityLabel={`${item.name}に切り替え${item.id === "main" && (item.learningUnreadCount || 0) > 0
+                          accessibilityRole="button" accessibilityLabel={`${item.name}に切り替え${(item.learningUnreadCount || 0) > 0
                             ? `、新しく学んだこと ${item.learningUnreadCount}件` : ""}`}
                           style={{ width: 44, height: 44, alignItems: "center", justifyContent: "center" }}
                           onPress={() => void switchTo(item.id)} onLongPress={() => void openManager()}>
@@ -745,7 +745,7 @@ function VoiceConversationSession({
                     onHistoryToggle={() => setHistoryExpanded((expanded) => !expanded)}
                     leadingAccessory={!historyExpanded ? (
                       <Pressable testID="voice-orchestrator-floating" accessibilityRole="button"
-                        accessibilityLabel={`${orchestrator.name}・履歴を開く${orchestrator.id === "main" && (orchestrator.learningUnreadCount || 0) > 0
+                        accessibilityLabel={`${orchestrator.name}・履歴を開く${(orchestrator.learningUnreadCount || 0) > 0
                           ? `、新しく学んだこと ${orchestrator.learningUnreadCount}件` : ""}`}
                         onPress={() => setHistoryExpanded(true)} onLongPress={() => void openManager()}
                         onPointerDown={(event) => { if (event.nativeEvent.button === 2) void openManager(); }}

@@ -10,7 +10,7 @@ export function VoiceOrchestratorIcon({ orchestrator, size = 40, active = false 
 }) {
   const { theme } = useVisualTheme();
   const [failedIcon, setFailedIcon] = useState("");
-  const learningUnread = orchestrator.id === "main" && Number.isSafeInteger(orchestrator.learningUnreadCount)
+  const learningUnread = Number.isSafeInteger(orchestrator.learningUnreadCount)
     && orchestrator.learningUnreadCount! > 0 ? orchestrator.learningUnreadCount! : 0;
   const initial = [...orchestrator.name.trim()][0] || "●";
   return (

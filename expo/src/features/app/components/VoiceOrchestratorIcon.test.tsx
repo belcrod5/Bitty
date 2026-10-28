@@ -15,7 +15,7 @@ test("falls back to the name after a broken image and accepts a replacement imag
   expect(screen.getByTestId("voice-orchestrator-icon-parent")).toBeTruthy();
 });
 
-test("floats a separate learning count on main only and keeps the conversation unread count", async () => {
+test("floats each orchestrator learning count separately and keeps the conversation unread count", async () => {
   const wrap = (id: string, count?: number) => (
     <VisualThemeProvider themeId="standard" onSelectTheme={() => undefined}>
       <VoiceOrchestratorIcon orchestrator={{ id, name: "メイン", icon: "", unreadCount: 2, learningUnreadCount: count }} />
@@ -34,5 +34,5 @@ test("floats a separate learning count on main only and keeps the conversation u
     expect(screen.queryByTestId("voice-orchestrator-learning-unread-main")).toBeNull();
   }
   await screen.rerender(wrap("child", 3));
-  expect(screen.queryByTestId("voice-orchestrator-learning-unread-child")).toBeNull();
+  expect(screen.getByTestId("voice-orchestrator-learning-unread-child")).toBeTruthy();
 });

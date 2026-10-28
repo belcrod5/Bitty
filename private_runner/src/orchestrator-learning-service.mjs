@@ -38,13 +38,13 @@ const LEARNING_OUTPUT_SCHEMA = schemaObject({
 const STATUSES = new Set(["candidate", "active", "retired", "rejected"]);
 const SKILL_FIELDS = ["purpose", "triggers", "inputs", "steps", "outputs", "exceptions", "approvals"];
 const skillMarkdown = (item) => `# ${item.content}\n\n${SKILL_FIELDS.map((key) => `## ${key}\n${item.skill[key]}`).join("\n\n")}\n`;
-const scoped = (item, id) => item.scope.orchestratorId === id || item.scope.shared === true;
+const scoped = (item, id) => item.scope.orchestratorId === id;
 const identifier = (id) => id === "main" || UUID.test(id);
 const score = (value) => value === null || Number.isInteger(value) && value >= 0 && value <= 100;
 
 
 // Single owner of evidence, adoption, skill versions and response delivery records.
-export async function openOrchestratorLearning({ workspace, memoryConversationId, initialThrough,
+export async function openOrchestratorLearning({ workspace, memoryConversationId, initialThrough, orchestratorId: ownerId,
   analyze, ledger, isBusy = () => false, onUnreadChanged = () => {}, now = () => Date.now(), limits = {} }) {
   const bounds = { ...LIMITS, ...limits };
   const directory = path.join(workspace, "orchestrator-learning");
@@ -54,6 +54,7 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
     || typeof process.getuid === "function" && stat.uid !== process.getuid()) throw fail("learning_store_invalid", "Unsafe learning directory");
   const file = path.join(directory, "state.json");
   let state;
+  let initializing = false;
   let serial = Promise.resolve();
   let task = null;
   let timer = null;
@@ -83,7 +84,8 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
   }
   function validPair(pair) {
     return record(pair) && pair.memoryConversationId === memoryConversationId && positive(pair.pairSeq)
-      && (pair.orchestratorId === "main" || UUID.test(pair.orchestratorId)) && UUID.test(pair.logicalConversationId)
+      && (pair.orchestratorId === "main" || UUID.test(pair.orchestratorId))
+      && (!ownerId || pair.orchestratorId === ownerId) && UUID.test(pair.logicalConversationId)
       && UUID.test(pair.clientOperationId) && typeof pair.user === "string" && typeof pair.assistant === "string"
       && Number.isFinite(Date.parse(pair.completedAt));
   }
@@ -118,7 +120,7 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
       processedThrough: initialThrough, pending: [], candidates: [], gaps: initialThrough > 0
         ? [{ from: 1, through: initialThrough, reason: "before_observation" }] : [],
       batch: null, lastStartedAt: 0 };
-    await save(state);
+    initializing = true;
   }
 
   // Additive migration: old observation snapshots remain readable.
@@ -129,6 +131,7 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
   for (const item of state.candidates) { item.version ??= 1; item.updatedAt ??= item.createdAt; }
   if (state.candidates.some((item) => !positive(item.version) || item.readVersion !== undefined && !positive(item.readVersion)
     || !identifier(item.scope.orchestratorId)
+    || ownerId && item.scope.orchestratorId !== ownerId
     || item.scope.shared !== undefined && typeof item.scope.shared !== "boolean"
     || [item.matchTerms, item.targetConstraints].some((values) => values !== undefined && (!Array.isArray(values) || values.some((value) => !text(value, 200))))
     || item.skill && (!record(item.skill) || SKILL_FIELDS.some((key) => !text(item.skill[key], 2000)))
@@ -138,6 +141,7 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
     || state.cleanup.some((id) => !UUID.test(id))
     || ["evaluations", "corrections", "changes", "uses", "proposals", "excluded", "requests"].some((key) => state[key].some((entry) => !record(entry))))
     throw fail("learning_store_invalid", "Invalid learning lifecycle metadata");
+  if (initializing) await save(state);
   const changedAt = () => new Date(now()).toISOString();
   const activeCorrection = (item) => !item.cancelledAt && (item.score !== null || Boolean(item.reason?.trim()));
   const pendingCorrection = (item) => activeCorrection(item) && !item.resolution;
@@ -372,8 +376,7 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
         ...(candidate.skill ? { skill: candidate.skill } : {}), ...(candidate.replaces?.length ? { replaces: candidate.replaces,
           replacementVersions: candidate.replaces.map((id) => ({ id, version: batch.items.find((item) => item.id === id).version })) } : {}),
         content: candidate.content.trim(), conditions: candidate.conditions.trim(), reason: candidate.reason.trim(),
-        scope: { orchestratorId: candidate.orchestratorId,
-          ...(candidate.replaces?.length && candidate.replaces.every((id) => batch.items.find((item) => item.id === id)?.scope.shared) ? { shared: true } : {}) }, createdAt: new Date(now()).toISOString(),
+        scope: { orchestratorId: candidate.orchestratorId }, createdAt: new Date(now()).toISOString(),
         evidence: candidate.evidence.map((seq) => { const pair = batch.sources.find((value) => value.pairSeq === seq);
           return { memoryConversationId, pairSeq: seq, orchestratorId: pair.orchestratorId,
             logicalConversationId: pair.logicalConversationId, clientOperationId: pair.clientOperationId,
@@ -634,7 +637,7 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
     async decide({ items, action, reason = "" }) {
       return exclusive(async () => {
         if (!Array.isArray(items) || !items.length || items.length > 50 || new Set(items.map((item) => item.id)).size !== items.length
-          || !["adopt", "reject", "retire", "share", "publish", "restore"].includes(action) || typeof reason !== "string" || bytes(reason) > 1000)
+          || !["adopt", "reject", "retire", "publish", "restore"].includes(action) || typeof reason !== "string" || bytes(reason) > 1000)
           throw fail("learning_request_invalid", "Invalid learning decision");
         const previousArtifacts = structuredClone(state.candidates);
         const next = structuredClone(state);
@@ -643,7 +646,7 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
           if (!item) throw fail("learning_conflict", "Learning version changed; reload before deciding");
           const before = structuredClone(item);
           if (action === "adopt" && item.status !== "candidate" || action === "reject" && item.status !== "candidate"
-            || ["retire", "share", "publish"].includes(action) && item.status !== "active"
+            || ["retire", "publish"].includes(action) && item.status !== "active"
             || action === "restore" && item.status !== "retired") throw fail("learning_conflict", "Decision does not match item state");
           if (item.published) await readArtifact(item);
           if (item.previousPublished) await readArtifact({ ...item, published: item.previousPublished });
@@ -660,7 +663,6 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
             }
           }
           if (action === "reject" || action === "retire") { item.status = action === "reject" ? "rejected" : "retired"; exclude(next, item); }
-          if (action === "share") item.scope.shared = true;
           if (action === "restore") {
             for (const successor of next.candidates.filter((entry) => entry.status === "active" && entry.replaces?.includes(item.id))) {
               const predecessor = structuredClone(successor); exclude(next, successor); successor.status = "retired";
