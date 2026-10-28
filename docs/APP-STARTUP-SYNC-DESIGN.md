@@ -1,7 +1,7 @@
 # Bitty 起動と初回同期の設計
 
 作成日: 2026-10-27
-状態: 起動同期改善はmainへ統合・実機確認済み。旧版一覧互換の削除を専用worktreeで検証中（2026-10-28）。
+状態: 起動同期改善はmainへ統合・実機確認済み。アプリの旧版一覧互換とサーバーの未使用一覧APIの削除を専用worktreeで検証中（2026-10-28）。
 調査開始の基準: `e891073`。実装の統合基準: `d2a0ea5`（既存の接続indicator改善を維持）。前提: [作業手順](GIT-WORKTREE.md)、[前回の改善結果](初回セッション同期-改善計画.md)。
 
 実装済み: WS readyでのintent開始、cycle内hello 1回、上限付き全登録先batch、接続・認証scope分離、部分失敗の表示保持と再取得、Claudeの不要な子列挙の削除。最新の実装・検証記録は第18節。
@@ -719,3 +719,21 @@ run `20261027_170230_450`、受信cutoff `2026-10-27T09:56:01.795Z`（18:56:01.7
 非対応hello／空backend広告は明示エラー、batch側の未対応error／timeoutは対象groupの失敗として返し、先行chunkの成功を保持する。接続generation・認証scope・対象変更時の破棄、backend部分失敗時の既存表示保持、個別追加ページ・子取得・HTTP補足を関連契約テストで確認する。現行batch成功時の通信数を変える最適化ではなく、不要な実装と失敗時の別方式への再送を削る変更であり、速度向上は主張しない。
 
 関連JestはAgent client・thread一覧変換・一覧controller・Explorer・同期実験の5suite／152件、既存server契約はagent service・transport・Claude backendの133件、default／macOS型チェックと`git diff --check`が成功した。非対応protocol、空backend広告、batch未対応error、不正group長・cwd・sessions型、後半chunk失敗、接続切替で旧方式へ再送しないことも確認した。同期実験fixtureは現行の1batch応答へ更新しており、過去に保存した人工測定値を変更せず、新しい実機性能測定とも扱わない。実機build・Runner再起動はエージェントでは行っておらず、削除後の実機確認は未実施。
+
+### 18.14 サーバー側の未使用一覧APIを削除（2026-10-28）
+
+受付と現行callerを照合し、旧HTTP一覧 `GET /sessions` を削除した。現行アプリ・CLIからの呼出しはなく、repo内の参照は過去の設計記録と独立した合成HTTP benchmarkのみだった。第18.13節までの削除はアプリ側であり、この受付は残っていた。過去の設計書にある `/sessions` 維持方針は本節で変更する。
+
+現行Agentの個別・batch一覧が使う内部 `listLlmSessions` は維持する。HTTP `GET /agent/sessions` は `bitty-session` CLIの一覧、`sessions.list` はページング・子一覧・最新1件、`/session-summaries`・`/session-messages`・既読APIは現行取得で使うため削除しない。raw `thread/list` は汎用RPC中継で通るが、旧一覧専用の受付実装ではないため、今回その中継へ新しい禁止分岐は追加しない。
+
+未使用routeの削除だけとし、転送・互換adapter・設定は追加しない。サーバー変更を含むため、反映には対象worktreeのRunner再起動が必要。第18.13節のアプリ変更が未反映ならアプリbuildも必要である。実機build・Runner再起動はエージェントでは行わない。
+
+関連Nodeテストはsummary・本文差分・既読endpoint、Agent service・transport、CLIの6file／115件が成功した。認証付きqueryで旧一覧が404になるtestは、旧routeを一時復元した状態では200が返り失敗し、削除後に成功することを確認した。現行 `/agent/sessions` の一覧・summary、個別／batch一覧、CLI一覧、既読・本文取得の既存契約を維持した。`git diff --check`も成功。ログは `/tmp/bitty-unused-listing-server-tests.log`、`/tmp/bitty-unused-listing-regression-{before,after}.log`。実機反映後の確認は未実施である。
+
+実行コマンド（repo root）:
+
+```sh
+node --test private_runner/tests/session-summaries-endpoint.test.mjs private_runner/tests/session-messages-delta-endpoint.test.mjs private_runner/tests/sessions-read-endpoint.test.mjs private_runner/tests/agent-service.test.mjs private_runner/tests/agent-transport.test.mjs private_runner/tests/bitty-session-cli.test.mjs
+node --test --test-name-pattern='removed GET /sessions' private_runner/tests/session-summaries-endpoint.test.mjs
+git diff --check
+```

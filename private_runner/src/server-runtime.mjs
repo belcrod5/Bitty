@@ -6614,33 +6614,6 @@ const handleRunnerRequest = async (req, res) => {
     }
   }
 
-  if (req.method === "GET" && pathname === "/sessions") {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, {
-        error: "runner_token_missing",
-        message: "RUNNER_TOKEN is required",
-      });
-    }
-    if (parseAuthToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
-    try {
-      const directory = String(reqUrl.searchParams.get("directory") || "").trim() || DEFAULT_LLM_FILE_ROOT_RELATIVE;
-      const source = normalizeSessionSource(reqUrl.searchParams.get("source"), "all");
-      const limit = normalizeSessionListLimit(reqUrl.searchParams.get("limit"));
-      const payload = await listLlmSessions(directory, { source, limit });
-      return json(res, 200, payload);
-    } catch (err) {
-      if (isApiError(err)) {
-        return json(res, err.apiStatus, err.apiPayload);
-      }
-      return json(res, 500, {
-        error: "sessions_failed",
-        message: errorMessage(err),
-      });
-    }
-  }
-
   if (req.method === "POST" && pathname === "/session-summaries") {
     if (!RUNNER_TOKEN) {
       return json(res, 500, {
