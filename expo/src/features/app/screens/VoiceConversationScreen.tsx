@@ -189,7 +189,6 @@ function VoiceConversationSession({
   const [synthesisRequestSettled, setSynthesisRequestSettled] = useState(false);
   const [transitioning, setTransitioning] = useState(false);
   const [appActive, setAppActive] = useState(AppState.currentState === "active");
-  const [statusAnimation, setStatusAnimation] = useState<{ status?: "responding" | "speaking"; frame: number }>({ frame: 0 });
   const footerRef = useRef<StreamingSttFooterHandle>(null);
   const historyScrollRef = useRef<ScrollView>(null);
   const historyAtBottomRef = useRef(true);
@@ -444,25 +443,9 @@ function VoiceConversationSession({
 
   const voiceStatus = editingTranscript || voice.error || transcript || (voice.reply && ttsUiStatus === "error")
     ? undefined : isTtsPlaying || ttsUiStatus === "playing" ? "speaking" : replyLoading ? "responding" : playbackActive ? "speaking" : undefined;
-  const statusLabel = voiceStatus === "responding" ? "responding..." : "speaking...";
-
-  useEffect(() => {
-    setStatusAnimation({ status: voiceStatus, frame: 0 });
-    if (!voiceStatus || reduceMotion !== false) return;
-    const timer = setInterval(() => setStatusAnimation((current) => ({
-      status: voiceStatus,
-      frame: current.status === voiceStatus ? current.frame + 1 : 1,
-    })), 180);
-    return () => clearInterval(timer);
-  }, [voiceStatus, reduceMotion]);
-
-  const frame = statusAnimation.status === voiceStatus ? statusAnimation.frame : 0;
-  const animatedStatus = reduceMotion === true
-    ? statusLabel
-    : statusLabel.slice(0, frame % statusLabel.length + 1);
   const statusText = voice.error || (transcript || editingTranscript ? undefined
     : voice.reply && ttsUiStatus === "error" ? "音声再生に失敗しました。"
-      : voiceStatus ? animatedStatus
+      : voiceStatus ? undefined
           : initialStartPending ? "録音を準備しています…" : !streamingStt.active ? "音声入力は停止しています。再開するには画面を開き直してください。" : "");
   const historyMessages = useMemo(() => {
     if (!voice.ready) return [];
@@ -675,7 +658,7 @@ function VoiceConversationSession({
                     transcript={transcript}
                     statusText={statusText}
                     voiceStatus={voiceStatus}
-                    reduceMotion={reduceMotion !== false}
+                    reduceMotion={reduceMotion}
                     phase={streamingStt.phase}
                     correctionPreview={streamingStt.correctionPreview}
                     onSendCorrection={streamingStt.sendCorrectionPreview}

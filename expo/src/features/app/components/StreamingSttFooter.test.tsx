@@ -521,3 +521,51 @@ describe("StreamingSttFooter", () => {
     await cyberpunk.unmount();
   });
 });
+
+test("owns the same response and speech character animation, including unknown and reduced motion preferences", async () => {
+  jest.useFakeTimers();
+  const screen = await render(<StreamingSttFooter transcript="" voiceStatus="responding" phase="idle" reduceMotion={false} />);
+  const label = () => screen.getByTestId("streaming-stt-transcript").props.children;
+  expect(label()).toBe("r");
+  await act(() => jest.advanceTimersByTime(179)); expect(label()).toBe("r");
+  await act(() => jest.advanceTimersByTime(1)); expect(label()).toBe("re");
+  await act(() => jest.advanceTimersByTime(180 * 11)); expect(label()).toBe("responding...");
+  await act(() => jest.advanceTimersByTime(180)); expect(label()).toBe("r");
+  await screen.rerender(<StreamingSttFooter transcript="" voiceStatus="responding" phase="idle" reduceMotion />);
+  expect(label()).toBe("responding...");
+  await act(() => jest.advanceTimersByTime(900)); expect(label()).toBe("responding...");
+  await screen.rerender(<StreamingSttFooter transcript="" voiceStatus="responding" phase="idle" reduceMotion={null} />);
+  expect(label()).toBe("r");
+  await act(() => jest.advanceTimersByTime(900)); expect(label()).toBe("r");
+  await screen.rerender(<StreamingSttFooter transcript="" voiceStatus="responding" phase="idle" reduceMotion={false} />);
+  expect(label()).toBe("r");
+  await act(() => jest.advanceTimersByTime(180)); expect(label()).toBe("re");
+  await screen.rerender(<StreamingSttFooter transcript="" voiceStatus="speaking" phase="idle" reduceMotion={false} />);
+  expect(label()).toBe("s");
+  await act(() => jest.advanceTimersByTime(180 * 5)); expect(label()).toBe("speaki");
+  await screen.rerender(<StreamingSttFooter transcript="" voiceStatus="speaking" phase="idle" reduceMotion={false} />);
+  expect(label()).toBe("speaki");
+  await act(() => jest.advanceTimersByTime(180)); expect(label()).toBe("speakin");
+  await screen.rerender(<StreamingSttFooter transcript="" voiceStatus="speaking" statusText="明示された状態" phase="idle" reduceMotion={false} />);
+  expect(label()).toBe("明示された状態");
+  await screen.unmount(); jest.useRealTimers();
+});
+
+test("optional editing and stop capabilities do not add a second visual mode or change ordinary defaults", async () => {
+  const requestEdit = jest.fn(), onSubmit = jest.fn(async () => {}), onStop = jest.fn();
+  const screen = await render(<StreamingSttFooter transcript="" phase="idle" voiceStatus="responding" reduceMotion />);
+  expect(screen.getByTestId("streaming-stt-transcript").props.onPress).toBeUndefined();
+  expect(screen.queryByTestId("streaming-stt-stop")).toBeNull();
+  const ordinaryPanel = StyleSheet.flatten(screen.getByTestId("streaming-stt-panel").props.style);
+  await screen.rerender(<StreamingSttFooter transcript="" phase="idle" voiceStatus="responding" reduceMotion
+    onRequestEdit={requestEdit} onStop={onStop} stopLabel="相談を停止" />);
+  await fireEvent.press(screen.getByTestId("streaming-stt-transcript"));
+  expect(requestEdit).toHaveBeenCalledTimes(1); expect(onStop).not.toHaveBeenCalled();
+  expect(StyleSheet.flatten(screen.getByTestId("streaming-stt-panel").props.style)).toEqual(ordinaryPanel);
+  expect(screen.getByTestId("streaming-stt-glow")).toBeTruthy();
+  await fireEvent.press(screen.getByLabelText("相談を停止")); expect(onStop).toHaveBeenCalledTimes(1);
+  await screen.rerender(<StreamingSttFooter transcript="draft" phase="idle" onChangeText={jest.fn()} onSubmit={onSubmit} submitDisabled />);
+  await fireEvent(screen.getByTestId("streaming-stt-transcript"), "submitEditing", { nativeEvent: { text: "draft" } });
+  expect(onSubmit).not.toHaveBeenCalled();
+  await screen.unmount();
+});

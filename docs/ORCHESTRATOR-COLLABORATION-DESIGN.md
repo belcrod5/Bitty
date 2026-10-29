@@ -36,7 +36,7 @@
 ### UI導線の提案
 
 [ボード下部](../expo/src/features/app/screens/SkiaMiniBoardScreen.tsx)のmic隣に「相談」アイコンを置き、独立相談一覧→新規→登録済み本人のアイコンを複数選択→空room作成→通常の最初のメッセージを送信とする導線を実装した。
-[通常音声画面](../expo/src/features/app/screens/VoiceConversationScreen.tsx)の本人切替と独立し、相談ヘッダーには参加者と設定、相談設定にはテンプレート・返答上限の編集を置く。履歴吹き出しは通常音声画面と同じcomponent、入力は通常チャットのChatComposerInput・ComposerFullscreenEditorを直接使い、IME確定・macOS CmdEnter・全画面編集を共用する。相談用manual footer分岐は撤去した。途中追加UIは設けていない。
+[通常音声画面](../expo/src/features/app/screens/VoiceConversationScreen.tsx)の本人切替と独立し、相談ヘッダーには参加者と設定、相談設定にはテンプレート・返答上限の編集を置く。履歴吹き出しは通常音声画面と同じcomponent、入力は通常オーケストレーターチャットの実StreamingSttFooterを使い、黒いpanel・Skia glow・Enter送信・応答／読み上げ状態表示をそのまま共用する。別styleのmanual表示やChatComposer／全画面入力は置かない。相談だけは応答表示のタップから補足入力へ移れ、読み上げ中のタップは従来どおり読み上げ停止を優先する。途中追加UIは設けていない。
 [相談画面](../expo/src/features/app/screens/VoiceConsultationScreen.tsx)は独立したテキストUIで、閉じても相談の本人実行を停止しないが、この画面の読み上げ待ち行列と所有音声は終了する。通常と同じTTS再生基盤・本人の声設定で新着の確定発言を順に読み、履歴は手動再生できる。初回表示・再接続の過去発言は自動再生しない。STT音声surfaceを持たないため、端末のマイク停止／音声移動に使うapp-control originは無い。既存のorigin無しと同じ制限であり、本人tool全般の無効化ではない。
 
 ### 公開紹介と自然言語の招待

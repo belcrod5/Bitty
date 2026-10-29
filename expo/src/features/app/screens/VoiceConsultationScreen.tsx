@@ -2,15 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { randomUUID } from "expo-crypto";
 import Reanimated, { FadeOut, ZoomIn } from "react-native-reanimated";
 import { Ionicons } from "@expo/vector-icons";
-import { Alert, LayoutAnimation, Platform, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Alert, LayoutAnimation, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useRunnerWebSocketManager, useRunnerWebSocketSnapshot } from "../../runnerWs/RunnerWebSocketContext";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { KeyboardAvoidingView } from "../keyboardController";
 import { UserInputModal } from "../components/UserInputModal";
 import { VoiceResetConfirmationModal } from "../components/VoiceResetConfirmationModal";
-import { ChatComposerInput, MACOS_CHAT_SUBMIT_KEY_EVENTS } from "../components/ChatComposerInput";
-import { ComposerFullscreenEditor } from "../components/ComposerFullscreenEditor";
-import { useAppStyles } from "../styles";
+import { StreamingSttFooter } from "../components/StreamingSttFooter";
 import { useConsultationSpeech } from "../hooks/useConsultationSpeech";
 import type { VoiceConversationPlayback } from "./VoiceConversationScreen";
 import { MarkdownText } from "../components/MarkdownText";
@@ -54,16 +52,14 @@ export function VoiceConsultationScreen({ onClose, playback }: { onClose: () => 
   const [templateExpanded, setTemplateExpanded] = useState(false);
   const [maxTurns, setMaxTurns] = useState("9");
   const [supplement, setSupplement] = useState("");
-  const [fullscreen, setFullscreen] = useState(false), [submitRequestId, setSubmitRequestId] = useState(0);
-  const inputRef = useRef<TextInput>(null), fullscreenInputRef = useRef<TextInput>(null);
-  const appStyles = useAppStyles();
+  const [editingTranscript, setEditingTranscript] = useState(false);
   const speech = useConsultationSpeech(mode === "room" ? selectedRoom : "", playback);
   const speechContext = useRef({ selectedRoom, mode, owners, enqueue: speech.enqueue });
   speechContext.current = { selectedRoom, mode, owners, enqueue: speech.enqueue };
   const knownMessages = useRef(new Map<string, Set<string>>());
   const knownRevisions = useRef(new Map<string, number>());
   const speechReady = useRef(false);
-  useEffect(() => { setFullscreen(false); }, [selectedRoom, mode]);
+  useEffect(() => { setEditingTranscript(false); }, [selectedRoom, mode]);
   const [error, setError] = useState(""), [busy, setBusy] = useState(false), [resetDeadline, setResetDeadline] = useState<number | null>(null);
   const scroll = useRef<ScrollView>(null);
   const historyAtBottom = useRef(true);
@@ -201,13 +197,13 @@ export function VoiceConsultationScreen({ onClose, playback }: { onClose: () => 
     applyRoom(value); setSelectedRoom(value.id); setMode("room");
   });
 
-  const submit = async (text: string, accepted: () => void) => {
+  const submit = async (text: string, accepted: () => boolean) => {
     if (!room || !connected || busy || !text.trim()) return;
     setError("");
     const previous = pendingSend.current;
     const submission = previous?.roomId === room.id && previous.text === text ? previous : { roomId: room.id, text, messageId: randomUUID() };
     pendingSend.current = submission;
-    try { applyRoom(await send("supplement", submission) as ConsultationRoom); if (pendingSend.current === submission) pendingSend.current = null; speech.stop(); accepted(); }
+    try { applyRoom(await send("supplement", submission) as ConsultationRoom); if (pendingSend.current === submission) pendingSend.current = null; speech.stop(); if (accepted()) setEditingTranscript(false); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "送信できません"); }
   };
   const live = room?.run?.progress;
@@ -369,31 +365,16 @@ export function VoiceConsultationScreen({ onClose, playback }: { onClose: () => 
         {button("相談を作る", create, !connected || selected.length < 2)}
       </View> : null}
       {mode === "room" && room ? <View style={styles.footer}>
-        {speech.error ? <Text accessibilityLiveRegion="polite" style={styles.secondary}>{speech.error}</Text> : null}
-        <View style={appStyles.chatInputWrapper}>
-          <ChatComposerInput inputRef={inputRef} value={supplement} showFullscreenButton
-            onChangeText={setSupplement} onFocus={() => {}} onBlur={() => {}}
-            onSubmit={submit} submitRequestId={submitRequestId} onOpenFullscreen={() => setFullscreen(true)} editable={!busy} />
-          <View style={appStyles.chatComposerIconRow}>
-            <Pressable accessibilityRole="button" accessibilityLabel="送信" disabled={!connected || busy || !supplement.trim()}
-              onPress={() => setSubmitRequestId((value) => value + 1)} style={styles.iconButton}>
-              <Ionicons name="caret-forward" size={25} color={!connected || busy || !supplement.trim() ? theme.colors.textMuted : theme.colors.accent} />
-            </Pressable>
-            {speech.pending ? <Pressable accessibilityRole="button" accessibilityLabel="読み上げを停止" onPress={speech.stop} style={styles.iconButton}>
-              <Ionicons name="volume-mute-outline" size={21} color={theme.colors.textSecondary} />
-            </Pressable> : null}
-            {room.run || room.state === "running" ? <Pressable accessibilityRole="button" accessibilityLabel="停止" style={styles.iconButton}
-              onPress={() => { speech.stop(); void act(async () => { applyRoom(await send("stop", { roomId: room.id }) as ConsultationRoom); }); }}>
-              <Ionicons name="stop" size={20} color={theme.colors.textSecondary} />
-            </Pressable> : null}
-          </View>
-        </View>
+        <StreamingSttFooter transcript={supplement} phase="idle" reduceMotion={reduceMotion}
+          voiceStatus={editingTranscript || supplement || error || speech.error ? undefined : speech.activeMessageId ? "speaking" : room.state === "running" ? "responding" : undefined}
+          statusText={speech.error || undefined} onRequestEdit={() => { speech.stop(); setEditingTranscript(true); }}
+          onChangeText={setSupplement} onFocus={() => { speech.stop(); setEditingTranscript(true); }} onBlur={() => setEditingTranscript(false)}
+          onSubmit={submit} submitDisabled={!connected || busy} onCancelSpeaking={speech.stop}
+          stopLabel="相談を停止" onStop={room.run || room.state === "running" ? () => {
+            speech.stop(); void act(async () => { applyRoom(await send("stop", { roomId: room.id }) as ConsultationRoom); });
+          } : undefined} />
       </View> : null}
     </KeyboardAvoidingView>
-    <ComposerFullscreenEditor visible={fullscreen && mode === "room"} inputRef={fullscreenInputRef}
-      value={supplement} history={(room?.messages || []).filter((message) => message.source === "user").map((message) => message.text).reverse()}
-      onChangeText={setSupplement} onSubmit={submit} onClose={() => setFullscreen(false)}
-      submitKeyEvents={Platform.OS === "macos" ? MACOS_CHAT_SUBMIT_KEY_EVENTS : undefined} onFocus={() => {}} onBlur={() => {}} />
     <UserInputModal request={userInput.request} onDecide={userInput.decide} />
     <VoiceResetConfirmationModal request={resetRequest} />
   </SafeAreaView>;
