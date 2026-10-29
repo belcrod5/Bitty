@@ -33,7 +33,7 @@ text出所と本人保存roleは別であり、既存user／assistant pair・学
 ## 4. roomの正本と一手番
 
 room JSONへ参加順・共有発言seq/source・本文version・本人別cursor・pass版・現run・次手番・世代・手番上限・deadline・テンプレート・revisionを保存する。loadでも有限上限・seq・run等の基本不変条件を検査してfail-closedにする。
-紹介はcontroller側の本人ID別metadataとして別に永続化し、room／runへ名簿snapshotを作る。本人registry・systemInstructionにfieldを足さない。
+公開紹介は既存本人registryのpublicIntroductionを正本とし、個人設定から編集する。controller別の紹介writerは撤去した。各準備時に最新名簿を読み、room／runのsnapshotを作る。生成は既存analyzeLearningのtool-free ephemeral実行を共用し、末尾12メッセージ・採用学習10件のみを文字数で区切って渡す。下書きは自動保存せず、全文メモリを参照しない。
 
 1. 短いroom排他でrun ID、入力上限／version、本文・追加指示snapshotを保存する。
 2. 本人サービスの該当scopeをopenする。open後・実送信直前にも世代／停止／上限を再検査し、送信確定意図を保存する。
@@ -47,16 +47,17 @@ stop、resume、resetの非同期待ち後は世代を再検査する。閉じ�
 
 ## 5. 停止・上限とUI
 
-同じ本文versionの全員passで休止し、発言・user補足・設定更新でpassをresetする。休止確定時にも未配達user seqを調べる。
-既定9・最大30手番、初回開始から15分を次の相談手番の起動条件とする。本人の内部preflight／topic／summary／learningの条件は変えず、公開手番数を総モデル呼出しやtokenのhard capとは扱わない。
+同じ本文versionの全員passで休止し、発言・user補足・参加更新でpassをresetする。休止確定時にも未配達user seqを調べる。
+空room作成ではmessages=[]／deadline=nullのまま本人を起動しない。最初および以後の真正user送信ごとに手番0／15分を設定する。同じmessageIdの再送、参加者発言、加入、設定変更はresetしない。run.inputUserSeqが最新user seqより前なら、後着完了を新budgetへ加算しない。上限を下げて過去消費数を下回っても保存・再読込できる。本人の内部preflight／topic／summary／learningの条件は変えず、公開手番数を総モデル呼出しやtokenのhard capとは扱わない。
 停止時の遅延出力は公開しないが、本人側の既存保存・実作業を巻き戻したことにはならない。
 
-[独立画面](../expo/src/features/app/screens/VoiceConsultationScreen.tsx)はボードmic隣から開く。初回の複数本人選択・議題、話者表示、補足、停止、設定編集を持ち、進行中runは固定して編集を次runへ適用する。画面を閉じても停止しない。
+[独立画面](../expo/src/features/app/screens/VoiceConsultationScreen.tsx)はボードmic隣から開く。初回は本人画像のアイコンgridで2〜8人を選び空roomを作る。通常画面と共用のVoiceConversationMessagesとStreamingSttFooter manual入力で最初の発言・補足を送る。話者表示、停止、設定編集を持ち、進行中runは固定して編集を次runへ適用する。画面を閉じても停止しない。
 [server接続](../private_runner/src/server-runtime.mjs)は既存global request bridgeへ本人の承認・質問を取り次ぐ。UIで勝手にyesを代行しない。相談completionは通常履歴／未読／pushへ混ぜず、共有task変更はowner単位で通常表示も更新する。
 相談画面は音声surfaceを持たず、端末マイク停止／音声移動用app-control originは無い。通常voiceもoriginが無ければ同じ利用不可となる契約で、本人tool全般のdisableではない。
 
 ## 6. 未実装・未検証
 
-自然文招待の意図抽出・特定提案への現在ユーザー承認の結合は未実装で、追加AI方式の回答待ちである。途中追加UI／public add route／未使用の参加制御を代用品として残していない。本人専用toolや返信全体JSONへも戻していない。
+招待は相談側conversationTools（定義・version・callback）を既存item/tool/callへ注入する。共通contextは定義のnamespace／toolからdispatchし、本人固有の招待判断を実装しない。dynamicToolsはthread/start時に登録し、旧scope親のnativeConversationToolsVersion不一致は既存親切替へ通す。通常起動やpreflightの判断は変えず、preflight中はtoolを実行しない。
+モデルには通常文で先にユーザー確認し、返答を読んでからconsultation.inviteを使うよう頼む。controllerはcurrent run／generation、登録済みID、最大8人、重複を検査し、予定加入を現runへ永続化する。正常終了結果と同時に末尾追加／参加通知を保存し、停止・失敗では公開加入しない。新しい分類LLM・承認state machine・招待UI・返信JSONは追加しない。意味上の同意判定は本人モデルへ委ね、実native検証は残る。
 実native／実機の実行、実本人の知識に基づく判断・承認解釈・学習採用、WS切断後の質問再表示の完全保証は未検証。既存bridgeの元の期限・対象画面の表示条件がある。
 [境界probe](ORCHESTRATOR-COLLABORATION-BOUNDARY-PROBE.md)は当時の検証記録として残し、一時stringpatch testは[製品の回帰試験](../private_runner/tests/orchestrator-consultation-boundaries.test.mjs)へ置き換えた。

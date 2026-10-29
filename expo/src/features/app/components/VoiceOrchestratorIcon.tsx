@@ -3,7 +3,7 @@ import { Image, Text, View } from "react-native";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 
 export type VoiceOrchestrator = { id: string; name: string; icon: string; unreadCount?: number; learningUnreadCount?: number;
-  ttsProvider?: string; voiceId?: string };
+  ttsProvider?: string; voiceId?: string; publicIntroduction?: string };
 
 export function VoiceOrchestratorIcon({ orchestrator, size = 40, active = false }: {
   orchestrator: VoiceOrchestrator; size?: number; active?: boolean;

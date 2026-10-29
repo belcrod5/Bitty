@@ -31,6 +31,9 @@ function usageLabel(usage: StreamingSttUsage | null) {
 
 export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   transcript: string;
+  manual?: boolean;
+  submitDisabled?: boolean;
+  stopAvailable?: boolean;
   phase: StreamingSttPhase;
   onStop: () => void;
   voiceStatus?: "responding" | "speaking";
@@ -51,7 +54,7 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   onDiscardCorrection?: () => void;
   onChangeCorrectionText?: (text: string) => void;
   trailingAccessory?: ReactNode;
-}>(function StreamingSttFooter({ transcript, phase, onStop, voiceStatus, reduceMotion, voiceContextStats, statusText,
+}>(function StreamingSttFooter({ transcript, manual = false, submitDisabled = false, stopAvailable = false, phase, onStop, voiceStatus, reduceMotion, voiceContextStats, statusText,
   onChangeText, onFocus, onBlur, onSubmit, onCancelSpeaking, historyExpanded, onHistoryToggle,
   leadingAccessory, trailingAccessory, correctionPreview, onSendCorrection, onEditCorrection, onDiscardCorrection,
   onChangeCorrectionText }, ref) {
@@ -177,7 +180,7 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   }, []);
 
   const submit = (text: string) => {
-    if (!onSubmit || submittingRef.current) return;
+    if (!onSubmit || submitDisabled || submittingRef.current) return;
     if (text !== latestTranscriptRef.current) {
       latestTranscriptRef.current = text;
       onChangeText?.(text);
@@ -346,7 +349,7 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
               ) : null}
             </View>
           ) : null}
-          {onChangeText && !voiceStatus ? (
+          {onChangeText && (manual || !voiceStatus) ? (
             <TextInput
               ref={inputRef}
               testID="streaming-stt-transcript"
@@ -366,7 +369,7 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
               placeholder={statusText || (phase === "idle" ? "メッセージを入力" : phase === "finalizing" ? "文字起こしを確定中…"
                 : phase === "correcting" ? "文字起こしを補正中…" : phase === "preview" ? "補正結果を確認中…" : "音声を聞いています…")}
               placeholderTextColor="#8e9bad"
-              accessibilityLabel="文字起こしを編集"
+              accessibilityLabel={manual ? "メッセージを入力" : "文字起こしを編集"}
               {...historyAccessibility}
               style={{ color: "#f4f7ff", fontSize: 16, lineHeight: 22, minHeight: 22, maxHeight: 66, padding: 0 }}
             />
@@ -389,17 +392,23 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
             <Text style={{ color: "#ff9a9a", fontSize: 11, marginTop: 2 }}>{statusText}</Text>
           ) : null}
         </View>
-        <TouchableOpacity
+        {manual ? <TouchableOpacity testID="streaming-stt-send" accessibilityRole="button" accessibilityLabel="送信"
+          disabled={submitDisabled || !transcript.trim()} onPress={() => submit(latestTranscriptRef.current)}
+          style={{ width: 42, height: 42, borderRadius: 12, alignItems: "center", justifyContent: "center",
+            backgroundColor: "#35465c", opacity: submitDisabled || !transcript.trim() ? 0.4 : 1 }}>
+          <Ionicons name="send" size={18} color="#ffffff" />
+        </TouchableOpacity> : null}
+        {!manual || voiceStatus === "responding" || stopAvailable ? <TouchableOpacity
           testID="streaming-stt-stop"
           accessibilityRole="button"
-          accessibilityLabel="録音を停止"
+          accessibilityLabel={manual ? "停止" : "録音を停止"}
           hitSlop={8}
           disabled={phase === "finalizing"}
           onPress={onStop}
           style={{ width: 42, height: 42, borderRadius: 12, alignItems: "center", justifyContent: "center", backgroundColor: "#35465c", opacity: phase === "finalizing" ? 0.5 : 1 }}
         >
           <Ionicons name="stop" size={18} color="#ffffff" />
-        </TouchableOpacity>
+        </TouchableOpacity> : null}
       </View>
       {leadingAccessory ? (
         <View testID="streaming-stt-leading-accessory"

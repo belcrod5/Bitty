@@ -1215,6 +1215,7 @@ export function createVoiceContextService({ rootDir, createClient: clientFactory
     }
     const next = { ...active, nativeThreadId: candidate.threadId,
       nativeCalendarReadEnabled: candidate.calendarReadEnabled === true,
+      ...(candidate.conversationToolsVersion ? { nativeConversationToolsVersion: candidate.conversationToolsVersion } : {}),
       ...(candidate.learningSnapshot ? { learningSnapshot: { contextRevision: candidate.learningSnapshot.contextRevision,
         selectedDigest: candidate.learningSnapshot.selectedDigest, items: candidate.learningSnapshot.items.map(({ id, version }) => ({ id, version })) }, nativeLearningEnabled: true } : {}),
       ...(taskChecklistPath ? { checklistReadPending: true, nativeAgentsEnabled: true,
@@ -1302,7 +1303,7 @@ export function createVoiceContextService({ rootDir, createClient: clientFactory
     forceNewThread = false, onDispatchIntent, onTurnIdentified, onNewParent, onStarted, onNativeRoot,
     onApproval, onUserInput, onCalendarToolCall, onText, readOnlyPreflight = false, checklistTurn,
     resumeThreadId = "", previousTurnId: previousTurnOverride = "",
-    onTextError, onContextUsage, signal, appControlInstruction = "", onLearningUsage, outputSchema, onLearningTool, onSkillReadCompleted, learningSelection }) {
+    onTextError, onContextUsage, signal, appControlInstruction = "", onLearningUsage, outputSchema, onLearningTool, onSkillReadCompleted, learningSelection, conversationTools }) {
     if (signal?.aborted) throw invalid("turn_interrupted", "Voice turn was cancelled");
     const model = requestedModel || settings().model;
     const effort = requestedEffort || settings().effort;
@@ -1426,6 +1427,7 @@ export function createVoiceContextService({ rootDir, createClient: clientFactory
           ...(managedSessions ? voiceSubagentTools : []),
           ...(onCalendarToolCall ? CALENDAR_READ_TOOLS : []),
           ...(learningContext ? LEARNING_TOOLS : []),
+          ...(conversationTools?.definitions || []),
         ] } : {}),
         config: { ...(onApproval
           ? { ...(readOnlyPreflight ? summaryConfig : {}), agents: { enabled: true },
@@ -1713,6 +1715,17 @@ export function createVoiceContextService({ rootDir, createClient: clientFactory
           toolSeen = true;
           interruptForTool();
           return { decision: "decline" };
+        }
+        if (method === "item/tool/call" && conversationTools?.definitions.some((definition) => definition.name === request.params?.namespace
+          && definition.tools.some((tool) => tool.name === request.params?.tool)) && !readOnlyPreflight) {
+          await identityReady;
+          const params = request.params;
+          if (!identity || !codexTurnEventMatches(params, identity) || signal?.aborted || terminal
+            || !conversationTools || typeof params.callId !== "string" || !isRecord(params.arguments)) return undefined;
+          try {
+            const result = await conversationTools.call({ namespace: params.namespace, tool: params.tool, arguments: params.arguments });
+            return { success: true, contentItems: [{ type: "inputText", text: JSON.stringify(result) }] };
+          } catch (error) { return { success: false, contentItems: [{ type: "inputText", text: String(error.message) }] }; }
         }
         if (method === "item/tool/call" && request.params?.namespace === "orchestrator_learning" && !readOnlyPreflight) {
           await identityReady;
@@ -2246,7 +2259,9 @@ export function createVoiceContextService({ rootDir, createClient: clientFactory
         // Dynamic tools are fixed at thread/start; thread/resume cannot add them.
         const legacyCalendarParent = Boolean(hooks.onCalendarToolCall && active.nativeThreadId
           && active.nativeCalendarReadEnabled !== true);
-        if ((legacyChecklistParent || legacyCalendarParent) && !active.pendingSwitch) {
+        const changedConversationTools = Boolean(hooks.conversationTools && active.nativeThreadId
+          && active.nativeConversationToolsVersion !== hooks.conversationTools.version);
+        if ((legacyChecklistParent || legacyCalendarParent || changedConversationTools) && !active.pendingSwitch) {
           await saveActive({ ...active, pendingSwitch: { parentGeneration: active.parentGeneration,
             turnSeq: Math.max(1, active.turnSeq || 0), reason: legacyChecklistParent ? "checklist" : "calendar" } },
           "Voice tools parent switch could not be synced");
@@ -2254,7 +2269,7 @@ export function createVoiceContextService({ rootDir, createClient: clientFactory
         const pending = active.pendingSwitch?.parentGeneration === active.parentGeneration
           ? active.pendingSwitch : null;
         const switching = Boolean(pending && await canSwitchParent(clientOperationId));
-        if ((legacyChecklistParent || legacyCalendarParent || learningReset) && !switching) {
+        if ((legacyChecklistParent || legacyCalendarParent || changedConversationTools || learningReset) && !switching) {
           throw invalid("session_busy", "Voice tools parent cannot switch yet");
         }
         if (active.contextLimitReached && !switching) {
@@ -2318,6 +2333,7 @@ export function createVoiceContextService({ rootDir, createClient: clientFactory
             preflight = await modelTurn({ input: CHECKLIST_PREFLIGHT_INPUT,
               instructions: prepared.preflightInstructions, onApproval, signal,
               onCalendarToolCall: hooks.onCalendarToolCall,
+              conversationTools: hooks.conversationTools,
               forceNewThread: prepared.switching, readOnlyPreflight: true });
             break;
           } catch (error) {
@@ -2349,6 +2365,7 @@ export function createVoiceContextService({ rootDir, createClient: clientFactory
         } : undefined,
         onSkillReadCompleted: learningContext ? (proof) => learningContext.recordRead({ operationId: clientOperationId, ...proof }) : undefined,
         onCalendarToolCall: hooks.onCalendarToolCall,
+        conversationTools: hooks.conversationTools,
         onNativeRoot: hooks.onNativeRoot,
         signal,
         onDispatchIntent: async ({ threadId, previousTurnId }) => exclusive(async () => {
@@ -2356,6 +2373,7 @@ export function createVoiceContextService({ rootDir, createClient: clientFactory
           const candidate = { clientOperationId, threadId, parentGeneration: prepared.generation,
             turnSeq, newParent: prepared.newParent,
             calendarReadEnabled: Boolean(hooks.onCalendarToolCall),
+            ...(hooks.conversationTools ? { conversationToolsVersion: hooks.conversationTools.version } : {}),
             ...(prepared.learning ? { learningSnapshot: { contextRevision: prepared.learning.contextRevision, selectedDigest: prepared.learning.selectedDigest,
               items: prepared.learning.items.map(({ id, version }) => ({ id, version })) } } : {}),
             ...(!prepared.newParent && previousTurnId ? { previousTurnId } : {}),

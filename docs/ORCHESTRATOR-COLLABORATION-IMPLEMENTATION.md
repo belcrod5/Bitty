@@ -1,21 +1,23 @@
 # 独立テキスト相談の実装と検証
 
-2026-10-29。実装済み範囲はレビュー承認済み。自然文招待の方式は回答待ちで未実装のため、全機能完成／実機確認済みとは扱わない。
+2026-10-29。独立テキスト相談を実装し、同日改訂で通常チャット表示・入力の共用、空room作成、個人設定の公開紹介、scope限定native招待を追加した。実native／実機確認済みとは扱わない。
 
 ## 実装したこと
 
-ボードのmic隣に「相談」を追加した。独立した一覧・作成画面で本人を複数選び、議題を入力する。本人は選択順で一人ずつ考え、他者の発言を受けて話す。話者付き吹き出し、補足・訂正、停止、上限、紹介・相談の進め方の編集を持つ。通常の本人選択は変更しない。
+ボードのmic隣に「相談」を追加した。本人画像のアイコンgridで2〜8人を選んで空roomを作り、その後チャットで通常の最初のメッセージを送る。長押しで紹介を確認できる。本人は選択順で一人ずつ考え、他者の発言を受けて話す。吹き出しはVoiceConversationMessages、入力はStreamingSttFooter manual表示を通常画面と共用する。補足・訂正、停止、上限・相談の進め方の編集を持つ。通常の本人選択は変更しない。
 
 [本人サービス](../private_runner/src/voice-orchestrator-service.mjs)へ任意conversationKey、[既存context](../private_runner/src/voice-context-service.mjs)へrun単位additionalInstructionsを接続した。未指定の通常defaultは既存処理を使う。相談も同じfactory／runTurn／本人runtimeを通り、将来の本人修正が同じ処理へ反映される。
 scopeは別active・events・native threadを持ち、本人workspace・設定・memory store instance・learning・task本体を共用する。通常contextがmemory／summaryと共有task overviewのcache／進行taskを一組だけ所有する。既存のメモリ保存・学習採用・承認・忘却・タスク判断は変更していない。
 
 [controller](../private_runner/src/voice-consultation-service.mjs)はroom共有ログ・参加順・差分cursor・本文version・pass・有限上限・run snapshotだけを管理する。モデル応答は通常文、全体が [[PASS]] の場合だけ見送り。返信JSON指定・字数制限は設けていない。
-既定9・最大30手番、初回開始から15分を次の手番の起動上限にする。内部preflight／summary／learning等の回数やtokenのhard capではない。
+既定9・最大30手番と15分を、真正userの新しいメッセージごとに数え直す。同ID再送・参加者発言ではresetせず、生成中補足を受ける前の旧run完了も新budgetへ加算しない。内部preflight／summary／learning等の回数やtokenのhard capではない。
 
 本人単位busy、全scope証拠からのmemory／learning回復、設定・clearの永続世代によるscope親失効の補完、安定workspace IDによるtask archive共有を追加した。通常completion／履歴／未読／pushへscope発言を混ぜず、共有task変更だけは同じownerの通常表示にも通知する。
 controllerは送信前後の停止競合、既知未受理の同run再開、unknownの照合、reset確認時の入力snapshot、close後の後着出力を扱う。永続保存障害は自動再試行せず休止し、正本を再起動回復するまでそのroomのresumeを拒否する。
 
 大きなowner基盤、本人実装のコピー、派生クラス、Redis／汎用workflowは作っていない。既存の大きいcontext内へは同じ実行・承認・復旧を使うための資源参照と追加指示の境界だけを置き、room進行は別ファイルへ分けた。
+
+公開紹介は既存の個人設定へ移し、本人registryを一つの正本にした。model／effortを選んで、直近12msg（各1500字）と採用学習10件（内容600・条件300字）から編集可能な下書きを生成する。全文memoryは走査せず、通常の保存を押すまで採用しない。生成には既存tool-free ephemeral実行を共用し、本人の通常モデル・systemInstruction・会話履歴を更新しない。
 
 ## 検証したこと
 
@@ -23,12 +25,10 @@ controllerは送信前後の停止競合、既知未受理の同run再開、unkn
 
 | 確認 | 結果 |
 | --- | --- |
-| 既存context・memory・learningの3 suites | 親の最終実行318/318 pass |
-| 既存orchestrator suite | 修正後42/42 pass |
-| 既存request bridge suite | 18/18 pass |
-| [製品scope／controller統合試験](../private_runner/tests/orchestrator-consultation-boundaries.test.mjs) | 親の最新21/21 pass。overview共用追加試験は独立レビュー側1/1、既存overview回帰は編集担当10/10 pass。別のstatus gate→stop再現も停止維持 |
-| 新相談画面・通常voice hook・ボード・承認・質問・calendarの6 UI suites | 親の独立実行176/176 pass |
-| 新相談画面・通常voice hook・通常voice画面の3 UI suites | 編集担当実行140/140 pass（一部は上の6 suitesと重複） |
+| 既存context・orchestrator・memory・learning・request bridgeの5 suites | 親の改訂版実行361/361 pass、173.032秒 |
+| [製品scope／controller統合試験](../private_runner/tests/orchestrator-consultation-boundaries.test.mjs) | 改訂版26/26 pass。空room再読込、user単位予算reset、旧native親の招待tool登録、重複加入、紹介生成のbounded入力・通常非汚染、上限引下げ再読込、stop後unknownの新入力も検証。採用済み／未採用学習の実state入力選別assert強化後、該当1件も1/1 pass |
+| 通常voice画面・通常voice hook・ボード・承認・質問・calendarの6 UI suites | 親の改訂版実行236/236 pass |
+| 改訂した相談画面・個人設定・共通入力の3 UI suites | 編集担当45/45 pass。通常voice画面・入力の既存試験も親84/84 pass（一部重複） |
 | 通常／macOS TypeScript | 両方pass |
 | 変更JavaScriptの構文・diff空白・文書リンク | pass |
 
@@ -47,7 +47,7 @@ controllerは送信前後の停止競合、既知未受理の同run再開、unkn
 
 ## 残る制限
 
-自然文の招待提案・「いいよ」の意味判定と加入確定は未実装で、追加AI方式のユーザー回答待ちである。部分一致で代用せず、途中追加UIや未使用の追加routeも入れていない。
+招待の同意意味は通常文の確認と本人モデルの判断へ委ね、追加分類LLMや承認state machineを使わない。scope限定native toolが登録済みID・run・世代・重複・人数を検査し、正常終了後に追加する。promptの確認が確実に守られることは実モデル未検証である。
 
 相談UIは独立したテキスト画面であり、音声surfaceがない。端末マイク停止／音声会話の移動に使うapp-control originは持たず、通常voiceでもoriginが無い場合と同じ利用不可の挙動になる。本人tool全般をdisableした変更ではなく、音声／STT追加は今回行っていない。
 

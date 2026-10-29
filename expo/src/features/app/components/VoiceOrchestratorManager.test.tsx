@@ -28,6 +28,9 @@ const mockRequest = jest.fn(async (message: { op: string; payload?: Record<strin
       { modelId: "another-model", label: "Another", effortOptions: ["medium", "high"] },
     ], storedMessageCount: 2, memoryCharacterCount: 12,
   } };
+  if (op === "voice.orchestrators.introduction.draft") return { op: `${op}.result`, payload: {
+    orchestratorId: payload?.orchestratorId, introduction: "調査と実装の相談を担当します。",
+  } };
   if (op === "voice.orchestrators.create") return { op: `${op}.result`, payload: {
     orchestrators: [...list.orchestrators, { id: "new-id", name: payload?.name, icon: payload?.icon }],
     selectedId: "main",
@@ -148,7 +151,7 @@ test("list opens detail; name, uploaded icon, model, effort, and instructions sa
   await fireEvent.changeText(screen.getByTestId("orchestrator-system-instruction"), "Research carefully.");
   await fireEvent.press(screen.getByTestId("orchestrator-save"));
   await waitFor(() => expect(mockRequest).toHaveBeenCalledWith({ channel: "agent", op: "voice.orchestrators.update",
-    payload: { orchestratorId: "other", name: "新しい名前", icon, model: "another-model",
+    payload: { orchestratorId: "other", name: "新しい名前", icon, publicIntroduction: "", model: "another-model",
       ttsProvider: "aivisspeech", voiceId: "",
       effort: "high", systemInstruction: "Research carefully.",
       topicModel: "another-model", topicEffort: "high", overviewModel: "gpt-6-luna", overviewEffort: "low" } }));
@@ -203,7 +206,7 @@ test("new detail creates with full settings and main has no delete control", asy
   await fireEvent.changeText(screen.getByTestId("orchestrator-name"), "新規");
   await fireEvent.press(screen.getByTestId("orchestrator-save"));
   await waitFor(() => expect(mockRequest).toHaveBeenCalledWith({ channel: "agent", op: "voice.orchestrators.create",
-    payload: { name: "新規", icon: "", model: "gpt-6-luna", effort: "low",
+    payload: { name: "新規", icon: "", publicIntroduction: "", model: "gpt-6-luna", effort: "low",
       ttsProvider: "aivisspeech", voiceId: "",
       systemInstruction: "Be helpful.", topicModel: "gpt-6-luna", topicEffort: "low",
       overviewModel: "gpt-6-luna", overviewEffort: "low" } }));
@@ -328,4 +331,35 @@ test("a specialist detail opens only its own learning and returns to its detail"
   await act(async () => { jest.mocked(AppModal).mock.lastCall?.[0].onRequestClose?.(); });
   expect(screen.getByTestId("orchestrator-name")).toHaveProp("value", "調査");
   await screen.unmount();
+});
+
+
+test("public introduction generation chooses a model and effort, leaves an editable draft, and only saves explicitly", async () => {
+  const screen = await render(<VoiceOrchestratorManager {...props} />);
+  await fireEvent.press(screen.getByTestId("orchestrator-row-other"));
+  await screen.findByLabelText("得意分野・担当");
+  await fireEvent.press(screen.getByLabelText("紹介を自動生成"));
+  await fireEvent.press(screen.getByTestId("select-紹介のモデル"));
+  await fireEvent.press(screen.getByTestId("select-紹介のエフォート"));
+  await fireEvent.press(screen.getByLabelText("選んだモデルで紹介を生成"));
+  await waitFor(() => expect(screen.getByLabelText("得意分野・担当").props.value).toBe("調査と実装の相談を担当します。"));
+  expect(mockRequest).toHaveBeenCalledWith({ channel: "agent", op: "voice.orchestrators.introduction.draft",
+    payload: { orchestratorId: "other", model: "another-model", effort: "high" } }, { timeoutMs: 75_000 });
+  expect(mockRequest.mock.calls.some(([message]) => message.op === "voice.orchestrators.update")).toBe(false);
+  await fireEvent.changeText(screen.getByLabelText("得意分野・担当"), "編集した紹介");
+  await fireEvent.press(screen.getByTestId("orchestrator-save"));
+  await waitFor(() => expect(mockRequest).toHaveBeenCalledWith(expect.objectContaining({ op: "voice.orchestrators.update",
+    payload: expect.objectContaining({ publicIntroduction: "編集した紹介", model: "gpt-6-luna", effort: "low", systemInstruction: "Be helpful." }) })));
+});
+
+
+test("closing settings dismisses the introduction picker before reopening", async () => {
+  const screen = await render(<VoiceOrchestratorManager {...props} />);
+  await fireEvent.press(screen.getByTestId("orchestrator-row-other"));
+  await screen.findByLabelText("紹介を自動生成");
+  await fireEvent.press(screen.getByLabelText("紹介を自動生成"));
+  expect(screen.getByText("紹介の下書き")).toBeTruthy();
+  await screen.rerender(<VoiceOrchestratorManager {...props} visible={false} />);
+  await screen.rerender(<VoiceOrchestratorManager {...props} visible />);
+  expect(screen.queryByText("紹介の下書き")).toBeNull();
 });

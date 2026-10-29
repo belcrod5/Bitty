@@ -7244,7 +7244,7 @@ runnerWsServer.on("connection", (ws, req) => {
     }
     const orchestratorId = message.payload?.orchestratorId || "main";
     if (["voice.orchestrators.list", "voice.orchestrators.select", "voice.orchestrators.create",
-      "voice.orchestrators.update", "voice.orchestrators.delete"].includes(message.op)) {
+      "voice.orchestrators.update", "voice.orchestrators.delete", "voice.orchestrators.introduction.draft"].includes(message.op)) {
       const operation = message.op === "voice.orchestrators.list" ? voiceContextService.list()
         : message.op === "voice.orchestrators.select" ? voiceContextService.select(orchestratorId)
           : message.op === "voice.orchestrators.create"
@@ -7252,10 +7252,12 @@ runnerWsServer.on("connection", (ws, req) => {
               message.payload?.model, message.payload?.effort, message.payload?.systemInstruction,
               message.payload?.topicModel, message.payload?.topicEffort,
               message.payload?.ttsProvider, message.payload?.voiceId,
-              message.payload?.overviewModel, message.payload?.overviewEffort)
+              message.payload?.overviewModel, message.payload?.overviewEffort, message.payload?.publicIntroduction)
             : message.op === "voice.orchestrators.update"
               ? voiceContextService.update(orchestratorId, message.payload)
-              : voiceContextService.remove(orchestratorId);
+              : message.op === "voice.orchestrators.introduction.draft"
+                ? voiceContextService.draftIntroduction(orchestratorId, message.payload)
+                : voiceContextService.remove(orchestratorId);
       void operation.then((payload) => {
         sendRunnerWsEnvelope(ws, { channel: "agent", op: `${message.op}.result`,
           requestId: message.requestId || "", payload });

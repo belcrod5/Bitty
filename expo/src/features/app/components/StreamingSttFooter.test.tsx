@@ -521,3 +521,20 @@ describe("StreamingSttFooter", () => {
     await cyberpunk.unmount();
   });
 });
+
+
+test("manual chat keeps the same composer available during a response, submits on acceptance and provides stop", async () => {
+  const onChangeText = jest.fn(), onStop = jest.fn();
+  let accept: (() => boolean) | undefined;
+  const onSubmit = jest.fn(async (_text, accepted) => { accept = accepted; });
+  const screen = await render(<StreamingSttFooter manual transcript="追加の条件" phase="idle" voiceStatus="responding"
+    reduceMotion onChangeText={onChangeText} onStop={onStop} onSubmit={onSubmit} />);
+  expect(screen.getByLabelText("メッセージを入力").props.value).toBe("追加の条件");
+  await fireEvent.press(screen.getByLabelText("送信"));
+  expect(onSubmit).toHaveBeenCalledWith("追加の条件", expect.any(Function));
+  expect(onChangeText).not.toHaveBeenCalledWith("");
+  await act(async () => { accept?.(); });
+  expect(onChangeText).toHaveBeenCalledWith("");
+  await fireEvent.press(screen.getByLabelText("停止"));
+  expect(onStop).toHaveBeenCalledTimes(1);
+});

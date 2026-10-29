@@ -11,7 +11,7 @@ import { openVoiceMemoryStore } from "../src/voice-memory-store.mjs";
 
 // No real App Server/client is imported. Only RPC responses and native events are
 // simulated; context lifecycle, filesystem, memory and learning observation are real.
-function fakeAppServer({ holdResponses = false, holdSummaries = false, holdOverviews = false, loseResponse = false, replyFor, taskCalls = [] } = {}) {
+function fakeAppServer({ holdResponses = false, holdSummaries = false, holdOverviews = false, loseResponse = false, replyFor, ephemeralReply, taskCalls = [] } = {}) {
   const calls = [], clientOptions = [], releases = [], summaryReleases = [], overviewReleases = [], threads = new Map();
   const createClient = (options) => {
     clientOptions.push(options);
@@ -90,7 +90,7 @@ function fakeAppServer({ holdResponses = false, holdSummaries = false, holdOverv
             }
             if (!thread.ephemeral && !thread.readOnly && taskCalls.length) for (const action of taskCalls.shift()) {
               const value = await handler({ method: "item/tool/call", params: {
-                threadId: thread.id, turnId: turn.id, callId: randomUUID(), namespace: "task_checklist",
+                threadId: thread.id, turnId: turn.id, callId: randomUUID(), namespace: action.namespace || "task_checklist",
                 tool: action.tool, arguments: action.arguments || {},
               } });
               calls.push({ method: "fake/taskResult", tool: action.tool, value });
@@ -99,7 +99,7 @@ function fakeAppServer({ holdResponses = false, holdSummaries = false, holdOverv
             try { const input = JSON.parse(params.input[0].text); recent = input.recent; summary = input.pairs && input.existingMemory; } catch {}
             const text = thread.ephemeral
               ? thread.overview ? "- [ ] Owner shared overview" : recent ? JSON.stringify({ decision: "continue", reason: "fake same topic" })
-                : summary ? JSON.stringify({ index: "# Topics\n", topics: [] }) : "{}"
+                : summary ? JSON.stringify({ index: "# Topics\n", topics: [] }) : ephemeralReply || "{}"
               : thread.readOnly ? "checklist read" : replyFor ? replyFor({ params, ownerId: options?.orchestratorId }) : `fake reply:${params.input[0].text}`;
             turn.items.push({ type: "agentMessage", text });
             turn.status = "completed";
@@ -479,21 +479,21 @@ async function consultationFixture(t, options) {
     orchestrators: values.service, requestApproval: () => { throw new Error("No approval requested by fake"); },
     requestUserInput: () => { throw new Error("No question requested by fake"); } });
   values.track(controller);
-  const room = await controller.create({ question: "Synthetic team question", participants: ["main", second.id, third.id] });
+  const room = await controller.create({ participants: ["main", second.id, third.id] });
   return { ...values, controller, room };
 }
 
 test("controller drives the real scopes A-B-C-A, delivers differences, and pauses only after same-version passes", { timeout: 20000 }, async (t) => {
   const replies = ["A opinion", "B adopts A", "C adopts B", "A rethinks B+C", "[[PASS]]", "[[PASS]]", "[[PASS]]"];
   const { controller, room, rpc, service } = await consultationFixture(t, { replyFor: () => replies.shift() || "[[PASS]]" });
-  await controller.resume(room.id);
+  await controller.supplement(room.id, { text: "Synthetic team question", messageId: randomUUID() });
   await waitFor(async () => (await controller.get(room.id)).reason === "all_pass");
   const final = await controller.get(room.id);
   assert.equal(final.turns, 7);
   assert.deepEqual(final.steps.map((step) => step.orchestratorId), [...room.participants, ...room.participants, "main"]);
   const inputs = rpc.calls.filter(({ method, params }) => method === "turn/start" && params.input[0].text.startsWith('{"kind":"consultation"'))
     .map(({ params }) => JSON.parse(params.input[0].text));
-  assert.deepEqual(inputs[1].messages.map((message) => message.text), [room.question, "A opinion"]);
+  assert.deepEqual(inputs[1].messages.map((message) => message.text), ["Synthetic team question", "A opinion"]);
   assert.ok(inputs[2].messages.some((message) => message.text === "B adopts A"));
   assert.deepEqual(inputs[3].messages.map((message) => message.text), ["B adopts A", "C adopts B"]);
   assert.equal((await service.history("main")).messages.length, 0);
@@ -502,7 +502,7 @@ test("controller drives the real scopes A-B-C-A, delivers differences, and pause
 
 test("supplement during a held response is delivered on later turns without losing cursor or premature all-pass", { timeout: 20000 }, async (t) => {
   const { controller, room, rpc } = await consultationFixture(t, { holdResponses: true, replyFor: () => "[[PASS]]" });
-  await controller.resume(room.id);
+  await controller.supplement(room.id, { text: "Synthetic team question", messageId: randomUUID() });
   await waitFor(() => rpc.releases.length === 1);
   const supplement = "Changed condition while A was thinking";
   await controller.supplement(room.id, { text: supplement, messageId: randomUUID() });
@@ -513,7 +513,7 @@ test("supplement during a held response is delivered on later turns without losi
   }
   await waitFor(async () => (await controller.get(room.id)).reason === "all_pass");
   const final = await controller.get(room.id);
-  assert.equal(final.turns, 4);
+  assert.equal(final.turns, 3);
   assert.ok(final.participants.every((id) => final.cursors[id] >= 2));
 });
 
@@ -535,7 +535,7 @@ test("stop during owner open suppresses dispatch, and stop between dispatch inte
     };
     const controller = createVoiceConsultationService({ rootDir: path.join(directory, `stop-${phase}`), orchestrators: service }); track(controller);
     const room = await controller.create({ question: "Stop race", participants: ["main", child.id] });
-    await controller.resume(room.id); await reached;
+    await controller.supplement(room.id, { text: "Stop race", messageId: randomUUID() }); await reached;
     const stopped = await controller.stop(room.id);
     const runId = stopped.run.id;
     release();
@@ -560,7 +560,7 @@ test("known busy retry keeps the exact run and input; a closed controller cannot
   const rootDir = path.join(directory, "retry-room");
   const controller = createVoiceConsultationService({ rootDir, orchestrators: service }); track(controller);
   const room = await controller.create({ question: "Retry known busy", participants: ["main", child.id], maxTurns: 1 });
-  await controller.resume(room.id);
+  await controller.supplement(room.id, { text: "Retry known busy", messageId: randomUUID() });
   await waitFor(async () => (await controller.get(room.id)).reason === "session_busy");
   const pending = (await controller.get(room.id)).run;
   assert.equal(pending.dispatched, false);
@@ -593,7 +593,7 @@ test("a reset-confirmed operation resumes the original durable instruction snaps
   const state = await json(file); state.nextResetPromptAt = 1; await fs.writeFile(file, JSON.stringify(state));
   const restartedOwner = createVoiceOrchestratorService({ rootDir, createClient: rpc.createClient }); track(restartedOwner);
   const controller = createVoiceConsultationService({ rootDir: roomsRoot, orchestrators: restartedOwner }); track(controller);
-  await controller.resume(room.id);
+  await controller.supplement(room.id, { text: "Reset snapshot", messageId: randomUUID() });
   await waitFor(async () => (await controller.get(room.id)).reason === "confirmation_required");
   const pending = (await controller.get(room.id)).run;
   await controller.confirmReset(room.id, "continue");
@@ -604,7 +604,8 @@ test("a reset-confirmed operation resumes the original durable instruction snaps
 
 test("recovery fails closed for a corrupted finite limit and introductions persist outside room snapshots", { timeout: 20000 }, async (t) => {
   const { controller, room, directory, service, track } = await consultationFixture(t);
-  await controller.configure(room.id, { template: "NEW_TEMPLATE", profiles: { main: "Product owner" } });
+  await controller.configure(room.id, { template: "NEW_TEMPLATE" });
+  await service.update("main", { name: "Main", icon: "", publicIntroduction: "Product owner" });
   const other = await controller.create({ question: "Another consultation", participants: room.participants });
   assert.equal(other.profiles.main.introduction, "Product owner");
   await controller.close();
@@ -629,7 +630,7 @@ test("persistent room save failures latch closed instead of spinning or starting
     }
     return open(file, ...args);
   });
-  await controller.resume(room.id);
+  await controller.supplement(room.id, { text: "Disk fault", messageId: randomUUID() });
   await waitFor(async () => (await controller.get(room.id)).reason === "storage_unavailable");
   for (let tick = 0; tick < 5; tick++) await new Promise((resolve) => setImmediate(resolve));
   assert.equal(failures, 1);
@@ -662,7 +663,7 @@ test("normal clear retains its existing confirmation-cancellation behavior, whil
 
 test("stop wins over a resume whose operation-status lookup was already in flight", { timeout: 20000 }, async (t) => {
   const { controller, room, service, rpc } = await consultationFixture(t, { holdResponses: true });
-  await controller.resume(room.id);
+  await controller.supplement(room.id, { text: "Resume race", messageId: randomUUID() });
   await waitFor(() => rpc.releases.length === 1);
   let release, entered;
   const gate = new Promise((resolve) => { release = resolve; });
@@ -712,4 +713,146 @@ test("new scopes reuse the owner's completed and in-flight task overview instead
   await rpc.overviewReleases.shift()();
   await waitFor(async () => (await json(cacheFile)).sourceHash !== oldHash);
   await assert.rejects(fs.stat(path.join(rootDir, "scopes", key, "task-checklist-overview.json")), { code: "ENOENT" });
+});
+
+test("creation is an empty persisted gathering; only a genuine first send starts the existing owners", { timeout: 20000 }, async (t) => {
+  const { controller, room, service, directory, rpc, track } = await consultationFixture(t, { replyFor: () => "[[PASS]]" });
+  assert.equal(room.question, ""); assert.deepEqual(room.messages, []); assert.equal(room.deadlineAt, null);
+  assert.equal(rpc.calls.filter(({ method }) => method === "turn/start").length, 0);
+  await assert.rejects(controller.resume(room.id), /first message/);
+  await controller.close();
+  const restored = createVoiceConsultationService({ rootDir: path.join(directory, "rooms"), orchestrators: service }); track(restored);
+  assert.deepEqual((await restored.get(room.id)).messages, []);
+  await service.update("main", { name: "Main", icon: "", publicIntroduction: "公開の新しい担当" });
+  await restored.supplement(room.id, { text: "普通の最初のメッセージ", messageId: randomUUID() });
+  await waitFor(async () => (await restored.get(room.id)).reason === "all_pass");
+  const first = rpc.calls.find(({ method, params }) => method === "turn/start" && params.input[0].text.startsWith('{"kind":"consultation"'));
+  assert.equal(JSON.parse(first.params.input[0].text).participants[0].introduction, "公開の新しい担当");
+  assert.equal((await restored.get(room.id)).messages[0].text, "普通の最初のメッセージ");
+  assert.equal((await service.history("main")).messages.length, 0);
+});
+
+test("each new user message resets the finite round once; an older in-flight answer cannot consume its new budget", { timeout: 20000 }, async (t) => {
+  const { controller, room, rpc } = await consultationFixture(t, { holdResponses: true, replyFor: () => "意見" });
+  await controller.configure(room.id, { template: room.template, maxTurns: 1 });
+  await controller.supplement(room.id, { text: "初回", messageId: randomUUID() });
+  await waitFor(() => rpc.releases.length === 1);
+  const id = randomUUID();
+  const newRound = await controller.supplement(room.id, { text: "条件を訂正", messageId: id });
+  const replay = await controller.supplement(room.id, { text: "条件を訂正", messageId: id });
+  assert.equal(replay.deadlineAt, newRound.deadlineAt); assert.equal(replay.version, newRound.version);
+  await rpc.releases.shift()();
+  await waitFor(() => rpc.releases.length === 1);
+  const next = await controller.get(room.id);
+  assert.equal(next.turns, 0); assert.equal(next.run.inputUserSeq, 2);
+  assert.equal(next.deadlineAt, newRound.deadlineAt);
+  await rpc.releases.shift()();
+  await waitFor(async () => (await controller.get(room.id)).reason === "limit");
+  assert.equal((await controller.get(room.id)).turns, 1);
+  assert.equal((await controller.get(room.id)).deadlineAt, newRound.deadlineAt, "participant speech never resets the deadline");
+  await controller.configure(room.id, { template: "新しい会話の依頼", maxTurns: 2 });
+  assert.equal((await controller.get(room.id)).turns, 1, "editing settings does not reset the round");
+  await controller.supplement(room.id, { text: "もう一つ相談", messageId: randomUUID() });
+  await waitFor(() => rpc.releases.length === 1);
+  assert.equal((await controller.get(room.id)).turns, 0);
+  await controller.stop(room.id);
+});
+
+test("scope-only native invitation validates registered IDs, deduplicates and joins after the native turn without a classifier", { timeout: 20000 }, async (t) => {
+  const taskCalls = [];
+  const { service, directory, rootDir, rpc, track } = await ownerFixture(t, { taskCalls, replyFor: () => "[[PASS]]" });
+  const second = await service.create("B"), invited = await service.create("C");
+  const controller = createVoiceConsultationService({ rootDir: path.join(directory, "invite"), orchestrators: service }); track(controller);
+  const room = await controller.create({ participants: ["main", second.id] });
+  await ownerTurn(service, "main", "old scoped parent before invite capability", room.id);
+  const oldParent = (await json(path.join(rootDir, "scopes", room.id, "active.json"))).nativeThreadId;
+  taskCalls.push([
+    { namespace: "consultation", tool: "invite", arguments: { orchestratorId: randomUUID() } },
+    { namespace: "consultation", tool: "invite", arguments: { orchestratorId: invited.id } },
+    { namespace: "consultation", tool: "invite", arguments: { orchestratorId: invited.id } },
+  ]);
+  await controller.supplement(room.id, { text: "Cもこの相談内の履歴を共有して呼んでいいよ", messageId: randomUUID() });
+  await waitFor(async () => (await controller.get(room.id)).reason === "all_pass");
+  const final = await controller.get(room.id);
+  assert.deepEqual(final.participants, ["main", second.id, invited.id]);
+  assert.equal(final.messages.filter((message) => message.source === "membership").length, 1);
+  const toolResults = rpc.calls.filter(({ method }) => method === "fake/taskResult").map(({ value }) => value);
+  assert.equal(toolResults[0].success, false);
+  assert.equal(JSON.parse(toolResults[1].contentItems[0].text).status, "joining_after_turn");
+  assert.equal(JSON.parse(toolResults[2].contentItems[0].text).status, "already_joined_or_pending");
+  const scopedParents = regularParents(rpc.calls);
+  assert.ok(scopedParents.some(({ params }) => params.dynamicTools?.some((item) => item.name === "consultation"
+    && item.tools[0].type === "function")), "capability is actually registered when native parent starts, including preflight");
+  assert.ok(scopedParents.every(({ params }) => !params.developerInstructions.includes("proposalId")));
+  const inputs = rpc.calls.filter(({ method, params }) => method === "turn/start" && params.input[0].text.startsWith('{"kind":"consultation"'))
+    .map(({ params }) => JSON.parse(params.input[0].text));
+  assert.equal(inputs[0].inviteCandidates[0].orchestratorId, invited.id);
+  assert.ok(inputs[1].participants.some((item) => item.orchestratorId === invited.id));
+  assert.ok(inputs[2].messages.some((message) => message.source === "membership"));
+  const scopeActive = await json(path.join(rootDir, "scopes", room.id, "active.json"));
+  assert.equal(scopeActive.nativeConversationToolsVersion, "consultation-invite-v1");
+  assert.notEqual(scopeActive.nativeThreadId, oldParent, "an old scoped parent is safely replaced to register the capability");
+  await ownerTurn(service, "main", "ordinary response");
+  const ordinaryParent = regularParents(rpc.calls).at(-1);
+  assert.equal(ordinaryParent.params.dynamicTools?.some((item) => item.name === "consultation") ?? false, false);
+});
+
+test("introduction draft uses only bounded recent history and adopted learning through the existing ephemeral tool-free execution", { timeout: 20000 }, async (t) => {
+  let { service, rpc, rootDir, track } = await ownerFixture(t, { ephemeralReply: "直近の相談に基づく公開紹介です。" });
+  for (let index = 0; index < 8; index++) await ownerTurn(service, "main", `bounded-history-${index}`);
+  const learningFile = path.join(rootDir, "workspace", "orchestrator-learning", "state.json");
+  const savedLearning = await json(learningFile);
+  const activeId = randomUUID(), candidateId = randomUUID();
+  for (const [id, status, content] of [[activeId, "active", "採用済みの得意分野"], [candidateId, "candidate", "未採用の情報"]]) {
+    savedLearning.candidates.push({ id, version: 1, status, kind: "preference", content, conditions: "本人の応答",
+      reason: "Synthetic learning evidence", scope: { orchestratorId: "main" },
+      evidence: [{ ...savedLearning.pending[0], user: undefined, assistant: undefined }], createdAt: new Date().toISOString() });
+  }
+  await service.close();
+  await fs.writeFile(learningFile, JSON.stringify(savedLearning));
+  service = createVoiceOrchestratorService({ rootDir, createClient: rpc.createClient }); track(service);
+  const before = await service.getSettings("main"), history = await service.history("main");
+  await service.update("main", { name: before.name, icon: before.icon, publicIntroduction: "保存済み紹介" });
+  const draft = await service.draftIntroduction("main", { model: "gpt-6-luna", effort: "low" });
+  assert.equal(draft.introduction, "直近の相談に基づく公開紹介です。");
+  assert.equal(draft.historyMessages, 12); assert.equal(draft.memoryIncluded, false); assert.equal(draft.adoptedLearningItems, 1);
+  const parent = rpc.calls.findLast(({ method, params }) => method === "thread/start" && params.ephemeral
+    && params.developerInstructions.includes("公開紹介の下書き"));
+  assert.ok(parent); assert.equal(parent.params.approvalPolicy, "never"); assert.equal(parent.params.dynamicTools, undefined);
+  const turn = rpc.calls.findLast(({ method }) => method === "turn/start");
+  const evidence = JSON.parse(turn.params.input[0].text);
+  assert.equal(evidence.recentConversation.length, 12);
+  assert.deepEqual(evidence.adoptedLearning, [{ content: "採用済みの得意分野", conditions: "本人の応答" }]);
+  assert.ok(evidence.recentConversation.every((item) => !item.text.includes("bounded-history-0")));
+  assert.deepEqual(Object.keys(evidence).sort(), ["adoptedLearning", "name", "recentConversation"]);
+  assert.equal((await service.getSettings("main")).publicIntroduction, "保存済み紹介", "generation never saves the draft");
+  assert.equal((await service.getSettings("main")).systemInstruction, before.systemInstruction);
+  assert.deepEqual((await service.history("main")).messages, history.messages, "draft never becomes a normal chat pair");
+  assert.equal((await json(path.join(rootDir, "orchestrators.json"))).orchestrators[0].publicIntroduction, "保存済み紹介");
+});
+
+
+test("lowering a round maximum persists safely, and a stopped unknown turn stays reconcilable after a new user message", { timeout: 20000 }, async (t) => {
+  const { controller, room, service, directory, track } = await consultationFixture(t, { replyFor: () => "[[PASS]]" });
+  await controller.supplement(room.id, { text: "First round", messageId: randomUUID() });
+  await waitFor(async () => (await controller.get(room.id)).reason === "all_pass");
+  await controller.configure(room.id, { template: room.template, maxTurns: 1 });
+  await controller.close();
+  const restored = createVoiceConsultationService({ rootDir: path.join(directory, "rooms"), orchestrators: service }); track(restored);
+  assert.equal((await restored.get(room.id)).turns, 3);
+  assert.equal((await restored.get(room.id)).maxTurns, 1);
+  await restored.close();
+  // A previously dispatched unknown operation survived stop. New text must not
+  // make the UI permanently running while the driver cannot redispatch it.
+  const file = path.join(directory, "rooms", `${room.id}.json`), saved = await json(file);
+  saved.state = "stopped"; saved.generation += 1;
+  saved.run = { id: randomUUID(), orchestratorId: "main", generation: saved.generation - 1,
+    inputVersion: saved.version, inputThroughSeq: 1, inputUserSeq: 1, inputText: "snapshot",
+    additionalInstructions: saved.template, dispatched: true, logicalConversationId: randomUUID() };
+  await fs.writeFile(file, JSON.stringify(saved));
+  const unknown = createVoiceConsultationService({ rootDir: path.join(directory, "rooms"), orchestrators: service }); track(unknown);
+  const updated = await unknown.supplement(room.id, { text: "New condition", messageId: randomUUID() });
+  assert.equal(updated.state, "paused"); assert.equal(updated.reason, "unknown");
+  assert.equal(updated.turns, 0); assert.equal(updated.run.id, saved.run.id);
+  assert.equal(updated.messages.at(-1).text, "New condition");
 });
