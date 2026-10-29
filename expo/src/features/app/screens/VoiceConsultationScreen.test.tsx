@@ -271,7 +271,7 @@ test("uses the ordinary orchestrator panel, glow, Enter submission and status wh
   } finally { Object.defineProperty(Platform, "OS", { value: previousOS, configurable: true }); }
 });
 
-test("reads only newly published live speech, never opened or reconnected history, and allows manual history playback", async () => {
+test("attaches sentence jobs in speaker order, never synthesizes the completed text twice, and keeps natural-end audio", async () => {
   const state = { active: false, messageId: "" };
   const synthesize = jest.fn(async (_text, target) => { state.active = true; state.messageId = target.messageId; });
   const stop = jest.fn(async (options) => { if (options?.expectedMessageId === state.messageId) state.active = false; });
@@ -279,30 +279,76 @@ test("reads only newly published live speech, never opened or reconnected histor
     ttsUiStatus: "idle" as const, getPlaybackState: () => ({ ...state }) };
   const screen = await render(<VoiceConsultationScreen onClose={jest.fn()} playback={playback} />);
   await screen.findByText("共有メモを作る相談"); await fireEvent.press(screen.getByText("共有メモを作る相談"));
+  await waitFor(() => expect(mockRequest.mock.calls.some(([request]) => request.op === "voice.consultations.speech.subscribe")).toBe(true));
+  const lease = mockRequest.mock.calls.find(([request]) => request.op === "voice.consultations.speech.subscribe")![0].payload!.subscriptionId;
   expect(synthesize).not.toHaveBeenCalled();
-  const live = { ...mockRoom, revision: 2, messages: [...mockRoom.messages,
-    { id: "b-live", seq: 3, speakerId: "b", source: "participant", text: "新しい提案です" }] };
-  await act(() => mockHandlers.get("voice.consultations.changed")?.({ payload: live }));
+  const ready = (jobId: string, runId: string, orchestratorId: string, status = "ready", subscriptionId = lease) => mockHandlers.get("voice.consultations.speech")?.({ payload: {
+    roomId: mockRoom.id, subscriptionId, jobId, runId, orchestratorId, generation: 0, inputUserSeq: 1, status,
+  } });
+  await act(() => ready("job-b", "run-b", "b"));
   await waitFor(() => expect(synthesize).toHaveBeenCalledTimes(1));
-  expect(synthesize).toHaveBeenCalledWith("新しい提案です", expect.objectContaining({ scope: "voice", orchestratorId: "b" }));
-  await act(() => mockHandlers.get("voice.consultations.changed")?.({ payload: live }));
+  expect(synthesize).toHaveBeenCalledWith("", expect.objectContaining({ jobId: "job-b", scope: "voice", orchestratorId: "b" }));
+  const live = { ...mockRoom, revision: 2, messages: [...mockRoom.messages,
+    { id: "run-b", seq: 3, speakerId: "b", source: "participant", text: "新しい提案です" }] };
+  await act(() => { mockHandlers.get("voice.consultations.changed")?.({ payload: live }); ready("job-b", "run-b", "b"); ready("job-a", "run-a", "main"); });
   expect(synthesize).toHaveBeenCalledTimes(1);
-  mockListedRoom = { ...live, revision: 3, messages: [...live.messages,
+  state.active = false; await screen.rerender(<VoiceConsultationScreen onClose={jest.fn()} playback={{ ...playback }} />);
+  await waitFor(() => expect(synthesize).toHaveBeenCalledTimes(2));
+  expect(synthesize).toHaveBeenLastCalledWith("", expect.objectContaining({ jobId: "job-a", orchestratorId: "main" }));
+  await act(() => mockHandlers.get("voice.consultations.changed")?.({ payload: { ...live, revision: 3, state: "idle", reason: "ended", run: null } }));
+  expect(stop).not.toHaveBeenCalled();
+  await act(() => { ready("job-a", "run-a", "main", "cancelled"); ready("job-a", "run-a", "main"); });
+  expect(synthesize).toHaveBeenCalledTimes(2);
+  mockListedRoom = { ...live, revision: 4, messages: [...live.messages,
     { id: "missed", seq: 4, speakerId: "main", source: "participant", text: "再接続前の発言です" }] };
   mockGeneration += 1;
   await screen.rerender(<VoiceConsultationScreen onClose={jest.fn()} playback={{ ...playback }} />);
   await screen.findByText("再接続前の発言です");
-  await act(() => mockHandlers.get("voice.consultations.changed")?.({ payload: mockListedRoom }));
-  expect(synthesize).toHaveBeenCalledTimes(1);
-  await fireEvent.press(screen.getAllByLabelText("Aの返答を読み上げ")[0]);
-  await waitFor(() => expect(synthesize).toHaveBeenCalledTimes(2));
-  expect(synthesize).toHaveBeenLastCalledWith("小さく始めよう", expect.objectContaining({ orchestratorId: "main" }));
-  const firstManualId = state.messageId;
-  await fireEvent.press(screen.getByTestId("streaming-stt-speaking-cancel"));
-  expect(stop).toHaveBeenCalledWith(expect.objectContaining({ expectedMessageId: firstManualId }));
-  expect(mockRequest.mock.calls.some(([request]) => request.op === "voice.consultations.stop")).toBe(false);
+  await act(() => ready("stale-job", "old-run", "main"));
+  expect(synthesize).toHaveBeenCalledTimes(2);
   await fireEvent.press(screen.getAllByLabelText("Aの返答を読み上げ")[0]);
   await waitFor(() => expect(synthesize).toHaveBeenCalledTimes(3));
-  const manualId = state.messageId; await screen.unmount();
+  expect(synthesize).toHaveBeenLastCalledWith("小さく始めよう", expect.not.objectContaining({ jobId: expect.anything() }));
+  const manualId = state.messageId;
+  await fireEvent.press(screen.getByTestId("streaming-stt-speaking-cancel"));
   expect(stop).toHaveBeenCalledWith(expect.objectContaining({ expectedMessageId: manualId }));
+  expect(mockRequest.mock.calls.some(([request]) => request.op === "voice.consultations.speech.cancel")).toBe(true);
+  expect(mockRequest.mock.calls.some(([request]) => request.op === "voice.consultations.stop")).toBe(false);
+  await screen.unmount();
+  expect(mockRequest.mock.calls.some(([request]) => request.op === "voice.consultations.speech.unsubscribe")).toBe(true);
+});
+
+test("first send waits for audio subscription and does not cancel its own job when ready precedes the send response", async () => {
+  let release!: (value: unknown) => void, lease: unknown;
+  const original = mockRequest.getMockImplementation()!;
+  mockRequest.mockImplementation(async (request) => {
+    if (request.op === "voice.consultations.speech.subscribe") {
+      lease = request.payload!.subscriptionId; return new Promise((resolve) => { release = resolve as typeof release; }) as never;
+    }
+    if (request.op === "voice.consultations.supplement") {
+      const next = { ...mockRoom, revision: 2, messages: [...mockRoom.messages,
+        { id: "new-user", seq: 3, speakerId: "user", source: "user", text: "新しい依頼" }] };
+      mockHandlers.get("voice.consultations.changed")?.({ payload: next });
+      mockHandlers.get("voice.consultations.speech")?.({ payload: { roomId: mockRoom.id, subscriptionId: lease,
+        runId: "new-run", orchestratorId: "main", jobId: "first-job", generation: 0, inputUserSeq: 3, status: "ready" } });
+      return { op: `${request.op}.result`, payload: next };
+    }
+    return original(request);
+  });
+  const state = { active: false, messageId: "" };
+  const synthesize = jest.fn(async (_text, target) => { state.active = true; state.messageId = target.messageId; });
+  const stop = jest.fn(async () => {});
+  const screen = await render(<VoiceConsultationScreen onClose={jest.fn()} playback={{ synthesizeSpeechStream: synthesize,
+    stopTtsPlayback: stop, ttsUiStatus: "idle", isTtsPlaybackActive: false, getPlaybackState: () => ({ ...state }) }} />);
+  await screen.findByText("共有メモを作る相談"); await fireEvent.press(screen.getByText("共有メモを作る相談"));
+  await waitFor(() => expect(release).toBeDefined());
+  await typeTranscript(screen, "新しい依頼");
+  const cancelCount = mockRequest.mock.calls.filter(([request]) => request.op === "voice.consultations.speech.cancel").length;
+  await submitTranscript(screen);
+  expect(mockRequest.mock.calls.some(([request]) => request.op === "voice.consultations.supplement")).toBe(false);
+  await act(() => release({ op: "voice.consultations.speech.subscribe.result", payload: { subscriptionId: lease } }));
+  await waitFor(() => expect(synthesize).toHaveBeenCalledWith("", expect.objectContaining({ jobId: "first-job" })));
+  expect(mockRequest.mock.calls.filter(([request]) => request.op === "voice.consultations.speech.cancel")).toHaveLength(cancelCount);
+  expect(stop).not.toHaveBeenCalled();
+  await screen.unmount(); mockRequest.mockImplementation(original);
 });

@@ -2859,6 +2859,52 @@ function createRunnerStreamTtsSegments({ emit, signal, publicBaseUrl, ttsProvide
   });
 }
 
+// Shared by ordinary voice turns and subscribed consultation turns. Both use
+// the same job transport, sentence segmenter, provider and cancellation path.
+function createVoiceTurnSpeech(operationId, tts, voice, publicBaseUrl) {
+  let job = null, segments = null, finishing = false;
+  const inactive = () => !job || job.abortController.signal.aborted || ["cancelled", "failed", "completed"].includes(job.status);
+  function fail(error) {
+    if (inactive()) return;
+    segments?.cancel();
+    const detail = errorMessage(error);
+    job.error = { error: "stream_tts_failed", message: detail, detail };
+    llmJobSetStatus(job, "failed");
+    llmJobEmit(job, { type: "error", ...job.error });
+  }
+  try {
+    job = createLlmJob({}, { mode: "voice", endpoint: "voice.turn", clientRequestId: operationId });
+    job.startedAt = jobNowIso(); llmJobSetStatus(job, "running");
+    rememberRunnerWsTtsOperationJob(operationId, job);
+    llmJobEmit(job, { type: "job_started", jobId: job.jobId, mode: "voice", endpoint: "voice.turn" });
+    if (!tts || typeof tts !== "object") throw new Error("Voice TTS speedScale is required");
+    const speedScale = parseOptionalSpeedScale(tts.speedScale), ttsProvider = voice.ttsProvider;
+    if (speedScale === undefined) throw new Error("Voice TTS speedScale is required");
+    if (!isSupportedTtsProvider(ttsProvider)) throw new Error(`Unsupported ttsProvider: ${ttsProvider}`);
+    const validation = validateTtsProviderRequirements(ttsProvider, "/stream-tts");
+    if (validation) throw new Error(validation.payload.message || validation.payload.error);
+    segments = createRunnerStreamTtsSegments({ emit: (event) => llmJobEmit(job, event),
+      signal: job.abortController.signal, publicBaseUrl, ttsProvider, voiceId: voice.voiceId,
+      speedScale, audioQuality: tts.audioQuality });
+    llmJobEmit(job, { type: "started", provider: ttsProvider, route: "voice.turn", mode: "voice" });
+  } catch (error) { fail(error); }
+  return {
+    get job() { return job; },
+    append(delta) { if (!inactive()) segments?.append(delta); },
+    complete(text) {
+      if (inactive() || !segments || finishing) return;
+      finishing = true;
+      job.reply = text;
+      job.runPromise = segments.finish().then(() => {
+        if (inactive()) return;
+        llmJobSetStatus(job, "completed"); llmJobEmit(job, { type: "done", reply: text }); pruneLlmJobStorage();
+      }).catch(fail);
+    },
+    fail,
+    cancel(reason = "voice_cancelled") { segments?.cancel(); if (job && job.status !== "cancelled") llmJobCancel(job, reason); },
+  };
+}
+
 function normalizeStreamTtsMode(raw) {
   const mode = String(raw || "").trim().toLowerCase();
   if (!mode || mode === "text") return "text";
@@ -5263,6 +5309,11 @@ const consultationService = createVoiceConsultationService({
       channel: "agent", op: "voice.consultations.progress", payload: progress,
     });
   },
+  onSpeech: (event) => {
+    for (const client of runnerWsActiveClients) sendRunnerWsEnvelope(client, {
+      channel: "agent", op: "voice.consultations.speech", payload: event,
+    });
+  },
   requestApproval: async ({ operationId, orchestratorId, request, signal }) => {
     const { orchestrators } = await voiceContextService.list();
     return scheduledVoiceApprovals.request(operationId, request, orchestratorId,
@@ -7193,6 +7244,15 @@ runnerWsServer.on("connection", (ws, req) => {
     appControl: appControlService,
   });
 
+  const consultationSpeechSubscriptions = new Map();
+  let consultationSpeechClosed = false;
+  ws.once("close", () => {
+    consultationSpeechClosed = true;
+    for (const [roomId, subscriptionId] of consultationSpeechSubscriptions) {
+      void consultationService.unsubscribeSpeech(roomId, subscriptionId).catch(() => {});
+    }
+    consultationSpeechSubscriptions.clear();
+  });
   function sendVoiceError(message, error) {
     sendRunnerWsEnvelope(ws, {
       channel: "agent", op: "error", requestId: message.requestId || "",
@@ -7231,6 +7291,21 @@ runnerWsServer.on("connection", (ws, req) => {
     if (message.op.startsWith("voice.consultations.")) {
       const payload = message.payload || {};
       const methods = {
+        "voice.consultations.speech.subscribe": async () => {
+          if (!payload.tts || parseOptionalSpeedScale(payload.tts.speedScale) === undefined) throw new Error("Voice TTS speedScale is required");
+          const result = await consultationService.subscribeSpeech(payload.roomId, payload.subscriptionId,
+            (operationId, voice) => createVoiceTurnSpeech(operationId, payload.tts, voice, publicBaseUrl));
+          if (consultationSpeechClosed) {
+            await consultationService.unsubscribeSpeech(payload.roomId, payload.subscriptionId);
+          } else consultationSpeechSubscriptions.set(payload.roomId, payload.subscriptionId);
+          return result;
+        },
+        "voice.consultations.speech.cancel": () => consultationService.cancelSpeech(payload.roomId, payload.subscriptionId),
+        "voice.consultations.speech.unsubscribe": async () => {
+          const result = await consultationService.unsubscribeSpeech(payload.roomId, payload.subscriptionId);
+          if (consultationSpeechSubscriptions.get(payload.roomId) === payload.subscriptionId) consultationSpeechSubscriptions.delete(payload.roomId);
+          return result;
+        },
         "voice.consultations.list": () => consultationService.list(),
         "voice.consultations.get": () => consultationService.get(payload.roomId),
         "voice.consultations.create": () => consultationService.create(payload),
@@ -7372,17 +7447,7 @@ runnerWsServer.on("connection", (ws, req) => {
         orchestrators.find((item) => item.id === orchestratorId)?.name || "", signal);
     };
     const voiceMessage = { ...message, payload: { ...voicePayload, orchestratorId: voicePayload.orchestratorId || "main" } };
-    let voiceJob = null;
-    let voiceSegments = null;
-    const failVoiceTts = (error) => {
-      if (!voiceJob || voiceJob.abortController.signal.aborted ||
-        voiceJob.status === "cancelled" || voiceJob.status === "failed" || voiceJob.status === "completed") return;
-      voiceSegments?.cancel();
-      const detail = errorMessage(error);
-      voiceJob.error = { error: "stream_tts_failed", message: detail, detail };
-      llmJobSetStatus(voiceJob, "failed");
-      llmJobEmit(voiceJob, { type: "error", error: "stream_tts_failed", message: detail, detail });
-    };
+    let voiceSpeech = null;
     const hooks = {
       acceptAppControl: () => appControlService.acceptTurn(ws, appControlOrigin, {
         target: { kind: "orchestrator", orchestratorId: voicePayload.orchestratorId || "main" },
@@ -7394,30 +7459,7 @@ runnerWsServer.on("connection", (ws, req) => {
         ...request, threadId: request.params.threadId, turnId: request.params.turnId,
       }, voicePayload.orchestratorId || "main", "", signal),
       onAccepted: (orchestratorTts) => {
-        if (voiceTts === undefined) return;
-        try {
-          voiceJob = createLlmJob({}, { mode: "voice", endpoint: "voice.turn", clientRequestId: operationId });
-          voiceJob.startedAt = jobNowIso();
-          llmJobSetStatus(voiceJob, "running");
-          rememberRunnerWsTtsOperationJob(operationId, voiceJob);
-          llmJobEmit(voiceJob, { type: "job_started", jobId: voiceJob.jobId, mode: "voice", endpoint: "voice.turn" });
-          if (!voiceTts || typeof voiceTts !== "object") throw new Error("Voice TTS speedScale is required");
-          const ttsProvider = orchestratorTts.ttsProvider;
-          const speedScale = parseOptionalSpeedScale(voiceTts.speedScale);
-          if (speedScale === undefined) throw new Error("Voice TTS speedScale is required");
-          if (!isSupportedTtsProvider(ttsProvider)) throw new Error(`Unsupported ttsProvider: ${ttsProvider}`);
-          const validation = validateTtsProviderRequirements(ttsProvider, "/stream-tts");
-          if (validation) throw new Error(validation.payload.message || validation.payload.error);
-          voiceSegments = createRunnerStreamTtsSegments({
-            emit: (event) => llmJobEmit(voiceJob, event),
-            signal: voiceJob.abortController.signal, publicBaseUrl,
-            ttsProvider, voiceId: orchestratorTts.voiceId, speedScale,
-            audioQuality: voiceTts.audioQuality,
-          });
-          llmJobEmit(voiceJob, { type: "started", provider: ttsProvider, route: "voice.turn", mode: "voice" });
-        } catch (error) {
-          if (voiceJob) failVoiceTts(error);
-        }
+        if (voiceTts !== undefined) voiceSpeech = createVoiceTurnSpeech(operationId, voiceTts, orchestratorTts, publicBaseUrl);
       },
       onStarted: (result) => sendRunnerWsEnvelope(ws, {
         channel: "agent", op: "voice.turn.started", operationId, streamId: operationId,
@@ -7434,33 +7476,21 @@ runnerWsServer.on("connection", (ws, req) => {
             delta,
           },
         });
-        voiceSegments?.append(delta);
+        voiceSpeech?.append(delta);
       },
-      onTextError: failVoiceTts,
-      onCompleted: (text) => {
-        if (!voiceJob || voiceJob.abortController.signal.aborted ||
-          voiceJob.status === "cancelled" || voiceJob.status === "failed" ||
-          voiceJob.status === "completed" || !voiceSegments) return;
-        voiceJob.reply = text;
-        voiceJob.runPromise = voiceSegments.finish().then(() => {
-          if (voiceJob.abortController.signal.aborted ||
-            voiceJob.status === "cancelled" || voiceJob.status === "failed") return;
-          llmJobSetStatus(voiceJob, "completed");
-          llmJobEmit(voiceJob, { type: "done", reply: text });
-          pruneLlmJobStorage();
-        }).catch(failVoiceTts);
-      },
-      onFailed: (error) => failVoiceTts(error),
+      onTextError: (error) => voiceSpeech?.fail(error),
+      onCompleted: (text) => voiceSpeech?.complete(text),
+      onFailed: (error) => voiceSpeech?.fail(error),
     };
     void voiceContextService.start(voiceMessage, (result) => {
-      const job = voiceJob || resolveRunnerWsTtsOperationJob(operationId);
+      const job = voiceSpeech?.job || resolveRunnerWsTtsOperationJob(operationId);
       sendRunnerWsEnvelope(ws, {
         channel: "agent", op: result.status === "completed" ? "voice.turn.completed" : "voice.turn.failed",
         operationId: result.clientOperationId, streamId: result.clientOperationId,
         payload: { ...result, ...(job ? { jobId: job.jobId } : {}) },
       });
     }, onApproval, hooks).then((payload) => {
-      const job = voiceJob || resolveRunnerWsTtsOperationJob(operationId);
+      const job = voiceSpeech?.job || resolveRunnerWsTtsOperationJob(operationId);
       sendRunnerWsEnvelope(ws, {
         channel: "agent", op: "turn.accepted", requestId: message.requestId || "",
         operationId: payload.clientOperationId, streamId: payload.clientOperationId,
@@ -10438,6 +10468,7 @@ export const __TESTING__ = {
   pickBestRelayForThread,
   runnerWsServer,
   voiceContextService,
+  consultationService,
   googleCloudService,
   broadcastVoiceChecklistChanged,
   listLlmDirectories,
@@ -10480,6 +10511,7 @@ export const __TESTING__ = {
   sweepRunnerWsTtsOperationJobs,
   startLlmStreamJob,
   sanitizeTtsInputText,
+  createVoiceTurnSpeech,
   fetchTtsWithTimeout,
   STREAM_TTS_MAX_CHARS,
   TTS_FETCH_TIMEOUT_MS,

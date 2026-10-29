@@ -111,3 +111,24 @@ test("the live pipeline snapshot also prevents stealing another surface before i
   state.active = false; await rerender({ p: { ...playback } });
   await waitFor(() => expect(playback.synthesizeSpeechStream).toHaveBeenCalledTimes(1));
 });
+
+test("job attachments share the playback queue, suppress repeated or cancelled jobs and keep manual text replay separate", async () => {
+  const { state, playback } = player();
+  const { result, rerender } = await renderHook(({ p }: { p: VoiceConversationPlayback }) => useConsultationSpeech("room", p), { initialProps: { p: playback } });
+  await act(() => {
+    result.current.enqueue({ ...a, text: "", jobId: "job-a" });
+    result.current.enqueue({ ...b, text: "", jobId: "job-b" });
+    result.current.enqueue({ ...b, text: "", jobId: "job-b" });
+    result.current.enqueue({ ...a, id: "c", text: "", jobId: "job-c" });
+  });
+  await waitFor(() => expect(playback.synthesizeSpeechStream).toHaveBeenCalledTimes(1));
+  expect(playback.synthesizeSpeechStream).toHaveBeenCalledWith("", expect.objectContaining({ jobId: "job-a" }));
+  await act(() => result.current.cancel("job-b"));
+  state.active = false; await rerender({ p: { ...playback } });
+  await waitFor(() => expect(playback.synthesizeSpeechStream).toHaveBeenCalledTimes(2));
+  expect(playback.synthesizeSpeechStream).toHaveBeenLastCalledWith("", expect.objectContaining({ jobId: "job-c" }));
+  await act(() => { result.current.enqueue({ ...b, text: "", jobId: "job-b" }); result.current.cancel("job-c"); });
+  await act(() => result.current.read(a));
+  await waitFor(() => expect(playback.synthesizeSpeechStream).toHaveBeenCalledTimes(3));
+  expect(playback.synthesizeSpeechStream).toHaveBeenLastCalledWith(a.text, expect.not.objectContaining({ jobId: expect.anything() }));
+});

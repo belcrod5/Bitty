@@ -17,6 +17,7 @@ import { formatMessageTimestampLabel } from "../utils/formatting";
 import { VoiceConversationMessages } from "../components/VoiceConversationMessages";
 import { VoiceOrchestratorIcon, type VoiceOrchestrator } from "../components/VoiceOrchestratorIcon";
 import { useReduceMotionEnabled } from "../hooks/useReduceMotionEnabled";
+import { resolveTtsAudioQuality } from "../utils/ttsAudioQuality";
 import { useVoiceUserInput } from "../hooks/useVoiceUserInput";
 
 type Owner = VoiceOrchestrator;
@@ -53,12 +54,10 @@ export function VoiceConsultationScreen({ onClose, playback }: { onClose: () => 
   const [maxTurns, setMaxTurns] = useState("9");
   const [supplement, setSupplement] = useState("");
   const [editingTranscript, setEditingTranscript] = useState(false);
-  const speech = useConsultationSpeech(mode === "room" ? selectedRoom : "", playback);
-  const speechContext = useRef({ selectedRoom, mode, owners, enqueue: speech.enqueue });
-  speechContext.current = { selectedRoom, mode, owners, enqueue: speech.enqueue };
-  const knownMessages = useRef(new Map<string, Set<string>>());
-  const knownRevisions = useRef(new Map<string, number>());
-  const speechReady = useRef(false);
+  const speech = useConsultationSpeech(mode === "room" && connected ? selectedRoom : "", playback);
+  const ownersRef = useRef(owners); ownersRef.current = owners;
+  const speechSubscription = useRef<{ roomId: string; id: string; connect: () => Promise<unknown>; ready: Promise<unknown> | null } | null>(null);
+  const roomSnapshots = useRef(new Map<string, ConsultationRoom>());
   useEffect(() => { setEditingTranscript(false); }, [selectedRoom, mode]);
   const [error, setError] = useState(""), [busy, setBusy] = useState(false), [resetDeadline, setResetDeadline] = useState<number | null>(null);
   const scroll = useRef<ScrollView>(null);
@@ -67,17 +66,10 @@ export function VoiceConsultationScreen({ onClose, playback }: { onClose: () => 
   const pendingSend = useRef<{ roomId: string; text: string; messageId: string } | null>(null);
   const room = rooms.find((item) => item.id === selectedRoom);
   const userInput = useVoiceUserInput(manager, room?.run?.orchestratorId || "");
-  const applyRoom = useCallback((value: ConsultationRoom, readAloud = false) => {
-    if ((knownRevisions.current.get(value.id) ?? -1) > value.revision) return;
-    knownRevisions.current.set(value.id, value.revision);
-    const seen = knownMessages.current.get(value.id), context = speechContext.current;
-    if (readAloud && speechReady.current && seen && context.selectedRoom === value.id && context.mode === "room") {
-      for (const message of value.messages) {
-        const owner = context.owners.find((item) => item.id === message.speakerId);
-        if (!seen.has(message.id) && message.source === "participant" && owner) context.enqueue({ id: message.id, text: message.text, owner });
-      }
-    }
-    knownMessages.current.set(value.id, new Set([...(seen || []), ...value.messages.map((message) => message.id)]));
+  const applyRoom = useCallback((value: ConsultationRoom) => {
+    const previous = roomSnapshots.current.get(value.id);
+    if (previous && previous.revision > value.revision) return;
+    roomSnapshots.current.set(value.id, value);
     setRooms((current) => {
       const previous = current.find((item) => item.id === value.id);
       if (previous && previous.revision > value.revision) return current;
@@ -88,7 +80,6 @@ export function VoiceConsultationScreen({ onClose, playback }: { onClose: () => 
     });
   }, []);
   useEffect(() => {
-    speechReady.current = false;
     setRooms((current) => current.map((room) => room.run?.progress ? { ...room, run: { ...room.run, progress: undefined } } : room));
   }, [generation]);
   const send = useCallback(async (operation: string, payload: Record<string, unknown> = {}) => {
@@ -98,6 +89,48 @@ export function VoiceConsultationScreen({ onClose, playback }: { onClose: () => 
     }
     return response.payload;
   }, [manager]);
+  useEffect(() => manager.subscribe({ channel: "agent", op: "voice.consultations.speech" }, (message) => {
+    const event = message.payload as { roomId: string; subscriptionId: string; runId: string; orchestratorId: string; jobId: string; generation: number; inputUserSeq: number; status: string };
+    const subscription = speechSubscription.current;
+    if (!subscription || event.roomId !== subscription.roomId || event.subscriptionId !== subscription.id) return;
+    if (event.status === "cancelled") { speech.cancel(event.jobId); return; }
+    const room = roomSnapshots.current.get(event.roomId);
+    if (!room || room.generation !== event.generation || room.messages.findLast((item) => item.source === "user")?.seq !== event.inputUserSeq) return;
+    const owner = ownersRef.current.find((item) => item.id === event.orchestratorId);
+    if (owner && event.status === "ready") speech.enqueue({ id: event.runId, jobId: event.jobId, text: "", owner });
+  }), [manager, speech.enqueue, speech.cancel]);
+  const ensureSpeechReady = useCallback(async () => {
+    const subscription = speechSubscription.current;
+    if (!subscription) return;
+    if (!subscription.ready) subscription.ready = subscription.connect().catch((cause) => { subscription.ready = null; throw cause; });
+    await subscription.ready;
+    if (speechSubscription.current !== subscription) throw new Error("相談画面が切り替わりました");
+  }, []);
+  const cancelSpeechJobs = useCallback(() => {
+    const subscription = speechSubscription.current;
+    if (subscription) void send("speech.cancel", { roomId: subscription.roomId, subscriptionId: subscription.id }).catch(() => {});
+  }, [send]);
+  const stopSpeech = useCallback(() => { speech.stop(); cancelSpeechJobs(); }, [speech.stop, cancelSpeechJobs]);
+  useEffect(() => {
+    if (mode !== "room" || !selectedRoom || !playback || !connected) return;
+    let current = true;
+    const subscription = { roomId: selectedRoom, id: randomUUID(), ready: null as Promise<unknown> | null,
+      connect: async () => {
+        const audioQuality = await resolveTtsAudioQuality(playback.lightweightTtsOnCellular === true);
+        if (!current) return;
+        return send("speech.subscribe", { roomId: selectedRoom, subscriptionId: subscription.id,
+          tts: { speedScale: playback.ttsSpeed ?? 1, audioQuality } }).then((value) => {
+            if (!current) void unsubscribe(); return value;
+          });
+      } };
+    const unsubscribe = () => send("speech.unsubscribe", { roomId: subscription.roomId, subscriptionId: subscription.id }).catch(() => {});
+    speechSubscription.current = subscription;
+    void ensureSpeechReady().catch((cause) => { if (current) setError(cause instanceof Error ? cause.message : "読み上げを準備できません"); });
+    return () => {
+      current = false; if (speechSubscription.current === subscription) speechSubscription.current = null;
+      void unsubscribe();
+    };
+  }, [mode, selectedRoom, Boolean(playback), playback?.ttsSpeed, playback?.lightweightTtsOnCellular, connected, generation, send, ensureSpeechReady]);
   const act = useCallback(async (work: () => Promise<void>) => {
     setBusy(true); setError("");
     try { await work(); } catch (cause) { setError(cause instanceof Error ? cause.message : "接続を確認してください"); }
@@ -114,14 +147,13 @@ export function VoiceConsultationScreen({ onClose, playback }: { onClose: () => 
       const value = result as { rooms: ConsultationRoom[]; defaultTemplate: string };
       setOwners(ownerPayload.orchestrators);
       for (const item of value.rooms) applyRoom(item);
-      speechReady.current = true;
       setTemplate((existing) => existing || value.defaultTemplate);
     }).catch((cause) => { if (current) setError(cause instanceof Error ? cause.message : "相談を読み込めません"); });
     return () => { current = false; };
   }, [manager, connected, generation, send, applyRoom]);
   useEffect(() => manager.subscribe({ channel: "agent", op: "voice.consultations.changed" }, (message) => {
     const value = message.payload as ConsultationRoom;
-    if (value?.id && Array.isArray(value.messages)) applyRoom(value, true);
+    if (value?.id && Array.isArray(value.messages)) applyRoom(value);
   }), [manager, applyRoom]);
   useEffect(() => {
     let current = true;
@@ -137,8 +169,8 @@ export function VoiceConsultationScreen({ onClose, playback }: { onClose: () => 
   }, [manager, generation]);
   const decideReset = useCallback((decision: "reset" | "continue") => {
     if (!room) return;
-    void act(async () => { applyRoom(await send("reset", { roomId: room.id, decision }) as ConsultationRoom); });
-  }, [room, act, send, applyRoom]);
+    void act(async () => { await ensureSpeechReady(); applyRoom(await send("reset", { roomId: room.id, decision }) as ConsultationRoom); });
+  }, [room, act, send, applyRoom, ensureSpeechReady]);
   const resetRunId = room?.reason === "confirmation_required" ? room.run?.id : undefined;
   const resetRequired = room?.resetConfirmation?.required === true;
   useEffect(() => {
@@ -203,7 +235,8 @@ export function VoiceConsultationScreen({ onClose, playback }: { onClose: () => 
     const previous = pendingSend.current;
     const submission = previous?.roomId === room.id && previous.text === text ? previous : { roomId: room.id, text, messageId: randomUUID() };
     pendingSend.current = submission;
-    try { applyRoom(await send("supplement", submission) as ConsultationRoom); if (pendingSend.current === submission) pendingSend.current = null; speech.stop(); if (accepted()) setEditingTranscript(false); }
+    if (submission !== previous) speech.stop();
+    try { await ensureSpeechReady(); applyRoom(await send("supplement", submission) as ConsultationRoom); if (pendingSend.current === submission) pendingSend.current = null; if (accepted()) setEditingTranscript(false); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "送信できません"); }
   };
   const live = room?.run?.progress;
@@ -333,8 +366,8 @@ export function VoiceConsultationScreen({ onClose, playback }: { onClose: () => 
               trace: room.steps?.find((step) => step.runId === message.id)?.trace } : {}),
           }))} onRead={playback ? (message) => {
             const owner = owners.find((item) => item.id === message.orchestratorId);
-            if (owner) speech.read({ id: message.clientOperationId, text: message.text, owner });
-          } : undefined} speakingMessageId={speech.activeMessageId} onStopReading={speech.stop} />
+            if (owner) { cancelSpeechJobs(); speech.read({ id: message.clientOperationId, text: message.text, owner }); }
+          } : undefined} speakingMessageId={speech.activeMessageId} onStopReading={stopSpeech} />
           {room.state === "running" && room.run ? <View style={{ gap: 8 }}>
             {liveText && liveText !== "[[PASS]]" ? <VoiceConversationMessages messages={[{ role: "assistant", text: liveText, clientOperationId: room.run.id,
               speakerName: ownerFor(room.run.orchestratorId).name, orchestrator: ownerFor(room.run.orchestratorId), streaming: true }]} /> : null}
@@ -354,7 +387,7 @@ export function VoiceConsultationScreen({ onClose, playback }: { onClose: () => 
           {room.state !== "running" && room.messages.length ? <View style={{ alignItems: "center", gap: 12, paddingVertical: 14 }}>
             <Text accessibilityLiveRegion="polite" style={styles.secondary}>{reasonText[room.reason] || "続きがあれば、メッセージをどうぞ。"}</Text>
             {room.reason !== "ended" && ["paused", "stopped"].includes(room.state) && room.turns < room.maxTurns
-              ? button("確認して再開", () => void act(async () => { applyRoom(await send("resume", { roomId: room.id }) as ConsultationRoom); }), !connected) : null}
+              ? button("確認して再開", () => void act(async () => { await ensureSpeechReady(); applyRoom(await send("resume", { roomId: room.id }) as ConsultationRoom); }), !connected) : null}
           </View> : null}
         </> : null}
       </ScrollView>
@@ -367,11 +400,11 @@ export function VoiceConsultationScreen({ onClose, playback }: { onClose: () => 
       {mode === "room" && room ? <View style={styles.footer}>
         <StreamingSttFooter transcript={supplement} phase="idle" reduceMotion={reduceMotion}
           voiceStatus={editingTranscript || supplement || error || speech.error ? undefined : speech.activeMessageId ? "speaking" : room.state === "running" ? "responding" : undefined}
-          statusText={speech.error || undefined} onRequestEdit={() => { speech.stop(); setEditingTranscript(true); }}
-          onChangeText={setSupplement} onFocus={() => { speech.stop(); setEditingTranscript(true); }} onBlur={() => setEditingTranscript(false)}
-          onSubmit={submit} submitDisabled={!connected || busy} onCancelSpeaking={speech.stop}
+          statusText={speech.error || undefined} onRequestEdit={() => { stopSpeech(); setEditingTranscript(true); }}
+          onChangeText={setSupplement} onFocus={() => { stopSpeech(); setEditingTranscript(true); }} onBlur={() => setEditingTranscript(false)}
+          onSubmit={submit} submitDisabled={!connected || busy} onCancelSpeaking={stopSpeech}
           stopLabel="相談を停止" onStop={room.run || room.state === "running" ? () => {
-            speech.stop(); void act(async () => { applyRoom(await send("stop", { roomId: room.id }) as ConsultationRoom); });
+            stopSpeech(); void act(async () => { applyRoom(await send("stop", { roomId: room.id }) as ConsultationRoom); });
           } : undefined} />
       </View> : null}
     </KeyboardAvoidingView>

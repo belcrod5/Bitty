@@ -1523,6 +1523,7 @@ export function createVoiceContextService({ rootDir, createClient: clientFactory
       }
       executionTiming.setupMs = Date.now() - modelStartedAt;
       const pendingNotifications = [];
+      let notificationsReady = false;
       let output = [];
       let terminal = null;
       let toolSeen = false;
@@ -1564,7 +1565,7 @@ export function createVoiceContextService({ rootDir, createClient: clientFactory
           if (pending?.threadId === params?.threadId) pending.controller.abort();
           return;
         }
-        if (!identity) { pendingNotifications.push([method, params]); return; }
+        if (!identity || !notificationsReady) { pendingNotifications.push([method, params]); return; }
         if (!codexTurnEventMatches(params, identity)) return;
         if (method === "item/started" || method === "item/completed" || method === "item/agentMessage/delta") hasCurrentTurnItem = true;
         if (method === "thread/tokenUsage/updated") {
@@ -2007,7 +2008,9 @@ export function createVoiceContextService({ rootDir, createClient: clientFactory
       interruptForCancellation();
       resolveIdentity();
       completion.expect(identity);
+      notificationsReady = true;
       for (const [method, params] of pendingNotifications) observe(method, params);
+      pendingNotifications.length = 0;
       interruptForTool();
       if (onApproval && onNewParent) {
         stage = "native_thread_store";

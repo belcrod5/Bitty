@@ -7,6 +7,7 @@ import test from "node:test";
 import { createVoiceContextService } from "../src/voice-context-service.mjs";
 import { createVoiceOrchestratorService } from "../src/voice-orchestrator-service.mjs";
 import { createVoiceConsultationService } from "../src/voice-consultation-service.mjs";
+import { createStreamTtsSegments } from "../src/stream-tts-segments.mjs";
 import { openVoiceMemoryStore } from "../src/voice-memory-store.mjs";
 
 // No real App Server/client is imported. Only RPC responses and native events are
@@ -481,7 +482,7 @@ async function consultationFixture(t, options) {
   const values = await ownerFixture(t, options);
   const second = await values.service.create("B"), third = await values.service.create("C");
   const controller = createVoiceConsultationService({ rootDir: path.join(values.directory, "rooms"),
-    orchestrators: values.service, requestApproval: () => { throw new Error("No approval requested by fake"); },
+    orchestrators: values.service, onSpeech: options?.onSpeech, requestApproval: () => { throw new Error("No approval requested by fake"); },
     requestUserInput: () => { throw new Error("No question requested by fake"); } });
   values.track(controller);
   const room = await controller.create({ participants: ["main", second.id, third.id] });
@@ -1034,5 +1035,143 @@ test("a durable finish reservation is recovered by the existing status path, whi
       await restored.stop(room.id);
     }
     if (status === "completed") assert.equal(rpc.calls.filter(({method,params}) => method === "turn/start" && params.input[0].text.startsWith('{"kind":"consultation"')).length, 1);
+  }
+});
+
+// Real segment queue with an in-memory audio provider; no synthesis/network.
+function audioFixture() {
+  const jobs = [], spoken = [], events = [];
+  const create = (runId, voice) => {
+    const job = { jobId: randomUUID(), runId, voice, cancelled: false, completed: false, finished: null };
+    const abort = new AbortController();
+    const segments = createStreamTtsSegments({ signal: abort.signal, speedScale: 1, sanitizeText: (text) => text.trim(),
+      estimateDurationMs: () => 1, emit: (event) => events.push({ runId, ...event }),
+      synthesizeSegment: async (text) => { spoken.push({ runId, text }); return { audioUrl: "synthetic-audio", speedScale: 1 }; } });
+    jobs.push(job);
+    return { job, append: segments.append, complete: () => { job.completed = true; job.finished = segments.finish(); },
+      cancel: () => { job.cancelled = true; abort.abort(); segments.cancel(); } };
+  };
+  return { jobs, spoken, events, create };
+}
+
+test("subscribed native final deltas synthesize a full stop before turn completion, independent of the human preview cap", { timeout: 20000 }, async (t) => {
+  const audio = audioFixture(), speechEvents = [], tail = "合成用の長い末尾".repeat(5000), text = `先に話せる文。${tail}`;
+  const { controller, room, rpc } = await consultationFixture(t, { onSpeech: (event) => speechEvents.push(event), replyFor: () => text,
+    responseEvents: () => [
+      { method: "item/started", params: { item: { id: "comment", type: "agentMessage", phase: "commentary" } } },
+      { method: "item/agentMessage/delta", params: { itemId: "comment", delta: "非公開の途中確認。" } },
+      { method: "item/started", params: { item: { id: "answer", type: "agentMessage", phase: "final_answer" } } },
+      { method: "item/agentMessage/delta", params: { itemId: "answer", delta: text } },
+    ] });
+  await controller.configure(room.id, { template: room.template, maxTurns: 1 });
+  const subscriptionId = randomUUID(); await controller.subscribeSpeech(room.id, subscriptionId, audio.create);
+  await controller.supplement(room.id, { text: "架空の相談", messageId: randomUUID() });
+  await waitFor(() => audio.spoken.length === 1);
+  const active = await controller.get(room.id);
+  assert.ok(active.run, "native turn is still held"); assert.equal(audio.jobs[0].completed, false);
+  assert.equal(audio.spoken[0].text, "先に話せる文。");
+  assert.equal(active.run.progress.messages.find((item) => item.id === "answer").truncated, true);
+  assert.equal(speechEvents.filter((event) => event.status === "ready").length, 1);
+  await rpc.eventReleases.shift()(); await waitFor(async () => (await controller.get(room.id)).reason === "limit");
+  await audio.jobs[0].finished;
+  assert.deepEqual(audio.spoken.map(({text}) => text), ["先に話せる文。", tail]);
+  assert.equal(audio.jobs[0].cancelled, false, "natural end retains the final audio job");
+});
+
+test("phase-unknown text waits for final metadata; PASS and commentary never reach the audio provider", { timeout: 20000 }, async (t) => {
+  for (const text of ["確定後に話す。末尾", "[[PASS]]"]) {
+    const audio = audioFixture();
+    const { controller, room, rpc, service } = await consultationFixture(t, { replyFor: () => text,
+      responseEvents: () => [
+        { method: "item/started", params: { item: { id: "comment", type: "agentMessage", phase: "commentary" } } },
+        { method: "item/agentMessage/delta", params: { itemId: "comment", delta: "これは読み上げない。" } },
+        { method: "item/agentMessage/delta", params: { itemId: "answer", delta: text.slice(0, 3) } },
+        { method: "item/agentMessage/delta", params: { itemId: "answer", delta: text.slice(3) } },
+      ] });
+    // Hold the real native identity publication while the native completion arrives.
+    // New live notifications must not overtake the earlier buffered deltas.
+    const rename = fs.rename; let held = false, releaseStore;
+    const storeGate = new Promise((resolve) => { releaseStore = resolve; });
+    const mocked = t.mock.method(fs, "rename", async (from, to) => {
+      if (!held && String(to).includes(path.join("scopes", room.id)) && path.basename(String(to)) === "active.json") {
+        const state = await json(from);
+        if (state.pendingDispatch?.turnId) { held = true; await storeGate; }
+      }
+      return rename(from, to);
+    });
+    const deltas = [], originalStart = service.start.bind(service);
+    service.start = (message, done, approval, hooks) => originalStart(message, done, approval,
+      { ...hooks, onText: (delta, metadata) => { deltas.push({ delta, metadata }); hooks.onText(delta, metadata); } });
+    await controller.configure(room.id, { template: room.template, maxTurns: 1 });
+    await controller.subscribeSpeech(room.id, randomUUID(), audio.create);
+    await controller.supplement(room.id, { text: "架空の依頼", messageId: randomUUID() });
+    try {
+      await waitFor(() => held && rpc.eventReleases.length === 1); assert.deepEqual(audio.spoken, []);
+      await rpc.eventReleases.shift()(); await new Promise((resolve) => setImmediate(resolve));
+      assert.deepEqual(audio.spoken, [], "completion must wait for durable native identity before any buffered text is released");
+      releaseStore();
+      await waitFor(async () => (await controller.get(room.id)).reason === "limit");
+      await audio.jobs[0].finished;
+      const answerDeltas = deltas.filter(({metadata}) => metadata?.itemId === "answer");
+      assert.equal(answerDeltas[0].metadata.phase, null);
+      assert.equal(answerDeltas.at(-1).metadata.phase, "final_answer");
+      assert.deepEqual(audio.spoken.map(({text}) => text), text === "[[PASS]]" ? [] : ["確定後に話す。", "末尾"], JSON.stringify(deltas));
+    } finally { releaseStore(); mocked.mock.restore(); }
+  }
+});
+
+test("audio demand is opt-in from the next accepted run, idempotent retries preserve it, and new user/unsubscribe cancel old work", { timeout: 20000 }, async (t) => {
+  const audio = audioFixture(), text = "途中の文。末尾";
+  const { controller, room, rpc, service } = await consultationFixture(t, { replyFor: () => text,
+    responseEvents: () => [
+      { method: "item/started", params: { item: { id: "answer", type: "agentMessage", phase: "final_answer" } } },
+      { method: "item/agentMessage/delta", params: { itemId: "answer", delta: "途中の文。" } },
+    ] });
+  await controller.configure(room.id, { template: room.template, maxTurns: 1 });
+  await controller.supplement(room.id, { text: "購読前の依頼", messageId: randomUUID() });
+  await waitFor(() => rpc.eventReleases.length === 1);
+  const subscriptionId = randomUUID(); await controller.subscribeSpeech(room.id, subscriptionId, audio.create);
+  assert.equal(audio.jobs.length, 0, "opening midway never regenerates a past prefix");
+  await rpc.eventReleases.shift()(); await waitFor(async () => (await controller.get(room.id)).reason === "limit");
+  assert.equal(audio.jobs.length, 0, "completion isn't a full-text fallback after a late subscription");
+  const messageId = randomUUID(); await controller.supplement(room.id, { text: "購読後の依頼", messageId });
+  await waitFor(() => audio.spoken.length === 1);
+  await controller.subscribeSpeech(room.id, subscriptionId, audio.create);
+  await controller.supplement(room.id, { text: "購読後の依頼", messageId });
+  assert.equal(audio.jobs.length, 1); assert.equal(audio.jobs[0].cancelled, false);
+  await controller.supplement(room.id, { text: "新しい補足", messageId: randomUUID() });
+  assert.equal(audio.jobs[0].cancelled, true);
+  await rpc.eventReleases.shift()(); await waitFor(() => audio.jobs.length === 2 && rpc.eventReleases.length === 1);
+  assert.equal((await controller.unsubscribeSpeech(room.id, randomUUID())).removed, false);
+  assert.equal(audio.jobs[1].cancelled, false);
+  await controller.unsubscribeSpeech(room.id, subscriptionId); assert.equal(audio.jobs[1].cancelled, true);
+  await controller.stop(room.id);
+});
+
+test("stream divergence and durable room failure cancel subscribed audio instead of replaying or leaving a running job", { timeout: 20000 }, async (t) => {
+  for (const storageFailure of [false, true]) {
+    const audio = audioFixture();
+    const { controller, room, rpc, directory } = await consultationFixture(t, { replyFor: () => "異なる確定本文。",
+      responseEvents: () => [
+        { method: "item/started", params: { item: { id: "answer", type: "agentMessage", phase: "final_answer" } } },
+        { method: "item/agentMessage/delta", params: { itemId: "answer", delta: "先に生成した文。" } },
+      ] });
+    await controller.configure(room.id, { template: room.template, maxTurns: 1 });
+    await controller.subscribeSpeech(room.id, randomUUID(), audio.create);
+    await controller.supplement(room.id, { text: "架空の確認", messageId: randomUUID() });
+    await waitFor(() => audio.spoken.length === 1);
+    if (storageFailure) {
+      const open = fs.open;
+      const mocked = t.mock.method(fs, "open", (file, ...args) => String(file).startsWith(path.join(directory, "rooms", `${room.id}.json.`))
+        ? Promise.reject(Object.assign(new Error("synthetic EIO"), { code: "EIO" })) : open(file, ...args));
+      try { await assert.rejects(controller.configure(room.id, { template: "保存不能" }), { code: "EIO" }); }
+      finally { mocked.mock.restore(); }
+      assert.equal((await controller.get(room.id)).reason, "storage_unavailable");
+    }
+    await rpc.eventReleases.shift()();
+    await waitFor(() => audio.jobs[0].cancelled);
+    if (!storageFailure) await waitFor(async () => (await controller.get(room.id)).reason === "limit");
+    assert.deepEqual(audio.spoken.map(({text}) => text), ["先に生成した文。"], "already emitted audio cannot be undone, but neither replacement nor tail is synthesized");
+    assert.equal(audio.jobs[0].completed, false);
   }
 });

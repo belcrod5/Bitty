@@ -30,7 +30,10 @@ UIを実avatar中心の静かな一覧、画像grid、広い相談本文、簡�
 
 相談入力の共用先をVoiceConversationScreenの実StreamingSttFooterへ訂正した。ChatComposer／全画面editor・独自送信rowを削除し、標準の黒panel／Skia glow／Enter送信／状態表示を使う。旧manual別styleへ戻したものではない。文字animationはFooterへ移して二重実装せず、通常表示・reduceMotion未確定の先頭文字待機を維持する。相談だけ応答表示のタップで補足を編集でき、読み上げ中は従来の停止操作が優先する。送信失敗の下書き保持・受理後の編集中本文保護・相談停止と読み上げ停止の区別も共用契約で扱う。
 終了は本人が通常会話を解釈してconsultation.finishへ真正user発言IDを渡す。終了予約をrunへ保存し、正常完了と同時に確定する。新user途中到着を優先し、失敗／中断・古いrunでは終了せず、終了後の遅いstopでも終了を保持する。同じuserのresumeは拒否し、新userで再開する。別AI分類・文字列判定・返信JSON指定は追加していない。
-TTSは既存プレイヤーと本人の声設定を使う。新着の確定発言だけを順に再生し、初回表示・再接続の過去発言は自動再生しない。通常voice履歴にも同じ読み上げボタンを追加した（既存本人の実行・判断条件の変更ではない）。共用履歴の手動読み上げ、停止、失敗後の次発言、別画面の音声待機、room移動／画面閉鎖の所有音声cleanupを持つ。生成Promiseと再生終了を区別し、既存pipeline snapshotで古いidle propsを補う。再生ごとのUUIDで遅い旧requestが同じ履歴の再読を止めない。
+TTSは通常turnと相談runで同じcreateVoiceTurnSpeechのjob lifecycle、既存の「。」segment queue、本人の声設定、既存audio job attach／playerを使う。相談はnative final deltaを直接送り、turn未完了でも句点から合成する。未知phaseは保留し、既知commentaryと[[PASS]]は読まない。確定全文はprefix照合とtail補完だけに使い、二重再生しない。表示用streamの32000字省略は音声に適用しない。
+表示中roomの一時speech購読だけがjob作成を許可する。購読ready後に送信・再開し、途中参加／再接続では次accepted runから開始して過去prefixを再合成しない。離室／WS close（subscribe応答待ち中も含む）／新user／明示停止／保存障害／stream不整合はqueue済み合成もcancelする。同IDのuser再送はcancelしない。自然終了は最後の音声を残す。背景再生には新しいAppState制約を設けない。
+UIはjob通知を既存の発言queueへ積み、生成Promiseでなく実再生終了を待つ。別画面の音声待機、未attach job取消、UUIDによる古いrequest保護、履歴の手動text再生を維持する。通常voice履歴の再生ボタンと直前の標準Footer統一も維持した。
+新しいphase試験で、native identity代入→fsync待ち中にcompletedがdeltaを追い越す既存observerの順序問題を再現した。保存完了まで全通知をbufferする小修正を共通owner境界へ入れ、実filesystem rename gateで受信順を検証した。TTS側の重複削除や本人の学習・タスク判断変更で対処していない。
 
 ## 検証したこと
 
@@ -43,11 +46,16 @@ TTSは既存プレイヤーと本人の声設定を使う。新着の確定発�
 | 前回の[製品scope／controller統合試験](../private_runner/tests/orchestrator-consultation-boundaries.test.mjs) | 途中表示修正版29/29 pass。空room再読込、user単位予算reset、旧native親の招待tool登録、重複加入、紹介生成のbounded入力・通常非汚染、上限引下げ再読込、stop後unknownの新入力も検証。採用済み／未採用学習の実state入力選別assert強化後、該当1件も1/1 pass。native phase／回復2/2、traceの公開projection・途中出力・停止→新run・指示byte境界も検証 |
 | 既存voice hook・ボード・activity hook・Markdown・承認・質問・calendarの7 UI suites | 前回185/185 pass。新Markdown依存のnative moduleをboard testで適切にmockして確認 |
 | 前回の途中表示修正版の相談画面・通常voice画面・共通入力の3 UI suites | 94/94 pass。既存Markdownを含む4 suitesは101/101 pass（Markdown7件は上の既存7 suitesと重複、加算しない） |
-| 直前の製品scope／controller統合試験（今回backend差分なし） | 33/33 pass。終了予約・新user優先・peer／未読user拒否・終了後late stop／再開・status回復とfailed／interruptedを追加 |
+| 前回の製品scope／controller統合試験 | 33/33 pass。終了予約・新user優先・peer／未読user拒否・終了後late stop／再開・status回復とfailed／interruptedを追加 |
 | 前回の相談／通常voice／STT footer／読み上げqueue 4 UI suites | 当時101/101 pass（ChatComposerへの切替時。今回その入力は撤去）。IME／全画面／編集中保持、live確定のみ再生、初回／再接続履歴除外、owner声、再生完了待ち、失敗／他画面／遅い旧request／cleanupを確認 |
 | 前回の既存stream TTS／playback session／fullscreen 3 suites | 52/52 pass。上の4 suitesとは別、fullscreen8件の先行baselineとは重複するため加算しない |
 | 前回の既存Board／macOS AppScreenContent 2 suites | 83/83 pass。再生prop接続と画面非表示時cleanupの読込回帰を確認 |
-| 今回の実Footer共用・通常voice・相談・読み上げqueue 4 suites | 100/100 pass。両画面の同一panel／glow、Enter送信、生成中のタップ編集、受理前／編集中の下書き、停止scope、通常状態導出を確認。文字animationの試験はscreen mockから実Footerへ移した |
+| 前回の実Footer共用・通常voice・相談・読み上げqueue 4 suites | 100/100 pass。両画面の同一panel／glow、Enter送信、生成中のタップ編集、受理前／編集中の下書き、停止scope、通常状態導出を確認。文字animationの試験はscreen mockから実Footerへ移した |
+| 今回のscope／controller統合 | 37/37 pass。実native fake→phase gate→既存segmenterで句点時点の早期合成、fsync中の通知順、未知phase／PASS／commentary／tail、preview上限非依存、需要購読／新user／同ID retry／取消／EIOを検証 |
+| 今回の共通segment／job lifecycle | 18/18 pass。既存providerをfake fetchに置換し、句点でturn完了前に音声chunkが得られること、tailとdoneの一度だけ確定、取消後の後続／遅い音声抑止を確認 |
+| 今回のWS transport | 46/46 pass。subscribe応答待ち中closeで同じ購読を解除することも検証 |
+| 今回の相談／queue／通常voice／標準Footer 4 suites | 102/102 pass。job attachの順序、duplicate／queued cancel、自然終了音声維持、購読ready前送信抑止、新run開始後の誤取消防止、履歴手動再生を確認 |
+| 今回の通常voice-context全件 | 244/244 pass（223 top-level、153.257秒）。通知順序変更に関連する通常実行・識別保存・中断・phase／復旧を含む全件回帰 |
 | 通常／macOS TypeScript | 両方pass |
 | 変更JavaScriptの構文・diff空白・文書リンク | pass |
 
@@ -67,7 +75,7 @@ TTSは既存プレイヤーと本人の声設定を使う。新着の確定発�
 ## 残る制限
 
 現在の本人runtimeはWeb検索・shellの任意network・共有MCP／appsを無効にしており、今回その権限は拡大していない。toolが動いたことと、最新外部情報を取得できたことを同一視しない。実能力の説明は送信前のbyte予算にも含める。実LLMで反復や事実誤認が解消したという結果ではなく、追加の有料モデル呼出しはゼロである。
-完全にphase情報のない旧native形式は互換動作を維持するため、過去のcommentaryを正しく識別できる保証はない。同processの再接続はlive snapshotを再取得できるが、process再起動前の未確定trace全体の復元は保証しない。
+完全にphase情報のない旧native形式は互換動作を維持するため、過去のcommentaryを正しく識別できる保証はない。相談の未知phaseは確定本文まで音声を保留する。既に発声した文は後の失敗で戻せず、cancelは後続生成と遅いemitを止める。既に開始したproviderリクエスト自体の取消は保証しない。同processの再接続はlive snapshotを再取得できるが、process再起動前の未確定trace全体の復元は保証しない。
 
 終了toolを本人が適切な意味で呼ぶこと、実nativeと端末の音声再生は有料モデル／実機で確認していない。fake試験は制御・配送・再生状態の境界を検証したもので、実会話で挨拶の反復が解消したという結果ではない。
 
