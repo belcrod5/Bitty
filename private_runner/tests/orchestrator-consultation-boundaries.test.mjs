@@ -795,7 +795,7 @@ test("scope-only native invitation validates registered IDs, deduplicates and jo
   assert.ok(inputs[1].participants.some((item) => item.orchestratorId === invited.id));
   assert.ok(inputs[2].peerMessages.some((message) => message.source === "membership"));
   const scopeActive = await json(path.join(rootDir, "scopes", room.id, "active.json"));
-  assert.equal(scopeActive.nativeConversationToolsVersion, "consultation-invite-v1");
+  assert.equal(scopeActive.nativeConversationToolsVersion, "consultation-controls-v2");
   assert.notEqual(scopeActive.nativeThreadId, oldParent, "an old scoped parent is safely replaced to register the capability");
   await ownerTurn(service, "main", "ordinary response");
   const ordinaryParent = regularParents(rpc.calls).at(-1);
@@ -951,4 +951,88 @@ test("effective consultation instructions are bounded before dispatch, including
   await waitFor(async () => (await restored.get(room.id)).reason === "instructions_too_long");
   assert.equal(rpc.calls.filter(({method}) => method === "turn/start").length, 0);
   assert.equal((await restored.get(room.id)).run, null);
+});
+
+test("a native finish request closes only after successful completion and stays ended across reload until a new user message", { timeout: 20000 }, async (t) => {
+  const userMessageId = randomUUID(), taskCalls = [[{ namespace: "consultation", tool: "finish", arguments: { userMessageId } }]];
+  const { controller, room, rpc, service, directory, track } = await consultationFixture(t, { taskCalls, replyFor: () => "終了します。" });
+  await controller.supplement(room.id, { text: "これで相談を終了します", messageId: userMessageId });
+  await waitFor(async () => (await controller.get(room.id)).reason === "ended");
+  const ended = await controller.get(room.id);
+  assert.equal(ended.turns, 1); assert.equal(ended.messages.at(-1).text, "終了します。"); assert.equal(ended.run, null);
+  assert.equal(rpc.calls.filter(({method,params}) => method === "turn/start" && params.input[0].text.startsWith('{"kind":"consultation"')).length, 1);
+  assert.equal((await controller.stop(room.id)).reason, "ended", "a late stop cannot erase a completed finish");
+  await assert.rejects(controller.resume(room.id), /Send a new message/);
+  await controller.close();
+  const restored = createVoiceConsultationService({ rootDir: path.join(directory,"rooms"), orchestrators: service }); track(restored);
+  await assert.rejects(restored.resume(room.id), /Send a new message/);
+  await restored.configure(room.id, { template: ended.template, maxTurns: 1 });
+  await restored.supplement(room.id, { text: "新しい相談です", messageId: randomUUID() });
+  await waitFor(async () => (await restored.get(room.id)).reason === "limit");
+});
+
+test("a finish reservation cannot swallow a new user instruction arriving during its native turn", { timeout: 20000 }, async (t) => {
+  const userMessageId = randomUUID();
+  const { controller, room, rpc } = await consultationFixture(t, {
+    taskCalls: [[{ namespace: "consultation", tool: "finish", arguments: { userMessageId } }]], replyFor: () => "承知しました",
+    responseEvents: () => [{ method: "item/started", params: { item: { id: "comment", type: "agentMessage", phase: "commentary" } } }],
+  });
+  await controller.supplement(room.id, { text: "ここで終わります", messageId: userMessageId });
+  await waitFor(() => rpc.eventReleases.length === 1);
+  const reserved = await controller.get(room.id);
+  assert.equal(reserved.run.finishUserMessageId, userMessageId);
+  assert.equal(reserved.state, "running");
+  const nextId = randomUUID(); await controller.supplement(room.id, { text: "待って、もう一つ確認", messageId: nextId });
+  rpc.eventReleases.shift()();
+  await waitFor(() => rpc.eventReleases.length === 1);
+  const current = await controller.get(room.id);
+  assert.equal(current.state, "running"); assert.notEqual(current.reason, "ended");
+  assert.equal(JSON.parse(current.run.inputText).newUserMessages.at(-1).id, nextId);
+  await controller.stop(room.id);
+});
+
+test("finish rejects a peer message and a genuine user message not read by the current run", { timeout: 20000 }, async (t) => {
+  const taskCalls = [], { controller, room, rpc } = await consultationFixture(t, { taskCalls, holdResponses: true, replyFor: () => "意見" });
+  const first = randomUUID(); await controller.supplement(room.id, { text: "相談を続けます", messageId: first });
+  await waitFor(() => rpc.releases.length === 1); await rpc.releases.shift()();
+  await waitFor(() => rpc.releases.length === 1);
+  const current = await controller.get(room.id), next = randomUUID();
+  taskCalls.push([{ namespace: "consultation", tool: "finish", arguments: { userMessageId: current.messages.at(-1).id } },
+    { namespace: "consultation", tool: "finish", arguments: { userMessageId: next } }]);
+  await controller.supplement(room.id, { text: "新しい指示", messageId: next });
+  await rpc.releases.shift()(); await waitFor(() => rpc.releases.length === 1);
+  const results = rpc.calls.filter(({method}) => method === "fake/taskResult");
+  assert.equal(results.length, 2); assert.ok(results.every(({value}) => value.success === false));
+  assert.notEqual((await controller.get(room.id)).reason, "ended"); await controller.stop(room.id);
+});
+
+test("a durable finish reservation is recovered by the existing status path, while failed or interrupted turns cannot end a room", { timeout: 20000 }, async (t) => {
+  for (const status of ["completed", "failed", "interrupted"]) {
+    const userMessageId = randomUUID();
+    const { controller, room, rpc, service, directory, track } = await consultationFixture(t, {
+      taskCalls: [[{ namespace: "consultation", tool: "finish", arguments: { userMessageId } }]], replyFor: () => "終了します。",
+    });
+    const original = service.start.bind(service); let terminalResult;
+    service.start = (message, _done, ...args) => original(message, (result) => { terminalResult = result; }, ...args);
+    await controller.supplement(room.id, { text: "これで終了します", messageId: userMessageId });
+    await waitFor(() => terminalResult);
+    const pending = await controller.get(room.id);
+    assert.equal(pending.run.finishUserMessageId, userMessageId);
+    await controller.close();
+    const statusOriginal = service.status.bind(service);
+    service.status = async (...args) => ({ ...await statusOriginal(...args), status });
+    const changes = [];
+    const restored = createVoiceConsultationService({ rootDir: path.join(directory,"rooms"), orchestrators: service,
+      onChanged: (value) => changes.push(value) }); track(restored);
+    if (status === "completed") {
+      await assert.rejects(restored.resume(room.id), /Send a new message/);
+      assert.equal((await restored.get(room.id)).reason, "ended");
+    } else {
+      await restored.resume(room.id);
+      assert.ok(changes.some((value) => value.state === "paused" && value.reason === status), "failed native status passes through failure settle before retry");
+      assert.ok(changes.every((value) => value.reason !== "ended"));
+      await restored.stop(room.id);
+    }
+    if (status === "completed") assert.equal(rpc.calls.filter(({method,params}) => method === "turn/start" && params.input[0].text.startsWith('{"kind":"consultation"')).length, 1);
+  }
 });

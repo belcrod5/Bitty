@@ -6188,6 +6188,9 @@ function AppContent({ onReady }: { onReady?: () => void }) {
         onStartNewSessionInDirectory={appDrawerProps.onStartNewSessionInDirectory}
         openSessionHistoryPopup={openSessionHistoryPopup}
         voicePlayback={{
+          getPlaybackState: () => ({ messageId: ttsPlaybackMessageIdRef.current, active: Boolean(ttsPlaybackWantedRef.current
+            || ttsPlayingRef.current || streamAudioQueueRef.current.length || streamAudioQueueProcessingRef.current
+            || streamTtsControlRef.current || streamSocketRef.current) }),
           synthesizeSpeechStream,
           stopTtsPlayback,
           isTtsPlaybackActive,

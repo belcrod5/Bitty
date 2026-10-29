@@ -2,13 +2,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { randomUUID } from "expo-crypto";
 import Reanimated, { FadeOut, ZoomIn } from "react-native-reanimated";
 import { Ionicons } from "@expo/vector-icons";
-import { Alert, LayoutAnimation, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Alert, LayoutAnimation, Platform, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useRunnerWebSocketManager, useRunnerWebSocketSnapshot } from "../../runnerWs/RunnerWebSocketContext";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { KeyboardAvoidingView } from "../keyboardController";
 import { UserInputModal } from "../components/UserInputModal";
 import { VoiceResetConfirmationModal } from "../components/VoiceResetConfirmationModal";
-import { StreamingSttFooter } from "../components/StreamingSttFooter";
+import { ChatComposerInput, MACOS_CHAT_SUBMIT_KEY_EVENTS } from "../components/ChatComposerInput";
+import { ComposerFullscreenEditor } from "../components/ComposerFullscreenEditor";
+import { useAppStyles } from "../styles";
+import { useConsultationSpeech } from "../hooks/useConsultationSpeech";
+import type { VoiceConversationPlayback } from "./VoiceConversationScreen";
 import { MarkdownText } from "../components/MarkdownText";
 import { VoiceTurnTrace, type VoiceTurnTraceData } from "../components/VoiceTurnTrace";
 import { formatMessageTimestampLabel } from "../utils/formatting";
@@ -30,14 +34,14 @@ export type ConsultationRoom = {
 };
 
 const reasonText: Record<string, string> = {
-  ready: "相談を始められます", all_pass: "今のところ、追加の発言はありません", limit: "回数または時間の上限に達しました",
+  ended: "相談を終了しました", ready: "相談を始められます", all_pass: "今のところ、追加の発言はありません", limit: "回数または時間の上限に達しました",
   user_stopped: "停止しました", session_busy: "参加者が別の処理中です。終わってから再開できます",
   unknown: "前の返答を確認する必要があります", recovery_required: "前回の処理を確認して再開します",
   confirmation_required: "セッション切替の確認を待っています",
   instructions_too_long: "相談の進め方を短くしてから、もう一度試してください",
 };
 
-export function VoiceConsultationScreen({ onClose }: { onClose: () => void }) {
+export function VoiceConsultationScreen({ onClose, playback }: { onClose: () => void; playback?: VoiceConversationPlayback }) {
   const manager = useRunnerWebSocketManager();
   const { connected, generation } = useRunnerWebSocketSnapshot();
   const { theme } = useVisualTheme();
@@ -50,6 +54,16 @@ export function VoiceConsultationScreen({ onClose }: { onClose: () => void }) {
   const [templateExpanded, setTemplateExpanded] = useState(false);
   const [maxTurns, setMaxTurns] = useState("9");
   const [supplement, setSupplement] = useState("");
+  const [fullscreen, setFullscreen] = useState(false), [submitRequestId, setSubmitRequestId] = useState(0);
+  const inputRef = useRef<TextInput>(null), fullscreenInputRef = useRef<TextInput>(null);
+  const appStyles = useAppStyles();
+  const speech = useConsultationSpeech(mode === "room" ? selectedRoom : "", playback);
+  const speechContext = useRef({ selectedRoom, mode, owners, enqueue: speech.enqueue });
+  speechContext.current = { selectedRoom, mode, owners, enqueue: speech.enqueue };
+  const knownMessages = useRef(new Map<string, Set<string>>());
+  const knownRevisions = useRef(new Map<string, number>());
+  const speechReady = useRef(false);
+  useEffect(() => { setFullscreen(false); }, [selectedRoom, mode]);
   const [error, setError] = useState(""), [busy, setBusy] = useState(false), [resetDeadline, setResetDeadline] = useState<number | null>(null);
   const scroll = useRef<ScrollView>(null);
   const historyAtBottom = useRef(true);
@@ -57,7 +71,17 @@ export function VoiceConsultationScreen({ onClose }: { onClose: () => void }) {
   const pendingSend = useRef<{ roomId: string; text: string; messageId: string } | null>(null);
   const room = rooms.find((item) => item.id === selectedRoom);
   const userInput = useVoiceUserInput(manager, room?.run?.orchestratorId || "");
-  const applyRoom = useCallback((value: ConsultationRoom) => {
+  const applyRoom = useCallback((value: ConsultationRoom, readAloud = false) => {
+    if ((knownRevisions.current.get(value.id) ?? -1) > value.revision) return;
+    knownRevisions.current.set(value.id, value.revision);
+    const seen = knownMessages.current.get(value.id), context = speechContext.current;
+    if (readAloud && speechReady.current && seen && context.selectedRoom === value.id && context.mode === "room") {
+      for (const message of value.messages) {
+        const owner = context.owners.find((item) => item.id === message.speakerId);
+        if (!seen.has(message.id) && message.source === "participant" && owner) context.enqueue({ id: message.id, text: message.text, owner });
+      }
+    }
+    knownMessages.current.set(value.id, new Set([...(seen || []), ...value.messages.map((message) => message.id)]));
     setRooms((current) => {
       const previous = current.find((item) => item.id === value.id);
       if (previous && previous.revision > value.revision) return current;
@@ -68,6 +92,7 @@ export function VoiceConsultationScreen({ onClose }: { onClose: () => void }) {
     });
   }, []);
   useEffect(() => {
+    speechReady.current = false;
     setRooms((current) => current.map((room) => room.run?.progress ? { ...room, run: { ...room.run, progress: undefined } } : room));
   }, [generation]);
   const send = useCallback(async (operation: string, payload: Record<string, unknown> = {}) => {
@@ -93,13 +118,14 @@ export function VoiceConsultationScreen({ onClose }: { onClose: () => void }) {
       const value = result as { rooms: ConsultationRoom[]; defaultTemplate: string };
       setOwners(ownerPayload.orchestrators);
       for (const item of value.rooms) applyRoom(item);
+      speechReady.current = true;
       setTemplate((existing) => existing || value.defaultTemplate);
     }).catch((cause) => { if (current) setError(cause instanceof Error ? cause.message : "相談を読み込めません"); });
     return () => { current = false; };
   }, [manager, connected, generation, send, applyRoom]);
   useEffect(() => manager.subscribe({ channel: "agent", op: "voice.consultations.changed" }, (message) => {
     const value = message.payload as ConsultationRoom;
-    if (value?.id && Array.isArray(value.messages)) applyRoom(value);
+    if (value?.id && Array.isArray(value.messages)) applyRoom(value, true);
   }), [manager, applyRoom]);
   useEffect(() => {
     let current = true;
@@ -175,6 +201,15 @@ export function VoiceConsultationScreen({ onClose }: { onClose: () => void }) {
     applyRoom(value); setSelectedRoom(value.id); setMode("room");
   });
 
+  const submit = async (text: string, accepted: () => void) => {
+    if (!room || !connected || busy || !text.trim()) return;
+    setError("");
+    const previous = pendingSend.current;
+    const submission = previous?.roomId === room.id && previous.text === text ? previous : { roomId: room.id, text, messageId: randomUUID() };
+    pendingSend.current = submission;
+    try { applyRoom(await send("supplement", submission) as ConsultationRoom); if (pendingSend.current === submission) pendingSend.current = null; speech.stop(); accepted(); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "送信できません"); }
+  };
   const live = room?.run?.progress;
   const liveText = live?.messages.filter((item) => item.phase !== "commentary").map((item) => item.text).join("\n").trim() || "";
   const lastStep = room?.steps?.at(-1);
@@ -300,7 +335,10 @@ export function VoiceConsultationScreen({ onClose }: { onClose: () => void }) {
             speakerName: message.speakerId === "user" ? "あなた" : message.speakerId === "system" ? "参加・設定" : ownerFor(message.speakerId).name,
             ...(message.source === "participant" ? { orchestratorId: message.speakerId, orchestrator: ownerFor(message.speakerId),
               trace: room.steps?.find((step) => step.runId === message.id)?.trace } : {}),
-          }))} />
+          }))} onRead={playback ? (message) => {
+            const owner = owners.find((item) => item.id === message.orchestratorId);
+            if (owner) speech.read({ id: message.clientOperationId, text: message.text, owner });
+          } : undefined} speakingMessageId={speech.activeMessageId} onStopReading={speech.stop} />
           {room.state === "running" && room.run ? <View style={{ gap: 8 }}>
             {liveText && liveText !== "[[PASS]]" ? <VoiceConversationMessages messages={[{ role: "assistant", text: liveText, clientOperationId: room.run.id,
               speakerName: ownerFor(room.run.orchestratorId).name, orchestrator: ownerFor(room.run.orchestratorId), streaming: true }]} /> : null}
@@ -319,7 +357,7 @@ export function VoiceConsultationScreen({ onClose }: { onClose: () => void }) {
           </View> : null}
           {room.state !== "running" && room.messages.length ? <View style={{ alignItems: "center", gap: 12, paddingVertical: 14 }}>
             <Text accessibilityLiveRegion="polite" style={styles.secondary}>{reasonText[room.reason] || "続きがあれば、メッセージをどうぞ。"}</Text>
-            {["paused", "stopped"].includes(room.state) && room.turns < room.maxTurns
+            {room.reason !== "ended" && ["paused", "stopped"].includes(room.state) && room.turns < room.maxTurns
               ? button("確認して再開", () => void act(async () => { applyRoom(await send("resume", { roomId: room.id }) as ConsultationRoom); }), !connected) : null}
           </View> : null}
         </> : null}
@@ -331,20 +369,31 @@ export function VoiceConsultationScreen({ onClose }: { onClose: () => void }) {
         {button("相談を作る", create, !connected || selected.length < 2)}
       </View> : null}
       {mode === "room" && room ? <View style={styles.footer}>
-        <StreamingSttFooter manual transcript={supplement} phase="idle" reduceMotion={reduceMotion !== false}
-          onChangeText={setSupplement} submitDisabled={!connected || busy} stopAvailable={Boolean(room.run) || room.state === "running"}
-          voiceStatus={room.state === "running" ? "responding" : undefined}
-          onStop={() => void act(async () => { applyRoom(await send("stop", { roomId: room.id }) as ConsultationRoom); })}
-          onSubmit={async (text, accepted) => {
-            setError("");
-            const previous = pendingSend.current;
-            const submission = previous?.roomId === room.id && previous.text === text ? previous : { roomId: room.id, text, messageId: randomUUID() };
-            pendingSend.current = submission;
-            try { applyRoom(await send("supplement", submission) as ConsultationRoom); if (pendingSend.current === submission) pendingSend.current = null; accepted(); }
-            catch (cause) { setError(cause instanceof Error ? cause.message : "送信できません"); throw cause; }
-          }} />
+        {speech.error ? <Text accessibilityLiveRegion="polite" style={styles.secondary}>{speech.error}</Text> : null}
+        <View style={appStyles.chatInputWrapper}>
+          <ChatComposerInput inputRef={inputRef} value={supplement} showFullscreenButton
+            onChangeText={setSupplement} onFocus={() => {}} onBlur={() => {}}
+            onSubmit={submit} submitRequestId={submitRequestId} onOpenFullscreen={() => setFullscreen(true)} editable={!busy} />
+          <View style={appStyles.chatComposerIconRow}>
+            <Pressable accessibilityRole="button" accessibilityLabel="送信" disabled={!connected || busy || !supplement.trim()}
+              onPress={() => setSubmitRequestId((value) => value + 1)} style={styles.iconButton}>
+              <Ionicons name="caret-forward" size={25} color={!connected || busy || !supplement.trim() ? theme.colors.textMuted : theme.colors.accent} />
+            </Pressable>
+            {speech.pending ? <Pressable accessibilityRole="button" accessibilityLabel="読み上げを停止" onPress={speech.stop} style={styles.iconButton}>
+              <Ionicons name="volume-mute-outline" size={21} color={theme.colors.textSecondary} />
+            </Pressable> : null}
+            {room.run || room.state === "running" ? <Pressable accessibilityRole="button" accessibilityLabel="停止" style={styles.iconButton}
+              onPress={() => { speech.stop(); void act(async () => { applyRoom(await send("stop", { roomId: room.id }) as ConsultationRoom); }); }}>
+              <Ionicons name="stop" size={20} color={theme.colors.textSecondary} />
+            </Pressable> : null}
+          </View>
+        </View>
       </View> : null}
     </KeyboardAvoidingView>
+    <ComposerFullscreenEditor visible={fullscreen && mode === "room"} inputRef={fullscreenInputRef}
+      value={supplement} history={(room?.messages || []).filter((message) => message.source === "user").map((message) => message.text).reverse()}
+      onChangeText={setSupplement} onSubmit={submit} onClose={() => setFullscreen(false)}
+      submitKeyEvents={Platform.OS === "macos" ? MACOS_CHAT_SUBMIT_KEY_EVENTS : undefined} onFocus={() => {}} onBlur={() => {}} />
     <UserInputModal request={userInput.request} onDecide={userInput.decide} />
     <VoiceResetConfirmationModal request={resetRequest} />
   </SafeAreaView>;

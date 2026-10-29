@@ -4,7 +4,7 @@
 
 ## 実装したこと
 
-ボードのmic隣に「相談」を追加した。本人画像のアイコンgridで2〜8人を選んで空roomを作り、その後チャットで通常の最初のメッセージを送る。長押しで紹介を確認できる。本人は選択順で一人ずつ考え、他者の発言を受けて話す。吹き出しはVoiceConversationMessages、入力はStreamingSttFooter manual表示を通常画面と共用する。補足・訂正、停止、上限・相談の進め方の編集を持つ。通常の本人選択は変更しない。
+ボードのmic隣に「相談」を追加した。本人画像のアイコンgridで2〜8人を選んで空roomを作り、その後チャットで通常の最初のメッセージを送る。長押しで紹介を確認できる。本人は選択順で一人ずつ考え、他者の発言を受けて話す。吹き出しはVoiceConversationMessages、入力は通常チャットのChatComposerInput・ComposerFullscreenEditorを直接共用する。補足・訂正、停止、上限・相談の進め方の編集を持つ。通常の本人選択は変更しない。
 
 [本人サービス](../private_runner/src/voice-orchestrator-service.mjs)へ任意conversationKey、[既存context](../private_runner/src/voice-context-service.mjs)へrun単位additionalInstructionsを接続した。未指定の通常defaultは既存処理を使う。相談も同じfactory／runTurn／本人runtimeを通り、将来の本人修正が同じ処理へ反映される。
 scopeは別active・events・native threadを持ち、本人workspace・設定・memory store instance・learning・task本体を共用する。通常contextがmemory／summaryと共有task overviewのcache／進行taskを一組だけ所有する。既存のメモリ保存・学習採用・承認・忘却・タスク判断は変更していない。
@@ -24,7 +24,13 @@ controllerは送信前後の停止競合、既知未受理の同run再開、unkn
 元依頼を毎回同じquestionとして渡す入力を改め、参照専用topic／新着user／peer更新／自分の既発言参照を分けた。初参加でも既に他者が答えた内容を読み、意味のある追加貢献・確認・異論・分担だけを求める。特定の話題のルールや文字列重複の削除で隠していない。
 既存native observerの公開commentaryとfinal_answerを分離し、完了・unknown回復の成果へcommentaryを混ぜない。開始で判明したphaseと、確定時に初めて判明したphaseの両方を扱い、回復用の小さなphase証拠も保存する。
 実tool名・入力・途中出力・状態・利用可能な結果を人向けtraceとして表示し、最終成果は一度だけ置換する。traceは公開messagesとは別のstepsへ保存する。peer入力は公開messageの明示projectionなので、toolが読んだ本人の私的情報は自動共有しない。省略するのは途中・tool previewだけで、確定本文は切らない。
-UIを実avatar中心の静かな一覧、画像grid、広い相談本文、簡潔な設定へ整えた。本文は既存MarkdownText、入力は同じmanual footerを使う。light／dark・390／760幅・作業記録展開・空roomを実component host treeの架空previewで確認する。ブラウザ配置previewと実機描画は別である。
+UIを実avatar中心の静かな一覧、画像grid、広い相談本文、簡潔な設定へ整えた。本文は既存MarkdownText、入力は既存汎用composerを使う。light／dark・390／760幅・作業記録展開・空roomを実component host treeの架空previewで確認する。ブラウザ配置previewと実機描画は別である。
+
+## 終了・入力・読み上げの追加修正
+
+相談入力を通常チャットのChatComposerInput／ComposerFullscreenEditorへ移し、独自manual footer分岐を削除した。日本語確定・macOS CmdEnter・送信失敗時の下書き保持・受理後の編集中本文を消さない挙動をそのまま使う。
+終了は本人が通常会話を解釈してconsultation.finishへ真正user発言IDを渡す。終了予約をrunへ保存し、正常完了と同時に確定する。新user途中到着を優先し、失敗／中断・古いrunでは終了せず、終了後の遅いstopでも終了を保持する。同じuserのresumeは拒否し、新userで再開する。別AI分類・文字列判定・返信JSON指定は追加していない。
+TTSは既存プレイヤーと本人の声設定を使う。新着の確定発言だけを順に再生し、初回表示・再接続の過去発言は自動再生しない。通常voice履歴にも同じ読み上げボタンを追加した（既存本人の実行・判断条件の変更ではない）。共用履歴の手動読み上げ、停止、失敗後の次発言、別画面の音声待機、room移動／画面閉鎖の所有音声cleanupを持つ。生成Promiseと再生終了を区別し、既存pipeline snapshotで古いidle propsを補う。再生ごとのUUIDで遅い旧requestが同じ履歴の再読を止めない。
 
 ## 検証したこと
 
@@ -33,10 +39,14 @@ UIを実avatar中心の静かな一覧、画像grid、広い相談本文、簡�
 | 確認 | 結果 |
 | --- | --- |
 | 前段階の既存backend 5 suites | 当時361/361 pass、173.032秒 |
-| 今回の既存backend 6 suites（runtime profileを含む） | 初回366/367 pass。追加した能力説明のadmission byte計上不整合1件を修正後、orchestrator42/42・context関連11/11を再実行してpass。他325件は初回pass。現在版の全367件単一runとは主張しない |
-| [製品scope／controller統合試験](../private_runner/tests/orchestrator-consultation-boundaries.test.mjs) | 途中表示修正版29/29 pass。空room再読込、user単位予算reset、旧native親の招待tool登録、重複加入、紹介生成のbounded入力・通常非汚染、上限引下げ再読込、stop後unknownの新入力も検証。採用済み／未採用学習の実state入力選別assert強化後、該当1件も1/1 pass。native phase／回復2/2、traceの公開projection・途中出力・停止→新run・指示byte境界も検証 |
-| 既存voice hook・ボード・activity hook・Markdown・承認・質問・calendarの7 UI suites | 今回185/185 pass。新Markdown依存のnative moduleをboard testで適切にmockして確認 |
-| 途中表示修正版の相談画面・通常voice画面・共通入力の3 UI suites | 94/94 pass。既存Markdownを含む4 suitesは101/101 pass（Markdown7件は上の既存7 suitesと重複、加算しない） |
+| 前回の既存backend 6 suites（runtime profileを含む） | 初回366/367 pass。追加した能力説明のadmission byte計上不整合1件を修正後、orchestrator42/42・context関連11/11を再実行してpass。他325件は初回pass。現在版の全367件単一runとは主張しない |
+| 前回の[製品scope／controller統合試験](../private_runner/tests/orchestrator-consultation-boundaries.test.mjs) | 途中表示修正版29/29 pass。空room再読込、user単位予算reset、旧native親の招待tool登録、重複加入、紹介生成のbounded入力・通常非汚染、上限引下げ再読込、stop後unknownの新入力も検証。採用済み／未採用学習の実state入力選別assert強化後、該当1件も1/1 pass。native phase／回復2/2、traceの公開projection・途中出力・停止→新run・指示byte境界も検証 |
+| 既存voice hook・ボード・activity hook・Markdown・承認・質問・calendarの7 UI suites | 前回185/185 pass。新Markdown依存のnative moduleをboard testで適切にmockして確認 |
+| 前回の途中表示修正版の相談画面・通常voice画面・共通入力の3 UI suites | 94/94 pass。既存Markdownを含む4 suitesは101/101 pass（Markdown7件は上の既存7 suitesと重複、加算しない） |
+| 今回の製品scope／controller統合試験 | 33/33 pass。終了予約・新user優先・peer／未読user拒否・終了後late stop／再開・status回復とfailed／interruptedを追加 |
+| 今回の相談／通常voice／STT footer／読み上げqueue 4 UI suites | 101/101 pass。実共有composerのIME／全画面／編集中保持、live確定のみ再生、初回／再接続履歴除外、owner声、再生完了待ち、失敗／他画面／遅い旧request／cleanupを確認 |
+| 既存stream TTS／playback session／fullscreen 3 suites | 52/52 pass。上の4 suitesとは別、fullscreen8件の先行baselineとは重複するため加算しない |
+| 今回の既存Board／macOS AppScreenContent 2 suites | 83/83 pass。再生prop接続と画面非表示時cleanupの読込回帰を確認 |
 | 通常／macOS TypeScript | 両方pass |
 | 変更JavaScriptの構文・diff空白・文書リンク | pass |
 
@@ -57,6 +67,8 @@ UIを実avatar中心の静かな一覧、画像grid、広い相談本文、簡�
 
 現在の本人runtimeはWeb検索・shellの任意network・共有MCP／appsを無効にしており、今回その権限は拡大していない。toolが動いたことと、最新外部情報を取得できたことを同一視しない。実能力の説明は送信前のbyte予算にも含める。実LLMで反復や事実誤認が解消したという結果ではなく、追加の有料モデル呼出しはゼロである。
 完全にphase情報のない旧native形式は互換動作を維持するため、過去のcommentaryを正しく識別できる保証はない。同processの再接続はlive snapshotを再取得できるが、process再起動前の未確定trace全体の復元は保証しない。
+
+終了toolを本人が適切な意味で呼ぶこと、実nativeと端末の音声再生は有料モデル／実機で確認していない。fake試験は制御・配送・再生状態の境界を検証したもので、実会話で挨拶の反復が解消したという結果ではない。
 
 招待の同意意味は通常文の確認と本人モデルの判断へ委ね、追加分類LLMや承認state machineを使わない。scope限定native toolが登録済みID・run・世代・重複・人数を検査し、正常終了後に追加する。promptの確認が確実に守られることは実モデル未検証である。
 

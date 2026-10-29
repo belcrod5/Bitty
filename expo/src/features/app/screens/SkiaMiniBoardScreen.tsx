@@ -791,7 +791,7 @@ export function SkiaMiniBoardScreen({
     onVoiceNavigationHandled?.(pendingVoiceOrchestratorId);
   }, [activeScreen, hasVoicePlayback, onVoiceNavigationHandled, pendingVoiceOrchestratorId]);
   useEffect(() => {
-    if (activeScreen !== "skia_board") setVoiceOpen(false);
+    if (activeScreen !== "skia_board") { setVoiceOpen(false); setConsultationOpen(false); }
   }, [activeScreen]);
   const { runnerUrl, runnerToken, sanitizeTextForTts, handleAssistantAudioButtonPress } = useChatScreen();
   const { activities, orchestrators, selectedId } = useOrchestratorActivities(runnerUrl, runnerToken, true);
@@ -2216,7 +2216,7 @@ export function SkiaMiniBoardScreen({
         <VoiceConversationScreen key={voiceOpenSequence} {...voicePlayback} initialOrchestratorId={voiceTargetId} initialControlSignal={voiceControlSignal}
           onClose={() => setVoiceOpen(false)} />
       ) : null}
-      {consultationOpen ? <VoiceConsultationScreen onClose={() => setConsultationOpen(false)} /> : null}
+      {consultationOpen ? <VoiceConsultationScreen playback={voicePlayback} onClose={() => setConsultationOpen(false)} /> : null}
       <SessionContextMenu
         target={sessionContextMenuTarget}
         onClose={() => setSessionContextMenuTarget(null)}

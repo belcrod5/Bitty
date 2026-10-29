@@ -35,6 +35,7 @@ export type VoiceConversationPlayback = {
   synthesizeSpeechStream: (text: string, target: TtsPlaybackTarget & { messageId: string }) => Promise<void>;
   stopTtsPlayback: (options?: { interruptStream?: boolean; reason?: string; expectedMessageId?: string }) => Promise<void>;
   isTtsPlaybackActive: boolean;
+  getPlaybackState?: () => { messageId: string; active: boolean };
   isTtsPlaying?: boolean;
   ttsUiStatus: "idle" | "queued" | "synthesizing" | "playing" | "error";
   ttsSpeed?: number;
@@ -554,7 +555,9 @@ function VoiceConversationSession({
                         ? <Text style={{ color: "#ffffff", textAlign: "center" }}>履歴はまだありません</Text>
                         : null}
                   <VoiceConversationMessages messages={historyMessages} orchestratorId={orchestrator.id}
-                    learningPaused={paused || !historyExpanded} />
+                    learningPaused={paused || !historyExpanded}
+                    onRead={(message) => { void playSpeech(message.text, message.clientOperationId); }}
+                    speakingMessageId={isTtsPlaybackActive ? voicePlaybackMessageIdRef.current : ""} onStopReading={cancelSpeaking} />
                 </ScrollView>
                 {taskChecklistOpen ? (
                   <View testID="voice-task-checklist-panel" style={{ position: "absolute", right: 0, top: 0,

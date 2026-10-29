@@ -1,5 +1,6 @@
+import { Ionicons } from "@expo/vector-icons";
 import { Fragment } from "react";
-import { Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { formatMessageTimestampLabel } from "../utils/formatting";
 import { formatOutputTokens } from "../utils/messageTokens";
@@ -15,8 +16,9 @@ export type VoiceConversationMessage = {
 };
 
 // Both the ordinary chat and consultation use the same transcript presentation.
-export function VoiceConversationMessages({ messages, orchestratorId, learningPaused = false }: {
+export function VoiceConversationMessages({ messages, orchestratorId, learningPaused = false, onRead, speakingMessageId, onStopReading }: {
   messages: VoiceConversationMessage[]; orchestratorId?: string; learningPaused?: boolean;
+  onRead?: (message: VoiceConversationMessage) => void; speakingMessageId?: string; onStopReading?: () => void;
 }) {
   const { theme } = useVisualTheme();
   return <>{messages.map((message, index) => {
@@ -45,6 +47,12 @@ export function VoiceConversationMessages({ messages, orchestratorId, learningPa
         {message.streaming || message.role === "system" ? <Text selectable style={{ color: textColor, fontSize: 15, lineHeight: 23 }}>{message.text}</Text>
           : <MarkdownText content={message.text} tone={user ? "user" : "assistant"}
             textStyle={{ color: textColor, fontSize: 15, lineHeight: 23 }} containerStyle={{ width: "auto", minWidth: 0 }} resolveImageSource={() => null} />}
+        {message.role === "assistant" && !message.streaming && onRead ? <Pressable accessibilityRole="button"
+          accessibilityLabel={speakingMessageId === message.clientOperationId ? "読み上げを停止" : `${message.speakerName || "AI"}の返答を読み上げ`}
+          onPress={() => speakingMessageId === message.clientOperationId ? onStopReading?.() : onRead(message)}
+          style={{ alignSelf: "flex-end", padding: 8 }}>
+          <Ionicons name={speakingMessageId === message.clientOperationId ? "stop-circle-outline" : "volume-medium-outline"} size={18} color={theme.colors.textSecondary} />
+        </Pressable> : null}
         {message.trace ? <VoiceTurnTrace trace={message.trace} live={message.streaming} /> : null}
         {message.role === "assistant" && owner && !message.streaming ? <AnswerLearningDetails orchestratorId={owner}
           operationId={message.clientOperationId} paused={learningPaused} /> : null}

@@ -31,9 +31,6 @@ function usageLabel(usage: StreamingSttUsage | null) {
 
 export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   transcript: string;
-  manual?: boolean;
-  submitDisabled?: boolean;
-  stopAvailable?: boolean;
   phase: StreamingSttPhase;
   onStop: () => void;
   voiceStatus?: "responding" | "speaking";
@@ -54,12 +51,12 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   onDiscardCorrection?: () => void;
   onChangeCorrectionText?: (text: string) => void;
   trailingAccessory?: ReactNode;
-}>(function StreamingSttFooter({ transcript, manual = false, submitDisabled = false, stopAvailable = false, phase, onStop, voiceStatus, reduceMotion, voiceContextStats, statusText,
+}>(function StreamingSttFooter({ transcript, phase, onStop, voiceStatus, reduceMotion, voiceContextStats, statusText,
   onChangeText, onFocus, onBlur, onSubmit, onCancelSpeaking, historyExpanded, onHistoryToggle,
   leadingAccessory, trailingAccessory, correctionPreview, onSendCorrection, onEditCorrection, onDiscardCorrection,
   onChangeCorrectionText }, ref) {
   const styles = useAppStyles();
-  const { themeId, theme } = useVisualTheme();
+  const { themeId } = useVisualTheme();
   const systemReduceMotion = useReduceMotionEnabled();
   const motionReduced = reduceMotion ?? systemReduceMotion !== false;
   const [usage, setUsage] = useState<StreamingSttUsage | null>(null);
@@ -118,7 +115,7 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   }, [correctionPreview?.editing]);
 
   useFrameCallback((frame) => {
-    if (manual || motionReduced) return;
+    if (motionReduced) return;
     const elapsed = Math.min(frame.timeSincePreviousFrame ?? 0, 50);
     const speed = glowStatus === "responding" ? 0.28
       : glowStatus === "speaking" ? 0.12 : RAINBOW_GLOW_DEGREES_PER_MS + audioLevel.value * 0.168;
@@ -180,7 +177,7 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   }, []);
 
   const submit = (text: string) => {
-    if (!onSubmit || submitDisabled || submittingRef.current) return;
+    if (!onSubmit || submittingRef.current) return;
     if (text !== latestTranscriptRef.current) {
       latestTranscriptRef.current = text;
       onChangeText?.(text);
@@ -292,7 +289,7 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
           GLOW_SPACE + panelTop + (height - panelTop) / 2);
       }}
     >
-      {!manual ? <Canvas pointerEvents="none" testID="streaming-stt-glow"
+      <Canvas pointerEvents="none" testID="streaming-stt-glow"
         style={{ position: "absolute", left: -GLOW_SPACE, right: -GLOW_SPACE,
           top: -GLOW_SPACE, bottom: -GLOW_SPACE }}>
         {themeId === "standard" ? (
@@ -311,9 +308,8 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
           <SweepGradient c={center} colors={glowColors} mode="repeat"
             start={gradientStart} end={gradientEnd} />
         </Path>
-      </Canvas> : null}
-      <View testID="streaming-stt-panel" style={[styles.chatInputWrapper, { minHeight: 62, backgroundColor: manual ? theme.colors.surface : "#070b12",
-        ...(manual ? { borderWidth: 1, borderColor: theme.colors.border, borderRadius: 24, paddingHorizontal: 14, paddingVertical: 10 } : {}),
+      </Canvas>
+      <View testID="streaming-stt-panel" style={[styles.chatInputWrapper, { minHeight: 62, backgroundColor: "#070b12",
         zIndex: 1 }]}>
         {voiceStatus === "speaking" && onCancelSpeaking ? (
           <TouchableOpacity
@@ -350,7 +346,7 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
               ) : null}
             </View>
           ) : null}
-          {onChangeText && (manual || !voiceStatus) ? (
+          {onChangeText && !voiceStatus ? (
             <TextInput
               ref={inputRef}
               testID="streaming-stt-transcript"
@@ -369,10 +365,10 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
               scrollEnabled
               placeholder={statusText || (phase === "idle" ? "メッセージを入力" : phase === "finalizing" ? "文字起こしを確定中…"
                 : phase === "correcting" ? "文字起こしを補正中…" : phase === "preview" ? "補正結果を確認中…" : "音声を聞いています…")}
-              placeholderTextColor={manual ? theme.colors.textMuted : "#8e9bad"}
-              accessibilityLabel={manual ? "メッセージを入力" : "文字起こしを編集"}
+              placeholderTextColor="#8e9bad"
+              accessibilityLabel="文字起こしを編集"
               {...historyAccessibility}
-              style={{ color: manual ? theme.colors.textPrimary : "#f4f7ff", fontSize: 16, lineHeight: 22, minHeight: 22, maxHeight: manual ? 96 : 66, padding: 0 }}
+              style={{ color: "#f4f7ff", fontSize: 16, lineHeight: 22, minHeight: 22, maxHeight: 66, padding: 0 }}
             />
           ) : (
             <Text
@@ -393,23 +389,17 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
             <Text style={{ color: "#ff9a9a", fontSize: 11, marginTop: 2 }}>{statusText}</Text>
           ) : null}
         </View>
-        {manual ? <TouchableOpacity testID="streaming-stt-send" accessibilityRole="button" accessibilityLabel="送信"
-          disabled={submitDisabled || !transcript.trim()} onPress={() => submit(latestTranscriptRef.current)}
-          style={{ width: 42, height: 42, borderRadius: 12, alignItems: "center", justifyContent: "center",
-            backgroundColor: theme.colors.accent, opacity: submitDisabled || !transcript.trim() ? 0.4 : 1 }}>
-          <Ionicons name="send" size={18} color={theme.colors.textOnAccent} />
-        </TouchableOpacity> : null}
-        {!manual || voiceStatus === "responding" || stopAvailable ? <TouchableOpacity
+        <TouchableOpacity
           testID="streaming-stt-stop"
           accessibilityRole="button"
-          accessibilityLabel={manual ? "停止" : "録音を停止"}
+          accessibilityLabel="録音を停止"
           hitSlop={8}
           disabled={phase === "finalizing"}
           onPress={onStop}
-          style={{ width: 42, height: 42, borderRadius: 12, alignItems: "center", justifyContent: "center", backgroundColor: manual ? theme.colors.surfaceMuted : "#35465c", opacity: phase === "finalizing" ? 0.5 : 1 }}
+          style={{ width: 42, height: 42, borderRadius: 12, alignItems: "center", justifyContent: "center", backgroundColor: "#35465c", opacity: phase === "finalizing" ? 0.5 : 1 }}
         >
-          <Ionicons name="stop" size={18} color={manual ? theme.colors.textPrimary : "#ffffff"} />
-        </TouchableOpacity> : null}
+          <Ionicons name="stop" size={18} color="#ffffff" />
+        </TouchableOpacity>
       </View>
       {leadingAccessory ? (
         <View testID="streaming-stt-leading-accessory"

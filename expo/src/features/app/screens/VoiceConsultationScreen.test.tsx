@@ -1,9 +1,11 @@
-import { Alert } from "react-native";
+import { Alert, Platform } from "react-native";
 import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
 import { VoiceConsultationScreen, type ConsultationRoom } from "./VoiceConsultationScreen";
 
 const mockHandlers = new Map<string, (message: unknown) => void>();
 let mockVisibleOwner = "";
+let mockGeneration = 1;
+let mockListedRoom: ConsultationRoom;
 const mockRoom: ConsultationRoom = {
   id: "room-one", generation: 0, question: "共有メモを作る相談", participants: ["main", "b"],
   profiles: { main: { orchestratorId: "main", name: "A", introduction: "製品" },
@@ -18,7 +20,7 @@ const mockRequest = jest.fn(async (message: { op: string; payload?: Record<strin
     selectedId: "main", orchestrators: [{ id: "main", name: "A", publicIntroduction: "製品" }, { id: "b", name: "B", publicIntroduction: "実装" }],
   } };
   if (message.op === "voice.consultations.list") return { op: `${message.op}.result`, payload: {
-    rooms: [mockRoom], introductions: { main: "製品", b: "実装" }, defaultTemplate: "相談の初期指示",
+    rooms: [mockListedRoom || mockRoom], introductions: { main: "製品", b: "実装" }, defaultTemplate: "相談の初期指示",
   } };
   return { op: `${message.op}.result`, payload: mockRoom };
 });
@@ -30,7 +32,7 @@ const mockManager = {
 };
 jest.mock("../../runnerWs/RunnerWebSocketContext", () => ({
   useRunnerWebSocketManager: () => mockManager,
-  useRunnerWebSocketSnapshot: () => ({ connected: true, generation: 1 }),
+  useRunnerWebSocketSnapshot: () => ({ connected: true, generation: mockGeneration }),
 }));
 jest.mock("../theme/VisualThemeContext", () => ({ useVisualTheme: () => {
   const { VISUAL_THEMES, DEFAULT_VISUAL_THEME_ID } = jest.requireActual("../theme/visualThemes");
@@ -60,7 +62,7 @@ jest.mock("@shopify/react-native-skia", () => {
       RRectXY: () => ({}), XYWHRect: () => ({}) } };
 });
 
-beforeEach(() => { jest.clearAllMocks(); mockHandlers.clear(); mockVisibleOwner = ""; mockMessageSequence = 0; });
+beforeEach(() => { jest.clearAllMocks(); mockHandlers.clear(); mockVisibleOwner = ""; mockMessageSequence = 0; mockGeneration = 1; mockListedRoom = mockRoom; });
 
 test("gathers identity icons in selected order and creates only an empty room", async () => {
   const alert = jest.spyOn(Alert, "alert").mockImplementation(() => {});
@@ -89,7 +91,7 @@ test("shows speaker identity, follows the active participant for questions, and 
   await fireEvent.press(screen.getByText("共有メモを作る相談"));
   expect(screen.getByText("小さく始めよう")).toBeTruthy();
   expect(mockVisibleOwner).toBe("b");
-  await fireEvent.changeText(screen.getByLabelText("メッセージを入力"), "期限を明日に訂正");
+  await fireEvent.changeText(screen.getByTestId("chat-composer-input"), "期限を明日に訂正");
   await fireEvent.press(screen.getByLabelText("送信"));
   await waitFor(() => expect(mockRequest).toHaveBeenCalledWith(expect.objectContaining({
     op: "voice.consultations.supplement", payload: { roomId: "room-one", text: "期限を明日に訂正", messageId: "message-id-1" },
@@ -135,15 +137,15 @@ test("a lost send response retries the same message ID and budget reset while ed
   const screen = await render(<VoiceConsultationScreen onClose={jest.fn()} />);
   await screen.findByText("共有メモを作る相談");
   await fireEvent.press(screen.getByText("共有メモを作る相談"));
-  await fireEvent.changeText(screen.getByLabelText("メッセージを入力"), "同じ指示");
+  await fireEvent.changeText(screen.getByTestId("chat-composer-input"), "同じ指示");
   mockRequest.mockRejectedValueOnce(new Error("response lost"));
   await fireEvent.press(screen.getByLabelText("送信"));
   await screen.findByText("response lost");
   await fireEvent.press(screen.getByLabelText("送信"));
-  await waitFor(() => expect(screen.getByLabelText("メッセージを入力").props.value).toBe(""));
+  await waitFor(() => expect(screen.getByTestId("chat-composer-input").props.value).toBe(""));
   const sends = mockRequest.mock.calls.filter(([message]) => message.op === "voice.consultations.supplement");
   expect(sends.map(([message]) => message.payload?.messageId)).toEqual(["message-id-1", "message-id-1"]);
-  await fireEvent.changeText(screen.getByLabelText("メッセージを入力"), "別の指示");
+  await fireEvent.changeText(screen.getByTestId("chat-composer-input"), "別の指示");
   await fireEvent.press(screen.getByLabelText("送信"));
   await waitFor(() => expect(mockRequest).toHaveBeenCalledWith(expect.objectContaining({ op: "voice.consultations.supplement",
     payload: expect.objectContaining({ messageId: "message-id-2", text: "別の指示" }) })));
@@ -226,4 +228,58 @@ test("streaming does not force scrolling while reading earlier messages", async 
   await fireEvent(history, "contentSizeChange", 390, 1400);
   expect(scroll).toHaveBeenCalledWith({ animated: false });
   scroll.mockRestore();
+});
+
+test("uses the actual shared IME composer and fullscreen editor without clearing edits made during send", async () => {
+  const previousOS = Platform.OS; Object.defineProperty(Platform, "OS", { value: "macos", configurable: true });
+  try {
+    const screen = await render(<VoiceConsultationScreen onClose={jest.fn()} />);
+    await screen.findByText("共有メモを作る相談"); await fireEvent.press(screen.getByText("共有メモを作る相談"));
+    const input = screen.getByTestId("chat-composer-input");
+    expect(input.props.multiline).toBe(true); expect(input.props.submitKeyEvents).toEqual([{ key: "Enter", metaKey: true }]);
+    await fireEvent.changeText(input, "未確定"); await fireEvent(input, "focus");
+    await fireEvent.press(screen.getByLabelText("送信"));
+    expect(mockRequest.mock.calls.some(([request]) => request.op === "voice.consultations.supplement")).toBe(false);
+    let release!: (response: unknown) => void;
+    mockRequest.mockImplementationOnce(() => new Promise((resolve) => { release = resolve as typeof release; }) as never);
+    await fireEvent(input, "endEditing", { nativeEvent: { text: "日本語を確定" } });
+    await waitFor(() => expect(release).toBeDefined());
+    await fireEvent.changeText(screen.getByTestId("chat-composer-input"), "送信中の新しい編集");
+    await act(() => release({ op: "voice.consultations.supplement.result", payload: mockRoom }));
+    expect(screen.getByTestId("chat-composer-input").props.value).toBe("送信中の新しい編集");
+    await fireEvent.press(screen.getByLabelText("入力欄を全画面表示"));
+    await fireEvent.changeText(screen.getByTestId("composer-fullscreen-input"), "長文の下書き");
+    await fireEvent.press(screen.getByLabelText("全画面入力を閉じる"));
+    expect(screen.getByTestId("chat-composer-input").props.value).toBe("長文の下書き");
+  } finally { Object.defineProperty(Platform, "OS", { value: previousOS, configurable: true }); }
+});
+
+test("reads only newly published live speech, never opened or reconnected history, and allows manual history playback", async () => {
+  const state = { active: false, messageId: "" };
+  const synthesize = jest.fn(async (_text, target) => { state.active = true; state.messageId = target.messageId; });
+  const stop = jest.fn(async (options) => { if (options?.expectedMessageId === state.messageId) state.active = false; });
+  const playback = { synthesizeSpeechStream: synthesize, stopTtsPlayback: stop, isTtsPlaybackActive: false,
+    ttsUiStatus: "idle" as const, getPlaybackState: () => ({ ...state }) };
+  const screen = await render(<VoiceConsultationScreen onClose={jest.fn()} playback={playback} />);
+  await screen.findByText("共有メモを作る相談"); await fireEvent.press(screen.getByText("共有メモを作る相談"));
+  expect(synthesize).not.toHaveBeenCalled();
+  const live = { ...mockRoom, revision: 2, messages: [...mockRoom.messages,
+    { id: "b-live", seq: 3, speakerId: "b", source: "participant", text: "新しい提案です" }] };
+  await act(() => mockHandlers.get("voice.consultations.changed")?.({ payload: live }));
+  await waitFor(() => expect(synthesize).toHaveBeenCalledTimes(1));
+  expect(synthesize).toHaveBeenCalledWith("新しい提案です", expect.objectContaining({ scope: "voice", orchestratorId: "b" }));
+  await act(() => mockHandlers.get("voice.consultations.changed")?.({ payload: live }));
+  expect(synthesize).toHaveBeenCalledTimes(1);
+  mockListedRoom = { ...live, revision: 3, messages: [...live.messages,
+    { id: "missed", seq: 4, speakerId: "main", source: "participant", text: "再接続前の発言です" }] };
+  mockGeneration += 1;
+  await screen.rerender(<VoiceConsultationScreen onClose={jest.fn()} playback={{ ...playback }} />);
+  await screen.findByText("再接続前の発言です");
+  await act(() => mockHandlers.get("voice.consultations.changed")?.({ payload: mockListedRoom }));
+  expect(synthesize).toHaveBeenCalledTimes(1);
+  await fireEvent.press(screen.getAllByLabelText("Aの返答を読み上げ")[0]);
+  await waitFor(() => expect(synthesize).toHaveBeenCalledTimes(2));
+  expect(synthesize).toHaveBeenLastCalledWith("小さく始めよう", expect.objectContaining({ orchestratorId: "main" }));
+  const manualId = state.messageId; await screen.unmount();
+  expect(stop).toHaveBeenCalledWith(expect.objectContaining({ expectedMessageId: manualId }));
 });
