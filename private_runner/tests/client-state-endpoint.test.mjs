@@ -62,21 +62,24 @@ test("client state is authenticated, durable, provider-aware, and merges field o
 test("conditional client-state GET validates current state without suppressing other clients' updates", async () => {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const url = `http://127.0.0.1:${server.address().port}/client-state`;
-  const headers = { authorization: "Bearer test-runner-token" };
+  const headers = { authorization: "Bearer test-runner-token", "accept-encoding": "identity" };
   try {
     const first = await fetch(url, { headers });
     assert.equal(first.status, 200);
     assert.equal(first.headers.get("cache-control"), "private, no-cache");
-    assert.equal(first.headers.get("vary"), "Authorization");
+    assert.equal(first.headers.get("vary"), "Authorization, Accept-Encoding");
     const body = await first.text();
     const etag = first.headers.get("etag");
-    assert.equal(etag, `"${createHash("sha256").update(body).digest("hex")}"`);
+    assert.equal(etag, `W/"${createHash("sha256").update(body).digest("hex")}"`);
     assert.equal(Number(first.headers.get("content-length")), Buffer.byteLength(body));
-    for (const validator of [etag, `"unrelated", W/${etag}`, "*"]) {
+    for (const validator of [etag, `"unrelated", ${etag.slice(2)}`, "*"]) {
       const unchanged = await fetch(url, { headers: { ...headers, "if-none-match": validator } });
       assert.equal(unchanged.status, 304);
       assert.equal(unchanged.headers.get("etag"), etag);
       assert.equal(unchanged.headers.get("cache-control"), "private, no-cache");
+      assert.equal(unchanged.headers.get("vary"), "Authorization, Accept-Encoding");
+      assert.equal(unchanged.headers.get("content-encoding"), null);
+      assert.equal(unchanged.headers.get("content-length"), null);
       assert.equal(await unchanged.text(), "");
     }
     for (const authorization of ["", "Bearer wrong-token"]) {
@@ -112,6 +115,42 @@ test("conditional client-state GET validates current state without suppressing o
     assert.equal(invalid.headers.get("cache-control"), "no-store");
   } finally {
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+test("client-state gzip GET and POST share a weak validator with identity and bodyless 304", async () => {
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const url = `http://127.0.0.1:${server.address().port}/client-state`;
+  const headers = { authorization: "Bearer test-runner-token", "accept-encoding": "gzip" };
+  try {
+    const post = await fetch(url, {
+      method: "POST", headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify({ operation: {
+        type: "session.set", backendId: "codex", sessionId: "compression-fixture",
+        note: "synthetic note for transfer verification. ".repeat(1000), expectedNote: "",
+      } }),
+    });
+    assert.equal(post.status, 200);
+    assert.equal(post.headers.get("content-encoding"), "gzip");
+    const payload = await post.text();
+    assert.ok(Number(post.headers.get("content-length")) < Buffer.byteLength(payload) / 4);
+    const etag = post.headers.get("etag");
+    assert.ok(etag.startsWith('W/"'));
+    for (const encoding of ["gzip", "identity"]) {
+      const get = await fetch(url, { headers: { ...headers, "accept-encoding": encoding } });
+      assert.equal(get.headers.get("etag"), etag);
+      assert.equal(await get.text(), payload);
+      const unchanged = await fetch(url, { headers: {
+        ...headers, "accept-encoding": encoding, "if-none-match": etag,
+      } });
+      assert.equal(unchanged.status, 304);
+      assert.equal(unchanged.headers.get("etag"), etag);
+      assert.equal(unchanged.headers.get("content-encoding"), null);
+      assert.equal(unchanged.headers.get("content-length"), null);
+      assert.equal(await unchanged.text(), "");
+    }
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
   }
 });
 

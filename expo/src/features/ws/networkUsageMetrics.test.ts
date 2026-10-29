@@ -34,8 +34,23 @@ describe("categorizeHttpUrl", () => {
     expect(categorizeHttpUrl("https://runner.example/session-messages?sessionId=a")).toBe("session-messages");
     expect(categorizeHttpUrl("https://runner.example/session-summaries")).toBe("session-summaries");
     expect(categorizeHttpUrl("https://runner.example/tts-media/abc.wav")).toBe("tts-media");
-    expect(categorizeHttpUrl("https://runner.example/client-logs")).toBe("other");
+    expect(categorizeHttpUrl("https://runner.example/client-logs")).toBe("client-logs");
     expect(categorizeHttpUrl("")).toBe("other");
+  });
+
+  it("separates large runner responses and external fetches without inspecting queries", () => {
+    const origin = "https://runner.example";
+    for (const [path, category] of [
+      ["/client-state", "client-state"],
+      ["/agent/session-history?sessionId=private", "agent-history"],
+      ["/agent/session-history/search", "agent-history"],
+      ["/agent/session-conversation", "agent-history"],
+      ["/skia-board/ops", "skia-board"],
+      ["/git/changed-files", "git"],
+      ["/unknown?next=/session-messages", "other"],
+    ]) expect(categorizeHttpUrl(`${origin}${path}`, origin)).toBe(category);
+    expect(categorizeHttpUrl("https://outside.example/client-state", origin)).toBe("other-origin");
+    expect(categorizeHttpUrl("not a URL", origin)).toBe("other");
   });
 });
 
@@ -69,6 +84,18 @@ describe("network usage accumulation", () => {
     const snapshot = getNetworkUsageSnapshot();
     expect(snapshot.totalSentBytes).toBe(0);
     expect(snapshot.totalReceivedBytes).toBe(0);
+  });
+
+  it("includes every new category in totals, snapshots and reset", () => {
+    recordHttpNetworkUsage("https://runner.example/client-state", 5, 100, "https://runner.example");
+    recordHttpNetworkUsage("https://outside.example/client-state", 7, 200, "https://runner.example");
+    const snapshot = getNetworkUsageSnapshot();
+    expect(snapshot.httpByCategory["client-state"]).toEqual({ sentBytes: 5, receivedBytes: 100 });
+    expect(snapshot.httpByCategory["other-origin"]).toEqual({ sentBytes: 7, receivedBytes: 200 });
+    expect(snapshot.http).toEqual({ sentBytes: 12, receivedBytes: 300 });
+    resetNetworkUsage();
+    expect(getNetworkUsageSnapshot().httpByCategory["other-origin"].receivedBytes).toBe(0);
+    expect(snapshot.httpByCategory["other-origin"].receivedBytes).toBe(200);
   });
 
   it("reset clears counters and refreshes the start time", () => {

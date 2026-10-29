@@ -8,6 +8,12 @@ export type NetworkUsageHttpCategory =
   | "session-messages"
   | "session-summaries"
   | "tts-media"
+  | "client-state"
+  | "agent-history"
+  | "skia-board"
+  | "git"
+  | "client-logs"
+  | "other-origin"
   | "other";
 
 export type NetworkUsageCounter = {
@@ -29,6 +35,12 @@ const HTTP_CATEGORIES: NetworkUsageHttpCategory[] = [
   "session-messages",
   "session-summaries",
   "tts-media",
+  "client-state",
+  "agent-history",
+  "skia-board",
+  "git",
+  "client-logs",
+  "other-origin",
   "other",
 ];
 
@@ -41,6 +53,12 @@ function createHttpCategoryCounters(): Record<NetworkUsageHttpCategory, NetworkU
     "session-messages": createCounter(),
     "session-summaries": createCounter(),
     "tts-media": createCounter(),
+    "client-state": createCounter(),
+    "agent-history": createCounter(),
+    "skia-board": createCounter(),
+    git: createCounter(),
+    "client-logs": createCounter(),
+    "other-origin": createCounter(),
     other: createCounter(),
   };
 }
@@ -69,11 +87,23 @@ export function utf8ByteLength(text: string): number {
   return bytes;
 }
 
-export function categorizeHttpUrl(url: string): NetworkUsageHttpCategory {
-  const value = String(url || "");
-  if (value.includes("/session-messages")) return "session-messages";
-  if (value.includes("/session-summaries")) return "session-summaries";
-  if (value.includes("/tts-media/")) return "tts-media";
+export function categorizeHttpUrl(url: string, runnerOrigin?: string): NetworkUsageHttpCategory {
+  let path: string;
+  try {
+    const parsed = new URL(url);
+    if (runnerOrigin && parsed.origin !== runnerOrigin) return "other-origin";
+    path = parsed.pathname;
+  } catch {
+    return "other";
+  }
+  if (path === "/session-messages") return "session-messages";
+  if (path === "/session-summaries") return "session-summaries";
+  if (path.startsWith("/tts-media/")) return "tts-media";
+  if (path === "/client-state") return "client-state";
+  if (path === "/agent/session-history" || path === "/agent/session-conversation" || path.startsWith("/agent/session-history/")) return "agent-history";
+  if (path === "/skia-board" || path.startsWith("/skia-board/")) return "skia-board";
+  if (path.startsWith("/git/")) return "git";
+  if (path === "/client-logs") return "client-logs";
   return "other";
 }
 
@@ -86,8 +116,8 @@ export function recordNetworkUsage(route: NetworkUsageRoute, sentBytes: number, 
   addTo(route === "runner-ws" ? runnerWs : streamTts, sentBytes, receivedBytes);
 }
 
-export function recordHttpNetworkUsage(url: string, sentBytes: number, receivedBytes: number) {
-  addTo(httpByCategory[categorizeHttpUrl(url)], sentBytes, receivedBytes);
+export function recordHttpNetworkUsage(url: string, sentBytes: number, receivedBytes: number, runnerOrigin?: string) {
+  addTo(httpByCategory[categorizeHttpUrl(url, runnerOrigin)], sentBytes, receivedBytes);
 }
 
 export function getNetworkUsageSnapshot(): NetworkUsageSnapshot {

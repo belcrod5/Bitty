@@ -85,22 +85,22 @@ function requestBodyBytes(body: BodyInit | null | undefined): number {
   return typeof maybeBlobSize === "number" && Number.isFinite(maybeBlobSize) ? maybeBlobSize : 0;
 }
 
-function recordHttpResponseUsage(url: string, response: Response) {
+function recordHttpResponseUsage(url: string, response: Response, runnerOrigin: string) {
   const headers = response?.headers;
   const contentLength = Number(headers?.get?.("content-length") || 0);
   if (Number.isFinite(contentLength) && contentLength > 0) {
-    recordHttpNetworkUsage(url, 0, contentLength);
+    recordHttpNetworkUsage(url, 0, contentLength, runnerOrigin);
     return;
   }
   // /session-messages はサーバーが応答バイト数をヘッダで報告している。
   const reportedBytes = Number(headers?.get?.("x-session-messages-response-bytes") || 0);
   if (Number.isFinite(reportedBytes) && reportedBytes > 0) {
-    recordHttpNetworkUsage(url, 0, reportedBytes);
+    recordHttpNetworkUsage(url, 0, reportedBytes, runnerOrigin);
     return;
   }
   try {
     response.clone().arrayBuffer()
-      .then((buffer) => recordHttpNetworkUsage(url, 0, buffer.byteLength))
+      .then((buffer) => recordHttpNetworkUsage(url, 0, buffer.byteLength, runnerOrigin))
       .catch(() => undefined);
   } catch {
     // clone不可(既に消費済み等)の応答は未計上のまま許容する。
@@ -126,11 +126,12 @@ export function configureCloudflareAccessFetch(config: FetchPatchConfig) {
     const responsePromise = originalFetch(input, finalInit);
     try {
       const url = requestUrl(input);
-      recordHttpNetworkUsage(url, requestBodyBytes(finalInit?.body), 0);
+      const runnerOrigin = activeRunnerOrigin;
+      recordHttpNetworkUsage(url, requestBodyBytes(finalInit?.body), 0, runnerOrigin);
       responsePromise.then(
         (response) => {
           try {
-            recordHttpResponseUsage(url, response);
+            recordHttpResponseUsage(url, response, runnerOrigin);
           } catch {
             // 計測失敗は通信本体に影響させない。
           }

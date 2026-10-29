@@ -81,6 +81,7 @@ function connectionMeta(req, opts = {}) {
       : Boolean(opts.hasQueryToken),
     reason: truncate(opts.reason || "", 120),
     closeCode: typeof opts.closeCode === "number" ? opts.closeCode : null,
+    ...(typeof opts.perMessageDeflate === "boolean" ? { perMessageDeflate: opts.perMessageDeflate } : {}),
   };
 }
 
