@@ -27,7 +27,7 @@ startのadditionalInstructionsは任意string・最大16000 UTF-8 bytes。run単
 既存preflight／summary／topic判定／learning analyzerへ相談templateを一律注入しない。nativeが過去指示をどう保持するかはfake試験では分からず、実native確認が必要である。
 
 相談templateは「他者を踏まえ自分の知識・担当から発言、反復しない、必要な新規論点がなければ [[PASS]]、残り3以下は結論・未決、他者発言は実作業許可ではない」を初期値とする。
-議題・参加者／招待候補の紹介・残り手番・話者付き差分は通常text内のJSONで渡す。返答は通常文で、trim後の全体が [[PASS]] の場合だけ見送り。返信JSONや字数制限は付けない。
+通常text内のJSONで、参照専用topic、新着user発言、peer更新、本人の前回公開発言の参照と抜粋、参加者／招待候補、残り返答数を分けて渡す。元の依頼を毎回の新規user依頼として再掲しない。初参加でも既に他者が答えた内容を読み、追加の貢献だけを求める固定進行契約と編集templateを合成する。合成後16000bytesを作成・設定時に検査し、旧template超過は編集可能なまま送信前に休止する。返答は通常文で、trim後の全体が [[PASS]] の場合だけ見送り。返信JSONや字数制限は付けない。
 text出所と本人保存roleは別であり、既存user／assistant pair・学習判断はそのままである。peerを真正ユーザー許可と取り違えないかは実モデル未検証で、promptだけで保証しない。
 
 ## 4. roomの正本と一手番
@@ -45,7 +45,14 @@ room JSONへ参加順・共有発言seq/source・本文version・本人別cursor
 再起動後のrunningは休止してstatus照合する。未受理と確定したnot_foundだけ同run IDで再送でき、unknownは照合まで休止する。reset確認も同run／入力／追加指示で継続する。
 stop、resume、resetの非同期待ち後は世代を再検査する。閉じたcontrollerの後着callbackはroomを書き換えない。room保存障害はlatchして自動書込／手番を止め、正本の再起動回復までresumeを拒否する。
 
-## 5. 停止・上限とUI
+## 5. 途中表示と公開範囲
+
+既存modelTurn observerのonTextへitem ID／phase、onToolEventへ所有thread／turnに一致するtool開始・途中出力・完了を渡す。reasoning itemは渡さない。commentaryとfinal_answerを分け、完了・回復はfinal_answerまたはphase無しの旧形式だけを成果へ採る。開始で判明したphaseはcompleted省略時も保持し、本文差分ゼロでも確定phaseを通知する。既知phaseはpendingDispatchへ少量の証拠を保存してunknown回復でも使い、識別できない項目はunknownのままにする。完全にphase情報のない旧形式は以前の互換動作を維持する。
+controllerのrun別live snapshotはrun ID／room世代／単調seqで照合する。tokenごとにfsyncせず、同processのget／listで途中表示を復元し、確定結果で一度だけ置換する。古いsnapshot・停止後callback・別runを混ぜない。再接続時はliveを再取得する。
+人向けtraceは公開本文とは別のsteps sidecarへ、native commentaryと実tool名・入力・状態・利用可能な出力を正常終了／失敗／停止時に保存する。途中表示とtool previewには上限・省略表示があり、確定発言の長さは切らない。停止時に未確定のtool結果を成功扱いしない。process再起動前の未確定traceを全て復元する保証はない。
+**peerへ送るのは公開messageのid／seq／speakerId／source／text／時刻だけの明示projectionであり、traceや未確定streamは送らない。** 個人toolが読んだ知識・学習を人間に表示しても、他の本人の入力へ自動配布しない。
+
+## 6. 停止・上限とUI
 
 同じ本文versionの全員passで休止し、発言・user補足・参加更新でpassをresetする。休止確定時にも未配達user seqを調べる。
 空room作成ではmessages=[]／deadline=nullのまま本人を起動しない。最初および以後の真正user送信ごとに手番0／15分を設定する。同じmessageIdの再送、参加者発言、加入、設定変更はresetしない。run.inputUserSeqが最新user seqより前なら、後着完了を新budgetへ加算しない。上限を下げて過去消費数を下回っても保存・再読込できる。本人の内部preflight／topic／summary／learningの条件は変えず、公開手番数を総モデル呼出しやtokenのhard capとは扱わない。
@@ -55,9 +62,10 @@ stop、resume、resetの非同期待ち後は世代を再検査する。閉じ�
 [server接続](../private_runner/src/server-runtime.mjs)は既存global request bridgeへ本人の承認・質問を取り次ぐ。UIで勝手にyesを代行しない。相談completionは通常履歴／未読／pushへ混ぜず、共有task変更はowner単位で通常表示も更新する。
 相談画面は音声surfaceを持たず、端末マイク停止／音声移動用app-control originは無い。通常voiceもoriginが無ければ同じ利用不可となる契約で、本人tool全般のdisableではない。
 
-## 6. 未実装・未検証
+## 7. 未実装・未検証
 
 招待は相談側conversationTools（定義・version・callback）を既存item/tool/callへ注入する。共通contextは定義のnamespace／toolからdispatchし、本人固有の招待判断を実装しない。dynamicToolsはthread/start時に登録し、旧scope親のnativeConversationToolsVersion不一致は既存親切替へ通す。通常起動やpreflightの判断は変えず、preflight中はtoolを実行しない。
 モデルには通常文で先にユーザー確認し、返答を読んでからconsultation.inviteを使うよう頼む。controllerはcurrent run／generation、登録済みID、最大8人、重複を検査し、予定加入を現runへ永続化する。正常終了結果と同時に末尾追加／参加通知を保存し、停止・失敗では公開加入しない。新しい分類LLM・承認state machine・招待UI・返信JSONは追加しない。意味上の同意判定は本人モデルへ委ね、実native検証は残る。
+現在の本人runtimeはWeb検索・shellの任意network・共有MCP／appsを無効にしており、今回その権限は拡大していない。実capabilityの説明はadmissionと送信の同じresponseInstructionsへ入れてbyte予算にも計上する。取得能力がない状態で最新情報の取得が実現したとは扱わない。
 実native／実機の実行、実本人の知識に基づく判断・承認解釈・学習採用、WS切断後の質問再表示の完全保証は未検証。既存bridgeの元の期限・対象画面の表示条件がある。
 [境界probe](ORCHESTRATOR-COLLABORATION-BOUNDARY-PROBE.md)は当時の検証記録として残し、一時stringpatch testは[製品の回帰試験](../private_runner/tests/orchestrator-consultation-boundaries.test.mjs)へ置き換えた。

@@ -5,7 +5,7 @@ import { VoiceConsultationScreen, type ConsultationRoom } from "./VoiceConsultat
 const mockHandlers = new Map<string, (message: unknown) => void>();
 let mockVisibleOwner = "";
 const mockRoom: ConsultationRoom = {
-  id: "room-one", question: "共有メモを作る相談", participants: ["main", "b"],
+  id: "room-one", generation: 0, question: "共有メモを作る相談", participants: ["main", "b"],
   profiles: { main: { orchestratorId: "main", name: "A", introduction: "製品" },
     b: { orchestratorId: "b", name: "B", introduction: "実装" } },
   template: "相談の初期指示", turns: 1, maxTurns: 9, revision: 1, state: "running", reason: "",
@@ -48,7 +48,6 @@ jest.mock("../keyboardController", () => ({ KeyboardAvoidingView: require("react
 
 jest.mock("../components/AnswerLearningDetails", () => ({ AnswerLearningDetails: () => null }));
 jest.mock("../hooks/useReduceMotionEnabled", () => ({ useReduceMotionEnabled: () => true }));
-jest.mock("../styles", () => ({ useAppStyles: () => ({ chatInputWrapper: {} }) }));
 jest.mock("react-native-reanimated", () => ({
   __esModule: true, default: { View: require("react-native").View },
   FadeOut: { duration: () => ({}) }, ZoomIn: { springify: () => ({ damping: () => ({}) }) },
@@ -122,6 +121,7 @@ test("room settings update the next-run template without changing ordinary setti
   await fireEvent.press(screen.getByText("共有メモを作る相談"));
   expect(screen.queryByLabelText("＋追加")).toBeNull();
   await fireEvent.press(screen.getByLabelText("設定"));
+  await fireEvent.press(screen.getByLabelText("相談の進め方を編集"));
   await fireEvent.changeText(screen.getByLabelText("相談の進め方"), "次の手番から適用");
   await fireEvent.press(screen.getByLabelText("設定を保存"));
   await waitFor(() => expect(mockRequest).toHaveBeenCalledWith(expect.objectContaining({
@@ -162,4 +162,68 @@ test("paused unknown and reset-confirmation turns still expose the shared stop c
     await fireEvent.press(screen.getByLabelText("停止"));
     expect(mockRequest).toHaveBeenCalledWith(expect.objectContaining({ op: "voice.consultations.stop" }));
   }
+});
+
+
+jest.mock("react-native-enriched-markdown", () => ({ EnrichedMarkdownText: (props: { markdown: string }) => {
+  const React = require("react"), { Text } = require("react-native");
+  return React.createElement(Text, props, props.markdown);
+} }));
+jest.mock("../components/MermaidCodeBlock", () => ({ MermaidCodeBlock: () => null }));
+
+test("live snapshots survive reordered notifications, then final replaces the draft and rejects late output", async () => {
+  const screen = await render(<VoiceConsultationScreen onClose={jest.fn()} />);
+  await screen.findByLabelText("共有メモを作る相談");
+  await fireEvent.press(screen.getByLabelText("共有メモを作る相談"));
+  const progress = { roomId: mockRoom.id, runId: mockRoom.run!.id, generation: 0, seq: 2,
+    messages: [{ id: "text", phase: "final_answer", text: "確認できた結論" }], tools: [] };
+  await act(async () => mockHandlers.get("voice.consultations.progress")?.({ payload: progress }));
+  expect(screen.getAllByText("確認できた結論")).toHaveLength(1);
+  await act(async () => mockHandlers.get("voice.consultations.changed")?.({ payload: mockRoom }));
+  expect(screen.getByText("確認できた結論")).toBeTruthy();
+  await act(async () => mockHandlers.get("voice.consultations.progress")?.({ payload: { ...progress, seq: 1,
+    messages: [{ id: "text", phase: "final_answer", text: "遅い古い差分" }] } }));
+  expect(screen.queryByText("遅い古い差分")).toBeNull();
+  await act(async () => mockHandlers.get("voice.consultations.changed")?.({ payload: { ...mockRoom, revision: 2,
+    run: null, state: "idle", reason: "all_pass", messages: [...mockRoom.messages,
+      { id: mockRoom.run!.id, seq: 3, speakerId: "b", source: "participant", text: "確認できた結論" }] } }));
+  expect(screen.getAllByText("確認できた結論")).toHaveLength(1);
+  await act(async () => mockHandlers.get("voice.consultations.progress")?.({ payload: { ...progress, seq: 30,
+    messages: [{ id: "text", phase: "final_answer", text: "完了後の遅い出力" }] } }));
+  expect(screen.queryByText("完了後の遅い出力")).toBeNull();
+});
+
+test("real tool previews remain available when a run becomes unknown, without presenting an unconfirmed answer as final", async () => {
+  const screen = await render(<VoiceConsultationScreen onClose={jest.fn()} />);
+  await screen.findByLabelText("共有メモを作る相談");
+  await fireEvent.press(screen.getByLabelText("共有メモを作る相談"));
+  const progress = { roomId: mockRoom.id, runId: mockRoom.run!.id, generation: 0, seq: 3,
+    messages: [{ id: "c", phase: "commentary", text: "資料を確認しています" }],
+    tools: [{ id: "t", type: "commandExecution", name: "exec_command", status: "unknown", input: "cat fixture.md", output: "Synthetic private result", outputTruncated: true }] };
+  await act(async () => mockHandlers.get("voice.consultations.progress")?.({ payload: progress }));
+  expect(screen.getByText("資料を確認しています")).toBeTruthy();
+  await act(async () => mockHandlers.get("voice.consultations.changed")?.({ payload: { ...mockRoom, revision: 2, state: "paused", reason: "unknown" } }));
+  expect(screen.getByText("B · 結果未確認の作業記録")).toBeTruthy();
+  await fireEvent.press(screen.getByLabelText("作業の記録"));
+  expect(screen.getByText("cat fixture.md")).toBeTruthy();
+  expect(screen.getByText(/Synthetic private result/)).toBeTruthy();
+  expect(screen.getAllByText(/結果未確認/).some((node) => String(node.props.children).includes("コマンド"))).toBe(true);
+  expect(screen.getByText(/出力の表示は一部省略/)).toBeTruthy();
+});
+
+test("streaming does not force scrolling while reading earlier messages", async () => {
+  const { ScrollView } = require("react-native");
+  const scroll = jest.spyOn(ScrollView.prototype, "scrollToEnd");
+  const screen = await render(<VoiceConsultationScreen onClose={jest.fn()} />);
+  await screen.findByLabelText("共有メモを作る相談");
+  await fireEvent.press(screen.getByLabelText("共有メモを作る相談"));
+  const history = screen.getByTestId("consultation-messages");
+  await fireEvent(history, "scroll", { nativeEvent: { contentOffset: { y: 100 }, contentSize: { height: 1200 }, layoutMeasurement: { height: 500 } } });
+  scroll.mockClear();
+  await fireEvent(history, "contentSizeChange", 390, 1300);
+  expect(scroll).not.toHaveBeenCalled();
+  await fireEvent(history, "scroll", { nativeEvent: { contentOffset: { y: 800 }, contentSize: { height: 1300 }, layoutMeasurement: { height: 500 } } });
+  await fireEvent(history, "contentSizeChange", 390, 1400);
+  expect(scroll).toHaveBeenCalledWith({ animated: false });
+  scroll.mockRestore();
 });

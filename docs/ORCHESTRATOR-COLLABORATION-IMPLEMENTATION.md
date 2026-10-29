@@ -1,6 +1,6 @@
 # 独立テキスト相談の実装と検証
 
-2026-10-29。独立テキスト相談を実装し、同日改訂で通常チャット表示・入力の共用、空room作成、個人設定の公開紹介、scope限定native招待を追加した。実native／実機確認済みとは扱わない。
+2026-10-29。独立テキスト相談を実装し、同日改訂で通常チャット表示・入力の共用、空room作成、個人設定の公開紹介、scope限定native招待を追加し、その後に入力更新契約・native phase・途中表示・人向けtool記録とUIを修正した。実native／実機確認済みとは扱わない。
 
 ## 実装したこと
 
@@ -19,16 +19,24 @@ controllerは送信前後の停止競合、既知未受理の同run再開、unkn
 
 公開紹介は既存の個人設定へ移し、本人registryを一つの正本にした。model／effortを選んで、直近12msg（各1500字）と採用学習10件（内容600・条件300字）から編集可能な下書きを生成する。全文memoryは走査せず、通常の保存を押すまで採用しない。生成には既存tool-free ephemeral実行を共用し、本人の通常モデル・systemInstruction・会話履歴を更新しない。
 
+## 途中表示・反復に関わる修正
+
+元依頼を毎回同じquestionとして渡す入力を改め、参照専用topic／新着user／peer更新／自分の既発言参照を分けた。初参加でも既に他者が答えた内容を読み、意味のある追加貢献・確認・異論・分担だけを求める。特定の話題のルールや文字列重複の削除で隠していない。
+既存native observerの公開commentaryとfinal_answerを分離し、完了・unknown回復の成果へcommentaryを混ぜない。開始で判明したphaseと、確定時に初めて判明したphaseの両方を扱い、回復用の小さなphase証拠も保存する。
+実tool名・入力・途中出力・状態・利用可能な結果を人向けtraceとして表示し、最終成果は一度だけ置換する。traceは公開messagesとは別のstepsへ保存する。peer入力は公開messageの明示projectionなので、toolが読んだ本人の私的情報は自動共有しない。省略するのは途中・tool previewだけで、確定本文は切らない。
+UIを実avatar中心の静かな一覧、画像grid、広い相談本文、簡潔な設定へ整えた。本文は既存MarkdownText、入力は同じmanual footerを使う。light／dark・390／760幅・作業記録展開・空roomを実component host treeの架空previewで確認する。ブラウザ配置previewと実機描画は別である。
+
 ## 検証したこと
 
 すべてfake App Server・一時filesystemによる試験で、実モデル／有料API／nativeサーバー／本番データは呼んでいない。
 
 | 確認 | 結果 |
 | --- | --- |
-| 既存context・orchestrator・memory・learning・request bridgeの5 suites | 親の改訂版実行361/361 pass、173.032秒 |
-| [製品scope／controller統合試験](../private_runner/tests/orchestrator-consultation-boundaries.test.mjs) | 改訂版26/26 pass。空room再読込、user単位予算reset、旧native親の招待tool登録、重複加入、紹介生成のbounded入力・通常非汚染、上限引下げ再読込、stop後unknownの新入力も検証。採用済み／未採用学習の実state入力選別assert強化後、該当1件も1/1 pass |
-| 通常voice画面・通常voice hook・ボード・承認・質問・calendarの6 UI suites | 親の改訂版実行236/236 pass |
-| 改訂した相談画面・個人設定・共通入力の3 UI suites | 編集担当45/45 pass。通常voice画面・入力の既存試験も親84/84 pass（一部重複） |
+| 前段階の既存backend 5 suites | 当時361/361 pass、173.032秒 |
+| 今回の既存backend 6 suites（runtime profileを含む） | 初回366/367 pass。追加した能力説明のadmission byte計上不整合1件を修正後、orchestrator42/42・context関連11/11を再実行してpass。他325件は初回pass。現在版の全367件単一runとは主張しない |
+| [製品scope／controller統合試験](../private_runner/tests/orchestrator-consultation-boundaries.test.mjs) | 途中表示修正版29/29 pass。空room再読込、user単位予算reset、旧native親の招待tool登録、重複加入、紹介生成のbounded入力・通常非汚染、上限引下げ再読込、stop後unknownの新入力も検証。採用済み／未採用学習の実state入力選別assert強化後、該当1件も1/1 pass。native phase／回復2/2、traceの公開projection・途中出力・停止→新run・指示byte境界も検証 |
+| 既存voice hook・ボード・activity hook・Markdown・承認・質問・calendarの7 UI suites | 今回185/185 pass。新Markdown依存のnative moduleをboard testで適切にmockして確認 |
+| 途中表示修正版の相談画面・通常voice画面・共通入力の3 UI suites | 94/94 pass。既存Markdownを含む4 suitesは101/101 pass（Markdown7件は上の既存7 suitesと重複、加算しない） |
 | 通常／macOS TypeScript | 両方pass |
 | 変更JavaScriptの構文・diff空白・文書リンク | pass |
 
@@ -46,6 +54,9 @@ controllerは送信前後の停止競合、既知未受理の同run再開、unkn
 本実装前の[境界probe](ORCHESTRATOR-COLLABORATION-BOUNDARY-PROBE.md)は当時の記録として残し、脆い一時stringpatch testは現在の製品回帰試験へ置換した。
 
 ## 残る制限
+
+現在の本人runtimeはWeb検索・shellの任意network・共有MCP／appsを無効にしており、今回その権限は拡大していない。toolが動いたことと、最新外部情報を取得できたことを同一視しない。実能力の説明は送信前のbyte予算にも含める。実LLMで反復や事実誤認が解消したという結果ではなく、追加の有料モデル呼出しはゼロである。
+完全にphase情報のない旧native形式は互換動作を維持するため、過去のcommentaryを正しく識別できる保証はない。同processの再接続はlive snapshotを再取得できるが、process再起動前の未確定trace全体の復元は保証しない。
 
 招待の同意意味は通常文の確認と本人モデルの判断へ委ね、追加分類LLMや承認state machineを使わない。scope限定native toolが登録済みID・run・世代・重複・人数を検査し、正常終了後に追加する。promptの確認が確実に守られることは実モデル未検証である。
 

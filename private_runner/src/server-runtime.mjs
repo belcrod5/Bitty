@@ -5258,6 +5258,11 @@ const consultationService = createVoiceConsultationService({
       channel: "agent", op: "voice.consultations.changed", payload: room,
     });
   },
+  onProgress: (progress) => {
+    for (const client of runnerWsActiveClients) sendRunnerWsEnvelope(client, {
+      channel: "agent", op: "voice.consultations.progress", payload: progress,
+    });
+  },
   requestApproval: async ({ operationId, orchestratorId, request, signal }) => {
     const { orchestrators } = await voiceContextService.list();
     return scheduledVoiceApprovals.request(operationId, request, orchestratorId,

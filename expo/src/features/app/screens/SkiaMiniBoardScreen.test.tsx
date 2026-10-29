@@ -2482,3 +2482,10 @@ describe("menu completion badge flash", () => {
     resetOpacity.mockRestore();
   });
 });
+
+
+jest.mock("react-native-enriched-markdown", () => ({ EnrichedMarkdownText: (props: { markdown: string }) => {
+  const React = require("react"), { Text } = require("react-native");
+  return React.createElement(Text, props, props.markdown);
+} }));
+jest.mock("../components/MermaidCodeBlock", () => ({ MermaidCodeBlock: () => null }));

@@ -768,7 +768,7 @@ test("the footer reveals stored messages and closes the history panel", async ()
   const colors = VISUAL_THEMES[DEFAULT_VISUAL_THEME_ID].colors;
   expect(StyleSheet.flatten(screen.getByText("最初の質問").parent?.props.style).backgroundColor).toBe(colors.accent);
   expect(StyleSheet.flatten(screen.getByText("最初の返答").parent?.props.style).backgroundColor).toBe(colors.surfaceMuted);
-  expect(screen.getByText("最初の質問").props.style.color).toBe(colors.textOnAccent);
+  expect(screen.getByText("最初の質問").props.markdownStyle.paragraph.color).toBe(colors.textOnAccent);
   await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: 80 }); });
   expect(screen.getByText("最初の質問")).toBeTruthy();
   await act(async () => { fireEvent.press(screen.getByTestId("voice-history-close")); });
@@ -1588,3 +1588,10 @@ test("main learning badge arrives during another chat and stays separate from ch
   expect(screen.queryByTestId("voice-orchestrator-learning-unread-main")).toBeNull();
   expect(screen.getByTestId("voice-orchestrator-unread-main")).toBeTruthy();
 });
+
+
+jest.mock("react-native-enriched-markdown", () => ({ EnrichedMarkdownText: (props: { markdown: string }) => {
+  const React = require("react"), { Text } = require("react-native");
+  return React.createElement(Text, props, props.markdown);
+} }));
+jest.mock("../components/MermaidCodeBlock", () => ({ MermaidCodeBlock: () => null }));

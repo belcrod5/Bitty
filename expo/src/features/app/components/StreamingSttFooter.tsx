@@ -59,7 +59,7 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   leadingAccessory, trailingAccessory, correctionPreview, onSendCorrection, onEditCorrection, onDiscardCorrection,
   onChangeCorrectionText }, ref) {
   const styles = useAppStyles();
-  const { themeId } = useVisualTheme();
+  const { themeId, theme } = useVisualTheme();
   const systemReduceMotion = useReduceMotionEnabled();
   const motionReduced = reduceMotion ?? systemReduceMotion !== false;
   const [usage, setUsage] = useState<StreamingSttUsage | null>(null);
@@ -118,7 +118,7 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   }, [correctionPreview?.editing]);
 
   useFrameCallback((frame) => {
-    if (motionReduced) return;
+    if (manual || motionReduced) return;
     const elapsed = Math.min(frame.timeSincePreviousFrame ?? 0, 50);
     const speed = glowStatus === "responding" ? 0.28
       : glowStatus === "speaking" ? 0.12 : RAINBOW_GLOW_DEGREES_PER_MS + audioLevel.value * 0.168;
@@ -292,7 +292,7 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
           GLOW_SPACE + panelTop + (height - panelTop) / 2);
       }}
     >
-      <Canvas pointerEvents="none" testID="streaming-stt-glow"
+      {!manual ? <Canvas pointerEvents="none" testID="streaming-stt-glow"
         style={{ position: "absolute", left: -GLOW_SPACE, right: -GLOW_SPACE,
           top: -GLOW_SPACE, bottom: -GLOW_SPACE }}>
         {themeId === "standard" ? (
@@ -311,8 +311,9 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
           <SweepGradient c={center} colors={glowColors} mode="repeat"
             start={gradientStart} end={gradientEnd} />
         </Path>
-      </Canvas>
-      <View testID="streaming-stt-panel" style={[styles.chatInputWrapper, { minHeight: 62, backgroundColor: "#070b12",
+      </Canvas> : null}
+      <View testID="streaming-stt-panel" style={[styles.chatInputWrapper, { minHeight: 62, backgroundColor: manual ? theme.colors.surface : "#070b12",
+        ...(manual ? { borderWidth: 1, borderColor: theme.colors.border, borderRadius: 24, paddingHorizontal: 14, paddingVertical: 10 } : {}),
         zIndex: 1 }]}>
         {voiceStatus === "speaking" && onCancelSpeaking ? (
           <TouchableOpacity
@@ -368,10 +369,10 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
               scrollEnabled
               placeholder={statusText || (phase === "idle" ? "メッセージを入力" : phase === "finalizing" ? "文字起こしを確定中…"
                 : phase === "correcting" ? "文字起こしを補正中…" : phase === "preview" ? "補正結果を確認中…" : "音声を聞いています…")}
-              placeholderTextColor="#8e9bad"
+              placeholderTextColor={manual ? theme.colors.textMuted : "#8e9bad"}
               accessibilityLabel={manual ? "メッセージを入力" : "文字起こしを編集"}
               {...historyAccessibility}
-              style={{ color: "#f4f7ff", fontSize: 16, lineHeight: 22, minHeight: 22, maxHeight: 66, padding: 0 }}
+              style={{ color: manual ? theme.colors.textPrimary : "#f4f7ff", fontSize: 16, lineHeight: 22, minHeight: 22, maxHeight: manual ? 96 : 66, padding: 0 }}
             />
           ) : (
             <Text
@@ -395,8 +396,8 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
         {manual ? <TouchableOpacity testID="streaming-stt-send" accessibilityRole="button" accessibilityLabel="送信"
           disabled={submitDisabled || !transcript.trim()} onPress={() => submit(latestTranscriptRef.current)}
           style={{ width: 42, height: 42, borderRadius: 12, alignItems: "center", justifyContent: "center",
-            backgroundColor: "#35465c", opacity: submitDisabled || !transcript.trim() ? 0.4 : 1 }}>
-          <Ionicons name="send" size={18} color="#ffffff" />
+            backgroundColor: theme.colors.accent, opacity: submitDisabled || !transcript.trim() ? 0.4 : 1 }}>
+          <Ionicons name="send" size={18} color={theme.colors.textOnAccent} />
         </TouchableOpacity> : null}
         {!manual || voiceStatus === "responding" || stopAvailable ? <TouchableOpacity
           testID="streaming-stt-stop"
@@ -405,9 +406,9 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
           hitSlop={8}
           disabled={phase === "finalizing"}
           onPress={onStop}
-          style={{ width: 42, height: 42, borderRadius: 12, alignItems: "center", justifyContent: "center", backgroundColor: "#35465c", opacity: phase === "finalizing" ? 0.5 : 1 }}
+          style={{ width: 42, height: 42, borderRadius: 12, alignItems: "center", justifyContent: "center", backgroundColor: manual ? theme.colors.surfaceMuted : "#35465c", opacity: phase === "finalizing" ? 0.5 : 1 }}
         >
-          <Ionicons name="stop" size={18} color="#ffffff" />
+          <Ionicons name="stop" size={18} color={manual ? theme.colors.textPrimary : "#ffffff"} />
         </TouchableOpacity> : null}
       </View>
       {leadingAccessory ? (

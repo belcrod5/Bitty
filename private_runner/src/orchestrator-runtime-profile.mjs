@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+export const ORCHESTRATOR_CAPABILITY_INSTRUCTION = "Current isolated runtime: web search and shell network access are unavailable. Shared MCP servers, apps, plugins and browser access are unavailable. Use only tools actually exposed in this turn. A failed or unavailable lookup is not a retrieved result; distinguish supplied statements from independently checked evidence.";
+
 const unavailable = () => Object.assign(new Error("This Codex runtime cannot isolate orchestrator knowledge and tools"), {
   code: "capability_unsupported", voiceReason: "orchestrator_isolation_unavailable",
 });
