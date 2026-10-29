@@ -237,10 +237,10 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
     && { supportsReasoningEffort: true, effortOptions: currentOverviewModel.effortOptions });
 
   const learningOrchestrator = list.orchestrators.find((item) => item.id === learningId);
-  const back = () => learningId ? setLearningId(null) : detailId === null ? onClose() : setDetailId(null);
+  const back = () => draftPicker ? setDraftPicker(false) : learningId ? setLearningId(null) : detailId === null ? onClose() : setDetailId(null);
 
   return (
-    <><AppModal visible={visible} animationType="slide" onRequestClose={back}>
+    <AppModal testID="orchestrator-manager-modal" visible={visible} animationType="slide" onRequestClose={back}>
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}
         automaticOffset={Platform.OS === "ios"}>
       <SafeAreaView style={styles.settingsScreen}>
@@ -248,10 +248,27 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
           contentContainerStyle={styles.settingsContent} keyboardShouldPersistTaps="handled">
           <TouchableOpacity accessibilityRole="button" accessibilityLabel="戻る"
             style={styles.settingsBackButton} onPress={back}>
-            <Text style={styles.settingsBackButtonText}>‹ {detailId === null && !learningId ? "音声会話" : "オーケストレータ"}</Text>
+            <Text style={styles.settingsBackButtonText}>‹ {draftPicker ? "詳細" : detailId === null && !learningId ? "音声会話" : "オーケストレータ"}</Text>
           </TouchableOpacity>
-          <Text style={styles.settingsTitle}>{learningId ? "学習・評価" : detailId === null ? "オーケストレータ" : detailId === "new" ? "追加" : "詳細"}</Text>
-          {learningId ? learningOrchestrator ? <>
+          <Text style={styles.settingsTitle}>{draftPicker ? "紹介の下書き" : learningId ? "学習・評価" : detailId === null ? "オーケストレータ" : detailId === "new" ? "追加" : "詳細"}</Text>
+          {draftPicker && detail ? <View testID="orchestrator-introduction-picker" style={styles.settingsSection}>
+            <Text style={styles.settingsFooterText}>生成に使うモデルを選んでください。紹介の保存や本人の通常モデルの変更は行いません。</Text>
+            <SettingsSelect icon="chatbubble-ellipses-outline" label="紹介のモデル"
+              options={detail.models.map((item) => ({ value: item.modelId, label: item.label }))}
+              selectedValue={draftModel} onSelect={(model) => {
+                const option = detail.models.find((item) => item.modelId === model);
+                if (option) { setDraftModel(model); if (!option.effortOptions.includes(draftEffort)) setDraftEffort(option.effortOptions[0]); }
+              }} />
+            <SettingsSelect icon="options-outline" label="紹介のエフォート"
+              options={(detail.models.find((item) => item.modelId === draftModel)?.effortOptions || []).map((effort) => ({ value: effort, label: EFFORT_LABELS[effort] }))}
+              selectedValue={draftEffort} onSelect={(effort) => setDraftEffort(effort as ReasoningEffort)} />
+            <TouchableOpacity accessibilityRole="button" accessibilityLabel="選んだモデルで紹介を生成" onPress={() => void generateIntroduction()}>
+              <Text style={styles.settingsActionText}>下書きを作る</Text>
+            </TouchableOpacity>
+            <TouchableOpacity accessibilityRole="button" accessibilityLabel="紹介の生成をキャンセル" onPress={() => setDraftPicker(false)}>
+              <Text style={styles.settingsActionText}>キャンセル</Text>
+            </TouchableOpacity>
+          </View> : learningId ? learningOrchestrator ? <>
             <SettingsSelect icon="chatbubbles-outline" label="オーケストレータ"
               options={list.orchestrators.map((item) => ({ value: item.id, label: item.name }))}
               selectedValue={learningId} onSelect={setLearningId} />
@@ -414,7 +431,7 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
           ) : null}
           {error && (!detailId || !detail) ? <Text style={styles.settingsErrorText}>{error}</Text> : null}
         </KeyboardAwareScrollView>
-        {detailId !== null && detail ? <View style={{ width: "100%", maxWidth: 760, alignSelf: "center",
+        {!draftPicker && detailId !== null && detail ? <View style={{ width: "100%", maxWidth: 760, alignSelf: "center",
           paddingHorizontal: 18, paddingTop: 12, paddingBottom: 12, gap: 8 }}>
           {error ? <Text accessibilityRole="alert" style={styles.settingsErrorText}>{error}</Text> : null}
           <TouchableOpacity testID="orchestrator-save" accessibilityRole="button" accessibilityLabel="オーケストレータを保存"
@@ -426,28 +443,5 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
       </SafeAreaView>
       </KeyboardAvoidingView>
     </AppModal>
-    {draftPicker ? <AppModal visible={visible} animationType="slide" onRequestClose={() => setDraftPicker(false)}>
-      <SafeAreaView style={styles.settingsScreen}>
-        <View style={styles.settingsContent}>
-          <Text style={styles.settingsTitle}>紹介の下書き</Text>
-          <Text style={styles.settingsFooterText}>生成に使うモデルを選んでください。紹介の保存や本人の通常モデルの変更は行いません。</Text>
-          <SettingsSelect icon="chatbubble-ellipses-outline" label="紹介のモデル"
-            options={detail?.models.map((item) => ({ value: item.modelId, label: item.label })) || []}
-            selectedValue={draftModel} onSelect={(model) => {
-              const option = detail?.models.find((item) => item.modelId === model);
-              if (option) { setDraftModel(model); if (!option.effortOptions.includes(draftEffort)) setDraftEffort(option.effortOptions[0]); }
-            }} />
-          <SettingsSelect icon="options-outline" label="紹介のエフォート"
-            options={(detail?.models.find((item) => item.modelId === draftModel)?.effortOptions || []).map((effort) => ({ value: effort, label: EFFORT_LABELS[effort] }))}
-            selectedValue={draftEffort} onSelect={(effort) => setDraftEffort(effort as ReasoningEffort)} />
-          <TouchableOpacity accessibilityRole="button" accessibilityLabel="選んだモデルで紹介を生成" onPress={() => void generateIntroduction()}>
-            <Text style={styles.settingsActionText}>下書きを作る</Text>
-          </TouchableOpacity>
-          <TouchableOpacity accessibilityRole="button" accessibilityLabel="紹介の生成をキャンセル" onPress={() => setDraftPicker(false)}>
-            <Text style={styles.settingsActionText}>キャンセル</Text>
-          </TouchableOpacity>
-        </View>
-      </SafeAreaView>
-    </AppModal> : null}</>
   );
 }

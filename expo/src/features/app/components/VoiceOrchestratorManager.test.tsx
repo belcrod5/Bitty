@@ -1,5 +1,4 @@
 import { act, fireEvent, render, waitFor, within } from "@testing-library/react-native";
-import type { ReactNode } from "react";
 import { Alert, StyleSheet } from "react-native";
 import { AppModal } from "./AppModal";
 import { VoiceOrchestratorManager } from "./VoiceOrchestratorManager";
@@ -9,6 +8,7 @@ let mockLegacySettings = false;
 let mockSaveFailure = false;
 let mockMainInstruction = "Be helpful.";
 let mockIsolationVersion = 1;
+let mockRealSettingsSelect = false;
 const mockPickIcon = jest.fn(async () => icon);
 const mockRequest = jest.fn(async (message: { op: string; payload?: Record<string, unknown> }) => {
   const { op, payload } = message;
@@ -61,12 +61,13 @@ jest.mock("../utils/voiceOrchestratorIconPicker", () => ({
   supportsVoiceOrchestratorIconPicking: true,
   pickVoiceOrchestratorIcon: () => mockPickIcon(),
 }));
+jest.mock("@expo/vector-icons", () => ({ Ionicons: () => null }));
 jest.mock("../keyboardController", () => ({
   KeyboardAwareScrollView: require("react-native").ScrollView,
   KeyboardAvoidingView: require("react-native").View,
 }));
 jest.mock("./AppModal", () => ({
-  AppModal: jest.fn(({ children }: { children: ReactNode }) => children),
+  AppModal: jest.fn(jest.requireActual("./AppModal").AppModal),
 }));
 jest.mock("./OrchestratorLearningPanel", () => ({
   OrchestratorLearningPanel: ({ orchestrator }: { orchestrator: { id: string } }) => {
@@ -75,11 +76,13 @@ jest.mock("./OrchestratorLearningPanel", () => ({
   },
 }));
 jest.mock("./SettingsSelect", () => ({
-  SettingsSelect: ({ label, onSelect, options, onOpen, searchValue, onSearchChange }: { label: string;
+  SettingsSelect: (props: { label: string;
     onSelect: (value: string) => void; onOpen?: () => void;
     searchValue?: string; onSearchChange?: (value: string) => void;
     options: { value: string }[] }) => {
     const ReactModule = require("react");
+    if (mockRealSettingsSelect) return ReactModule.createElement(jest.requireActual("./SettingsSelect").SettingsSelect, props);
+    const { label, onSelect, options, onOpen, searchValue, onSearchChange } = props;
     const { Pressable, Text } = require("react-native");
     return ReactModule.createElement(Pressable, { testID: `select-${label}`,
       accessibilityValue: { text: searchValue || "" },
@@ -94,7 +97,7 @@ const onConversationChanged = jest.fn();
 const onClose = jest.fn();
 const props = { visible: true, list, onListChanged, onConversationChanged, onClose };
 
-beforeEach(() => { jest.clearAllMocks(); mockLegacySettings = false; mockSaveFailure = false; mockMainInstruction = "Be helpful."; mockIsolationVersion = 1; });
+beforeEach(() => { jest.clearAllMocks(); mockLegacySettings = false; mockSaveFailure = false; mockMainInstruction = "Be helpful."; mockIsolationVersion = 1; mockRealSettingsSelect = false; });
 
 test("opens through the platform modal and closes detail before the manager", async () => {
   const screen = await render(<VoiceOrchestratorManager {...props} />);
@@ -362,4 +365,41 @@ test("closing settings dismisses the introduction picker before reopening", asyn
   await screen.rerender(<VoiceOrchestratorManager {...props} visible={false} />);
   await screen.rerender(<VoiceOrchestratorManager {...props} visible />);
   expect(screen.queryByText("紹介の下書き")).toBeNull();
+});
+
+
+test("introduction setup navigates inside the existing native modal and real model/effort selectors stay usable", async () => {
+  mockRealSettingsSelect = true;
+  const screen = await render(<VoiceOrchestratorManager {...props} />);
+  await fireEvent.press(screen.getByTestId("orchestrator-row-other"));
+  await screen.findByLabelText("紹介を自動生成");
+  await fireEvent.changeText(screen.getByLabelText("得意分野・担当"), "編集途中の紹介");
+  const visibleModals = () => screen.container.queryAll((node) => node.type === "Modal" && node.props.visible === true);
+  const managerModal = visibleModals()[0];
+  expect(visibleModals()).toHaveLength(1);
+  await fireEvent.press(screen.getByLabelText("紹介を自動生成"));
+  expect(visibleModals()).toHaveLength(1);
+  expect(visibleModals()[0]).toBe(managerModal);
+  expect(within(managerModal).getByTestId("orchestrator-introduction-picker")).toBeTruthy();
+  expect(screen.queryByTestId("orchestrator-save")).toBeNull();
+  await fireEvent.press(screen.getByLabelText("紹介の生成をキャンセル"));
+  expect(screen.getByLabelText("得意分野・担当").props.value).toBe("編集途中の紹介");
+  await fireEvent.press(screen.getByLabelText("紹介を自動生成"));
+  await act(async () => managerModal.props.onRequestClose());
+  expect(screen.getByLabelText("得意分野・担当").props.value).toBe("編集途中の紹介");
+  expect(onClose).not.toHaveBeenCalled();
+  await fireEvent.press(screen.getByLabelText("紹介を自動生成"));
+  await fireEvent.press(screen.getByLabelText("紹介のモデル"));
+  expect(visibleModals()).toHaveLength(2);
+  expect(within(managerModal).getByLabelText("紹介のモデルの選択肢")).toBeTruthy();
+  await fireEvent.press(screen.getByText("Another"));
+  expect(visibleModals()).toHaveLength(1);
+  await fireEvent.press(screen.getByLabelText("紹介のエフォート"));
+  await fireEvent.press(screen.getByText("高"));
+  await fireEvent.press(screen.getByLabelText("選んだモデルで紹介を生成"));
+  await waitFor(() => expect(screen.getByLabelText("得意分野・担当").props.value).toBe("調査と実装の相談を担当します。"));
+  expect(mockRequest.mock.calls.filter(([message]) => message.op === "voice.orchestrators.introduction.draft")).toHaveLength(1);
+  expect(mockRequest).toHaveBeenCalledWith({ channel: "agent", op: "voice.orchestrators.introduction.draft",
+    payload: { orchestratorId: "other", model: "another-model", effort: "high" } }, { timeoutMs: 75_000 });
+  expect(mockRequest.mock.calls.some(([message]) => message.op === "voice.orchestrators.update")).toBe(false);
 });
