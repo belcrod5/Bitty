@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 const NAMESPACE = "voice_subagent";
+export const VOICE_SUBAGENT_TOOLS_VERSION = 1;
 const TERMINAL = new Set(["completed", "failed", "interrupted"]);
 const response = (value) => ({ success: true, contentItems: [{ type: "inputText", text: JSON.stringify(value) }] });
 const keyOf = (record) => record.sessionId ? `${record.backendId}\u0000${record.sessionId}` : `run:${record.runId}`;
@@ -14,15 +15,15 @@ export const voiceSubagentTools = [{
   type: "namespace", name: NAMESPACE,
   description: "隔離外のworkspace・インストール済みCLI/skill・認証情報・ネットワークが必要な許可済み作業をRunnerへ委任し、実行状態を確認する",
   tools: [
-    { type: "function", name: "delegate", deferLoading: true,
+    { type: "function", name: "delegate", deferLoading: false,
       description: "承認済みworkspaceで新しいCodex/Claudeセッションを開始するか、既存セッションにタスクを委任する。現在のユーザーの明示的な依頼・承認の範囲で実行する。対象や操作が不明なら先に確認する。",
       inputSchema: { type: "object", additionalProperties: false, required: ["backendId", "request"],
         properties: { backendId: { type: "string" }, cwd: { type: "string" }, sessionId: { type: "string" },
           request: { type: "string" }, model: { type: "string" }, effort: { type: "string" } } } },
-    { type: "function", name: "status", deferLoading: true,
+    { type: "function", name: "status", deferLoading: false,
       description: "この音声オーケストレーターが委任したセッションの実際のRunner状態を確認する",
       inputSchema: { type: "object", additionalProperties: false } },
-    { type: "function", name: "respond", deferLoading: true,
+    { type: "function", name: "respond", deferLoading: false,
       description: "委任セッションの承認要求へ、ユーザーから明示された判断を返す。実行前にユーザーへ確認する",
       inputSchema: { type: "object", additionalProperties: false,
         required: ["runId", "requestId", "decision"], properties: {

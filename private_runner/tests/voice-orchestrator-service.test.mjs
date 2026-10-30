@@ -1304,11 +1304,50 @@ test("existing isolated parents acquire the Runner bridge once without losing co
   assert.equal((await (await turn(upgraded, "main", main.logicalConversationId, "Continue after native work")).finished).status, "completed");
   const after = JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8"));
   assert.notEqual(after.nativeThreadId, before.nativeThreadId);
-  assert.equal(after.nativeManagedSessionsEnabled, true);
+  assert.equal(after.nativeManagedSessionsVersion, 1);
   assert.equal(after.logicalConversationId, before.logicalConversationId);
   assert.ok((await upgraded.history("main")).messages.some((message) => message.text === "Remember this task"));
   const parentCount = codex.calls.filter(({ method, params }) => method === "thread/start" && !params.ephemeral).length;
   assert.equal((await (await turn(upgraded, "main", main.logicalConversationId, "Continue again")).finished).status, "completed");
+  assert.equal(codex.calls.filter(({ method, params }) => method === "thread/start" && !params.ephemeral).length, parentCount);
+  await upgraded.close();
+});
+
+for (const scoped of [false, true]) test(`previously marked deferred Runner parents upgrade safely in ${scoped ? "consultation" : "individual"} chats`, async (t) => {
+  let delegatedState = "running";
+  const getAgentService = () => ({ inspectRun: async () => ({ state: delegatedState, actions: [] }) });
+  const { rootDir, service, codex } = await fixture(t, { getAgentService });
+  const key = scoped ? randomUUID() : undefined;
+  const opened = await service.open("main", key);
+  assert.equal((await (await turn(service, "main", opened.logicalConversationId, "Keep this context", undefined, key)).finished).status, "completed");
+  await service.close();
+  const activeFile = path.join(rootDir, ...(key ? ["scopes", key] : []), "active.json");
+  const before = JSON.parse(await fs.readFile(activeFile, "utf8"));
+  delete before.nativeManagedSessionsVersion;
+  before.nativeManagedSessionsEnabled = true;
+  await fs.writeFile(activeFile, JSON.stringify(before));
+  await fs.writeFile(path.join(rootDir, "subagents.json"), JSON.stringify([{
+    orchestratorId: "main", backendId: "test", sessionId: "existing-session", runId: "existing-run",
+    request: "Already running", clientOperationId: "existing-operation", requestHash: "existing-hash", status: "running",
+  }]));
+  const upgraded = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient,
+    getAgentService, subjectId: "voice-owner" });
+  const blocked = await (await turn(upgraded, "main", opened.logicalConversationId, "Continue", undefined, key)).finished;
+  assert.equal(blocked.code, "session_busy");
+  assert.equal(JSON.parse(await fs.readFile(activeFile, "utf8")).nativeThreadId, before.nativeThreadId);
+  delegatedState = "completed";
+  assert.equal((await (await turn(upgraded, "main", opened.logicalConversationId, "Continue after work", undefined, key)).finished).status, "completed");
+  const after = JSON.parse(await fs.readFile(activeFile, "utf8"));
+  assert.notEqual(after.nativeThreadId, before.nativeThreadId);
+  assert.equal(after.nativeManagedSessionsVersion, 1);
+  assert.equal(after.nativeManagedSessionsEnabled, undefined);
+  assert.equal(after.logicalConversationId, before.logicalConversationId);
+  assert.ok((await upgraded.history("main", key)).messages.some(({ text }) => text === "Keep this context"));
+  const parent = codex.calls.filter(({ method, params }) => method === "thread/start" && !params.ephemeral).at(-1);
+  assert.ok(parent.params.dynamicTools.find(({ name }) => name === "voice_subagent").tools.every(({ deferLoading }) => deferLoading === false));
+  const parentCount = codex.calls.filter(({ method, params }) => method === "thread/start" && !params.ephemeral).length;
+  assert.equal((await (await turn(upgraded, "main", opened.logicalConversationId, "Continue again", undefined, key)).finished).status, "completed");
+  assert.equal(JSON.parse(await fs.readFile(activeFile, "utf8")).nativeThreadId, after.nativeThreadId);
   assert.equal(codex.calls.filter(({ method, params }) => method === "thread/start" && !params.ephemeral).length, parentCount);
   await upgraded.close();
 });

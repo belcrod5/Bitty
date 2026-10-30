@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import { APP_CONTROL_UNAVAILABLE_INSTRUCTION, codexTurnEventMatches, extractCodexAgentMessageText, listCodexModelsFromAppServer } from "./codex-turn-execution.mjs";
 import { openVoiceMemoryStore } from "./voice-memory-store.mjs";
 import { prepareOrchestratorRuntime, assertOrchestratorRuntime, ORCHESTRATOR_CAPABILITY_INSTRUCTION } from "./orchestrator-runtime-profile.mjs";
-import { voiceSubagentTools } from "./voice-subagents.mjs";
+import { voiceSubagentTools, VOICE_SUBAGENT_TOOLS_VERSION } from "./voice-subagents.mjs";
 import { calendarConversationDynamicTools, CALENDAR_READ_TOOL_NAMES } from "./calendar-tool-service.mjs";
 
 const CALENDAR_READ_TOOLS = calendarConversationDynamicTools().map((namespace) => ({
@@ -827,6 +827,9 @@ export function createVoiceContextService({ rootDir, createClient: clientFactory
           || Object.entries(active.pendingDispatch.messagePhases).some(([id, phase]) => !id || id.length > 200 || !["commentary", "final_answer"].includes(phase))))
         || (active.pendingDispatch.managedSessionsEnabled !== undefined
           && typeof active.pendingDispatch.managedSessionsEnabled !== "boolean")
+        || (active.pendingDispatch.managedSessionsVersion !== undefined
+          && (!Number.isSafeInteger(active.pendingDispatch.managedSessionsVersion)
+            || active.pendingDispatch.managedSessionsVersion < 0))
         || (active.pendingDispatch.calendarReadEnabled !== undefined
           && typeof active.pendingDispatch.calendarReadEnabled !== "boolean")
         || (active.pendingDispatch.turnId !== undefined
@@ -847,6 +850,8 @@ export function createVoiceContextService({ rootDir, createClient: clientFactory
         || !active.systemInstruction.trim() || bytes(active.systemInstruction) > 16_000))
       || (active.checklistReadPending !== undefined && typeof active.checklistReadPending !== "boolean")
       || (active.nativeManagedSessionsEnabled !== undefined && typeof active.nativeManagedSessionsEnabled !== "boolean")
+      || (active.nativeManagedSessionsVersion !== undefined
+        && (!Number.isSafeInteger(active.nativeManagedSessionsVersion) || active.nativeManagedSessionsVersion < 0))
       || (active.nativeCalendarReadEnabled !== undefined && typeof active.nativeCalendarReadEnabled !== "boolean")
       || (active.checklistCompletion !== undefined
         && (!taskChecklistPath || !validChecklistCompletion(active.checklistCompletion)))
@@ -1223,7 +1228,7 @@ export function createVoiceContextService({ rootDir, createClient: clientFactory
     }
     const next = { ...active, nativeThreadId: candidate.threadId,
       nativeCalendarReadEnabled: candidate.calendarReadEnabled === true,
-      nativeManagedSessionsEnabled: candidate.managedSessionsEnabled === true,
+      nativeManagedSessionsVersion: candidate.managedSessionsVersion || 0,
       ...(candidate.conversationToolsVersion ? { nativeConversationToolsVersion: candidate.conversationToolsVersion } : {}),
       ...(candidate.learningSnapshot ? { learningSnapshot: { contextRevision: candidate.learningSnapshot.contextRevision,
         selectedDigest: candidate.learningSnapshot.selectedDigest, items: candidate.learningSnapshot.items.map(({ id, version }) => ({ id, version })) }, nativeLearningEnabled: true } : {}),
@@ -1231,6 +1236,7 @@ export function createVoiceContextService({ rootDir, createClient: clientFactory
         nativeChecklistWriteEnabled: true, nativeChecklistCompletionVersion: CHECKLIST_COMPLETION_VERSION } : {}),
       ...(candidate.turnId ? { nativeTurnId: candidate.turnId } : {}) };
     delete next.nativeChecklistCompletionEnabled;
+    delete next.nativeManagedSessionsEnabled;
     if (switching) {
       next.parentGeneration = candidate.parentGeneration + 1;
       next.completedOnParent = 0;
@@ -2298,7 +2304,7 @@ export function createVoiceContextService({ rootDir, createClient: clientFactory
         const legacyCalendarParent = Boolean(hooks.onCalendarToolCall && active.nativeThreadId
           && active.nativeCalendarReadEnabled !== true);
         const legacyManagedParent = Boolean(managedSessions && active.nativeThreadId
-          && active.nativeManagedSessionsEnabled !== true);
+          && active.nativeManagedSessionsVersion !== VOICE_SUBAGENT_TOOLS_VERSION);
         const changedConversationTools = Boolean(hooks.conversationTools && active.nativeThreadId
           && active.nativeConversationToolsVersion !== hooks.conversationTools.version);
         if ((legacyChecklistParent || legacyCalendarParent || legacyManagedParent || changedConversationTools) && !active.pendingSwitch) {
@@ -2422,7 +2428,7 @@ export function createVoiceContextService({ rootDir, createClient: clientFactory
           const candidate = { clientOperationId, threadId, parentGeneration: prepared.generation,
             turnSeq, newParent: prepared.newParent,
             calendarReadEnabled: Boolean(hooks.onCalendarToolCall),
-            managedSessionsEnabled: Boolean(managedSessions),
+            managedSessionsVersion: managedSessions ? VOICE_SUBAGENT_TOOLS_VERSION : 0,
             ...(hooks.conversationTools ? { conversationToolsVersion: hooks.conversationTools.version } : {}),
             ...(prepared.learning ? { learningSnapshot: { contextRevision: prepared.learning.contextRevision, selectedDigest: prepared.learning.selectedDigest,
               items: prepared.learning.items.map(({ id, version }) => ({ id, version })) } } : {}),
