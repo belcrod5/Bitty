@@ -22,7 +22,7 @@ function fakeAppServer({ holdResponses = false, holdSummaries = false, holdOverv
       thread.readOnly = params.permissions
         ? params.config.permissions[params.permissions].filesystem[":workspace_roots"] === "read"
         : params.sandbox === "read-only";
-      return { thread, ...(params.permissions ? {
+      return { thread, approvalPolicy: params.approvalPolicy, ...(params.permissions ? {
       activePermissionProfile: { id: params.permissions }, instructionSources: [],
       runtimeWorkspaceRoots: params.runtimeWorkspaceRoots,
       sandbox: params.config.permissions[params.permissions].filesystem[":workspace_roots"] === "read"
@@ -149,7 +149,7 @@ async function fixture(t, options) {
 const json = async (file) => JSON.parse(await fs.readFile(file, "utf8"));
 const activeAt = (directory, name) => path.join(directory, name, "active.json");
 const regularParents = (calls) => calls.filter(({ method, params }) =>
-  ["thread/start", "thread/resume"].includes(method) && params.approvalPolicy === "on-request");
+  ["thread/start", "thread/resume"].includes(method) && params.ephemeral !== true);
 async function waitFor(check) {
   const until = Date.now() + 5000;
   while (Date.now() < until) {
@@ -311,6 +311,7 @@ test("production scopes reuse owner resources, isolate normal history, persist p
   assert.equal((await first.terminal).conversationKey, key);
   await ownerTurn(service, "main", "room-2", key, { additionalInstructions: "CONSULTATION_SECOND" });
   const parents = regularParents(rpc.calls);
+  assert.ok(parents.every(({ params }) => params.approvalPolicy === "never"));
   const firstInstruction = parents.find(({ params }) => params.developerInstructions.includes("CONSULTATION_FIRST"));
   const secondInstruction = parents.find(({ params }) => params.developerInstructions.includes("CONSULTATION_SECOND"));
   assert.ok(firstInstruction); assert.ok(secondInstruction);
@@ -1381,4 +1382,27 @@ test("stream divergence and durable room failure cancel subscribed audio instead
     assert.deepEqual(audio.spoken.map(({text}) => text), ["先に生成した文。"], "already emitted audio cannot be undone, but neither replacement nor tail is synthesized");
     assert.equal(audio.jobs[0].completed, false);
   }
+});
+
+test("native background work keeps lifecycle protected while ordinary and consultation conversations continue", { timeout: 20000 }, async (t) => {
+  const { service, rpc, rootDir } = await ownerFixture(t);
+  const owner = await service.create("background owner"), key = randomUUID();
+  await ownerTurn(service, owner.id, "Start a native task", key);
+  const directory = path.join(rootDir, "orchestrators", owner.id, "scopes", key);
+  const scope = await json(path.join(directory, "active.json"));
+  const root = rpc.threads.get(scope.nativeThreadId), childId = randomUUID();
+  root.turns.at(-1).items.push({ type: "collabAgentToolCall", status: "completed", receiverThreadIds: [childId],
+    agentsStates: { [childId]: { status: "running" } } });
+  rpc.threads.set(childId, { id: childId, status: { type: "active" }, turns: [] });
+  assert.equal(await service.isBusy(owner.id), true);
+  await ownerTurn(service, owner.id, "待ちません");
+  await ownerTurn(service, owner.id, "Continue discussing the task", key);
+  await assert.rejects(service.configure(owner.id, "gpt-6-luna", "low", "changed"), { code: "session_busy" });
+  await assert.rejects(service.clearMemory(owner.id), { code: "session_busy" });
+  await assert.rejects(service.clearMessages(owner.id), { code: "session_busy" });
+  await assert.rejects(service.remove(owner.id), { code: "session_busy" });
+  await assert.rejects(service.draftIntroduction(owner.id, { model: "gpt-6-luna", effort: "low" }), { code: "session_busy" });
+  rpc.threads.get(childId).status = { type: "idle" };
+  root.turns.at(-2).items.at(-1).agentsStates[childId].status = "completed";
+  await service.clearMessages(owner.id);
 });

@@ -765,6 +765,29 @@ test("continued-parent turn/start loss is reconciled after its journaled predece
     && params.approvalPolicy === "on-request").length, 2);
 });
 
+test("old Runner dispatch metadata recovers without automatic capability checks", async (t) => {
+  const managedSessions = { refresh: async () => ({ records: [] }), contextOf: () => "" };
+  const { rootDir, codex, service, conversation } = await fixture(t, { loseTurnStartResponseAt: 1, managedSessions });
+  const started = await beginTurn(service, conversation, "Recover the original request");
+  assert.equal((await started.terminal).status, "unknown");
+  const activeFile = path.join(rootDir, "active.json");
+  const active = JSON.parse(await fs.readFile(activeFile, "utf8"));
+  delete active.pendingDispatch.managedSessionsVersion;
+  active.pendingDispatch.managedSessionsEnabled = true;
+  await fs.writeFile(activeFile, JSON.stringify(active));
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient, managedSessions });
+  assert.equal((await restarted.open()).status, "completed");
+  const recovered = JSON.parse(await fs.readFile(activeFile, "utf8"));
+  assert.equal(recovered.nativeManagedSessionsVersion, undefined);
+  assert.equal(recovered.pendingDispatch, undefined);
+  assert.equal((await complete(restarted, conversation, "Continue after recovery")).result.status, "completed");
+  const upgraded = JSON.parse(await fs.readFile(activeFile, "utf8"));
+  assert.equal(upgraded.nativeThreadId, recovered.nativeThreadId);
+  assert.equal(upgraded.nativeManagedSessionsVersion, undefined);
+  assert.equal(upgraded.logicalConversationId, conversation.logicalConversationId);
+  assert.ok((await restarted.history()).messages.some(({ text }) => text === "Recover the original request"));
+});
+
 test("an unknown restarted native turn blocks lifecycle changes until reconciliation", async (t) => {
   const nativeThreads = new Map();
   const { rootDir, codex, service, conversation } = await fixture(t, {

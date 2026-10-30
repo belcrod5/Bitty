@@ -28,7 +28,7 @@ async function fixture(t) {
   return { workspace, sibling, ownSkill, otherSkill, linked, calls, client };
 }
 
-const response = (runtime, readOnly = false) => ({ activePermissionProfile: { id: runtime.permissions },
+const response = (runtime, readOnly = false) => ({ approvalPolicy: "never", activePermissionProfile: { id: runtime.permissions },
   runtimeWorkspaceRoots: runtime.runtimeWorkspaceRoots, instructionSources: [], sandbox: readOnly
     ? { type: "readOnly", networkAccess: false }
     : { type: "workspaceWrite", networkAccess: false, excludeSlashTmp: true, excludeTmpdirEnvVar: true, writableRoots: [] } });
@@ -88,6 +88,7 @@ test("startup and resume cannot silently use inherited instructions, roots or le
   const f = await fixture(t);
   const runtime = await prepareOrchestratorRuntime(f.client, { workspaceDirectory: f.workspace, cwd: f.workspace });
   for (const patch of [
+    { approvalPolicy: "on-request" }, { approvalPolicy: undefined },
     { activePermissionProfile: null }, { activePermissionProfile: { id: "other" } },
     { runtimeWorkspaceRoots: [f.sibling] }, { runtimeWorkspaceRoots: [...runtime.runtimeWorkspaceRoots, f.sibling] },
     { instructionSources: ["/global/AGENTS.md"] }, { sandbox: { type: "dangerFullAccess" } },

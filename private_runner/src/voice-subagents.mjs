@@ -12,17 +12,17 @@ const publicRecord = (record) => ({ backendId: record.backendId, sessionId: reco
 
 export const voiceSubagentTools = [{
   type: "namespace", name: NAMESPACE,
-  description: "Bitty Runnerの委任セッションを開始・再開し、その実行状態を確認する",
+  description: "隔離外のworkspace・インストール済みCLI/skill・認証情報・ネットワークが必要な許可済み作業をRunnerへ委任し、実行状態を確認する",
   tools: [
-    { type: "function", name: "delegate", deferLoading: true,
-      description: "承認済みworkspaceで新しいCodex/Claudeセッションを開始するか、既存セッションにタスクを委任する。実行前にユーザーの確認が必要。",
+    { type: "function", name: "delegate", deferLoading: false,
+      description: "承認済みworkspaceで新しいCodex/Claudeセッションを開始するか、既存セッションにタスクを委任する。現在のユーザーの明示的な依頼・承認の範囲で実行する。対象や操作が不明なら先に確認する。",
       inputSchema: { type: "object", additionalProperties: false, required: ["backendId", "request"],
         properties: { backendId: { type: "string" }, cwd: { type: "string" }, sessionId: { type: "string" },
           request: { type: "string" }, model: { type: "string" }, effort: { type: "string" } } } },
-    { type: "function", name: "status", deferLoading: true,
+    { type: "function", name: "status", deferLoading: false,
       description: "この音声オーケストレーターが委任したセッションの実際のRunner状態を確認する",
       inputSchema: { type: "object", additionalProperties: false } },
-    { type: "function", name: "respond", deferLoading: true,
+    { type: "function", name: "respond", deferLoading: false,
       description: "委任セッションの承認要求へ、ユーザーから明示された判断を返す。実行前にユーザーへ確認する",
       inputSchema: { type: "object", additionalProperties: false,
         required: ["runId", "requestId", "decision"], properties: {
