@@ -796,7 +796,7 @@ test("scope-only native invitation validates registered IDs, deduplicates and jo
   assert.ok(inputs[1].participants.some((item) => item.orchestratorId === invited.id));
   assert.ok(inputs[2].peerMessages.some((message) => message.source === "membership"));
   const scopeActive = await json(path.join(rootDir, "scopes", room.id, "active.json"));
-  assert.equal(scopeActive.nativeConversationToolsVersion, "consultation-controls-v2");
+  assert.equal(scopeActive.nativeConversationToolsVersion, "consultation-controls-v3");
   assert.notEqual(scopeActive.nativeThreadId, oldParent, "an old scoped parent is safely replaced to register the capability");
   await ownerTurn(service, "main", "ordinary response");
   const ordinaryParent = regularParents(rpc.calls).at(-1);
@@ -1036,6 +1036,172 @@ test("a durable finish reservation is recovered by the existing status path, whi
     }
     if (status === "completed") assert.equal(rpc.calls.filter(({method,params}) => method === "turn/start" && params.input[0].text.startsWith('{"kind":"consultation"')).length, 1);
   }
+});
+
+test("latest-user snapshot survives peer updates and replaces an old ending after the room reopens", { timeout: 20000 }, async (t) => {
+  const first = randomUUID(), next = randomUUID(), taskCalls = [[{ namespace: "consultation", tool: "finish", arguments: { userMessageId: first } }]];
+  const replies = ["Goodbye", "A new opinion", "[[PASS]]", "[[PASS]]", "[[PASS]]"];
+  const { controller, room, rpc } = await consultationFixture(t, { taskCalls, replyFor: () => replies.shift() || "[[PASS]]" });
+  await controller.supplement(room.id, { text: "Finish this discussion", messageId: first });
+  await waitFor(async () => (await controller.get(room.id)).reason === "ended");
+  taskCalls.push([{ namespace: "consultation", tool: "finish", arguments: { userMessageId: first } }]);
+  await controller.supplement(room.id, { text: "What do the others think?", messageId: next });
+  await waitFor(async () => (await controller.get(room.id)).reason === "all_pass");
+  const inputs = rpc.calls.filter(({method,params}) => method === "turn/start" && params.input[0].text.startsWith('{"kind":"consultation"'))
+    .map(({params}) => JSON.parse(params.input[0].text));
+  assert.ok(inputs.slice(1).every((input) => input.latestUserMessage.id === next && input.latestUserMessage.referenceOnly === true));
+  assert.equal(inputs.at(-1).turnType, "peer_update"); assert.deepEqual(inputs.at(-1).newUserMessages, []);
+  assert.equal(inputs.at(-1).latestUserMessage.text, "What do the others think?");
+  assert.equal(inputs.at(-1).topic.text, "Finish this discussion");
+  assert.deepEqual(rpc.calls.filter(({method}) => method === "fake/taskResult").map(({value}) => value.success), [true, false]);
+  assert.equal((await controller.get(room.id)).turns, 4, "old ending cannot close the new discussion");
+});
+
+test("handoff prioritizes the addressed unread participant, stays silent, then resumes ordinary rotation without contaminating ordinary owner tools", { timeout: 20000 }, async (t) => {
+  const userMessageId = randomUUID(), taskCalls = [], replies = ["[[PASS]]", "Requested story", "[[PASS]]", "[[PASS]]", "[[PASS]]"];
+  const { controller, room, rpc, service } = await consultationFixture(t, { taskCalls, replyFor: ({params}) => params.input[0].text.startsWith('{"kind":"consultation"') ? replies.shift() || "[[PASS]]" : "Ordinary reply" });
+  await ownerTurn(service, "main", "Ordinary before");
+  const before = regularParents(rpc.calls).length;
+  taskCalls.push([{ namespace: "consultation", tool: "handoff", arguments: { orchestratorId: room.participants[2], userMessageId } }]);
+  await controller.supplement(room.id, { text: "C, write a story. Everyone else stay quiet.", messageId: userMessageId });
+  await waitFor(async () => (await controller.get(room.id)).reason === "all_pass");
+  const completed = await controller.get(room.id);
+  assert.deepEqual(completed.steps.map((step) => step.orchestratorId), ["main", room.participants[2], "main", room.participants[1], room.participants[2]]);
+  assert.deepEqual(completed.messages.filter((item) => item.source === "participant").map((item) => [item.speakerId, item.text]), [[room.participants[2], "Requested story"]]);
+  const inputs = rpc.calls.filter(({method,params}) => method === "turn/start" && params.input[0].text.startsWith('{"kind":"consultation"')).map(({params}) => JSON.parse(params.input[0].text));
+  assert.ok(inputs[0].handoffCandidates.includes(room.participants[2]));
+  assert.ok(!inputs[2].handoffCandidates.includes(room.participants[2]), "already consumed request cannot be handed back");
+  assert.equal(inputs[2].latestUserMessage.id, userMessageId); assert.deepEqual(inputs[2].newUserMessages, []);
+  const through = regularParents(rpc.calls).length;
+  await ownerTurn(service, "main", "Ordinary after");
+  const parents = regularParents(rpc.calls), normal = [...parents.slice(0, before), ...parents.slice(through)];
+  assert.ok(normal.length >= 2);
+  assert.ok(normal.every(({params}) => !params.dynamicTools?.some((tool) => tool.name === "consultation")));
+  assert.ok(normal.every(({params}) => !params.developerInstructions.includes("latestUserMessage") && !params.developerInstructions.includes("consultation.handoff")));
+  assert.ok(parents.slice(before, through).some(({params}) => params.dynamicTools?.some((tool) => tool.name === "consultation" && tool.tools.some((item) => item.name === "handoff"))));
+});
+
+test("handoff validates membership, latest read user, target cursor, idempotency and an exclusive control reservation", { timeout: 20000 }, async (t) => {
+  const userMessageId = randomUUID(), taskCalls = [];
+  const { controller, room, rpc } = await consultationFixture(t, { taskCalls, holdResponses: true, replyFor: () => "[[PASS]]" });
+  const action = (tool, args) => ({ namespace: "consultation", tool, arguments: args });
+  taskCalls.push([
+    action("handoff", { orchestratorId: randomUUID(), userMessageId }),
+    action("handoff", { orchestratorId: "main", userMessageId }),
+    action("handoff", { orchestratorId: room.participants[2], userMessageId: randomUUID() }),
+    action("handoff", { orchestratorId: room.participants[2], userMessageId, unexpected: true }),
+    action("handoff", { orchestratorId: room.participants[2], userMessageId }),
+    action("handoff", { orchestratorId: room.participants[2], userMessageId }),
+    action("handoff", { orchestratorId: room.participants[1], userMessageId }),
+    action("finish", { userMessageId }),
+  ]);
+  await controller.supplement(room.id, { text: "C please respond", messageId: userMessageId });
+  await waitFor(() => rpc.releases.length === 1); await rpc.releases.shift()();
+  await waitFor(() => rpc.releases.length === 1);
+  assert.equal((await controller.get(room.id)).run.orchestratorId, room.participants[2]);
+  taskCalls.push([action("handoff", { orchestratorId: "main", userMessageId })]);
+  await rpc.releases.shift()(); await waitFor(() => rpc.releases.length === 1);
+  const results = rpc.calls.filter(({method}) => method === "fake/taskResult").map(({value}) => value.success);
+  assert.deepEqual(results, [false, false, false, false, true, true, false, false, false]);
+  await controller.stop(room.id);
+});
+
+test("a finish reservation stays exclusive and commits with the normal final reply", { timeout: 20000 }, async (t) => {
+  const userMessageId = randomUUID(), taskCalls = [];
+  const { controller, room, rpc } = await consultationFixture(t, { taskCalls, replyFor: () => "Final answer" });
+  taskCalls.push([{ namespace: "consultation", tool: "finish", arguments: { userMessageId } },
+    { namespace: "consultation", tool: "handoff", arguments: { orchestratorId: room.participants[2], userMessageId } }]);
+  await controller.supplement(room.id, { text: "Give your final answer then finish", messageId: userMessageId });
+  await waitFor(async () => (await controller.get(room.id)).reason === "ended");
+  assert.deepEqual(rpc.calls.filter(({method}) => method === "fake/taskResult").map(({value}) => value.success), [true, false]);
+  assert.equal((await controller.get(room.id)).messages.at(-1).text, "Final answer");
+});
+
+test("a newer user arriving before or after handoff reservation invalidates old routing", { timeout: 20000 }, async (t) => {
+  for (const afterReservation of [false, true]) {
+    const userMessageId = randomUUID(), nextId = randomUUID(), taskCalls = [];
+    const { controller, room, rpc } = await consultationFixture(t, { taskCalls, holdResponses: !afterReservation,
+      responseEvents: afterReservation ? () => [{ method: "item/started", params: { item: { id: "comment", type: "agentMessage", phase: "commentary" } } }] : undefined,
+      replyFor: () => "[[PASS]]" });
+    taskCalls.push([{ namespace: "consultation", tool: "handoff", arguments: { orchestratorId: room.participants[2], userMessageId } }]);
+    await controller.supplement(room.id, { text: "C please respond", messageId: userMessageId });
+    await waitFor(() => (afterReservation ? rpc.eventReleases : rpc.releases).length === 1);
+    assert.equal(Boolean((await controller.get(room.id)).run.handoff), afterReservation);
+    await controller.supplement(room.id, { text: "Changed request for everyone", messageId: nextId });
+    const release = (afterReservation ? rpc.eventReleases : rpc.releases).shift();
+    await release();
+    await waitFor(() => (afterReservation ? rpc.eventReleases : rpc.releases).length === 1);
+    const current = await controller.get(room.id);
+    assert.equal(current.run.orchestratorId, room.participants[1], "new request resumes normal order instead of the old target");
+    assert.equal(current.turns, 0);
+    assert.equal(JSON.parse(current.run.inputText).latestUserMessage.id, nextId);
+    await controller.stop(room.id);
+  }
+});
+
+test("durable handoff recovers only completed turns and never bypasses the turn limit", { timeout: 20000 }, async (t) => {
+  for (const status of ["completed", "failed", "interrupted", "limit"]) {
+    const userMessageId = randomUUID(), taskCalls = [];
+    const { controller, room, rpc, service, directory, track } = await consultationFixture(t, { taskCalls, replyFor: () => "[[PASS]]" });
+    if (status === "limit") await controller.configure(room.id, { template: room.template, maxTurns: 1 });
+    taskCalls.push([{ namespace: "consultation", tool: "handoff", arguments: { orchestratorId: room.participants[2], userMessageId } }]);
+    const original = service.start.bind(service); let terminalResult;
+    service.start = (message, _done, ...args) => original(message, (result) => { terminalResult = result; }, ...args);
+    await controller.supplement(room.id, { text: "C please respond", messageId: userMessageId });
+    await waitFor(() => terminalResult);
+    assert.equal((await controller.get(room.id)).run.handoff.orchestratorId, room.participants[2]);
+    await controller.close(); service.start = original;
+    const statusOriginal = service.status.bind(service);
+    service.status = async (...args) => ({ ...await statusOriginal(...args), status: status === "limit" ? "completed" : status });
+    const restored = createVoiceConsultationService({ rootDir: path.join(directory,"rooms"), orchestrators: service }); track(restored);
+    if (status === "limit") {
+      await assert.rejects(restored.resume(room.id), /limit reached/);
+      assert.equal((await restored.get(room.id)).reason, "limit");
+      assert.equal(rpc.calls.filter(({method,params}) => method === "turn/start" && params.input[0].text.startsWith('{"kind":"consultation"')).length, 1);
+    } else {
+      await restored.resume(room.id);
+      await waitFor(async () => (await restored.get(room.id)).reason === "all_pass");
+      const final = await restored.get(room.id);
+      const successful = final.steps.filter((step) => step.action === "pass");
+      assert.equal(successful[1].orchestratorId, status === "completed" ? room.participants[2] : room.participants[1]);
+    }
+  }
+});
+
+test("handoff lets the addressed final reply finish before any other participant runs", { timeout: 20000 }, async (t) => {
+  const userMessageId = randomUUID(), taskCalls = [];
+  const { controller, room, rpc } = await consultationFixture(t, { taskCalls,
+    replyFor: ({ownerId}) => ownerId === "main" ? "[[PASS]]" : "Final requested story" });
+  taskCalls.push([{ namespace: "consultation", tool: "handoff", arguments: { orchestratorId: room.participants[2], userMessageId } }],
+    [{ namespace: "consultation", tool: "finish", arguments: { userMessageId } }]);
+  await controller.supplement(room.id, { text: "One last story from C, then finish. Others stay quiet.", messageId: userMessageId });
+  await waitFor(async () => (await controller.get(room.id)).reason === "ended");
+  const final = await controller.get(room.id);
+  assert.deepEqual(final.steps.map((step) => step.orchestratorId), ["main", room.participants[2]]);
+  assert.deepEqual(final.messages.filter((item) => item.source === "participant").map((item) => item.text), ["Final requested story"]);
+  assert.deepEqual(rpc.calls.filter(({method}) => method === "fake/taskResult").map(({value}) => value.success), [true, true]);
+});
+
+test("persisted malformed handoff reservations fail closed on reload", { timeout: 20000 }, async (t) => {
+  const userMessageId = randomUUID(), taskCalls = [];
+  const { controller, room, rpc, service, directory, track } = await consultationFixture(t, { taskCalls, replyFor: () => "[[PASS]]" });
+  taskCalls.push([{ namespace: "consultation", tool: "handoff", arguments: { orchestratorId: room.participants[2], userMessageId } }]);
+  const original = service.start.bind(service); let done;
+  service.start = (message, _done, ...args) => original(message, (result) => { done = result; }, ...args);
+  await controller.supplement(room.id, { text: "C please respond", messageId: userMessageId });
+  await waitFor(() => done); await controller.close();
+  const file = path.join(directory, "rooms", `${room.id}.json`), saved = await json(file);
+  for (const handoff of [null, { orchestratorId: randomUUID(), userMessageId }, { orchestratorId: "main", userMessageId },
+    { orchestratorId: room.participants[2], userMessageId: randomUUID() }]) {
+    const invalid = structuredClone(saved); invalid.run.handoff = handoff;
+    await fs.writeFile(file, JSON.stringify(invalid));
+    const restored = createVoiceConsultationService({ rootDir: path.join(directory,"rooms"), orchestrators: service }); track(restored);
+    await assert.rejects(restored.get(room.id), /Invalid consultation state/);
+  }
+  const conflicting = structuredClone(saved); conflicting.run.finishUserMessageId = userMessageId;
+  await fs.writeFile(file, JSON.stringify(conflicting));
+  const restored = createVoiceConsultationService({ rootDir: path.join(directory,"rooms"), orchestrators: service }); track(restored);
+  await assert.rejects(restored.get(room.id), /Invalid consultation state/);
 });
 
 // Real segment queue with an in-memory audio provider; no synthesis/network.

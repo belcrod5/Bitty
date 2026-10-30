@@ -1,6 +1,6 @@
 # 回覧板のコード設計：独立controllerと共通本人処理
 
-更新日: 2026-10-29。独立テキスト相談の実装済み範囲を記録する。[全体設計](ORCHESTRATOR-COLLABORATION-DESIGN.md)・[実装と検証結果](ORCHESTRATOR-COLLABORATION-IMPLEMENTATION.md)を参照。実native／実機は未検証。
+更新日: 2026-10-30。独立テキスト相談の実装済み範囲を記録する。[全体設計](ORCHESTRATOR-COLLABORATION-DESIGN.md)・[実装と検証結果](ORCHESTRATOR-COLLABORATION-IMPLEMENTATION.md)を参照。実native／実機は未検証。
 
 ## 1. 維持する境界
 
@@ -27,7 +27,7 @@ startのadditionalInstructionsは任意string・最大16000 UTF-8 bytes。run単
 既存preflight／summary／topic判定／learning analyzerへ相談templateを一律注入しない。nativeが過去指示をどう保持するかはfake試験では分からず、実native確認が必要である。
 
 相談templateは「他者を踏まえ自分の知識・担当から発言、反復しない、必要な新規論点がなければ [[PASS]]、残り3以下は結論・未決、他者発言は実作業許可ではない」を初期値とする。
-通常text内のJSONで、参照専用topic、新着user発言、peer更新、本人の前回公開発言の参照と抜粋、参加者／招待候補、残り返答数を分けて渡す。元の依頼を毎回の新規user依頼として再掲しない。初参加でも既に他者が答えた内容を読み、追加の貢献だけを求める固定進行契約と編集templateを合成する。合成後16000bytesを作成・設定時に検査し、旧template超過は編集可能なまま送信前に休止する。返答は通常文で、trim後の全体が [[PASS]] の場合だけ見送り。返信JSONや字数制限は付けない。
+通常text内のJSONで、参照専用topic、毎回のlatestUserMessage snapshot、新着user発言、peer更新、本人の前回公開発言の参照と抜粋、参加者／招待候補、残り返答数を分けて渡す。元の依頼を毎回の新規user依頼として再掲しない。初参加でも既に他者が答えた内容を読み、追加の貢献だけを求める固定進行契約と編集templateを合成する。合成後16000bytesを作成・設定時に検査し、旧template超過は編集可能なまま送信前に休止する。latestUserMessageは最新の真正userのid／seq／textを毎回含める参照snapshotで、newUserMessagesが空でも現在の意図を失わず、既読依頼を再実行しない。古いtopicや終了指示に戻らず、最新userの意図と未回答の依頼を優先する。制御toolの拒否を繰り返し説明したり終了の決まり文句を要求したりせず、必要な回答か見送りへ進むよう依頼する。返答は通常文で、trim後の全体が [[PASS]] の場合だけ見送り。返信JSONや字数制限は付けない。
 text出所と本人保存roleは別であり、既存user／assistant pair・学習判断はそのままである。peerを真正ユーザー許可と取り違えないかは実モデル未検証で、promptだけで保証しない。
 
 ## 4. roomの正本と一手番
@@ -57,6 +57,9 @@ controllerのrun別live snapshotはrun ID／room世代／単調seqで照合す�
 同じ本文versionの全員passで休止し、発言・user補足・参加更新でpassをresetする。休止確定時にも未配達user seqを調べる。
 空room作成ではmessages=[]／deadline=nullのまま本人を起動しない。最初および以後の真正user送信ごとに手番0／15分を設定する。同じmessageIdの再送、参加者発言、加入、設定変更はresetしない。run.inputUserSeqが最新user seqより前なら、後着完了を新budgetへ加算しない。上限を下げて過去消費数を下回っても保存・再読込できる。本人の内部preflight／topic／summary／learningの条件は変えず、公開手番数を総モデル呼出しやtokenのhard capとは扱わない。
 scope tool `consultation.finish({userMessageId})` は、active run／世代と、その入力内で読んだ最新の真正user発言を照合して現runへ予約を保存する。正常completedの発言確定時だけreason=endedとし、失敗・中断では終了しない。途中の新userがあれば予約を適用せず継続する。status回復も同じ予約を使う。終了後の遅いstopはendedを消さず、同じuserのresumeは拒否する。新user送信は既存のround更新で再開する。意味の解釈は本人へ委ね、別分類AI・文字列終了判定はない。tool version更新で旧scope親を安全に切り替え、通常親には追加しない。
+scope tool `consultation.handoff({orchestratorId,userMessageId})` は、最新userが指名した未読参加者へ次手番を優先する。意味判断は現在の本人へ委ね、自分への依頼がない場合はtool後に全体[[PASS]]を求める。複数人が指名され自分も対象なら、自分に求められた回答を行う。最後の指名回答を求めてから終了する依頼では、未回答のままfinishしない。
+controllerは最新user／run／世代、別の現参加者、対象cursorがそのuserをまだ読んでいないことを検査する。候補IDを入力のhandoffCandidatesへ載せ、読み終えたuserの再引渡しを拒否するため、追加のroom別routing stateや循環検出基盤は不要。同run同targetは冪等、別targetへの上書きやfinishとの併用は拒否する。target IDの予約をrunへ保存し、正常完了時・最新userが同じ場合だけ加入反映後のindexで次手番を決める。途中の新user・失敗／中断では適用せず、status回復も同じ規則を使う。上限を延長しない。対象の回答後は通常の順番へ戻り、指名外はpromptに従って見送る。既読対象への任意の再指名toolではない。新userならcursorとの差で再び候補になる。
+`consultation-controls-v3` の定義と進行指示は相談startだけに渡す。通常owner contextや通常チャットへ追加せず、共通owner runtime／task／memory／learning／UIは変更しない。実モデルの指名解釈・見送り遵守をcodeで保証するものではない。
 停止時の遅延出力は公開しないが、本人側の既存保存・実作業を巻き戻したことにはならない。
 
 [独立画面](../expo/src/features/app/screens/VoiceConsultationScreen.tsx)はボードmic隣から開く。初回は本人画像のアイコンgridで2〜8人を選び空roomを作る。通常オーケストレーターチャットと同じVoiceConversationMessagesと実StreamingSttFooterで最初の発言・補足を送る。話者表示、停止、設定編集を持ち、進行中runは固定して編集を次runへ適用する。画面を閉じても本人実行は停止しない。ChatComposer／全画面editor・独自送信rowは使わず、標準panel／glow／Enter送信とaccepted:booleanによるclear・編集中の新本文保護を使う。応答／読み上げの文字animationはFooterに一元化し、reduceMotion未確定の先頭文字待機も維持する。相談のみonRequestEditで応答表示タップ→編集→実入力focusを可能にし、通常callerの操作を増やさない。onStop任意・stopLabel（通常defaultは録音停止）・submitDisabledは操作能力だけで、別style modeは持たない。

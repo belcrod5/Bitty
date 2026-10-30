@@ -35,6 +35,14 @@ TTSは通常turnと相談runで同じcreateVoiceTurnSpeechのjob lifecycle、既
 UIはjob通知を既存の発言queueへ積み、生成Promiseでなく実再生終了を待つ。別画面の音声待機、未attach job取消、UUIDによる古いrequest保護、履歴の手動text再生を維持する。通常voice履歴の再生ボタンと直前の標準Footer統一も維持した。
 新しいphase試験で、native identity代入→fsync待ち中にcompletedがdeltaを追い越す既存observerの順序問題を再現した。保存完了まで全通知をbufferする小修正を共通owner境界へ入れ、実filesystem rename gateで受信順を検証した。TTS側の重複削除や本人の学習・タスク判断変更で対処していない。
 
+## 最新userの参照と指名への引渡し
+
+相談入力に毎回latestUserMessageのid／seq／textと参照専用の印を渡し、新着差分がない手番も現在のユーザー意図を確認できるようにした。finishの説明と固定指示を最新userだけに揃え、古い終了の再試行・内部エラーの公開反復・終了の決まり文句の要求を避けるよう依頼する。最後に指名回答を求められた場合は、回答を済ませる前に終了しない。
+
+相談だけに `consultation.handoff({orchestratorId,userMessageId})` を追加した。現在の本人が指名を解釈し、次の未読参加者を予約して[[PASS]]にする。controllerはactive run／世代・最新userの読了境界・現参加者・自己除外・対象cursorを検査する。既読相手への再引渡しを拒否し、同target再送は冪等、別targetへの上書きとfinish併用は拒否する。予約はrunに保存し、正常完了かつ同じ最新userの場合だけ、加入反映後のtarget IDから次手番を決める。新user・失敗・中断は旧予約を適用せず、上限も増やさない。対象回答後は通常の順番へ戻る。
+
+room別の新しいrouting state、追加分類LLM、日本語keyword判定、汎用queue、通常ownerの分岐は追加していない。UI・共有TTS・通常のタスク／メモリ／学習はそのまま。本人の意味解釈やPASS遵守は実モデル未検証であり、fakeで正しい応答を与えてもモデル精度の実証にはならない。
+
 ## 検証したこと
 
 不具合調査では、ユーザーが指定した既存相談と対応scopeの保存記録だけを読取専用で確認した。本文・個人IDは資料へ転載していない。以下の試験はfake App Server・一時filesystemで行い、実モデル／有料API／nativeサーバーの呼出しや本番データへの実行・書込はしていない。
@@ -51,13 +59,15 @@ UIはjob通知を既存の発言queueへ積み、生成Promiseでなく実再生
 | 前回の既存stream TTS／playback session／fullscreen 3 suites | 52/52 pass。上の4 suitesとは別、fullscreen8件の先行baselineとは重複するため加算しない |
 | 前回の既存Board／macOS AppScreenContent 2 suites | 83/83 pass。再生prop接続と画面非表示時cleanupの読込回帰を確認 |
 | 前回の実Footer共用・通常voice・相談・読み上げqueue 4 suites | 100/100 pass。両画面の同一panel／glow、Enter送信、生成中のタップ編集、受理前／編集中の下書き、停止scope、通常状態導出を確認。文字animationの試験はscreen mockから実Footerへ移した |
-| 今回のscope／controller統合 | 37/37 pass。実native fake→phase gate→既存segmenterで句点時点の早期合成、fsync中の通知順、未知phase／PASS／commentary／tail、preview上限非依存、需要購読／新user／同ID retry／取消／EIOを検証 |
-| 今回の共通segment／job lifecycle | 18/18 pass。既存providerをfake fetchに置換し、句点でturn完了前に音声chunkが得られること、tailとdoneの一度だけ確定、取消後の後続／遅い音声抑止を確認 |
-| 今回のWS transport | 46/46 pass。subscribe応答待ち中closeで同じ購読を解除することも検証 |
-| 今回の相談／queue／通常voice／標準Footer 4 suites | 102/102 pass。job attachの順序、duplicate／queued cancel、自然終了音声維持、購読ready前送信抑止、新run開始後の誤取消防止、履歴手動再生を確認 |
-| 今回の通常voice-context全件 | 244/244 pass（223 top-level、153.257秒）。通知順序変更に関連する通常実行・識別保存・中断・phase／復旧を含む全件回帰 |
+| 前回のscope／controller統合 | 37/37 pass。実native fake→phase gate→既存segmenterで句点時点の早期合成、fsync中の通知順、未知phase／PASS／commentary／tail、preview上限非依存、需要購読／新user／同ID retry／取消／EIOを検証 |
+| 前回の共通segment／job lifecycle | 18/18 pass。既存providerをfake fetchに置換し、句点でturn完了前に音声chunkが得られること、tailとdoneの一度だけ確定、取消後の後続／遅い音声抑止を確認 |
+| 前回のWS transport | 46/46 pass。subscribe応答待ち中closeで同じ購読を解除することも検証 |
+| 前回の相談／queue／通常voice／標準Footer 4 suites | 102/102 pass。job attachの順序、duplicate／queued cancel、自然終了音声維持、購読ready前送信抑止、新run開始後の誤取消防止、履歴手動再生を確認 |
+| 前回の通常voice-context全件 | 244/244 pass（223 top-level、153.257秒）。通知順序変更に関連する通常実行・識別保存・中断・phase／復旧を含む全件回帰 |
 | 通常／macOS TypeScript | 両方pass |
-| 変更JavaScriptの構文・diff空白・文書リンク | pass |
+| 最新user／handoff修正後のscope／controller全件 | 45/45 pass、85.131秒。上記37件を含めて再実行。最新user snapshot／古い終了の再開、未読指名相手の優先、通常tool非汚染、既読循環拒否、制御予約の排他・冪等、途中新user、正常／失敗／中断回復、上限、最終指名回答→終了、破損予約のfail-closedを追加 |
+| 最新user／handoff修正後の通常voice-context全件 | 親が244/244 passを再確認、167.56秒。今回再実行した独立ファイルは合計289件で、前回の18／46／102件や型検査を今回再実行した数には含めない |
+| 変更JavaScriptの構文・diff空白・文書リンク | 最新修正で2 JS構文・diff空白・3文書31ローカルリンク／fenceを確認、pass |
 
 統合試験は実factory・実memory・実learning.observeを使い、以下を確認した。
 
