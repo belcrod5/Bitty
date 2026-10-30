@@ -500,8 +500,21 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
         model: batch.settings.model, effort: batch.settings.effort, provider: null, runtime: "codex-app-server",
         estimatedInputTokens: bytes(INSTRUCTIONS) + bytes(LEARNING_OUTPUT_SCHEMA) + bytes(input), maxOutputTokens: bounds.outputReservation });
       if (!reservation.ok) {
-        error = { code: reservation.reason || "learning_budget", message: "Background learning is waiting for budget or usage storage." };
-        if (reservation.reason === "daily-budget-exceeded") budgetRetryAt = (Math.floor(now() / 86400_000) + 1) * 86400_000;
+        let message;
+        if (reservation.reason === "daily-budget-exceeded") {
+          budgetRetryAt = (Math.floor(now() / 86400_000) + 1) * 86400_000;
+          const retryAt = new Date(budgetRetryAt).toLocaleString("ja-JP", {
+            timeZone: "Asia/Tokyo", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false,
+          });
+          message = `学習・評価用の本日の予算では、次の分析に必要な枠を確保できないため待機しています。${retryAt}（日本時間）に自動で再試行します。`;
+        } else {
+          message = {
+            "usage-ledger-unreadable": "学習・評価の利用量記録を読み込めないため、分析を保留しています。",
+            "usage-storage-failed": "学習・評価の利用量記録を保存できないため、分析を保留しています。",
+            "usage-capacity-exceeded": "学習・評価の利用量記録が保存容量の上限に達したため、分析を保留しています。",
+          }[reservation.reason] || "学習・評価を開始できないため、分析を保留しています。";
+        }
+        error = { code: reservation.reason || "learning_budget", message };
         schedule(); return;
       }
       batch.attempts += 1; batch.callId = reservation.call.callId;

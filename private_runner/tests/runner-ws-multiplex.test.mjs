@@ -1968,3 +1968,18 @@ test("scheduled approvals fail closed when no app is connected", async () => {
     method: "item/fileChange/requestApproval", params: {}, threadId: "thread", turnId: "turn",
   }, "main", "定期調査"), /channel closed/);
 });
+
+test("a consultation speech subscription accepted after its websocket closes is immediately removed with the same lease", async (t) => {
+  const service = __TESTING__.consultationService, subscribe = service.subscribeSpeech, unsubscribe = service.unsubscribeSpeech;
+  let release, called = false; const removed = [];
+  service.subscribeSpeech = async (_room, id) => { called = true; await new Promise((resolve) => { release = resolve; }); return { subscriptionId: id }; };
+  service.unsubscribeSpeech = async (...args) => { removed.push(args); return { removed: true }; };
+  t.after(() => { service.subscribeSpeech = subscribe; service.unsubscribeSpeech = unsubscribe; });
+  const ws = createRunnerWsConnectionForTest();
+  const roomId = "11111111-1111-4111-8111-111111111111", subscriptionId = "22222222-2222-4222-8222-222222222222";
+  ws.emit("message", JSON.stringify({ channel: "agent", op: "voice.consultations.speech.subscribe", requestId: "speech-subscribe",
+    payload: { roomId, subscriptionId, tts: { speedScale: 1 } } }), false);
+  await waitFor(() => called); ws.close(); release();
+  await waitFor(() => removed.length === 1);
+  assert.deepEqual(removed, [[roomId, subscriptionId]]);
+});

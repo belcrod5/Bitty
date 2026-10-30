@@ -32,13 +32,16 @@ function usageLabel(usage: StreamingSttUsage | null) {
 export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   transcript: string;
   phase: StreamingSttPhase;
-  onStop: () => void;
+  onStop?: () => void;
+  stopLabel?: string;
+  submitDisabled?: boolean;
   voiceStatus?: "responding" | "speaking";
-  reduceMotion?: boolean;
+  reduceMotion?: boolean | null;
   voiceContextStats?: VoiceContextStats | null;
   statusText?: string;
   onChangeText?: (text: string) => void;
   onFocus?: () => void;
+  onRequestEdit?: () => void;
   onBlur?: () => void;
   onSubmit?: (text: string, onAccepted: () => boolean) => Promise<void>;
   onCancelSpeaking?: () => void;
@@ -51,14 +54,15 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   onDiscardCorrection?: () => void;
   onChangeCorrectionText?: (text: string) => void;
   trailingAccessory?: ReactNode;
-}>(function StreamingSttFooter({ transcript, phase, onStop, voiceStatus, reduceMotion, voiceContextStats, statusText,
-  onChangeText, onFocus, onBlur, onSubmit, onCancelSpeaking, historyExpanded, onHistoryToggle,
+}>(function StreamingSttFooter({ transcript, phase, onStop, stopLabel = "録音を停止", submitDisabled = false, voiceStatus, reduceMotion, voiceContextStats, statusText,
+  onChangeText, onFocus, onRequestEdit, onBlur, onSubmit, onCancelSpeaking, historyExpanded, onHistoryToggle,
   leadingAccessory, trailingAccessory, correctionPreview, onSendCorrection, onEditCorrection, onDiscardCorrection,
   onChangeCorrectionText }, ref) {
   const styles = useAppStyles();
   const { themeId } = useVisualTheme();
   const systemReduceMotion = useReduceMotionEnabled();
-  const motionReduced = reduceMotion ?? systemReduceMotion !== false;
+  const motionPreference = reduceMotion === undefined ? systemReduceMotion : reduceMotion;
+  const motionReduced = motionPreference !== false;
   const [usage, setUsage] = useState<StreamingSttUsage | null>(null);
   const [, tickProgress] = useState(0);
   const remainingMs = correctionPreview?.deadlineMs == null ? 3000
@@ -68,6 +72,23 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   const pendingUsageRef = useRef<StreamingSttUsage | null>(null);
   const usageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inputRef = useRef<TextInput>(null);
+  const editRequestedRef = useRef(false);
+  React.useEffect(() => {
+    if (voiceStatus || !editRequestedRef.current) return;
+    editRequestedRef.current = false; inputRef.current?.focus();
+  }, [voiceStatus]);
+  const [statusAnimation, setStatusAnimation] = useState<{ status?: "responding" | "speaking"; frame: number }>({ frame: 0 });
+  React.useEffect(() => {
+    setStatusAnimation((current) => current.status === voiceStatus && current.frame === 0
+      ? current : { status: voiceStatus, frame: 0 });
+    if (!voiceStatus || motionPreference !== false) return;
+    const timer = setInterval(() => setStatusAnimation((current) => ({ status: voiceStatus,
+      frame: current.status === voiceStatus ? current.frame + 1 : 1 })), 180);
+    return () => clearInterval(timer);
+  }, [voiceStatus, motionPreference]);
+  const statusLabel = voiceStatus === "responding" ? "responding..." : "speaking...";
+  const statusFrame = statusAnimation.status === voiceStatus ? statusAnimation.frame : 0;
+  const animatedStatus = voiceStatus ? motionPreference === true ? statusLabel : statusLabel.slice(0, statusFrame % statusLabel.length + 1) : "";
   const latestTranscriptRef = useRef(transcript);
   latestTranscriptRef.current = transcript;
   const submittingRef = useRef(false);
@@ -177,7 +198,7 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   }, []);
 
   const submit = (text: string) => {
-    if (!onSubmit || submittingRef.current) return;
+    if (!onSubmit || submitDisabled || submittingRef.current) return;
     if (text !== latestTranscriptRef.current) {
       latestTranscriptRef.current = text;
       onChangeText?.(text);
@@ -374,6 +395,9 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
             <Text
               testID="streaming-stt-transcript"
               accessibilityLabel={voiceStatus === "responding" ? "Responding" : voiceStatus === "speaking" ? "Speaking" : undefined}
+              accessibilityRole={onRequestEdit ? "button" : undefined}
+              accessibilityHint={onRequestEdit ? "タップしてメッセージを入力" : undefined}
+              onPress={onRequestEdit ? () => { editRequestedRef.current = true; onRequestEdit(); } : undefined}
               {...historyAccessibility}
               style={[{ color: "#f4f7ff", fontSize: 16, lineHeight: 22, maxHeight: 66 }, voiceStatus ? {
                 color: voiceStatus === "responding" ? "#83f8ff" : "#ffafd9",
@@ -382,24 +406,24 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
                 fontWeight: "300",
               } : undefined]}
             >
-              {statusText || transcript || (phase === "finalizing" ? "文字起こしを確定中…" : "音声を聞いています…")}
+              {statusText || transcript || animatedStatus || (phase === "finalizing" ? "文字起こしを確定中…" : "音声を聞いています…")}
             </Text>
           )}
           {statusText && transcript ? (
             <Text style={{ color: "#ff9a9a", fontSize: 11, marginTop: 2 }}>{statusText}</Text>
           ) : null}
         </View>
-        <TouchableOpacity
+        {onStop ? <TouchableOpacity
           testID="streaming-stt-stop"
           accessibilityRole="button"
-          accessibilityLabel="録音を停止"
+          accessibilityLabel={stopLabel}
           hitSlop={8}
           disabled={phase === "finalizing"}
           onPress={onStop}
           style={{ width: 42, height: 42, borderRadius: 12, alignItems: "center", justifyContent: "center", backgroundColor: "#35465c", opacity: phase === "finalizing" ? 0.5 : 1 }}
         >
           <Ionicons name="stop" size={18} color="#ffffff" />
-        </TouchableOpacity>
+        </TouchableOpacity> : null}
       </View>
       {leadingAccessory ? (
         <View testID="streaming-stt-leading-accessory"
