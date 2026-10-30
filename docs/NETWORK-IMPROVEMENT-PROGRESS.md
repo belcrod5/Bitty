@@ -1,7 +1,7 @@
 # 通信処理改善の進捗（PR #260 の残課題）
 
 更新日: 2026-10-30
-状態: 主要経路・発火契機の調査済み。第1段階のHTTP分類修正・関連自動検証済み。
+状態: 第1段階のHTTP分類修正・関連自動検証・独立レビュー済み。GitHub公開の承認待ち。
 ブランチ: `fix/network-sync-upstream`
 作業先: `/Volumes/SSD-500GB-SanDisk/work/bitty-worktree/fix/network-sync-upstream`
 基準: `origin/main` / `3ebbd96`（[PR #260](https://github.com/belcrod5/Bitty/pull/260) マージ後）
@@ -125,7 +125,11 @@ client-state全量応答と相談全接続配信は構造確認済みだが、�
   mainと同一package/lockの既存依存をworktreeへコピーして復旧。`npm ls --depth=0`成功。
   bootstrap再実行でenv・Runner依存・Expo依存・iOS native/Podsを準備し、共有token存在確認も成功。
   mainの追跡ファイル変更なし。Runner再起動・実機ビルドは代行していない。
-- 実機・CF経由・総通信量の比較は未実施。第1段階は独立レビュー済みでコミット・push・PR作成へ進める状態。mainマージは未実施。
+- 第1段階の実装コミット: `6b0fd22`。通常pushは自動承認レビューで拒否されたため未push。
+  理由は公開リポジトリへ今回のコード・調査メタ情報を公開する明示承認の不足とremote信頼未確認。
+  その後の読み取りでoriginがユーザー指定と同じ`belcrod5/Bitty`（PUBLIC）であることを確認した。
+  明示公開承認の条件は残るため再pushしていない。PR未作成、CI未開始、mainマージ未実施。
+- 実機・CF経由・総通信量の比較は未実施。
 
 ## 実機で次に確認すること
 
@@ -153,5 +157,7 @@ cd /Volumes/SSD-500GB-SanDisk/work/bitty-worktree/fix/network-sync-upstream
 ## 次の判断
 
 第1段階のorigin修正を検証した後に実機を再ビルドし、local/CFそれぞれ同じ操作でHTTP分類を確認する。
+公開承認後は`fix/network-sync-upstream`を通常pushし、第1段階のPRを作成してCIを確認する。
+マージは別途ユーザー承認が必要。
 次の実装修正単位は子一覧の発火契約とする。必要な通知・互換性を先に整理する。
 client-stateや相談の契約変更を同時に広げず、実測に応じて優先度を決める。
