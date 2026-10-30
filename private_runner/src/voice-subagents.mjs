@@ -15,7 +15,7 @@ export const voiceSubagentTools = [{
   description: "Bitty Runnerの委任セッションを開始・再開し、その実行状態を確認する",
   tools: [
     { type: "function", name: "delegate", deferLoading: true,
-      description: "承認済みworkspaceで新しいCodex/Claudeセッションを開始するか、既存セッションにタスクを委任する。実行前にユーザーの確認が必要。",
+      description: "承認済みworkspaceで新しいCodex/Claudeセッションを開始するか、既存セッションにタスクを委任する。現在のユーザーの明示的な依頼・承認の範囲で実行する。対象や操作が不明なら先に確認する。",
       inputSchema: { type: "object", additionalProperties: false, required: ["backendId", "request"],
         properties: { backendId: { type: "string" }, cwd: { type: "string" }, sessionId: { type: "string" },
           request: { type: "string" }, model: { type: "string" }, effort: { type: "string" } } } },

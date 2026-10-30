@@ -164,11 +164,12 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
   async function assertOwnerIdle(id, startingContext) {
     if (introductionDrafts.has(id)) throw failure("Introduction draft is running", "session_busy");
     if ([...reservations].some((key) => key.startsWith(`${id}:`))) throw failure("Orchestrator is busy", "session_busy");
+    // The target checks its own lifecycle; other contexts only exclude a new
+    // conversation while a foreground turn is pending. Whole-owner operations wait for all work.
     for (const service of await ownerContexts(id)) {
-      if (service !== startingContext && await service.isBusy({ includeBackground: false }))
+      if (service !== startingContext && await service.isBusy({ includeBackground: !startingContext }))
         throw failure("Orchestrator is busy", "session_busy");
     }
-    if (await hasOutstandingDelegates(id)) throw failure("Orchestrator has outstanding delegated work", "session_busy");
   }
   async function hasOtherActivity(id, key) {
     for (const source of await evidence(id)) {
@@ -247,6 +248,10 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
         await learnings.get(id)?.observe([{ ...pair, orchestratorId: id, memoryConversationId: learningMemoryIds.get(id) }]);
       },
       learningContext: learningContext(id),
+      managedSessions: subagents ? {
+        refresh: () => subagents.refresh(id), contextOf: subagents.contextOf,
+        handleTool: (request) => subagents.handleTool(id, request),
+      } : undefined,
       hasOutstandingActivity: hasOutstandingActivity(id) });
     if (key) {
       if (!scopedContexts.has(id)) scopedContexts.set(id, new Map());
@@ -387,7 +392,6 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
         await load();
         const service = await loadedContext(id);
         await assertOwnerIdle(id);
-        for (const candidate of await ownerContexts(id)) if (await candidate.isBusy()) throw failure("Orchestrator is busy", "session_busy");
         const next = { ...registry, selectedId: registry.selectedId === id ? "main" : registry.selectedId,
           orchestrators: registry.orchestrators.filter((item) => item.id !== id) };
         await saveRegistry(next);
@@ -511,7 +515,7 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
     async isBusy(id) { return exclusive(async () => { await load();
       if (introductionDrafts.has(idOf(id))) return true;
       for (const service of await ownerContexts(idOf(id))) if (await service.isBusy()) return true;
-      return await hasOutstandingDelegates(id);
+      return false;
     }); },
     async open(id, conversationKey) { return withCounts(id, await (await context(idOf(id), conversationKey)).open()); },
     async status(id, conversationId, operationId, conversationKey) {

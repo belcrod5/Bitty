@@ -1382,3 +1382,26 @@ test("stream divergence and durable room failure cancel subscribed audio instead
     assert.equal(audio.jobs[0].completed, false);
   }
 });
+
+test("native background work keeps lifecycle protected while ordinary and consultation conversations continue", { timeout: 20000 }, async (t) => {
+  const { service, rpc, rootDir } = await ownerFixture(t);
+  const owner = await service.create("background owner"), key = randomUUID();
+  await ownerTurn(service, owner.id, "Start a native task", key);
+  const directory = path.join(rootDir, "orchestrators", owner.id, "scopes", key);
+  const scope = await json(path.join(directory, "active.json"));
+  const root = rpc.threads.get(scope.nativeThreadId), childId = randomUUID();
+  root.turns.at(-1).items.push({ type: "collabAgentToolCall", status: "completed", receiverThreadIds: [childId],
+    agentsStates: { [childId]: { status: "running" } } });
+  rpc.threads.set(childId, { id: childId, status: { type: "active" }, turns: [] });
+  assert.equal(await service.isBusy(owner.id), true);
+  await ownerTurn(service, owner.id, "待ちません");
+  await ownerTurn(service, owner.id, "Continue discussing the task", key);
+  await assert.rejects(service.configure(owner.id, "gpt-6-luna", "low", "changed"), { code: "session_busy" });
+  await assert.rejects(service.clearMemory(owner.id), { code: "session_busy" });
+  await assert.rejects(service.clearMessages(owner.id), { code: "session_busy" });
+  await assert.rejects(service.remove(owner.id), { code: "session_busy" });
+  await assert.rejects(service.draftIntroduction(owner.id, { model: "gpt-6-luna", effort: "low" }), { code: "session_busy" });
+  rpc.threads.get(childId).status = { type: "idle" };
+  root.turns.at(-2).items.at(-1).agentsStates[childId].status = "completed";
+  await service.clearMessages(owner.id);
+});

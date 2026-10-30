@@ -5,13 +5,15 @@ import os from "node:os";
 import net from "node:net";
 import path from "node:path";
 import test from "node:test";
+import { createAgentService } from "../src/agent/agent-service.mjs";
+import { operationStore, sessionStore, status } from "./agent-service-fixtures.mjs";
 import { createCodexScheduleService } from "../src/codex-schedule-service.mjs";
 import { createVoiceContextService } from "../src/voice-context-service.mjs";
 import { createVoiceOrchestratorService } from "../src/voice-orchestrator-service.mjs";
 import { prepareOrchestratorIsolation } from "../scripts/prepare-orchestrator-isolation.mjs";
 
 function fakeCodex({ hold = false, failSummary = false, failTurn = false, approval = false,
-  checklistWrites = [], archiveReads = [], failModelList = () => false } = {}) {
+  checklistWrites = [], archiveReads = [], managedCalls = [], failModelList = () => false } = {}) {
   const calls = [];
   const releases = [];
   const threads = new Map();
@@ -44,7 +46,7 @@ function fakeCodex({ hold = false, failSummary = false, failTurn = false, approv
         if (method === "thread/start") {
           summary = params.approvalPolicy === "never";
           const thread = { id: randomUUID(), ephemeral: params.ephemeral, turns: [],
-            checklistRead: params.developerInstructions?.includes("新しい親セッションでは") };
+            dynamicTools: params.dynamicTools, checklistRead: params.developerInstructions?.includes("新しい親セッションでは") };
           threads.set(thread.id, thread);
           return started(thread, params);
         }
@@ -90,6 +92,17 @@ function fakeCodex({ hold = false, failSummary = false, failTurn = false, approv
               listener("item/completed", { threadId: params.threadId, turnId,
                 item: { id: randomUUID(), type: "fileChange", status: "completed" } });
             }
+            if (!summary && !threads.get(params.threadId)?.checklistRead && managedCalls.length) {
+              for (const action of managedCalls.shift()) {
+                assert.ok(threads.get(params.threadId).dynamicTools?.some((tool) => tool.name === "voice_subagent"),
+                  "managed tools must be installed on the native parent");
+                const result = await serverHandler({ method: "item/tool/call", params: {
+                  threadId: params.threadId, turnId, callId: randomUUID(),
+                  namespace: "voice_subagent", tool: action.tool, arguments: action.arguments || {},
+                } });
+                calls.push({ method: "managed.result", tool: action.tool, result: JSON.parse(result.contentItems[0].text) });
+              }
+            }
             turn.status = "completed";
             listener("item/completed", { threadId: params.threadId, turnId,
               item: { type: "agentMessage", text: `reply:${params.input[0].text}` } });
@@ -104,7 +117,7 @@ function fakeCodex({ hold = false, failSummary = false, failTurn = false, approv
       },
     };
   };
-  return { createClient, calls, releases };
+  return { createClient, calls, releases, threads };
 }
 
 async function fixture(t, options) {
@@ -130,11 +143,12 @@ async function prepareLegacy(rootDir, apply = true) {
   return prepareOrchestratorIsolation({ rootDir, runnerPort: port, codexPort: port, apply });
 }
 
-async function turn(service, orchestratorId, conversationId, text, operationId = randomUUID()) {
+async function turn(service, orchestratorId, conversationId, text, operationId = randomUUID(), conversationKey) {
   let resolve;
   const finished = new Promise((done) => { resolve = done; });
   const message = { operationId, payload: { ...(orchestratorId ? { orchestratorId } : {}),
     backendId: "codex", logicalConversationId: conversationId, clientOperationId: operationId,
+    ...(conversationKey ? { conversationKey } : {}),
     input: { blocks: [{ type: "text", text }] } },
   };
   let accepted = await service.start(message, resolve, async () => "decline");
@@ -630,6 +644,8 @@ test("an orchestrator with an outstanding delegated run cannot be deleted", asyn
   await assert.rejects(recovered.update(child.id, { name: "変更不可", icon: "" }), { code: "session_busy" });
   assert.equal((await recovered.getSettings(child.id)).name, "委任中");
   await assert.rejects(recovered.clearMessages(child.id), { code: "session_busy" });
+  await assert.rejects(recovered.configure(child.id, "gpt-6-luna", "low", "changed"), { code: "session_busy" });
+  await assert.rejects(recovered.draftIntroduction(child.id, { model: "gpt-6-luna", effort: "low" }), { code: "session_busy" });
   await assert.rejects(recovered.remove(child.id), { code: "session_busy" });
   state = "unknown";
   await assert.rejects(recovered.remove(child.id), { code: "session_busy" });
@@ -1212,4 +1228,94 @@ test("offline preparation retains all old To Do files and mixed memory in main o
   const ownPairs = JSON.parse(await fs.readFile(path.join(ownedWorkspace, "voice-memory", "recent.json"), "utf8"));
   assert.deepEqual(ownPairs.map((pair) => pair.user), ["Old own conversation", "Other chat secret", "New own request"]);
   assert.equal(codex.calls.some((call) => call.method === "thread/inject_items"), false);
+});
+
+
+test("owned Runner delegation works without shell approval and conversation continues in normal and consultation contexts", async (t) => {
+  const starts = [], admissions = [], gates = [];
+  const agent = createAgentService({ backends: [{
+    backendId: "test", getStatus: async () => {
+      const value = status(); value.capabilities.model = { select: true, effort: true };
+      value.capabilities.workspace = { admission: true }; return value;
+    },
+    resolveSessionCwd: async () => "/approved/workspace",
+    async startTurn({ emit, resolveSession, input }) {
+      starts.push(input.blocks[0].text);
+      await resolveSession({ backendId: "test", nativeSessionId: "owned-session" });
+      emit("turn.started", {});
+      await new Promise((resolve) => gates.push(resolve));
+      return { outcome: "completed" };
+    },
+  }], operationStore: operationStore(), sessionStore: sessionStore(),
+  workspaceAdmission: { assertAllowed: async (subject, cwd) => { admissions.push({ subject, cwd }); return cwd; } },
+  resolveCanonicalCwd: async (cwd) => cwd });
+  const managedCalls = [[{ tool: "delegate", arguments: {
+    backendId: "test", cwd: "/approved/workspace", request: "Create the email orchestrator", model: "gpt-6-luna", effort: "low",
+  } }], [{ tool: "status" }], [{ tool: "status" }], [{ tool: "status" }, { tool: "delegate", arguments: {
+    backendId: "test", sessionId: "owned-session", request: "Must not reach another owner's session",
+  } }]];
+  const { service, codex } = await fixture(t, { getAgentService: () => agent, managedCalls });
+  t.after(() => { for (const release of gates.splice(0)) release(); });
+  const main = await service.open("main");
+  assert.equal((await (await turn(service, "main", main.logicalConversationId, "Create the email orchestrator")).finished).status, "completed");
+  assert.equal(codex.calls.find((call) => call.method === "managed.result").result.ok, true, JSON.stringify(codex.calls.find((call) => call.method === "managed.result")));
+  await waitFor(() => gates.length === 1);
+  assert.deepEqual(starts, ["Create the email orchestrator"]);
+  assert.deepEqual(admissions, [{ subject: "voice-owner", cwd: "/approved/workspace" }]);
+  assert.equal(await service.isBusy("main"), true, "lifecycle still sees the delegated work");
+  assert.equal((await (await turn(service, "main", main.logicalConversationId, "待ちません")).finished).status, "completed");
+  const key = randomUUID(), room = await service.open("main", key);
+  assert.equal((await (await turn(service, "main", room.logicalConversationId, "Discuss the running task", undefined, key)).finished).status, "completed");
+  const statuses = codex.calls.filter((call) => call.method === "managed.result" && call.tool === "status");
+  assert.equal(statuses.length, 2);
+  for (const { result } of statuses) {
+    assert.equal(result.records[0].sessionId, "owned-session");
+    assert.equal(result.runningCount, 1);
+  }
+  await assert.rejects(service.clearMemory("main"), { code: "session_busy" });
+  await assert.rejects(service.clearMessages("main"), { code: "session_busy" });
+  const sibling = await service.create("別の担当"), siblingChat = await service.open(sibling.id);
+  assert.equal((await (await turn(service, sibling.id, siblingChat.logicalConversationId, "Check only your sessions")).finished).status, "completed");
+  const results = codex.calls.filter((call) => call.method === "managed.result");
+  assert.deepEqual(results.at(-2).result.records, []);
+  assert.equal(results.at(-1).result.ok, false);
+  assert.match(results.at(-1).result.error, /does not belong/);
+  assert.equal(starts.length, 1);
+  assert.equal(codex.calls.some((call) => call.method === "approval.result"), false);
+  for (const { params } of codex.calls.filter((call) => call.method === "thread/start")) {
+    assert.equal(params.config.permissions[params.permissions].network.enabled, false);
+    assert.deepEqual(params.config.shell_environment_policy, { inherit: "none" });
+  }
+  for (const release of gates.splice(0)) release();
+  await waitFor(async () => !await service.isBusy("main"));
+});
+
+test("existing isolated parents acquire the Runner bridge once without losing conversation or native work", async (t) => {
+  const { rootDir, service, codex } = await fixture(t);
+  const main = await service.open("main");
+  assert.equal((await (await turn(service, "main", main.logicalConversationId, "Remember this task")).finished).status, "completed");
+  const before = JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8"));
+  const rootThread = codex.threads.get(before.nativeThreadId);
+  const childId = randomUUID();
+  rootThread.turns.at(-1).items.push({ type: "collabAgentToolCall", status: "completed", receiverThreadIds: [childId],
+    agentsStates: { [childId]: { status: "running" } } });
+  codex.threads.set(childId, { id: childId, status: { type: "active" }, turns: [] });
+  await service.close();
+  const upgraded = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient,
+    getAgentService: () => ({ inspectRun: async () => ({ state: "running", actions: [] }) }), subjectId: "voice-owner" });
+  const blocked = await (await turn(upgraded, "main", main.logicalConversationId, "Continue")).finished;
+  assert.equal(blocked.code, "session_busy");
+  assert.equal(JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8")).nativeThreadId, before.nativeThreadId);
+  codex.threads.get(childId).status = { type: "idle" };
+  rootThread.turns.at(-1).items.at(-1).agentsStates[childId].status = "completed";
+  assert.equal((await (await turn(upgraded, "main", main.logicalConversationId, "Continue after native work")).finished).status, "completed");
+  const after = JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8"));
+  assert.notEqual(after.nativeThreadId, before.nativeThreadId);
+  assert.equal(after.nativeManagedSessionsEnabled, true);
+  assert.equal(after.logicalConversationId, before.logicalConversationId);
+  assert.ok((await upgraded.history("main")).messages.some((message) => message.text === "Remember this task"));
+  const parentCount = codex.calls.filter(({ method, params }) => method === "thread/start" && !params.ephemeral).length;
+  assert.equal((await (await turn(upgraded, "main", main.logicalConversationId, "Continue again")).finished).status, "completed");
+  assert.equal(codex.calls.filter(({ method, params }) => method === "thread/start" && !params.ephemeral).length, parentCount);
+  await upgraded.close();
 });
