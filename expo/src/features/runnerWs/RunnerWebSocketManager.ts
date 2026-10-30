@@ -188,6 +188,7 @@ export class RunnerWebSocketManager {
   private clientInstanceId: string;
   private connectionId: string | undefined;
   private generation = 0;
+  private supportedControlEvents: string[] = [];
   private connectionOptionsGeneration = 0;
   private blockedAuthGeneration: number | null = null;
   private consecutiveAuthFailureCount = 0;
@@ -726,6 +727,8 @@ export class RunnerWebSocketManager {
     const payload = message.payload && typeof message.payload === "object" && !Array.isArray(message.payload)
       ? message.payload as Record<string, unknown>
       : {};
+    if (message.op === "ready") this.supportedControlEvents = Array.isArray(payload.supportedControlEvents)
+      ? payload.supportedControlEvents.filter((event): event is string => typeof event === "string") : [];
     const connectionId = normalizeText(payload.connectionId);
     const sessionId = normalizeText(message.sessionId);
     if (connectionId || sessionId) {
@@ -1038,6 +1041,7 @@ export class RunnerWebSocketManager {
       consecutiveMissedPingCount: this.consecutiveMissedPingCount,
       lastPingRttMs: this.lastPingRttMs,
       serverStatus: this.serverStatus,
+      supportedControlEvents: [...this.supportedControlEvents],
     };
   }
 

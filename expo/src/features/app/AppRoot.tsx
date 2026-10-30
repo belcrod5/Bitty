@@ -2029,7 +2029,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     toggleDirectoryExpanded,
     refreshDirectorySessionTree,
     refreshRegisteredDirectorySessions,
-    refreshSessionChildTreesAtBoundary,
   } = useDirectorySessionTreeController({
     directorySessionsById,
     setDirectorySessionsById,
@@ -2052,11 +2051,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     ensureRegisteredDirectorySessions,
     logSessionDiag,
   });
-  const handleSessionStreamBoundary = useCallback((sessionIdRaw: string) => {
-    const sessionId = parseOptionalSessionId(sessionIdRaw);
-    if (!sessionId) return;
-    void refreshSessionChildTreesAtBoundary(sessionId, "parent_progress");
-  }, [refreshSessionChildTreesAtBoundary]);
 
   function removeRegisteredDirectory(directoryId: string) {
     const target = registeredDirectories.find((item) => item.id === directoryId);
@@ -3236,7 +3230,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     onAssistantTurnCompleted: handleRelayAssistantTurnCompleted,
     onRuntimeStatus: updateConversationRuntimeRequestStatus,
     ensureRuntimeRequestForRelay: ensureConversationRuntimeRequestForRelay,
-    onSessionStreamBoundary: handleSessionStreamBoundary,
     // observer強奪(別スレッドのrunning turnがobserverを奪う)時の補償:
     // clean closeされる側のセッションはresume_missを出せないため、
     // 「あとで再同期が必要」マーカーに積んで次のready遷移・G2再取得判定で拾う(M-4)。
@@ -3819,7 +3812,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
       const payload = message.payload && typeof message.payload === "object" ? message.payload as Record<string, unknown> : {};
       const completedSessionId = parseOptionalSessionId(message.threadId || message.sessionId || payload.threadId || payload.sessionId);
       if (completedSessionId) {
-        void refreshSessionChildTreesAtBoundary(completedSessionId, "child_completed");
         if (getConversationRuntimePreview(completedSessionId)?.isResponding) {
           if (AppState.currentState === "active") {
             requestSessionResync(completedSessionId, {
@@ -3833,7 +3825,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
       }
       if (AppState.currentState === "active") refreshDirectorySessionsAfterCompletion(payload.directory);
     }
-  ), [getConversationRuntimePreview, markSessionRespondingForResync, refreshDirectorySessionsAfterCompletion, refreshSessionChildTreesAtBoundary, requestSessionResync, runnerWebSocketManager]);
+  ), [getConversationRuntimePreview, markSessionRespondingForResync, refreshDirectorySessionsAfterCompletion, requestSessionResync, runnerWebSocketManager]);
 
   observerPreemptedHandlerRef.current = markSessionRespondingForResync;
   // relay watermark gap(relay作り直し検出)の穴埋め: observer存命中の即時resyncは
@@ -4336,7 +4328,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
       sessionRuntimeStatusByIdRef.current[parseOptionalSessionId(sessionIdRaw)]
     ),
     onLlmMessageCompleted: handleLlmMessageCompleted,
-    onSessionStreamBoundary: handleSessionStreamBoundary,
   });
 
   const {

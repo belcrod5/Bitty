@@ -73,7 +73,6 @@ function createHarness(initialConversation: ConversationMessage[]) {
     },
     onRuntimeStatus: jest.fn(),
     ensureRuntimeRequestForRelay: jest.fn(),
-    onSessionStreamBoundary: jest.fn(),
   };
 
   return {
@@ -115,16 +114,6 @@ describe("useCodexRelayObserverStartController relay loss recovery", () => {
       expect.any(String)
     );
     expect(harness.options.clearCodexRelayObserverForMiss).toHaveBeenCalledWith("thread-1", "/workspace");
-  });
-
-  test("reports replayed item completion as a non-delta session boundary", async () => {
-    const harness = await startObserver("session_restored_running_turn");
-
-    await act(async () => {
-      harness.getObserverOptions().onEvent("item/completed", { item: { type: "agentMessage" } });
-    });
-
-    expect(harness.options.onSessionStreamBoundary).toHaveBeenCalledWith("thread-1");
   });
 
   test("projects replayed real Codex item starts into the shared runtime status", async () => {

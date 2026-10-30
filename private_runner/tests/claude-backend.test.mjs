@@ -1909,3 +1909,16 @@ test('main-only Claude listing does not spend the 5000-entry budget traversing c
   const child = await backend.readHistory({ sessionRef: { backendId: 'claude', nativeSessionId: 'agent-0' }, limit: 1 });
   assert.equal(child.items[0].content[0].text, 'fixture');
 });
+
+test("Claude child notifications follow Agent tools instead of ordinary tool and assistant completion", async () => {
+  const changed = [];
+  const lines = [{ type: "system", subtype: "init", session_id: SESSION_ID }];
+  for (const [id, name] of [["shell", "Bash"], ["agent", "Agent"]]) {
+    lines.push({ type: "assistant", message: { id: `assistant-${id}`, content: [{ type: "tool_use", id, name, input: {} }] } });
+    lines.push({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: id, content: "done" }] } });
+  }
+  lines.push({ type: "result", subtype: "success", result: "done", session_id: SESSION_ID });
+  const { backend } = backendWith(lines, { backendOverrides: { onSessionChildrenChanged: (parent) => changed.push(parent) } });
+  await backend.startTurn({ runId: "claude-children", cwd: "/workspace", input: { blocks: [{ type: "text", text: "synthetic" }] }, resolveSession: async () => {}, emit() {} });
+  assert.deepEqual(changed, [{ backendId: "claude", nativeSessionId: SESSION_ID }, { backendId: "claude", nativeSessionId: SESSION_ID }]);
+});

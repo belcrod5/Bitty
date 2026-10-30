@@ -133,7 +133,6 @@ function createHarness() {
     uploadCodexWsPreflightLog: jest.fn(async () => "ok"),
     trimForInline: (value: string) => value,
     reportError: jest.fn(),
-    onSessionStreamBoundary: jest.fn(),
   };
 
   return {
@@ -357,22 +356,6 @@ describe("useCodexReplyRequest onAgentMessageCompleted", () => {
       backendId: "claude",
       sessionId: "claude-session",
     }));
-  });
-
-  test("reports item completion as a non-delta session boundary", async () => {
-    const harness = createHarness();
-    const { sendPromise } = await startRequest(harness);
-
-    await act(async () => {
-      harness.getTurnOptions().onThreadIdResolved("thread-1");
-      harness.getTurnOptions().onEvent("item/completed", { item: { type: "agentMessage" } });
-    });
-
-    expect(harness.options.onSessionStreamBoundary).toHaveBeenCalledWith("thread-1");
-    await act(async () => {
-      harness.resolveTurn({ threadId: "thread-1", turnId: "turn-1", reply: "done", contextUsage: null });
-      await sendPromise;
-    });
   });
 
   test("marks the panel session materialized when the first turn resolves a native ID", async () => {

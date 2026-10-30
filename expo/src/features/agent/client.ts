@@ -17,6 +17,44 @@ import {
   calendarToolResponse,
 } from "../calendar/calendarToolHandler";
 
+// Compatibility belongs beside Agent/native event normalization. Current
+// Runners publish qualified parent changes; older ones expose only child tools
+// and turn boundaries. Ordinary item completion is never a child change.
+export function subscribeSessionChildrenChanges(manager: RunnerWebSocketManager, onChanged: (
+  sessionId: string, relationship: "parent_changed" | "child_completed", backendId: string,
+) => void) {
+  return manager.subscribe({}, (message) => {
+    const payload = object(message.payload);
+    if (message.channel === "control" && message.op === "session_children_changed") {
+      const parent = object(payload.parentSessionRef);
+      if (parent.backendId && parent.nativeSessionId) onChanged(String(parent.nativeSessionId), "parent_changed", String(parent.backendId));
+      return;
+    }
+    if (manager.getSnapshot().supportedControlEvents?.includes("session_children_changed")) return;
+    if (message.channel === "agent" && message.op === "event") {
+      const event = payload;
+      const detail = object(event.payload), ref = object(event.sessionRef);
+      const id = String(ref.nativeSessionId || ""), backend = String(ref.backendId || "");
+      if (!id || !backend) return;
+      if (event.type === "item.completed" && ["collabAgentToolCall", "subagent"].includes(String(detail.itemType || ""))
+        || event.type === "tool.started" && ["Agent", "Task"].includes(String(detail.name || ""))) {
+        onChanged(id, "parent_changed", backend);
+      } else if (["turn.completed", "turn.interrupted", "turn.failed"].includes(String(event.type || ""))) {
+        onChanged(id, "child_completed", backend);
+      }
+    } else if (message.channel === "llm" && message.op === "rpc") {
+      let rpc = payload;
+      if (typeof message.payload === "string") { try { rpc = object(JSON.parse(message.payload)); } catch { return; } }
+      const params = object(rpc.params), item = object(params.item);
+      const parent = String(params.threadId || params.thread_id || message.threadId || "");
+      if (rpc.method === "item/completed" && item.type === "collabAgentToolCall" && parent) onChanged(parent, "parent_changed", "codex");
+    } else if (message.channel === "llm" && message.op === "turn_completed_notification") {
+      const id = String(message.threadId || message.sessionId || payload.threadId || payload.sessionId || "");
+      if (id) onChanged(id, "child_completed", String(payload.backendId || "codex"));
+    }
+  });
+}
+
 const PROTOCOL_VERSION = 2;
 // sessions.listのprovider-neutralスコープ。session.list対応の全Backendを集約する。
 export const ALL_BACKENDS_SCOPE = "all";

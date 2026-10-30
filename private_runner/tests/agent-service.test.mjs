@@ -2683,3 +2683,34 @@ test("complete list summaries use final stored model/effort/read state for every
     await check("native-new", "medium", "2026-10-27T02:00:00Z");
   }
 });
+
+test("all list scopes enforce the existing display title contract without changing history", async () => {
+  const original = "Synthetic child instructions. ".repeat(1000);
+  const cases = [
+    ["long", original, `${original.slice(0, 199)}…`],
+    ["space", "  alpha\n\t beta  ", "alpha beta"],
+    ["emoji200", "😀".repeat(200), "😀".repeat(200)],
+    ["emoji201", "😀".repeat(201), `${"😀".repeat(199)}…`],
+    ["override", "native", "manual title"],
+    ["legacy-override", "native", `${"😀".repeat(199)}…`],
+  ];
+  const native = cases.map(([id, title]) => ({ sessionRef: { backendId: "codex", nativeSessionId: id }, canonicalCwd: "/workspace", title }));
+  const backend = {
+    backendId: "codex", getStatus: async () => ({ readiness: { ready: true }, capabilities: { session: { list: true, history: { read: true } } } }),
+    resolveSessionCwd: async () => "/workspace",
+    listSessions: async () => ({ sessions: native }),
+    readHistory: async () => ({ items: [{ id: "message", role: "user", content: [{ type: "text", text: original }] }] }),
+  };
+  const service = createAgentService({ backends: [backend], operationStore: operationStore(), sessionStore: sessionStore(),
+    resolveCanonicalCwd: async (cwd) => cwd,
+    getSessionTitles: async (refs) => refs.map((ref) => ref.nativeSessionId === "override" ? " manual\n title " : ref.nativeSessionId === "legacy-override" ? "😀".repeat(300) : ""),
+  });
+  const single = await service.listSessions({ backendId: "codex", cwd: "/workspace" });
+  const all = await service.listSessions({ cwd: "/workspace" });
+  const batch = await service.listSessionsBatch({ cwds: ["/workspace"], limit: 100 });
+  for (const result of [single, all, batch.groups[0].payload]) assert.deepEqual(result.sessions.map((row) => row.title), cases.map((row) => row[2]));
+  assert.equal(native[0].title, original);
+  const history = await service.readHistory({ sessionRef: native[0].sessionRef });
+  assert.equal(history.items[0].content[0].text, original);
+  console.info(`[child title fixture] nativeListDecodedBytes=${Buffer.byteLength(JSON.stringify({ sessions: native }))} boundedListDecodedBytes=${Buffer.byteLength(JSON.stringify(single))}`);
+});

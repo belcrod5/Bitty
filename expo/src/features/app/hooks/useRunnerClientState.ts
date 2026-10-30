@@ -63,19 +63,24 @@ export function useRunnerClientState({
         if ((snapshot.drafts[sessionKey]?.text || "") === pending.text) delete pendingDrafts.current[key];
       }
     }
-    if (snapshotConnectionRef.current === id && snapshotRef.current === snapshot) return;
+    const previous = snapshotConnectionRef.current === id ? snapshotRef.current : null;
+    if (previous === snapshot) return;
     snapshotConnectionRef.current = id;
     snapshotRef.current = snapshot;
-    setRegisteredDirectories((current) => JSON.stringify(current) === JSON.stringify(snapshot.directories) ? current : snapshot.directories);
+    if (previous?.directories !== snapshot.directories) {
+      setRegisteredDirectories((current) => JSON.stringify(current) === JSON.stringify(snapshot.directories) ? current : snapshot.directories);
+    }
     setTitleModelId(snapshot.titleModelId || "gpt-6-luna");
     setTitleReasoningEffort(snapshot.titleModelId ? snapshot.titleReasoningEffort || "low" : "low");
-    setSessionTitleOverridesById(Object.fromEntries(Object.entries(snapshot.sessions)
-      .map(([key, value]) => [key, value.title])));
-    setSessionMarkerColorsById(Object.fromEntries(Object.entries(snapshot.sessions)
-      .map(([key, value]) => [key, value.markerColor])));
-    setSessionNotesById(Object.fromEntries(Object.entries(snapshot.sessions)
-      .map(([key, value]) => [key, value.note || ""])));
-    setMessages(snapshot.composerHistory);
+    if (previous?.sessions !== snapshot.sessions) {
+      setSessionTitleOverridesById(Object.fromEntries(Object.entries(snapshot.sessions)
+        .map(([key, value]) => [key, value.title])));
+      setSessionMarkerColorsById(Object.fromEntries(Object.entries(snapshot.sessions)
+        .map(([key, value]) => [key, value.markerColor])));
+      setSessionNotesById(Object.fromEntries(Object.entries(snapshot.sessions)
+        .map(([key, value]) => [key, value.note || ""])));
+    }
+    if (previous?.composerHistory !== snapshot.composerHistory) setMessages(snapshot.composerHistory);
     setDrafts(Object.entries({ ...snapshot.drafts, ...Object.fromEntries(Object.entries(pendingDrafts.current)
       .filter(([, pending]) => pending.connection.id === id && pending.text.trim())
       .map(([key, pending]) => [key.slice(id.length + 1), { text: pending.text, updatedAt: Date.now() }])) }).map(([key, value]) => {

@@ -411,3 +411,31 @@ test("a late failure from the old Runner cannot mark the new Runner disconnected
   await waitFor(() => expect(result.current.draftsLoaded).toBe(true));
   expect(result.current.connectionInterrupted).toBe(false);
 });
+
+test("draft-only patches preserve unrelated session sinks while session changes still apply", async () => {
+  server.sessions[sessionKey] = { title: "Original", markerColor: "red" };
+  const originalFetch = global.fetch;
+  global.fetch = jest.fn(async (url, init) => {
+    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+    const response = await originalFetch(url, init);
+    const snapshot = (await response.json()).snapshot;
+    const payload = body?.baseEtag && body.operation.type === "draft.set"
+      ? { patch: { baseEtag: body.baseEtag, changes: { revision: snapshot.revision, drafts: snapshot.drafts } } }
+      : body?.baseEtag && body.operation.type === "session.set"
+        ? { patch: { baseEtag: body.baseEtag, changes: { revision: snapshot.revision, sessions: { [sessionKey]: snapshot.sessions[sessionKey] } } } }
+        : { snapshot };
+    return { ...response, headers: { get: () => `W/"revision-${snapshot.revision}"` }, json: async () => payload } as unknown as Response;
+  }) as typeof fetch;
+  const { result, setRegisteredDirectories, setSessionTitleOverridesById } = await renderState();
+  await waitFor(() => expect(result.current.draftsLoaded).toBe(true));
+  const initialTitles = setSessionTitleOverridesById.mock.calls.length;
+  const initialDirectories = setRegisteredDirectories.mock.calls.length;
+  await act(async () => result.current.setDraft("session-1", "draft", "codex"));
+  await act(async () => { jest.advanceTimersByTime(300); });
+  await waitFor(() => expect(operations.length).toBe(1));
+  expect(setSessionTitleOverridesById).toHaveBeenCalledTimes(initialTitles);
+  expect(setRegisteredDirectories).toHaveBeenCalledTimes(initialDirectories);
+  await act(async () => result.current.mutate({ type: "session.set", backendId: "codex", sessionId: "session-1", note: "new note" }));
+  await waitFor(() => expect(result.current.sessionNotesById[sessionKey]).toBe("new note"));
+  expect(setSessionTitleOverridesById).toHaveBeenCalledTimes(initialTitles + 1);
+});

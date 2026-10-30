@@ -1482,3 +1482,19 @@ test("logs only safe session-list operation counts after successful socket sends
   expect(onDiagEvent.mock.calls.filter(([event]) => event === "runner_ws_session_list_sent")).toHaveLength(3);
   manager.disconnect("manual");
 });
+
+test("control event support follows each connection's ready advertisement", async () => {
+  const manager = createManager();
+  const first = nextSocket();
+  const connect = manager.connect(); first.open();
+  first.message({ channel: "control", op: "ready", payload: { supportedControlEvents: ["session_children_changed"] } });
+  await connect;
+  expect(manager.getSnapshot().supportedControlEvents).toEqual(["session_children_changed"]);
+  manager.disconnect();
+  const second = nextSocket();
+  const reconnect = manager.connect(); second.open();
+  second.message({ channel: "control", op: "ready" });
+  await reconnect;
+  expect(manager.getSnapshot().supportedControlEvents).toEqual([]);
+  manager.disconnect();
+});

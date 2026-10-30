@@ -210,3 +210,106 @@ test("an unavailable authoritative store returns an error instead of a cache hit
     await new Promise((resolve, reject) => runtimeServer.close((error) => error ? reject(error) : resolve()));
   }
 });
+
+test("client-state patches cover canonical operations and fall back when another writer changed the base", async () => {
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const url = `http://127.0.0.1:${server.address().port}/client-state`;
+  const headers = { authorization: "Bearer test-runner-token", "content-type": "application/json", "accept-encoding": "identity" };
+  const post = (operation, baseEtag) => fetch(url, { method: "POST", headers, body: JSON.stringify({ operation, baseEtag }) });
+  try {
+    const operations = [
+      { type: "directory.upsert", directory: { id: "patch-dir", path: "/patch", displayName: "Patch", markerColor: "green" } },
+      { type: "directory.remove", id: "patch-dir" },
+      { type: "title-settings.set", modelId: "fixture-model", reasoningEffort: "high" },
+      { type: "session.set", backendId: "codex", sessionId: "patch-session", title: "  normalized\n title " },
+      { type: "session.set", backendId: "codex", sessionId: "patch-session", note: "canonical note", expectedNote: "" },
+      { type: "composer.append", text: "patch composer" },
+      ...Array.from({ length: 11 }, (_, index) => ({ type: "draft.set", backendId: "codex", sessionId: `patch-${index}`, text: `draft ${index}` })),
+      { type: "draft.set", backendId: "codex", sessionId: "patch-10", text: "" },
+    ];
+    for (const operation of operations) {
+      const get = await fetch(url, { headers });
+      const before = (await get.json()).snapshot;
+      const baseEtag = get.headers.get("etag");
+      const result = await post(operation, baseEtag);
+      assert.equal(result.status, 200);
+      const payload = await result.json();
+      assert.equal(payload.snapshot, undefined);
+      assert.equal(payload.patch.baseEtag, baseEtag);
+      const changes = payload.patch.changes;
+      assert.equal(changes.revision, before.revision + 1);
+      const applied = { ...before, ...changes, sessions: changes.sessions ? { ...before.sessions, ...changes.sessions } : before.sessions };
+      const after = await fetch(url, { headers });
+      assert.deepEqual(applied, (await after.json()).snapshot);
+      assert.equal(result.headers.get("etag"), after.headers.get("etag"));
+    }
+    const base = await fetch(url, { headers }), baseEtag = base.headers.get("etag");
+    const first = await post({ type: "session.set", backendId: "claude", sessionId: "other-writer", title: "Other device" });
+    assert.equal(first.status, 200);
+    const stale = await post({ type: "draft.set", backendId: "codex", sessionId: "stale-base", text: "retained" }, baseEtag);
+    const full = await stale.json();
+    assert.equal(full.patch, undefined);
+    assert.equal(full.snapshot.sessions[JSON.stringify(["claude", "other-writer"])].title, "Other device");
+    const concurrentBase = stale.headers.get("etag");
+    const concurrent = await Promise.all([post({ type: "composer.append", text: "one" }, concurrentBase), post({ type: "composer.append", text: "two" }, concurrentBase)]);
+    const bodies = await Promise.all(concurrent.map((result) => result.json()));
+    assert.equal(bodies.filter((body) => body.patch).length, 1);
+    assert.equal(bodies.filter((body) => body.snapshot).length, 1);
+    const conflict = await post({ type: "session.set", backendId: "codex", sessionId: "patch-session", note: "stale note", expectedNote: "" }, concurrentBase);
+    assert.equal(conflict.status, 400);
+    assert.equal((await conflict.json()).patch, undefined);
+  } finally { await new Promise((resolve) => server.close(resolve)); }
+});
+
+test("same-revision restored content cannot receive a patch for a different snapshot", async () => {
+  const state = await createClientStateStore(process.env.CLIENT_STATE_STORE_PATH).snapshot();
+  const oldEtag = `W/"${createHash("sha256").update(JSON.stringify({ ok: true, snapshot: state })).digest("hex")}"`;
+  const restored = { ...state, composerHistory: ["Restored same-revision fixture"] };
+  const file = path.join(tempDir, "same-revision-patch.json");
+  await fs.writeFile(file, JSON.stringify(restored));
+  const originalPath = process.env.CLIENT_STATE_STORE_PATH;
+  let runtime;
+  try { process.env.CLIENT_STATE_STORE_PATH = file; runtime = await import("../src/server-runtime.mjs?client-state-patch-restored"); }
+  finally { process.env.CLIENT_STATE_STORE_PATH = originalPath; }
+  const runtimeServer = runtime.__TESTING__.server;
+  await new Promise((resolve) => runtimeServer.listen(0, "127.0.0.1", resolve));
+  try {
+    const result = await fetch(`http://127.0.0.1:${runtimeServer.address().port}/client-state`, { method: "POST",
+      headers: { authorization: "Bearer test-runner-token", "content-type": "application/json" },
+      body: JSON.stringify({ baseEtag: oldEtag, operation: { type: "draft.set", backendId: "codex", sessionId: "restored", text: "draft" } }),
+    });
+    const payload = await result.json();
+    assert.equal(payload.patch, undefined);
+    assert.deepEqual(payload.snapshot.composerHistory, restored.composerHistory);
+  } finally { await new Promise((resolve) => runtimeServer.close(resolve)); }
+});
+
+test("synthetic large client-state draft saves return only their canonical changes", async () => {
+  const file = path.join(tempDir, "large-patch.json");
+  const state = { version: 1, revision: 0, titleModelId: "fixture", titleReasoningEffort: "low", directories: [],
+    composerHistory: [], drafts: {}, sessions: Object.fromEntries(Array.from({ length: 4928 }, (_, index) => [JSON.stringify(["codex", `synthetic-${index}`]), {
+      title: `Synthetic title ${index} ${((index * 2654435761) >>> 0).toString(36)}`, markerColor: "none", note: `Synthetic note ${index}`,
+    }])) };
+  await fs.writeFile(file, JSON.stringify(state));
+  const originalPath = process.env.CLIENT_STATE_STORE_PATH;
+  let runtime;
+  try { process.env.CLIENT_STATE_STORE_PATH = file; runtime = await import("../src/server-runtime.mjs?client-state-large-patch"); }
+  finally { process.env.CLIENT_STATE_STORE_PATH = originalPath; }
+  const runtimeServer = runtime.__TESTING__.server;
+  await new Promise((resolve) => runtimeServer.listen(0, "127.0.0.1", resolve));
+  try {
+    const url = `http://127.0.0.1:${runtimeServer.address().port}/client-state`;
+    const headers = { authorization: "Bearer test-runner-token", "content-type": "application/json", "accept-encoding": "gzip" };
+    const operation = { type: "draft.set", backendId: "codex", sessionId: "synthetic-draft", text: "Synthetic draft text. ".repeat(30) };
+    const legacy = await fetch(url, { method: "POST", headers, body: JSON.stringify({ operation }) });
+    const legacyBody = await legacy.text(), baseEtag = legacy.headers.get("etag");
+    const patch = await fetch(url, { method: "POST", headers, body: JSON.stringify({ operation, baseEtag }) });
+    const patchBody = await patch.text();
+    const body = JSON.parse(patchBody);
+    assert.deepEqual(body.patch.changes.drafts[JSON.stringify(["codex", "synthetic-draft"])].text, operation.text);
+    assert.equal(body.patch.changes.sessions, undefined);
+    assert.ok(patchBody.length < legacyBody.length / 100);
+    assert.ok(Number(patch.headers.get("content-length")) < Number(legacy.headers.get("content-length")) / 10);
+    console.info(`[client-state fixture] legacyDecoded=${Buffer.byteLength(legacyBody)} patchDecoded=${Buffer.byteLength(patchBody)} legacyGzipBody=${legacy.headers.get("content-length")} patchGzipBody=${patch.headers.get("content-length")}; HTTP response bodies only`);
+  } finally { await new Promise((resolve) => runtimeServer.close(resolve)); }
+});

@@ -48,7 +48,8 @@ import {
 import { createCodexAppServerClient } from "./codex-app-server-client.mjs";
 import { createOrchestratorRuntime } from "./orchestrator-runtime.mjs";
 import { createVoiceOrchestratorService } from "./voice-orchestrator-service.mjs";
-import { createVoiceConsultationService } from "./voice-consultation-service.mjs";
+import { createVoiceConsultationService, consultationRoomSummary } from "./voice-consultation-service.mjs";
+import { createCodexSessionChildrenObserver } from "./codex-session-children.mjs";
 import { createStreamTtsSegments, TTS_SEGMENT_BOUNDARY } from "./stream-tts-segments.mjs";
 import { convertTtsAudioToMp3 } from "./tts-audio.mjs";
 import { createVoiceRequestBridge } from "./voice-request-bridge.mjs";
@@ -1575,6 +1576,7 @@ const agentRuntime = createPrivateRunnerAgentRuntime({
   runEventObservers: [approvalPushService.onRunEvent, turnCompletionNotifier.onAgentRunEvent],
   activity: orchestratorActivity,
   onActiveSessionsChanged: broadcastActiveSessionsChanged,
+  onSessionChildrenChanged: broadcastSessionChildrenChanged,
   listRawActiveSessions: () => [...codexWsRelaysById.values()].flatMap((relay) => {
     const lease = relay.agentLease;
     return lease && !relay.closed ? [{ sessionRef: lease.sessionRef, canonicalCwd: lease.canonicalCwd,
@@ -5287,24 +5289,45 @@ const scheduledVoiceApprovals = createVoiceRequestBridge({
     }
   },
 });
+const consultationSubscriptions = new Map();
+const consultationSpeechSubscribers = new Map();
+function broadcastConsultationChanged(room) {
+  for (const [client, subscription] of consultationSubscriptions) {
+    if (subscription.legacy) sendRunnerWsEnvelope(client, { channel: "agent", op: "voice.consultations.changed", payload: room });
+    else if (subscription.roomId === room.id) {
+      if (subscription.initializing) {
+        if (!subscription.room || subscription.room.revision <= room.revision) subscription.room = room;
+      }
+      else sendRunnerWsEnvelope(client, { channel: "agent", op: "voice.consultations.changed", operationId: subscription.id, payload: room });
+    } else sendRunnerWsEnvelope(client, { channel: "agent", op: "voice.consultations.summary", operationId: subscription.id, payload: consultationRoomSummary(room) });
+  }
+}
+function broadcastConsultationProgress(progress, change) {
+  for (const [client, subscription] of consultationSubscriptions) {
+    if (subscription.legacy) sendRunnerWsEnvelope(client, { channel: "agent", op: "voice.consultations.progress", payload: progress });
+    else if (subscription.roomId === progress.roomId) {
+      if (subscription.initializing) {
+        const previous = subscription.progress;
+        if ((!subscription.room?.run || subscription.room.run.id === progress.runId)
+          && (!previous || previous.runId !== progress.runId || previous.generation < progress.generation || previous.seq < progress.seq)) subscription.progress = progress;
+      }
+      else sendRunnerWsEnvelope(client, { channel: "agent", op: "voice.consultations.progress.delta", operationId: subscription.id, payload: change });
+    }
+  }
+}
+function broadcastConsultationSpeech(event) {
+  for (const [client, subscriptions] of consultationSpeechSubscribers) {
+    if (subscriptions.get(event.roomId) === event.subscriptionId) sendRunnerWsEnvelope(client, {
+      channel: "agent", op: "voice.consultations.speech", payload: event,
+    });
+  }
+}
 const consultationService = createVoiceConsultationService({
   rootDir: path.join(WORKSPACE_ROOT, "private_runner/logs/consultations"),
   orchestrators: voiceContextService,
-  onChanged: (room) => {
-    for (const client of runnerWsActiveClients) sendRunnerWsEnvelope(client, {
-      channel: "agent", op: "voice.consultations.changed", payload: room,
-    });
-  },
-  onProgress: (progress) => {
-    for (const client of runnerWsActiveClients) sendRunnerWsEnvelope(client, {
-      channel: "agent", op: "voice.consultations.progress", payload: progress,
-    });
-  },
-  onSpeech: (event) => {
-    for (const client of runnerWsActiveClients) sendRunnerWsEnvelope(client, {
-      channel: "agent", op: "voice.consultations.speech", payload: event,
-    });
-  },
+  onChanged: broadcastConsultationChanged,
+  onProgress: broadcastConsultationProgress,
+  onSpeech: broadcastConsultationSpeech,
   requestApproval: async ({ operationId, orchestratorId, request, signal }) => {
     const { orchestrators } = await voiceContextService.list();
     return scheduledVoiceApprovals.request(operationId, request, orchestratorId,
@@ -6347,9 +6370,19 @@ const handleRunnerRequest = async (req, res) => {
     if (!RUNNER_TOKEN) return json(res, 500, { error: "runner_token_missing" });
     if (parseAuthToken(req) !== RUNNER_TOKEN) return json(res, 401, { error: "unauthorized" });
     try {
-      const snapshot = req.method === "GET"
-        ? await clientStateStore.snapshot()
-        : await clientStateStore.mutate((await readJsonBody(req, 3 * 1024 * 1024)).operation);
+      let snapshot, patch;
+      if (req.method === "GET") snapshot = await clientStateStore.snapshot();
+      else {
+        const { operation, baseEtag } = await readJsonBody(req, 3 * 1024 * 1024);
+        if (typeof baseEtag === "string") {
+          const result = await clientStateStore.mutate(operation, { includeChanges: true });
+          snapshot = result.snapshot;
+          // The base and mutation share one store serialization boundary. A
+          // restored store may have the same revision with different content.
+          const previousEtag = `"${createHash("sha256").update(JSON.stringify({ ok: true, snapshot: result.previousSnapshot })).digest("hex")}"`;
+          if (baseEtag.replace(/^W\//, "") === previousEtag) patch = { baseEtag, changes: result.changes };
+        } else snapshot = await clientStateStore.mutate(operation);
+      }
       const body = JSON.stringify({ ok: true, snapshot });
       const etag = `"${createHash("sha256").update(body).digest("hex")}"`;
       // The validator identifies the snapshot across gzip and identity representations.
@@ -6361,7 +6394,7 @@ const handleRunnerRequest = async (req, res) => {
           return res.end();
         }
       }
-      return json(res, 200, { ok: true, snapshot }, headers);
+      return json(res, 200, patch ? { ok: true, patch } : { ok: true, snapshot }, headers);
     } catch (error) {
       return json(res, error instanceof ClientStateStoreUnavailableError ? 503 : 400, {
         error: "client_state_unavailable",
@@ -7240,9 +7273,12 @@ runnerWsServer.on("connection", (ws, req) => {
   });
 
   const consultationSpeechSubscriptions = new Map();
+  consultationSpeechSubscribers.set(ws, consultationSpeechSubscriptions);
   let consultationSpeechClosed = false;
   ws.once("close", () => {
     consultationSpeechClosed = true;
+    consultationSubscriptions.delete(ws);
+    consultationSpeechSubscribers.delete(ws);
     for (const [roomId, subscriptionId] of consultationSpeechSubscriptions) {
       void consultationService.unsubscribeSpeech(roomId, subscriptionId).catch(() => {});
     }
@@ -7301,8 +7337,30 @@ runnerWsServer.on("connection", (ws, req) => {
           if (consultationSpeechSubscriptions.get(payload.roomId) === payload.subscriptionId) consultationSpeechSubscriptions.delete(payload.roomId);
           return result;
         },
-        "voice.consultations.list": () => consultationService.list(),
-        "voice.consultations.get": () => consultationService.get(payload.roomId),
+        "voice.consultations.list": async () => {
+          const modern = payload.updates === "delta" && typeof payload.subscriptionId === "string" && payload.subscriptionId.length > 0 && payload.subscriptionId.length <= 200;
+          const subscription = modern
+            ? { id: payload.subscriptionId, roomId: String(payload.roomId || ""), initializing: Boolean(payload.roomId) }
+            : { legacy: true };
+          if (!consultationSpeechClosed) consultationSubscriptions.set(ws, subscription);
+          const result = await consultationService.list({ summaries: modern });
+          return modern ? { ...result, updates: "delta", subscriptionId: subscription.id } : result;
+        },
+        "voice.consultations.get": () => {
+          if (payload.subscriptionId) {
+            const subscription = consultationSubscriptions.get(ws);
+            if (!subscription || subscription.id !== payload.subscriptionId) throw new Error("Consultation subscription expired");
+            subscription.roomId = String(payload.roomId || ""); subscription.initializing = Boolean(subscription.roomId);
+            subscription.requestId = message.requestId; subscription.room = null; subscription.progress = null;
+            if (!subscription.roomId) return { room: null };
+          }
+          return consultationService.get(payload.roomId);
+        },
+        "voice.consultations.unsubscribe": () => {
+          const removed = typeof payload.subscriptionId === "string" && consultationSubscriptions.get(ws)?.id === payload.subscriptionId;
+          if (removed) consultationSubscriptions.delete(ws);
+          return { removed };
+        },
         "voice.consultations.create": () => consultationService.create(payload),
         "voice.consultations.resume": () => consultationService.resume(payload.roomId),
         "voice.consultations.stop": () => consultationService.stop(payload.roomId),
@@ -7312,9 +7370,25 @@ runnerWsServer.on("connection", (ws, req) => {
       };
       const work = methods[message.op];
       if (!work) { sendVoiceError(message, { code: "turn_rejected", message: "Unknown consultation operation" }); return true; }
-      void Promise.resolve().then(work).then((result) => sendRunnerWsEnvelope(ws, {
-        channel: "agent", op: `${message.op}.result`, requestId: message.requestId || "", payload: result,
-      })).catch((error) => sendVoiceError(message, error));
+      void Promise.resolve().then(work).then((result) => {
+        const subscription = consultationSubscriptions.get(ws);
+        const initializing = message.op === "voice.consultations.get" && payload.subscriptionId
+          && subscription?.id === payload.subscriptionId && subscription.requestId === message.requestId;
+        if (initializing && result?.id === subscription.roomId) {
+          if (subscription.room && subscription.room.revision >= result.revision) result = subscription.room;
+          const progress = subscription.progress;
+          if (progress && result.run?.id === progress.runId && result.generation === progress.generation
+            && (result.run.progress?.seq || 0) < progress.seq) result = { ...result, run: { ...result.run, progress } };
+        }
+        sendRunnerWsEnvelope(ws, { channel: "agent", op: `${message.op}.result`, requestId: message.requestId || "", payload: result });
+        if (initializing) { subscription.initializing = false; subscription.room = null; subscription.progress = null; }
+      }).catch((error) => {
+        const subscription = consultationSubscriptions.get(ws);
+        if (message.op === "voice.consultations.get" && subscription?.id === payload.subscriptionId && subscription.requestId === message.requestId) {
+          subscription.initializing = false; subscription.room = null; subscription.progress = null;
+        }
+        sendVoiceError(message, error);
+      });
       return true;
     }
     const orchestratorId = message.payload?.orchestratorId || "main";
@@ -7757,6 +7831,7 @@ runnerWsServer.on("connection", (ws, req) => {
       endpoint: RUNNER_WS_PATH,
       connectionId,
       channels: Array.from(RUNNER_WS_CHANNELS),
+      supportedControlEvents: ["session_children_changed"],
     },
   });
 
@@ -9307,6 +9382,20 @@ function broadcastSkiaBoardUpdated(payload) {
   return sent > 0;
 }
 
+function broadcastSessionChildrenChanged(parentSessionRef) {
+  for (const client of runnerWsActiveClients) sendRunnerWsEnvelope(client, {
+    channel: "control", op: "session_children_changed", payload: { parentSessionRef },
+  });
+}
+
+const observeRawSessionChildren = createCodexSessionChildrenObserver({
+  onChanged: broadcastSessionChildrenChanged,
+  resolveSession: async (threadId) => {
+    const entry = selectCliSessionIndexEntryBySessionId(threadId) || await findCliSessionIndexEntryBySessionId(threadId);
+    return entry?.parentSessionId ? { parentSessionRef: { backendId: "codex", nativeSessionId: entry.parentSessionId } } : null;
+  },
+});
+
 function broadcastActiveSessionsChanged() {
   widgetRefreshNotifier.changed();
   if (typeof runnerWsActiveClients === "undefined") return;
@@ -9396,6 +9485,7 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
   relay.updatedAtMs = codexRelayNowMs();
   const meta = parseCodexRpcMeta(data, isBinary);
   const rpcPayload = parseCodexRpcObject(data, isBinary);
+  if (rpcPayload?.method) void observeRawSessionChildren(rpcPayload.method, rpcPayload.params).catch(() => {});
   if (relay.usageAccount && rpcPayload?.method) observeCodexUsageNotification(relay.usageAccount, rpcPayload.method, rpcPayload.params);
   if (meta?.method === "account/chatgptAuthTokens/refresh" && meta.id !== null) {
     void (async () => {
@@ -10464,6 +10554,9 @@ export const __TESTING__ = {
   runnerWsServer,
   voiceContextService,
   consultationService,
+  broadcastConsultationChanged,
+  broadcastConsultationProgress,
+  broadcastConsultationSpeech,
   googleCloudService,
   broadcastVoiceChecklistChanged,
   listLlmDirectories,

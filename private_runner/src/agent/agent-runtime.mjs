@@ -61,6 +61,7 @@ export function createPrivateRunnerAgentRuntime({
   runEventObservers = [],
   activity,
   onActiveSessionsChanged,
+  onSessionChildrenChanged,
   listRawActiveSessions,
   getRegisteredDirectoryPaths,
   log = console,
@@ -108,14 +109,16 @@ export function createPrivateRunnerAgentRuntime({
     listModels: listCodexModels,
     resolveSessionCwd: resolveCodexSessionCwd,
     onActiveSessionsChanged,
+    onSessionChildrenChanged,
     resolveNativeActiveSession: async (threadId) => {
-      const entry = selectCachedSession?.(threadId);
+      const entry = selectCachedSession?.(threadId) || await findSession(threadId);
       const cwd = String(entry && resolveSessionDirectory(entry) || "").trim();
       if (!cwd) return null;
       return {
         sessionRef: { backendId: "codex", nativeSessionId: threadId },
         canonicalCwd: await resolveCanonicalCwd(cwd),
         isSubagent: entry.isSubagent === true || Boolean(entry.parentSessionId),
+        ...(entry.parentSessionId ? { parentSessionRef: { backendId: "codex", nativeSessionId: entry.parentSessionId } } : {}),
       };
     },
     dynamicTools,
@@ -186,6 +189,7 @@ export function createPrivateRunnerAgentRuntime({
     },
   });
   const claudeBackend = createClaudeBackend({
+    onSessionChildrenChanged,
     binary: claudeBinary,
     sessionStore,
     // 実行時に学習したcontext window等の永続化先(履歴再表示の%復元に使う)

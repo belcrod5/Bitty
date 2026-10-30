@@ -1,4 +1,4 @@
-import { listAgentSessions, listAgentSessionsBatch, startAgentSessionObserverWithRawFallback, startAgentTurnWithRawFallback } from "./client";
+import { subscribeSessionChildrenChanges, listAgentSessions, listAgentSessionsBatch, startAgentSessionObserverWithRawFallback, startAgentTurnWithRawFallback } from "./client";
 import type { RunnerWebSocketManager } from "../runnerWs/RunnerWebSocketManager";
 
 test("child listing sends backend-qualified parents without changing an ordinary listing", async () => {
@@ -1385,4 +1385,30 @@ test("a connection replacement after hello rejects the whole old cycle before li
   });
   await expect(listAgentSessionsBatch(fixture.manager, ["/one"], 5)).rejects.toThrow("connection changed");
   expect(fixture.request).toHaveBeenCalledTimes(1);
+});
+
+test.each([true, false])("child change subscriptions preserve mixed-version behavior (supported=%s)", (supported) => {
+  let receive!: (message: any) => void;
+  const onChanged = jest.fn();
+  const manager = {
+    getSnapshot: () => ({ supportedControlEvents: supported ? ["session_children_changed"] : undefined }),
+    subscribe: jest.fn((_filter, handler) => { receive = handler; return () => {}; }),
+  } as unknown as RunnerWebSocketManager;
+  subscribeSessionChildrenChanges(manager, onChanged);
+  for (let i = 0; i < 100; i++) receive({ channel: "agent", op: "event", payload: {
+    type: "item.completed", sessionRef: { backendId: "codex", nativeSessionId: "parent" }, payload: { itemType: ["commandExecution", "reasoning", "assistant"][i % 3] },
+  } });
+  expect(onChanged).not.toHaveBeenCalled();
+  receive({ channel: "agent", op: "event", payload: { type: "item.completed", sessionRef: { backendId: "codex", nativeSessionId: "parent" }, payload: { itemType: "collabAgentToolCall" } } });
+  receive({ channel: "agent", op: "event", payload: { type: "tool.started", sessionRef: { backendId: "claude", nativeSessionId: "parent" }, payload: { name: "Agent" } } });
+  receive({ channel: "llm", op: "rpc", payload: { method: "item/completed", params: { threadId: "raw-parent", item: { type: "collabAgentToolCall" } } } });
+  receive({ channel: "agent", op: "event", payload: { type: "turn.completed", sessionRef: { backendId: "claude", nativeSessionId: "child" }, payload: {} } });
+  receive({ channel: "llm", op: "turn_completed_notification", threadId: "raw-child", payload: {} });
+  if (supported) expect(onChanged).not.toHaveBeenCalled();
+  else expect(onChanged.mock.calls).toEqual([
+    ["parent", "parent_changed", "codex"], ["parent", "parent_changed", "claude"],
+    ["raw-parent", "parent_changed", "codex"], ["child", "child_completed", "claude"], ["raw-child", "child_completed", "codex"],
+  ]);
+  receive({ channel: "control", op: "session_children_changed", payload: { parentSessionRef: { backendId: "codex", nativeSessionId: "current-parent" } } });
+  expect(onChanged).toHaveBeenLastCalledWith("current-parent", "parent_changed", "codex");
 });

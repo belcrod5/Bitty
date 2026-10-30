@@ -1481,7 +1481,7 @@ test("partial backend results keep only failed backend rows and remain retryable
 test("WS ready drains an intent queued while connecting", async () => {
   let snapshot = { connectionState: 'connecting', generation: 1, connectionId: 'one', url: 'ws://runner' };
   const listeners = new Set<() => void>();
-  const manager = { getSnapshot: () => snapshot, subscribeSnapshot: (handler: () => void) => {
+  const manager = { subscribe: () => () => {}, getSnapshot: () => snapshot, subscribeSnapshot: (handler: () => void) => {
     listeners.add(handler); return () => { listeners.delete(handler); };
   } };
   const batch = jest.fn(async (paths: string[]) => paths.map((cwd) => ({ cwd, result: { latestSessionId: '', nextCursor: '', entries: [] } })));
@@ -1585,16 +1585,102 @@ test('an old child queue cleanup cannot erase the new scope queue for the same p
   let oldQueue!: Promise<void>;
   await act(async () => {
     oldActive = result.current.controller.loadSessionChildTree('workspace', '/workspace', 'parent');
-    oldQueue = result.current.controller.refreshSessionChildTreesAtBoundary('parent', 'parent_progress');
+    oldQueue = result.current.controller.refreshSessionChildTreesAtBoundary('parent', 'parent_changed');
   });
   await rerender({ scope: 'new' });
   let newActive!: Promise<void>;
   let newQueue!: Promise<void>;
   await act(async () => {
     newActive = result.current.controller.loadSessionChildTree('workspace', '/workspace', 'parent');
-    newQueue = result.current.controller.refreshSessionChildTreesAtBoundary('parent', 'parent_progress');
+    newQueue = result.current.controller.refreshSessionChildTreesAtBoundary('parent', 'parent_changed');
   });
   await act(async () => { oldChild.resolve({ parent: [] }); await Promise.all([oldActive, oldQueue]); });
   await act(async () => { newChild.resolve({ parent: [] }); await Promise.all([newActive, newQueue]); });
   expect(children).toHaveBeenCalledTimes(3); // New scope still performs its queued boundary refresh.
+});
+
+function childNotificationManager() {
+  let snapshot = { connectionState: "connecting", generation: 0, connectionId: "", url: "ws://runner" };
+  const listeners = new Set<() => void>();
+  const handlers = new Map<string, (message: { channel: string; op: string; payload: unknown }) => void>();
+  const manager = {
+    getSnapshot: () => snapshot,
+    subscribeSnapshot(handler: () => void) { listeners.add(handler); return () => { listeners.delete(handler); }; },
+    subscribe(filter: { op?: string }, handler: (message: { channel: string; op: string; payload: unknown }) => void) {
+      handlers.set(filter.op || "*", handler); return () => { handlers.delete(filter.op || "*"); };
+    },
+  };
+  return {
+    manager: manager as never,
+    ready(generation: number) {
+      snapshot = { ...snapshot, connectionState: "ready", generation, connectionId: String(generation) };
+      listeners.forEach((listener) => listener());
+    },
+    disconnect() { snapshot = { ...snapshot, connectionState: "connecting" }; listeners.forEach((listener) => listener()); },
+    changed(backendId: string, nativeSessionId: string) {
+      handlers.get("*")?.({ channel: "control", op: "session_children_changed", payload: { parentSessionRef: { backendId, nativeSessionId } } });
+    },
+  };
+}
+
+test("child notifications refresh only the loaded parent with the matching backend identity", async () => {
+  const source = childNotificationManager();
+  const fetchChildren = jest.fn(async () => ({}));
+  const { result } = await renderHook(() => useTestController({
+    fetchSessionHistory: jest.fn(), fetchSessionChildrenHistory: fetchChildren, runnerWebSocketManager: source.manager,
+    registeredDirectories: [workspaceDirectory, { ...workspaceDirectory, id: "claude-dir", path: "/claude" }],
+    initialTrees: {
+      workspace: { ...emptyState, loaded: true, entries: [session("", "same")], childrenByParentId: { same: { loaded: true, loading: false, error: "", entries: [] } } },
+      "claude-dir": { ...emptyState, loaded: true, entries: [{ ...session("", "same"), backendId: "claude" }], childrenByParentId: { same: { loaded: true, loading: false, error: "", entries: [] } } },
+    },
+  }));
+  await act(async () => { source.ready(1); });
+  fetchChildren.mockClear();
+  await act(async () => { source.changed("codex", "same"); });
+  expect(fetchChildren).toHaveBeenCalledTimes(1);
+  expect(fetchChildren).toHaveBeenCalledWith(["same"], "/workspace", expect.any(Object));
+  await act(async () => { source.changed("claude", "same"); });
+  expect(fetchChildren).toHaveBeenCalledTimes(2);
+  expect(fetchChildren).toHaveBeenLastCalledWith(["same"], "/claude", expect.any(Object));
+  await act(async () => { source.changed("codex", "never-opened"); });
+  expect(fetchChildren).toHaveBeenCalledTimes(2);
+  expect(result.current.directorySessionsById.workspace.childrenByParentId["never-opened"]).toBeUndefined();
+});
+
+test("reconnect waits for an older in-flight child request then fetches the new generation", async () => {
+  const source = childNotificationManager();
+  let rejectOld!: (reason: Error) => void;
+  const old = new Promise<Record<string, LlmSessionHistoryEntry[]>>((_resolve, reject) => { rejectOld = reject; });
+  const fetchChildren = jest.fn().mockImplementationOnce(() => old).mockResolvedValue({ parent: [session("", "fresh-child")] });
+  const { result } = await renderHook(() => useTestController({
+    fetchSessionHistory: jest.fn(), fetchSessionChildrenHistory: fetchChildren, runnerWebSocketManager: source.manager,
+    initialTrees: { workspace: { ...emptyState, loaded: true, entries: [session("", "parent")], childrenByParentId: { parent: { loaded: true, loading: false, error: "", entries: [] } } } },
+  }));
+  await act(async () => { source.ready(1); });
+  expect(fetchChildren).toHaveBeenCalledTimes(1);
+  await act(async () => { source.disconnect(); });
+  await act(async () => { source.ready(2); });
+  expect(fetchChildren).toHaveBeenCalledTimes(1);
+  await act(async () => { rejectOld(new Error("old connection changed")); });
+  expect(fetchChildren).toHaveBeenCalledTimes(2);
+  expect(result.current.directorySessionsById.workspace.childrenByParentId.parent.entries[0].sessionId).toBe("fresh-child");
+  await act(async () => { source.ready(2); });
+  expect(fetchChildren).toHaveBeenCalledTimes(2);
+});
+
+test("duplicate child notifications coalesce and retain the latest child snapshot", async () => {
+  const source = childNotificationManager();
+  const pending = deferred<Record<string, LlmSessionHistoryEntry[]>>();
+  const fetchChildren = jest.fn().mockImplementationOnce(() => pending.promise)
+    .mockResolvedValue({ parent: [session("", "completed-child")] });
+  const { result } = await renderHook(() => useTestController({
+    fetchSessionHistory: jest.fn(), fetchSessionChildrenHistory: fetchChildren, runnerWebSocketManager: source.manager,
+    initialTrees: { workspace: { ...emptyState, loaded: true, entries: [session("", "parent")], childrenByParentId: { parent: { loaded: true, loading: false, error: "", entries: [] } } } },
+  }));
+  await act(async () => { source.ready(1); });
+  await act(async () => { for (let i = 0; i < 10; i++) source.changed("codex", "parent"); });
+  expect(fetchChildren).toHaveBeenCalledTimes(1);
+  await act(async () => { pending.resolve({ parent: [session("", "initial-child")] }); });
+  expect(fetchChildren).toHaveBeenCalledTimes(2);
+  expect(result.current.directorySessionsById.workspace.childrenByParentId.parent.entries[0].sessionId).toBe("completed-child");
 });

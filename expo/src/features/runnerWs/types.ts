@@ -61,6 +61,7 @@ export type RunnerWsConnectionSnapshot = {
   lastPingRttMs?: number;
   bufferedAmount?: number;
   serverStatus?: RunnerWsServerStatus;
+  supportedControlEvents?: string[];
 };
 
 export type RunnerWsServerStatus = {

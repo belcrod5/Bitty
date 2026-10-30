@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { isValidUserInputResponse } from "./codex-user-input.mjs";
+import { createCodexSessionChildrenObserver } from "./codex-session-children.mjs";
 
 export const APP_CONTROL_UNAVAILABLE_INSTRUCTION = "No app control context is available for this turn. Never reuse references from earlier turns.";
 
@@ -282,6 +283,7 @@ export function createCodexBackend({
   compactTimeoutMs = 10 * 60 * 1000,
   resolveNativeActiveSession = () => null,
   onActiveSessionsChanged,
+  onSessionChildrenChanged,
 } = {}) {
   if (typeof createClient !== "function") throw new TypeError("createClient is required");
   if (typeof resolveSessionCwd !== "function") throw new TypeError("resolveSessionCwd is required");
@@ -296,6 +298,9 @@ export function createCodexBackend({
   // 「native activeなthread」を追跡する。runner自身が起動したturn以外(spawnされた
   // subagent thread等)のactive/idleはここでしか観測できず、session一覧の
   // isActive(サブエージェント実行中数の表示源)に使う。
+  const observeChildren = createCodexSessionChildrenObserver({
+    resolveSession: resolveNativeActiveSession, onChanged: onSessionChildrenChanged,
+  });
   const nativeActiveThreads = new Map();
   let openTurnClientCount = 0;
   const observeNativeThreadStatus = (method, params) => {
@@ -504,7 +509,10 @@ export function createCodexBackend({
       });
     };
     openTurnClientCount += 1;
-    const removeNativeStatusListener = client.addNotificationListener(observeNativeThreadStatus);
+    const removeNativeStatusListener = client.addNotificationListener((method, params) => {
+      observeNativeThreadStatus(method, params);
+      void observeChildren(method, params).catch(() => {});
+    });
     const removeNotificationListener = client.addNotificationListener(applyNotification);
     const removeServerRequestHandler = client.addServerRequestHandler((request) => {
       if (request?.method === "item/tool/requestUserInput") {
