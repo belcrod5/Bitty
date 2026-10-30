@@ -280,6 +280,35 @@ cd /Volumes/SSD-500GB-SanDisk/work/bitty-worktree/fix/network-sync-upstream
 5. 通信削減の実装修正後は同じ経路・操作で再測定し、鮮度・子追加・子完了・再接続回復も確認する。
    WSは展開後bytesで、携帯回線総通信量はOS計測との照合が必要。
 
+## 再起動後の接続検証（2026-10-30 20:10 JST）
+
+ユーザーによる再起動後、localhost:8788の稼働プロセスのcwdが本worktreeであることを確認。
+コードは`570fc40`から変更せず、実サーバーへ次の検証を行い、すべて成功した。
+
+- 認証付き`/health`の200/ok、認証なし`/client-state`の401。
+- 認証付き`/client-state`のgzip応答、JSONとしての妥当性、ETag。
+  この時点の応答本文は圧縮107,976 bytes、展開469,786 bytes。改善前後比較ではない。
+- 同じETagによる条件付きGETの304、本文0 bytes。
+- `/runner-ws`への認証付き接続、permessage-deflate交渉、`session_children_changed`対応通知。
+- 相談一覧のdelta/lease交渉、古いleaseによる解除拒否、正しいleaseによる解除。
+  接続内の購読のみを作成・解除し、会話生成や永続データの更新操作は行っていない。
+  取得した実データ本文・tokenは出力/保存していない。
+
+加えて、下記の隔離された合成テストを再実行し、19件成功、失敗/skip 0。
+
+```sh
+node --test \
+  private_runner/tests/client-state-endpoint.test.mjs \
+  private_runner/tests/codex-session-children.test.mjs \
+  private_runner/tests/network-child-transfer.test.mjs \
+  private_runner/tests/runner-ws-session-children.test.mjs \
+  private_runner/tests/consultation-transfer.test.mjs
+```
+
+保存差分・子イベント・相談配信の変更動作は合成テストで確認した範囲。
+稼働中の実データに対する保存/子生成/相談実行、実機UI、Cloudflare経由の通信量と応答性は未検証。
+push・PR作成・mainマージは行っていない。
+
 ## 次の判断
 
 ユーザーが上記のRunner再起動と実機ビルドを実行し、同じworktreeで一式を確認する。
