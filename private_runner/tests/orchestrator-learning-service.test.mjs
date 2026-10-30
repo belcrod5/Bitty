@@ -126,12 +126,39 @@ test("daily budget pause resumes the next UTC day without resetting source attem
   f.ledger.reserve = async () => denied ? { ok: false, reason: "daily-budget-exceeded" }
     : { ok: true, call: { callId: randomUUID() } };
   await configure(f.service); await f.service.observe([f.pair(1)]); await f.service.runDue();
-  assert.equal((await f.service.status()).status, "paused");
+  const paused = await f.service.status();
+  assert.equal(paused.status, "paused");
+  assert.equal(paused.error.code, "daily-budget-exceeded");
+  assert.match(paused.error.message, /次の分析に必要な枠を確保できない/);
+  assert.match(paused.error.message, /10月21日 09:00（日本時間）に自動で再試行/);
+  assert.doesNotMatch(paused.error.message, /保存/);
+  assert.equal(f.calls.length, 0);
   await f.service.observe([f.pair(2)]);
   assert.equal((await f.service.status()).pendingCount, 2);
   assert.equal((await f.service.status()).observedThrough, 2);
   denied = false; f.advance(86400_000); await f.service.runDue();
   assert.equal((await f.service.status()).processedThrough, 2);
+  assert.equal((await f.service.status()).error, null);
+});
+
+test("usage storage pauses explain the cause without claiming a daily-budget retry", async (t) => {
+  for (const [reason, explanation] of [
+    ["usage-ledger-unreadable", "利用量記録を読み込めない"],
+    ["usage-storage-failed", "利用量記録を保存できない"],
+    ["usage-capacity-exceeded", "利用量記録が保存容量の上限に達した"],
+  ]) await t.test(reason, async (t) => {
+    const f = await fixture(t);
+    f.ledger.reserve = async () => ({ ok: false, reason });
+    await configure(f.service); await f.service.observe([f.pair(1)]); await f.service.runDue();
+    const status = await f.service.status();
+    assert.equal(status.status, "paused");
+    assert.equal(status.error.code, reason);
+    assert.ok(status.error.message.includes(explanation));
+    assert.doesNotMatch(status.error.message, /予算|再試行|日本時間/);
+    assert.equal(status.pendingCount, 1);
+    assert.equal(status.processedThrough, 0);
+    assert.equal(f.calls.length, 0);
+  });
 });
 
 test("storage corruption and symlinks are not silently overwritten", async (t) => {
