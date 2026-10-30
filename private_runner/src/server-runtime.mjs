@@ -2,6 +2,7 @@ import { createAppControlService, createAppControlHttpHandler } from "./app-cont
 import { createAppStatusSnapshot } from "./app-status-snapshot.mjs";
 import { createWidgetRefreshNotifier } from "./widget-refresh-notifier.mjs";
 import { createClientAppLogWriter } from "./client-app-log-writer.mjs";
+import { json } from "./http-json.mjs";
 import { withLlmSessionRollout } from "./llm-session-rollout-file.mjs";
 import http from "node:http";
 import https from "node:https";
@@ -570,16 +571,6 @@ const codexCompactByThreadId = new Map();
 const codexQueueDrainTimerByThreadId = new Map();
 if (TTS_PROVIDER_RAW && TTS_PROVIDER_RAW !== TTS_PROVIDER) {
   console.warn(`[config] invalid TTS_PROVIDER=${TTS_PROVIDER_RAW}, fallback=${TTS_PROVIDER}`);
-}
-
-function json(res, status, payload) {
-  const body = JSON.stringify(payload);
-  res.writeHead(status, {
-    "content-type": "application/json; charset=utf-8",
-    "content-length": Buffer.byteLength(body),
-    "cache-control": "no-store",
-  });
-  res.end(body);
 }
 
 function makeApiError(status, error, message, extra = {}) {
@@ -6361,7 +6352,8 @@ const handleRunnerRequest = async (req, res) => {
         : await clientStateStore.mutate((await readJsonBody(req, 3 * 1024 * 1024)).operation);
       const body = JSON.stringify({ ok: true, snapshot });
       const etag = `"${createHash("sha256").update(body).digest("hex")}"`;
-      const headers = { etag, "cache-control": req.method === "GET" ? "private, no-cache" : "no-store", vary: "Authorization" };
+      // The validator identifies the snapshot across gzip and identity representations.
+      const headers = { etag: `W/${etag}`, "cache-control": req.method === "GET" ? "private, no-cache" : "no-store", vary: "Authorization, Accept-Encoding" };
       if (req.method === "GET") {
         const validators = String(req.headers["if-none-match"] || "").split(",").map((value) => value.trim().replace(/^W\//, ""));
         if (validators.includes(etag) || validators.includes("*")) {
@@ -6369,12 +6361,7 @@ const handleRunnerRequest = async (req, res) => {
           return res.end();
         }
       }
-      res.writeHead(200, {
-        ...headers,
-        "content-type": "application/json; charset=utf-8",
-        "content-length": Buffer.byteLength(body),
-      });
-      return res.end(body);
+      return json(res, 200, { ok: true, snapshot }, headers);
     } catch (error) {
       return json(res, error instanceof ClientStateStoreUnavailableError ? 503 : 400, {
         error: "client_state_unavailable",
@@ -7177,7 +7164,14 @@ async function broadcastVoiceUnreadState() {
   }
 }
 const runnerWsClientInstanceIds = new WeakMap();
-const runnerWsServer = new WebSocketServer({ noServer: true });
+const runnerWsServer = new WebSocketServer({
+  noServer: true,
+  perMessageDeflate: {
+    serverNoContextTakeover: true,
+    clientNoContextTakeover: true,
+    threshold: 1024,
+  },
+});
 const wsServer = new WebSocketServer({ noServer: true });
 const streamSttWsServer = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES });
 const macosSttLog = {
@@ -7236,6 +7230,7 @@ runnerWsServer.on("connection", (ws, req) => {
     connectionId,
     route: "runner-ws",
     endpoint: reqUrl.pathname,
+    perMessageDeflate: String(ws.extensions || "").split(",").includes("permessage-deflate"),
   });
   const agentConnection = agentRuntime.createWsConnection({
     ws,

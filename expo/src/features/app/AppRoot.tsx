@@ -1133,6 +1133,8 @@ function AppContent({ onReady }: { onReady?: () => void }) {
         ...snapshot,
         sampledAtMs: Date.now(),
         ttsMediaMeasurement: "server_reported_estimate",
+        runnerWsMeasurement: "decoded_payload_bytes",
+        httpMeasurement: "content_length_or_decoded_body_bytes",
       }, { throttleMs: 0 });
     };
     const timer = setInterval(logUsage, NETWORK_USAGE_LOG_INTERVAL_MS);
