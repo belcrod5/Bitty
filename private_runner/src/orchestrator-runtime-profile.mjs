@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-export const ORCHESTRATOR_CAPABILITY_INSTRUCTION = "Current isolated runtime: public web search and page retrieval are available through the built-in Web tool during interactive responses. Shell network access, shared MCP servers, apps, plugins and logged-in browser/computer control are unavailable. Use only tools actually exposed in this turn. A failed or unavailable lookup is not a retrieved result; distinguish supplied statements from independently checked evidence.";
+export const ORCHESTRATOR_CAPABILITY_INSTRUCTION = "Current isolated runtime: public web search and page retrieval are available through the built-in Web tool during interactive responses. The shell is limited to the owned workspace without network access or permission escalation. Shared installed skills, credentials, external environment files, MCP servers, apps, plugins and logged-in browser/computer control are unavailable here. When voice_subagent tools are exposed, route authorized work requiring an external workspace, installed tools, credentials or network through an approved Runner session instead; do not attempt that work in the isolated shell. Use only tools actually exposed in this turn. A failed or unavailable lookup is not a retrieved result; distinguish supplied statements from independently checked evidence.";
 
 const unavailable = () => Object.assign(new Error("This Codex runtime cannot isolate orchestrator knowledge and tools"), {
   code: "capability_unsupported", voiceReason: "orchestrator_isolation_unavailable",
@@ -55,7 +55,8 @@ export async function prepareOrchestratorRuntime(client, { workspaceDirectory, c
 export function assertOrchestratorRuntime(started, runtime) {
   const roots = started?.runtimeWorkspaceRoots;
   const readOnly = runtime.config.permissions[runtime.permissions].filesystem[":workspace_roots"] === "read";
-  if (started?.activePermissionProfile?.id !== runtime.permissions
+  if (started?.approvalPolicy !== "never"
+    || started?.activePermissionProfile?.id !== runtime.permissions
     || !Array.isArray(roots) || roots.length !== 1 || roots[0] !== runtime.runtimeWorkspaceRoots[0]
     || !Array.isArray(started.instructionSources) || started.instructionSources.length
     || started.sandbox?.type !== (readOnly ? "readOnly" : "workspaceWrite")

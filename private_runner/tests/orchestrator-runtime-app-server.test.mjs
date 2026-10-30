@@ -22,7 +22,8 @@ async function initialize(client) {
 // Uses only a localhost fake provider and disposable homes. No real credentials or model requests.
 test("real App Servers isolate prompt, file access and durable sessions across owners and restart", { skip: !enabled, timeout: 30_000 }, async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "orchestrator-server-test-"));
-  const requests = [];
+  const requests = [], shellProbes = new Map(), probeOutputs = new Map(), approvals = [];
+  const issuedProbes = new Set();
   let manager;
   let taskPid;
   let taskRunning = false;
@@ -31,8 +32,16 @@ test("real App Servers isolate prompt, file access and durable sessions across o
       response.writeHead(404); response.end(); return;
     }
     const chunks = []; for await (const chunk of request) chunks.push(chunk);
-    requests.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
-    const item = { id: `msg_${requests.length}`, type: "message", role: "assistant", status: "completed",
+    const input = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    requests.push(input);
+    const latestUser = input.input.filter((item) => item.role === "user").at(-1)?.content?.[0]?.text;
+    const probe = shellProbes.get(latestUser);
+    const issueProbe = probe && !issuedProbes.has(latestUser);
+    if (issueProbe) issuedProbes.add(latestUser);
+    else if (probe) probeOutputs.set(latestUser, JSON.stringify(input.input.filter((item) => item.type?.endsWith("_output"))));
+    const item = issueProbe ? { id: `fc_${requests.length}`, type: "custom_tool_call", namespace: "functions",
+      name: "exec", call_id: `call_${requests.length}`, status: "completed",
+      input: `text(await tools.exec_command(${JSON.stringify(probe)}));` } : { id: `msg_${requests.length}`, type: "message", role: "assistant", status: "completed",
       content: [{ type: "output_text", text: "OWNED_MOCK_REPLY" }] };
     const result = { id: `resp_${requests.length}`, object: "response", created_at: Math.floor(Date.now() / 1000),
       model: "gpt-6-sol", status: "completed", output: [item], usage: { input_tokens: 10, output_tokens: 3, total_tokens: 13 } };
@@ -93,9 +102,10 @@ test("real App Servers isolate prompt, file access and durable sessions across o
   assertOrchestratorRuntime(bThread, bProfile);
   assert.deepEqual(await b.request("mcpServerStatus/list", { threadId: bThread.thread.id, cursor: null }, 10_000), { data: [], nextCursor: null });
   const bReadOnly = await prepareOrchestratorRuntime(b, { workspaceDirectory: bWorkspace, cwd: bWorkspace, readOnly: true });
+  // Simulate an old persisted parent: the next resume must apply the new policy in place.
   const preflight = await b.request("thread/start", { cwd: await fs.realpath(bWorkspace), ...bReadOnly,
     ephemeral: false, approvalPolicy: "on-request", model: "gpt-6-sol" }, 10_000);
-  assertOrchestratorRuntime(preflight, bReadOnly);
+  assert.equal(preflight.approvalPolicy, "on-request");
   assert.deepEqual(await b.request("mcpServerStatus/list", { threadId: preflight.thread.id, cursor: null }, 10_000), { data: [], nextCursor: null });
   const bCompletion = b.waitForTurnCompletion();
   const bTurn = await b.request("turn/start", { threadId: preflight.thread.id, input: [{ type: "text", text: "OWNER_B_READ_ONLY_INPUT" }] }, 10_000);
@@ -105,8 +115,9 @@ test("real App Servers isolate prompt, file access and durable sessions across o
   b = await manager.createClient(options(OTHER, bWorkspace));
   await initialize(b);
   const bResumed = await b.request("thread/resume", { threadId: preflight.thread.id, cwd: await fs.realpath(bWorkspace), ...bProfile,
-    approvalPolicy: "on-request", model: "gpt-6-sol" }, 10_000);
+    approvalPolicy: "never", model: "gpt-6-sol" }, 10_000);
   assertOrchestratorRuntime(bResumed, bProfile);
+  assert.equal(bResumed.thread.id, preflight.thread.id);
   assert.deepEqual(await b.request("mcpServerStatus/list", { threadId: bResumed.thread.id, cursor: null }, 10_000), { data: [], nextCursor: null });
   const bReplyCompletion = b.waitForTurnCompletion();
   const bReply = await b.request("turn/start", { threadId: bResumed.thread.id, input: [{ type: "text", text: "OWNER_B_CURRENT_INPUT" }] }, 10_000);
@@ -136,8 +147,24 @@ test("real App Servers isolate prompt, file access and durable sessions across o
   assertOrchestratorRuntime(summary, summaryRuntime);
   assert.deepEqual(await a.request("mcpServerStatus/list", { threadId: summary.thread.id, cursor: null }, 10_000), { data: [], nextCursor: null });
   await assert.rejects(b.request("thread/read", { threadId, includeTurns: true }, 10_000));
+  a.addServerRequestHandler((request) => {
+    if (request.method.endsWith("requestApproval")) { approvals.push(request); return { decision: "decline" }; }
+    return undefined;
+  });
   const inside = path.join(aWorkspace, "inside-marker"), outside = path.join(bWorkspace, "outside-marker");
   await fs.writeFile(inside, "INSIDE_ALLOWED"); await fs.writeFile(outside, "OUTSIDE_SECRET");
+  shellProbes.set("SHELL_PROBE_LOCAL", { cmd: "/bin/cat inside-marker", workdir: aWorkspace });
+  shellProbes.set("SHELL_PROBE_EXTERNAL", { cmd: `/bin/cat ${outside}`, workdir: aWorkspace,
+    sandbox_permissions: "require_escalated", justification: "Read a marker outside the owned workspace" });
+  for (const input of shellProbes.keys()) {
+    const completed = a.waitForTurnCompletion();
+    const probe = await a.request("turn/start", { threadId, input: [{ type: "text", text: input }], approvalPolicy: "never" }, 10_000);
+    completed.expect({ threadId, turnId: probe.turn.id }); await completed.promise;
+  }
+  assert.equal(approvals.length, 0, "isolated shell escalation must fail without requesting user approval");
+  assert.match(probeOutputs.get("SHELL_PROBE_LOCAL") || "", /INSIDE_ALLOWED/);
+  assert.match(probeOutputs.get("SHELL_PROBE_EXTERNAL") || "", /(?:never|escalat|reject|not allowed)/i);
+  assert.doesNotMatch(probeOutputs.get("SHELL_PROBE_EXTERNAL") || "", /OUTSIDE_SECRET/);
   const allowed = await a.request("command/exec", { command: ["/bin/cat", inside], cwd: aWorkspace, permissionProfile: "owned" }, 10_000);
   assert.equal(allowed.exitCode, 0); assert.equal(allowed.stdout, "INSIDE_ALLOWED");
   const denied = await a.request("command/exec", { command: ["/bin/cat", outside], cwd: aWorkspace, permissionProfile: "owned" }, 10_000);

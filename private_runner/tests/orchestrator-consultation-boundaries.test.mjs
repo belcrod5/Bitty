@@ -22,7 +22,7 @@ function fakeAppServer({ holdResponses = false, holdSummaries = false, holdOverv
       thread.readOnly = params.permissions
         ? params.config.permissions[params.permissions].filesystem[":workspace_roots"] === "read"
         : params.sandbox === "read-only";
-      return { thread, ...(params.permissions ? {
+      return { thread, approvalPolicy: params.approvalPolicy, ...(params.permissions ? {
       activePermissionProfile: { id: params.permissions }, instructionSources: [],
       runtimeWorkspaceRoots: params.runtimeWorkspaceRoots,
       sandbox: params.config.permissions[params.permissions].filesystem[":workspace_roots"] === "read"
@@ -149,7 +149,7 @@ async function fixture(t, options) {
 const json = async (file) => JSON.parse(await fs.readFile(file, "utf8"));
 const activeAt = (directory, name) => path.join(directory, name, "active.json");
 const regularParents = (calls) => calls.filter(({ method, params }) =>
-  ["thread/start", "thread/resume"].includes(method) && params.approvalPolicy === "on-request");
+  ["thread/start", "thread/resume"].includes(method) && params.ephemeral !== true);
 async function waitFor(check) {
   const until = Date.now() + 5000;
   while (Date.now() < until) {
@@ -311,6 +311,7 @@ test("production scopes reuse owner resources, isolate normal history, persist p
   assert.equal((await first.terminal).conversationKey, key);
   await ownerTurn(service, "main", "room-2", key, { additionalInstructions: "CONSULTATION_SECOND" });
   const parents = regularParents(rpc.calls);
+  assert.ok(parents.every(({ params }) => params.approvalPolicy === "never"));
   const firstInstruction = parents.find(({ params }) => params.developerInstructions.includes("CONSULTATION_FIRST"));
   const secondInstruction = parents.find(({ params }) => params.developerInstructions.includes("CONSULTATION_SECOND"));
   assert.ok(firstInstruction); assert.ok(secondInstruction);

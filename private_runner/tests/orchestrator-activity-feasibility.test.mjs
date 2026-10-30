@@ -129,7 +129,7 @@ async function nativeFixture(t, requests, parents, childToolThreadId) {
     let handler = () => undefined;
     let finish;
     let checklistRead = false;
-    const started = (thread, params) => ({ thread, ...(params.permissions ? {
+    const started = (thread, params) => ({ thread, approvalPolicy: params.approvalPolicy, ...(params.permissions ? {
       activePermissionProfile: { id: params.permissions }, runtimeWorkspaceRoots: params.runtimeWorkspaceRoots,
       instructionSources: [], sandbox: params.config.permissions[params.permissions].filesystem[":workspace_roots"] === "read"
         ? { type: "readOnly", networkAccess: false }
@@ -148,7 +148,7 @@ async function nativeFixture(t, requests, parents, childToolThreadId) {
         if (method === "modelProvider/capabilities/read") return { namespaceTools: true };
         if (method === "model/list") return { data: [{ model: "gpt-6-luna", supportedReasoningEfforts: [{ reasoningEffort: "low" }] }] };
         if (method === "thread/start") {
-          if (params.approvalPolicy !== "never" && responseThreadStarts++ > 0) root = randomUUID();
+          if (params.ephemeral !== true && responseThreadStarts++ > 0) root = randomUUID();
           checklistRead = params.developerInstructions?.includes("新しい親セッションでは");
           return started({ id: root, ephemeral: params.ephemeral }, params);
         }
