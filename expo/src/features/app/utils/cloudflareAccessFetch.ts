@@ -7,12 +7,14 @@ import { recordHttpNetworkUsage, utf8ByteLength } from "../../ws/networkUsageMet
 
 type FetchPatchConfig = {
   runnerUrl: string;
+  cloudflareRunnerUrl: string;
   credentials: CloudflareAccessCredentials;
 };
 
 let installed = false;
 let originalFetch: typeof fetch | null = null;
 let activeRunnerOrigin = "";
+let cloudflareAccessOrigin = "";
 let activeHeaders: Record<string, string> = {};
 
 function normalizeOrigin(rawUrl: string) {
@@ -36,12 +38,12 @@ function requestUrl(input: RequestInfo | URL) {
 }
 
 function shouldAttachCloudflareAccessHeaders(input: RequestInfo | URL) {
-  if (!activeRunnerOrigin || !activeHeaders["CF-Access-Client-Id"] || !activeHeaders["CF-Access-Client-Secret"]) {
+  if (!cloudflareAccessOrigin || !activeHeaders["CF-Access-Client-Id"] || !activeHeaders["CF-Access-Client-Secret"]) {
     return false;
   }
   const url = requestUrl(input);
   if (!url) return false;
-  return normalizeOrigin(url) === activeRunnerOrigin;
+  return normalizeOrigin(url) === cloudflareAccessOrigin;
 }
 
 function mergeHeaders(headers: HeadersInit | undefined, extra: Record<string, string>) {
@@ -109,6 +111,7 @@ function recordHttpResponseUsage(url: string, response: Response, runnerOrigin: 
 
 export function configureCloudflareAccessFetch(config: FetchPatchConfig) {
   activeRunnerOrigin = normalizeOrigin(config.runnerUrl);
+  cloudflareAccessOrigin = normalizeOrigin(config.cloudflareRunnerUrl);
   activeHeaders = buildCloudflareAccessHeaders(normalizeCloudflareAccessCredentials(
     config.credentials.clientId,
     config.credentials.clientSecret

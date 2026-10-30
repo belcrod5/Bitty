@@ -518,7 +518,7 @@ describe("ChatScreen voice input", () => {
     mockPanelSessionId = "session-1";
     mockPanelSessionMaterialized = true;
     mockSelectedLlmSessionMaterialized = true;
-    configureCloudflareAccessFetch({ runnerUrl: "", credentials: { clientId: "", clientSecret: "" } });
+    configureCloudflareAccessFetch({ runnerUrl: "", cloudflareRunnerUrl: "", credentials: { clientId: "", clientSecret: "" } });
     mockImageResolver = undefined;
     mockRunnerUrl = "http://runner.test";
     mockRunnerClientStateScopeId = "runner-a";
@@ -623,14 +623,14 @@ describe("ChatScreen voice input", () => {
 
   it("updates the image resolver for same-ID Access secret rotation and emits only safe source diagnostics", async () => {
     mockRunnerUrl = "https://runner.test";
-    configureCloudflareAccessFetch({ runnerUrl: mockRunnerUrl, credentials: { clientId: "access-id", clientSecret: "secret-first" } });
+    configureCloudflareAccessFetch({ runnerUrl: mockRunnerUrl, cloudflareRunnerUrl: mockRunnerUrl, credentials: { clientId: "access-id", clientSecret: "secret-first" } });
     const events: unknown[] = [];
     const subscription = DeviceEventEmitter.addListener("BittyRunnerImageDiagnostic", (payload) => events.push(payload));
     const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
     const row = await render(mockLegendListProps.current?.renderItem?.({ item: mockPanelConversationMessages[0], index: 0 }));
     const first = mockImageResolver!;
     expect(first("/private/tmp/sensitive.jpg").headers["CF-Access-Client-Secret"]).toBe("secret-first");
-    configureCloudflareAccessFetch({ runnerUrl: mockRunnerUrl, credentials: { clientId: "access-id", clientSecret: "secret-second" } });
+    configureCloudflareAccessFetch({ runnerUrl: mockRunnerUrl, cloudflareRunnerUrl: mockRunnerUrl, credentials: { clientId: "access-id", clientSecret: "secret-second" } });
     await screen.rerender(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
     await row.rerender(mockLegendListProps.current?.renderItem?.({ item: mockPanelConversationMessages[0], index: 0 }));
     expect(mockImageResolver).not.toBe(first);

@@ -639,7 +639,8 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   const cloudflareAccessEnabled = hasCloudflareAccessCredentials(cloudflareAccessCredentials);
   const effectiveCloudflareRunnerUrl = runnerHttpsOrigin(cloudflareRunnerUrl);
   configureCloudflareAccessFetch({
-    runnerUrl: effectiveCloudflareRunnerUrl,
+    runnerUrl,
+    cloudflareRunnerUrl: effectiveCloudflareRunnerUrl,
     credentials: cloudflareAccessCredentials,
   });
   const [activeScreen, setActiveScreen] = useState<AppScreen>("skia_board");
