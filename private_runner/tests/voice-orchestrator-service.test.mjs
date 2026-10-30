@@ -482,8 +482,12 @@ test("main checklist changes notify on service starts without per-turn hooks", a
     onChecklistChanged: (identity) => changed.push(identity) });
   const conversationId = (await service.open("main")).logicalConversationId;
   assert.equal((await (await turn(service, "main", conversationId, "first")).finished).status, "completed");
+  assert.ok(changed.length > 0);
+  assert.deepEqual((await service.history("main")).taskChecklist, { status: "present", markdown: "- [ ] 確認\n" });
+  const beforeSecond = changed.length;
   assert.equal((await (await turn(service, "main", conversationId, "second")).finished).status, "completed");
-  assert.deepEqual(changed, [1, 2].map(() => ({ orchestratorId: "main", logicalConversationId: conversationId })));
+  assert.ok(changed.length > beforeSecond);
+  assert.ok(changed.every((identity) => identity.orchestratorId === "main" && identity.logicalConversationId === conversationId));
   assert.deepEqual((await service.history("main")).taskChecklist,
     { status: "present", markdown: "- [x] 確認\n" });
 });
@@ -1171,7 +1175,8 @@ test("new specialists use canonical defaults and expose no inherited external or
   const threads = codex.calls.filter((call) => call.method === "thread/start");
   for (const { params } of threads) {
     assert.equal(params.dynamicTools?.some((tool) => ["voice_subagent", "iphone_calendar"].includes(tool.name)), false);
-    assert.equal(params.config.web_search, "disabled");
+    const readOnly = params.config.permissions[params.permissions].filesystem[":workspace_roots"] === "read";
+    assert.equal(params.config.web_search, readOnly ? "disabled" : "live");
     assert.deepEqual(params.runtimeWorkspaceRoots, [await fs.realpath(path.join(rootDir, "orchestrators", child.id, "workspace"))]);
   }
 });

@@ -17,6 +17,7 @@ process.env.TTS_MEDIA_DIR = mediaDir;
 
 const {
   sanitizeTtsInputText,
+  createVoiceTurnSpeech,
   fetchTtsWithTimeout,
   startLlmStreamJob,
   handleRunnerRequest,
@@ -293,4 +294,44 @@ test("fetchTtsWithTimeout passes through successful responses", async () => {
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("the shared ordinary/consultation voice job lifecycle synthesizes full stops before completion and finishes its tail once", async () => {
+  const previousFetch = globalThis.fetch, spoken = [];
+  globalThis.fetch = async (_url, init) => {
+    spoken.push(JSON.parse(init.body).text);
+    return { ok: true, arrayBuffer: async () => Uint8Array.of(1, 2, 3).buffer };
+  };
+  try {
+    const speech = createVoiceTurnSpeech("synthetic-shared-speech", { speedScale: 1 }, { ttsProvider: "elevenlabs", voiceId: "" }, "http://localhost:1");
+    speech.append("途中の文。");
+    const until = Date.now() + 3000;
+    while (!speech.job.events.some((event) => event.type === "audio_chunk") && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.deepEqual(spoken, ["途中の文"]);
+    assert.equal(speech.job.status, "running", "audio is ready before model completion");
+    speech.append("末尾"); speech.complete("途中の文。末尾"); speech.complete("途中の文。末尾");
+    await speech.job.runPromise;
+    assert.deepEqual(spoken, ["途中の文", "末尾"]);
+    assert.equal(speech.job.status, "completed");
+    assert.equal(speech.job.events.filter((event) => event.type === "done").length, 1);
+    assert.equal(speech.job.events.filter((event) => event.type === "audio_chunk").length, 2);
+  } finally { globalThis.fetch = previousFetch; }
+});
+
+test("the common voice job cancellation suppresses queued and late audio without changing provider cancellation semantics", async () => {
+  const previousFetch = globalThis.fetch; let release, count = 0;
+  globalThis.fetch = async () => {
+    count += 1; await new Promise((resolve) => { release = resolve; });
+    return { ok: true, arrayBuffer: async () => Uint8Array.of(1, 2, 3).buffer };
+  };
+  try {
+    const speech = createVoiceTurnSpeech("synthetic-cancel-speech", { speedScale: 1 }, { ttsProvider: "elevenlabs", voiceId: "" }, "http://localhost:1");
+    speech.append("一。二。"); speech.complete("一。二。");
+    await Promise.resolve(); await Promise.resolve();
+    assert.ok(release); speech.cancel("synthetic stop"); release();
+    speech.complete("一。二。");
+    await speech.job.runPromise;
+    assert.equal(count, 1); assert.equal(speech.job.status, "cancelled");
+    assert.equal(speech.job.events.filter((event) => event.type === "audio_chunk").length, 0);
+  } finally { globalThis.fetch = previousFetch; }
 });

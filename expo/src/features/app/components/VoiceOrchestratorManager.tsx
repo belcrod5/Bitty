@@ -15,7 +15,7 @@ import { VoiceOrchestratorIcon, type VoiceOrchestrator } from "./VoiceOrchestrat
 
 type VoiceModel = { modelId: string; label: string; effortOptions: ReasoningEffort[] };
 type Detail = {
-  name: string; icon: string; model: string; effort: ReasoningEffort; systemInstruction: string;
+  name: string; icon: string; publicIntroduction: string; model: string; effort: ReasoningEffort; systemInstruction: string;
   ttsProvider: TtsProvider; voiceId: string;
   topicModel: string; topicEffort: ReasoningEffort;
   overviewModel?: string; overviewEffort?: ReasoningEffort;
@@ -40,17 +40,23 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
   const [learningId, setLearningId] = useState<string | null>(null);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [busy, setBusy] = useState(false);
+  const [draftPicker, setDraftPicker] = useState(false);
+  const [generatingIntroduction, setGeneratingIntroduction] = useState(false);
+  const [draftModel, setDraftModel] = useState("");
+  const [draftEffort, setDraftEffort] = useState<ReasoningEffort>("low");
   const [error, setError] = useState("");
   const [voices, setVoices] = useState<{ voiceId: string; name: string }[]>([]);
   const [voicesLoading, setVoicesLoading] = useState(false);
   const [voiceFilter, setVoiceFilter] = useState("");
+  const draftRequestRef = useRef(0);
   const detailIdRef = useRef(detailId);
   detailIdRef.current = detailId;
   const voiceCatalogKeyRef = useRef("");
   const voiceCatalogRequestRef = useRef(0);
   voiceCatalogKeyRef.current = detail ? `${detailId}:${detail.ttsProvider}` : "";
-  const request = useCallback(async (op: string, payload?: Record<string, unknown>) => {
-    const response = await manager.request({ channel: "agent", op, ...(payload ? { payload } : {}) });
+  const request = useCallback(async (op: string, payload?: Record<string, unknown>, timeoutMs?: number) => {
+    const envelope = { channel: "agent" as const, op, ...(payload ? { payload } : {}) };
+    const response = timeoutMs ? await manager.request(envelope, { timeoutMs }) : await manager.request(envelope);
     const result = response.payload && typeof response.payload === "object" && !Array.isArray(response.payload)
       ? response.payload as Record<string, unknown> : {};
     if (response.op === "error") throw new Error(String(result.message || result.code || "操作に失敗しました。"));
@@ -61,11 +67,12 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
   }, [manager]);
 
   useEffect(() => {
-    if (!visible) { setDetailId(null); setDetail(null); setLearningId(null); setError(""); setVoices([]);
+    if (!visible) { draftRequestRef.current += 1; setDraftPicker(false); setGeneratingIntroduction(false); setBusy(false); setDetailId(null); setDetail(null); setLearningId(null); setError(""); setVoices([]);
       voiceCatalogRequestRef.current += 1; }
   }, [visible]);
 
   useEffect(() => {
+    draftRequestRef.current += 1; setDraftPicker(false); setGeneratingIntroduction(false); setBusy(false);
     if (!visible || detailId === null) return;
     let current = true;
     voiceCatalogRequestRef.current += 1;
@@ -93,6 +100,7 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
         setDetail({
           name: detailId === "new" ? "" : String(value.name || ""),
           icon: detailId === "new" ? "" : String(value.icon || ""),
+          publicIntroduction: detailId === "new" ? "" : String(value.publicIntroduction || ""),
           ttsProvider: detailId !== "new" && TTS_PROVIDERS.includes(value.ttsProvider as TtsProvider)
             ? value.ttsProvider as TtsProvider : DEFAULT_TTS_PROVIDER,
           voiceId: detailId === "new" ? "" : String(value.voiceId || ""),
@@ -147,7 +155,7 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
     try {
       const result = await request(detailId === "new" ? "voice.orchestrators.create" : "voice.orchestrators.update", {
         ...(detailId === "new" ? {} : { orchestratorId: detailId }),
-        name: detail.name, icon: detail.icon, model: detail.model,
+        name: detail.name, icon: detail.icon, publicIntroduction: detail.publicIntroduction, model: detail.model,
         ttsProvider: detail.ttsProvider, voiceId: detail.voiceId,
         effort: detail.effort, systemInstruction: detail.systemInstruction,
         topicModel: detail.topicModel, topicEffort: detail.topicEffort,
@@ -158,6 +166,19 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
       setDetailId(null);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "保存できません。"); }
     finally { setBusy(false); }
+  };
+
+  const generateIntroduction = async () => {
+    if (!detail || !detailId || detailId === "new") return;
+    const ownerId = detailId, draftRequest = ++draftRequestRef.current;
+    setDraftPicker(false); setBusy(true); setGeneratingIntroduction(true); setError("");
+    try {
+      const result = await request("voice.orchestrators.introduction.draft", { orchestratorId: ownerId, model: draftModel, effort: draftEffort }, 75_000);
+      if (detailIdRef.current !== ownerId || draftRequestRef.current !== draftRequest) return;
+      if (typeof result.introduction !== "string") throw new Error("紹介の下書きを読み込めません。");
+      setDetail((current) => current && { ...current, publicIntroduction: result.introduction as string });
+    } catch (cause) { if (detailIdRef.current === ownerId && draftRequestRef.current === draftRequest) setError(cause instanceof Error ? cause.message : "紹介を作成できません。"); }
+    finally { if (draftRequestRef.current === draftRequest) { setBusy(false); setGeneratingIntroduction(false); } }
   };
 
   const remove = () => {
@@ -216,10 +237,10 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
     && { supportsReasoningEffort: true, effortOptions: currentOverviewModel.effortOptions });
 
   const learningOrchestrator = list.orchestrators.find((item) => item.id === learningId);
-  const back = () => learningId ? setLearningId(null) : detailId === null ? onClose() : setDetailId(null);
+  const back = () => draftPicker ? setDraftPicker(false) : learningId ? setLearningId(null) : detailId === null ? onClose() : setDetailId(null);
 
   return (
-    <AppModal visible={visible} animationType="slide" onRequestClose={back}>
+    <AppModal testID="orchestrator-manager-modal" visible={visible} animationType="slide" onRequestClose={back}>
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}
         automaticOffset={Platform.OS === "ios"}>
       <SafeAreaView style={styles.settingsScreen}>
@@ -227,10 +248,27 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
           contentContainerStyle={styles.settingsContent} keyboardShouldPersistTaps="handled">
           <TouchableOpacity accessibilityRole="button" accessibilityLabel="戻る"
             style={styles.settingsBackButton} onPress={back}>
-            <Text style={styles.settingsBackButtonText}>‹ {detailId === null && !learningId ? "音声会話" : "オーケストレータ"}</Text>
+            <Text style={styles.settingsBackButtonText}>‹ {draftPicker ? "詳細" : detailId === null && !learningId ? "音声会話" : "オーケストレータ"}</Text>
           </TouchableOpacity>
-          <Text style={styles.settingsTitle}>{learningId ? "学習・評価" : detailId === null ? "オーケストレータ" : detailId === "new" ? "追加" : "詳細"}</Text>
-          {learningId ? learningOrchestrator ? <>
+          <Text style={styles.settingsTitle}>{draftPicker ? "紹介の下書き" : learningId ? "学習・評価" : detailId === null ? "オーケストレータ" : detailId === "new" ? "追加" : "詳細"}</Text>
+          {draftPicker && detail ? <View testID="orchestrator-introduction-picker" style={styles.settingsSection}>
+            <Text style={styles.settingsFooterText}>生成に使うモデルを選んでください。紹介の保存や本人の通常モデルの変更は行いません。</Text>
+            <SettingsSelect icon="chatbubble-ellipses-outline" label="紹介のモデル"
+              options={detail.models.map((item) => ({ value: item.modelId, label: item.label }))}
+              selectedValue={draftModel} onSelect={(model) => {
+                const option = detail.models.find((item) => item.modelId === model);
+                if (option) { setDraftModel(model); if (!option.effortOptions.includes(draftEffort)) setDraftEffort(option.effortOptions[0]); }
+              }} />
+            <SettingsSelect icon="options-outline" label="紹介のエフォート"
+              options={(detail.models.find((item) => item.modelId === draftModel)?.effortOptions || []).map((effort) => ({ value: effort, label: EFFORT_LABELS[effort] }))}
+              selectedValue={draftEffort} onSelect={(effort) => setDraftEffort(effort as ReasoningEffort)} />
+            <TouchableOpacity accessibilityRole="button" accessibilityLabel="選んだモデルで紹介を生成" onPress={() => void generateIntroduction()}>
+              <Text style={styles.settingsActionText}>下書きを作る</Text>
+            </TouchableOpacity>
+            <TouchableOpacity accessibilityRole="button" accessibilityLabel="紹介の生成をキャンセル" onPress={() => setDraftPicker(false)}>
+              <Text style={styles.settingsActionText}>キャンセル</Text>
+            </TouchableOpacity>
+          </View> : learningId ? learningOrchestrator ? <>
             <SettingsSelect icon="chatbubbles-outline" label="オーケストレータ"
               options={list.orchestrators.map((item) => ({ value: item.id, label: item.name }))}
               selectedValue={learningId} onSelect={setLearningId} />
@@ -285,6 +323,20 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
                   <TextInput testID="orchestrator-name" accessibilityLabel="オーケストレータの名前"
                     value={detail.name} onChangeText={(name) => setDetail({ ...detail, name })}
                     maxLength={80} editable={!busy} style={{ flex: 1, marginLeft: 12, color: theme.colors.groupedTextPrimary }} />
+                </View>
+                <View style={[styles.settingsRow, styles.settingsRowDivider, { flexDirection: "column", alignItems: "stretch", gap: 10 }]}>
+                  <Text style={styles.settingsRowLabel}>得意分野・担当</Text>
+                  <TextInput accessibilityLabel="得意分野・担当" multiline maxLength={1000} editable={!busy}
+                    value={detail.publicIntroduction} onChangeText={(publicIntroduction) => setDetail({ ...detail, publicIntroduction })}
+                    placeholder="例：メールの検索・整理、顧客への返信相談"
+                    placeholderTextColor={theme.colors.textMuted}
+                    style={{ color: theme.colors.groupedTextPrimary, minHeight: 70, textAlignVertical: "top" }} />
+                  <Text style={styles.settingsRowDescription}>相談相手へ公開する紹介です。下書きは直近12メッセージと採用済み学習10件までを使い、メモリー全体は読みません。保存前に編集できます。</Text>
+                  {generatingIntroduction ? <Text role="status" style={styles.settingsFooterText}>紹介を作成しています…</Text> : null}
+                  {detailId !== "new" ? <TouchableOpacity accessibilityRole="button" accessibilityLabel="紹介を自動生成"
+                    disabled={busy} onPress={() => { setDraftModel(detail.model); setDraftEffort(detail.effort); setDraftPicker(true); }}>
+                    <Text style={styles.settingsActionText}>紹介を自動生成</Text>
+                  </TouchableOpacity> : null}
                 </View>
                 <SettingsSelect icon="chatbubble-ellipses-outline" label="モデル"
                   options={detail.models.map((model) => ({ value: model.modelId, label: model.label }))}
@@ -379,7 +431,7 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
           ) : null}
           {error && (!detailId || !detail) ? <Text style={styles.settingsErrorText}>{error}</Text> : null}
         </KeyboardAwareScrollView>
-        {detailId !== null && detail ? <View style={{ width: "100%", maxWidth: 760, alignSelf: "center",
+        {!draftPicker && detailId !== null && detail ? <View style={{ width: "100%", maxWidth: 760, alignSelf: "center",
           paddingHorizontal: 18, paddingTop: 12, paddingBottom: 12, gap: 8 }}>
           {error ? <Text accessibilityRole="alert" style={styles.settingsErrorText}>{error}</Text> : null}
           <TouchableOpacity testID="orchestrator-save" accessibilityRole="button" accessibilityLabel="オーケストレータを保存"

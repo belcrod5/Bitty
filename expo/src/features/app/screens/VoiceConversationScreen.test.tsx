@@ -115,7 +115,7 @@ type MockFooterProps = {
   draftTranscript?: string;
   statusText?: string;
   voiceStatus?: "responding" | "speaking";
-  reduceMotion?: boolean;
+  reduceMotion?: boolean | null;
   phase: string;
   onStop: () => void;
   onFocus?: () => void;
@@ -768,7 +768,7 @@ test("the footer reveals stored messages and closes the history panel", async ()
   const colors = VISUAL_THEMES[DEFAULT_VISUAL_THEME_ID].colors;
   expect(StyleSheet.flatten(screen.getByText("最初の質問").parent?.props.style).backgroundColor).toBe(colors.accent);
   expect(StyleSheet.flatten(screen.getByText("最初の返答").parent?.props.style).backgroundColor).toBe(colors.surfaceMuted);
-  expect(screen.getByText("最初の質問").props.style.color).toBe(colors.textOnAccent);
+  expect(screen.getByText("最初の質問").props.markdownStyle.paragraph.color).toBe(colors.textOnAccent);
   await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: 80 }); });
   expect(screen.getByText("最初の質問")).toBeTruthy();
   await act(async () => { fireEvent.press(screen.getByTestId("voice-history-close")); });
@@ -1180,124 +1180,33 @@ test("shows connection errors inside the shared footer", async () => {
   await screen.unmount();
 });
 
-test("changes the status characters for responding and speaking, and stops for reduced motion", async () => {
-  jest.useFakeTimers();
+test("passes response and speech states to the actual shared footer without implementing its display animation", async () => {
   mockVoice.turnStatus = "running";
   const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
-  expect(mockFooterProps?.transcript).toBe("r");
   expect(mockFooterProps?.voiceStatus).toBe("responding");
+  expect(mockFooterProps?.statusText).toBeUndefined();
   expect(mockFooterProps?.reduceMotion).toBe(false);
-  await act(async () => { jest.advanceTimersByTime(179); });
-  expect(mockFooterProps?.transcript).toBe("r");
-  await act(async () => { jest.advanceTimersByTime(1); });
-  expect(mockFooterProps?.transcript).toBe("re");
-  await act(async () => { jest.advanceTimersByTime(180 * 8); });
-  expect(mockFooterProps?.transcript).toBe("responding");
-  await act(async () => { jest.advanceTimersByTime(180); });
-  expect(mockFooterProps?.transcript).toBe("responding.");
-  await act(async () => { jest.advanceTimersByTime(180); });
-  expect(mockFooterProps?.transcript).toBe("responding..");
-  await act(async () => { jest.advanceTimersByTime(180); });
-  expect(mockFooterProps?.transcript).toBe("responding...");
-  await act(async () => { jest.advanceTimersByTime(180); });
-  expect(mockFooterProps?.transcript).toBe("r");
-
-  mockReduceMotion = true;
-  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
-  expect(mockFooterProps?.reduceMotion).toBe(true);
-  expect(mockFooterProps?.transcript).toBe("responding...");
-  await act(async () => { jest.advanceTimersByTime(900); });
-  expect(mockFooterProps?.transcript).toBe("responding...");
-
   mockReduceMotion = null;
   await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
-  expect(mockFooterProps?.reduceMotion).toBe(true);
-  expect(mockFooterProps?.transcript).toBe("r");
-
+  expect(mockFooterProps?.reduceMotion).toBeNull();
   mockVoice.error = "返答に失敗しました。";
   await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
-  expect(mockFooterProps?.transcript).toBe("返答に失敗しました。");
+  expect(mockFooterProps?.statusText).toBe("返答に失敗しました。");
   expect(mockFooterProps?.voiceStatus).toBeUndefined();
-
-  mockVoice.error = "";
-  mockVoice.turnStatus = "completed";
-  mockReduceMotion = false;
+  mockVoice.error = ""; mockVoice.turnStatus = "completed";
   await screen.rerender(<VoiceConversationScreen {...playback} isTtsPlaybackActive ttsUiStatus="playing" onClose={mockOnClose} />);
-  expect(mockFooterProps?.transcript).toBe("s");
   expect(mockFooterProps?.voiceStatus).toBe("speaking");
-  await act(async () => { jest.advanceTimersByTime(180 * 10); });
-  expect(mockFooterProps?.transcript).toBe("speaking...");
-  await act(async () => { jest.advanceTimersByTime(180); });
-  expect(mockFooterProps?.transcript).toBe("s");
-  await screen.unmount();
-  jest.useRealTimers();
-});
-
-test("holds the first character until the reduced motion setting resolves", async () => {
-  jest.useFakeTimers();
-  mockReduceMotion = null;
-  mockVoice.turnStatus = "running";
-  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
-  expect(mockFooterProps?.transcript).toBe("r");
-  await act(async () => { jest.advanceTimersByTime(900); });
-  expect(mockFooterProps?.transcript).toBe("r");
-
-  mockFooterRenders.length = 0;
-  mockReduceMotion = false;
-  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
-  expect(mockFooterRenders.every(({ transcript }) => transcript === "r")).toBe(true);
-  await act(async () => { jest.advanceTimersByTime(180); });
-  expect(mockFooterProps?.transcript).toBe("re");
-
-  await screen.unmount();
-  jest.useRealTimers();
-});
-
-test("starts each new voice phase at its first character even before effects reset the timer", async () => {
-  jest.useFakeTimers();
-  mockVoice.turnStatus = "running";
-  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
-  await act(async () => { jest.advanceTimersByTime(180 * 9); });
-  expect(mockFooterProps?.transcript).toBe("responding");
-
-  mockFooterRenders.length = 0;
-  mockVoice.turnStatus = "completed";
-  await screen.rerender(<VoiceConversationScreen {...playback} isTtsPlaybackActive ttsUiStatus="playing" onClose={mockOnClose} />);
-  expect(mockFooterRenders[0]).toEqual({ transcript: "s", voiceStatus: "speaking" });
-
-  await act(async () => { jest.advanceTimersByTime(180 * 4); });
-  expect(mockFooterProps?.transcript).toBe("speak");
-  mockFooterRenders.length = 0;
-  mockVoice.turnStatus = "running";
-  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
-  expect(mockFooterRenders[0]).toEqual({ transcript: "r", voiceStatus: "responding" });
-
-  await screen.unmount();
-  jest.useRealTimers();
-});
-
-test("keeps the speaking animation across streamed chunk gaps", async () => {
-  jest.useFakeTimers();
-  mockVoice.turnStatus = "running";
-  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
-  await screen.rerender(<VoiceConversationScreen {...playback} isTtsPlaybackActive isTtsPlaying ttsUiStatus="playing" onClose={mockOnClose} />);
-  await act(async () => { jest.advanceTimersByTime(180 * 5); });
-  expect(mockFooterProps?.statusText).toBe("speaki");
-
+  expect(mockFooterProps?.statusText).toBeUndefined();
+  expect(mockFooterProps?.onCancelSpeaking).toEqual(expect.any(Function));
+  // A gap between audio chunks does not leave the speaking state while synthesis is still playing.
   await screen.rerender(<VoiceConversationScreen {...playback} ttsUiStatus="playing" onClose={mockOnClose} />);
   expect(mockFooterProps?.voiceStatus).toBe("speaking");
-  expect(mockFooterProps?.statusText).toBe("speaki");
-  await act(async () => { jest.advanceTimersByTime(180); });
-  expect(mockFooterProps?.statusText).toBe("speakin");
-
   mockVoice.turnStatus = "completed";
-  await screen.rerender(<VoiceConversationScreen {...playback} isTtsPlaybackActive ttsUiStatus="playing" onClose={mockOnClose} />);
-  expect(mockFooterProps?.statusText).toBe("speakin");
+  await screen.rerender(<VoiceConversationScreen {...playback} ttsUiStatus="playing" onClose={mockOnClose} />);
+  expect(mockFooterProps?.voiceStatus).toBe("speaking");
   await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
   expect(mockFooterProps?.voiceStatus).toBeUndefined();
-
   await screen.unmount();
-  jest.useRealTimers();
 });
 
 test("plays completed replies automatically and keeps STT paused while TTS is queued", async () => {
@@ -1588,3 +1497,10 @@ test("main learning badge arrives during another chat and stays separate from ch
   expect(screen.queryByTestId("voice-orchestrator-learning-unread-main")).toBeNull();
   expect(screen.getByTestId("voice-orchestrator-unread-main")).toBeTruthy();
 });
+
+
+jest.mock("react-native-enriched-markdown", () => ({ EnrichedMarkdownText: (props: { markdown: string }) => {
+  const React = require("react"), { Text } = require("react-native");
+  return React.createElement(Text, props, props.markdown);
+} }));
+jest.mock("../components/MermaidCodeBlock", () => ({ MermaidCodeBlock: () => null }));

@@ -216,7 +216,7 @@ test.each(["main", "other"])("%s completion consent uses its offered source hash
   expect(result.current.taskChecklistCompletion).toBeNull();
 });
 
-test.each(["main", "other"])("a checklist notice reloads only the matching %s conversation", async (orchestratorId) => {
+test.each(["main", "other"])("a checklist notice reloads the matching %s owner across conversation scopes", async (orchestratorId) => {
   const request = mockManager.request.getMockImplementation();
   let markdown: string | null = "- [ ] 確認";
   let overview: { status: "pending" | "unavailable" } | { status: "present"; markdown: string } = { status: "pending" };
@@ -238,7 +238,7 @@ test.each(["main", "other"])("a checklist notice reloads only the matching %s co
   await act(async () => { handlers.get("voice.task-checklist.changed")?.({ payload: {
     orchestratorId, logicalConversationId: "another-conversation",
   } }); });
-  expect(result.current.taskChecklist).toEqual({ status: "present", markdown: "- [ ] 確認" });
+  await waitFor(() => expect(result.current.taskChecklist).toEqual({ status: "present", markdown: "- [x] 確認" }));
   await act(async () => { handlers.get("voice.task-checklist.changed")?.({ payload: {
     orchestratorId, logicalConversationId: conversationId,
   } }); });

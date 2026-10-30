@@ -10,7 +10,7 @@ import { createVoiceRequestBridge } from "../src/voice-request-bridge.mjs";
 import { openOrchestratorLearning } from "../src/orchestrator-learning-service.mjs";
 
 function fakeCodex({ reply = "answer", summaryReply, topicReplies = [], overviewReplies = [], holdOverviews = false, failTopicJudge = false,
-  holdTopicJudges = false, agentEvents, earlyAgentEvents = [], completionUsage, contextUsageByTurn = [], summaryContextUsage,
+  holdTopicJudges = false, agentEvents, disconnectAfterAgentEvents = false, earlyAgentEvents = [], completionUsage, contextUsageByTurn = [], summaryContextUsage,
   responseOutputTokensByTurn = [], failSummary = false, failSummaryCount = 0, holdTurns = false, holdThreadStart = false,
   holdSummaryTurnStart = false, finishOnInterrupt = false, holdInterrupt = false, holdInterruptRpc = false,
   holdSummaries = false, holdModelList = false, ignoreAbort = false, toolItem = false, toolCall = false,
@@ -242,6 +242,7 @@ function fakeCodex({ reply = "answer", summaryReply, topicReplies = [], overview
               nativeAnswer = text;
               listener("item/completed", { threadId: params.threadId, turnId, item: { type: "agentMessage", text } });
             }
+            if (disconnectAfterAgentEvents && !isIsolated) { nativeTurn.status = "completed"; resolveCompletion(); return; }
             for (const outputTokens of responseOutputTokens) {
               turnOutputTokens += outputTokens;
               threadOutputTokens.set(params.threadId, turnOutputTokens);
@@ -4862,10 +4863,12 @@ test("learning exclusions keep the latest ten-pair window without backfilling ol
   const service = createVoiceContextService({ rootDir, createClient: codex.createClient,
     learningContext: { retrieve: async () => ({ contextRevision: 2, selectedDigest: "empty", items: [], instruction: "", excludedPairSeqs: [14] }),
       delivered: async () => {}, recordRead: async () => {} } });
-  await complete(service, conversation, "continue");
-  const injected = codex.calls.find(({ method }) => method === "thread/inject_items");
-  assert.deepEqual(injected.params.items.filter(({ role }) => role === "user").map(({ content }) => content[0].text),
-    [6, 7, 8, 9, 10, 11, 12, 13, 15].map((index) => `user-${index}`));
+  try {
+    await complete(service, conversation, "continue");
+    const injected = codex.calls.find(({ method }) => method === "thread/inject_items");
+    assert.deepEqual(injected.params.items.filter(({ role }) => role === "user").map(({ content }) => content[0].text),
+      [6, 7, 8, 9, 10, 11, 12, 13, 15].map((index) => `user-${index}`));
+  } finally { await service.close(); }
 });
 
 test("unavailable learning does not replay conversation with unknown exclusions", async (t) => {
@@ -4933,4 +4936,61 @@ test("legacy journals show only boundaries between known native parent identitie
   const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient });
   const users = (await restarted.history()).messages.filter(({ role }) => role === "user");
   assert.equal(users[0].sessionSwitched, undefined); assert.equal(users[1].sessionSwitched, true);
+});
+
+test("native commentary and tool output stream separately while only final messages become durable answers", async (t) => {
+  const { service, conversation } = await fixture(t, { agentEvents: [
+    { method: "item/started", params: { item: { id: "comment", type: "agentMessage", phase: "commentary" } } },
+    { method: "item/agentMessage/delta", params: { itemId: "comment", delta: "Working note" } },
+    { method: "item/completed", params: { item: { id: "comment", type: "agentMessage", text: "Working note" } } },
+    { method: "item/started", params: { item: { id: "tool", type: "commandExecution", command: "cat fixture.md" } } },
+    { method: "item/commandExecution/outputDelta", params: { threadId: "foreign", itemId: "tool", delta: "wrong" } },
+    { method: "item/commandExecution/outputDelta", params: { itemId: "tool", delta: "partial" } },
+    { method: "item/completed", params: { item: { id: "tool", type: "commandExecution", status: "completed", exitCode: 0, aggregatedOutput: "complete" } } },
+    { method: "item/agentMessage/delta", params: { itemId: "answer", delta: "Published answer" } },
+    { method: "item/completed", params: { item: { id: "answer", type: "agentMessage", phase: "final_answer", text: "Published answer" } } },
+  ] });
+  const id = randomUUID(), streamed = [], tools = [];
+  let finish;
+  const done = new Promise((resolve) => { finish = resolve; });
+  await service.start({ operationId: id, payload: { backendId: "codex", logicalConversationId: conversation.logicalConversationId,
+    clientOperationId: id, input: { blocks: [{ type: "text", text: "Synthetic request" }] } } }, finish, async () => "decline", {
+    onText: (text, metadata) => streamed.push({ text, ...metadata }), onToolEvent: (event) => tools.push(event),
+  });
+  const result = await done;
+  assert.equal(result.status, "completed"); assert.equal(result.text, "Published answer");
+  assert.ok(streamed.some((item) => item.phase === "commentary" && item.text === "Working note"));
+  assert.ok(streamed.some((item) => item.itemId === "answer" && item.phase === "final_answer" && item.text === ""), "phase is delivered even when the completed item adds no characters");
+  assert.deepEqual(tools.map((event) => event.event), ["started", "outputDelta", "completed"]);
+  assert.equal(tools[1].item.delta, "partial");
+  assert.equal((await service.history()).messages.at(-1).text, "Published answer");
+  await service.close();
+});
+
+test("native recovery honors persisted message phases and preserves legacy unphased answers", async (t) => {
+  for (const mode of ["explicit", "persisted", "legacy"]) {
+    const { rootDir, service, conversation, codex } = await fixture(t, {
+      loseTurnStartResponseAt: mode === "persisted" ? 0 : 1, disconnectAfterAgentEvents: mode === "persisted",
+      ...(mode === "persisted" ? { agentEvents: [
+        { method: "item/started", params: { item: { id: "comment", type: "agentMessage", phase: "commentary" } } },
+        { method: "item/completed", params: { item: { id: "comment", type: "agentMessage", text: "Private working note" } } },
+        { method: "item/completed", params: { item: { id: "answer", type: "agentMessage", phase: "final_answer", text: "Recovered answer" } } },
+      ] } : {}),
+    });
+    const id = randomUUID(), started = await beginTurn(service, conversation, "Synthetic recovery", id);
+    assert.equal((await started.terminal).status, "unknown");
+    const activeFile = path.join(rootDir, "active.json"), active = JSON.parse(await fs.readFile(activeFile, "utf8"));
+    const native = codex.nativeThreads.get(active.pendingDispatch.threadId).turns.at(-1);
+    native.items = [
+      ...native.items.filter((item) => item.type === "userMessage"),
+      { id: "comment", type: "agentMessage", text: "Private working note", ...(mode === "explicit" ? { phase: "commentary" } : {}) },
+      { id: "answer", type: "agentMessage", text: "Recovered answer", ...(mode === "explicit" ? { phase: "final_answer" } : {}) },
+    ];
+    if (mode === "persisted") assert.deepEqual(active.pendingDispatch.messagePhases, { comment: "commentary", answer: "final_answer" });
+    const restored = createVoiceContextService({ rootDir, createClient: codex.createClient });
+    const recovered = await restored.open();
+    assert.equal(recovered.status, "completed", mode);
+    assert.equal(recovered.text, mode === "legacy" ? "Private working note\nRecovered answer" : "Recovered answer");
+    await restored.close(); await service.close();
+  }
 });
