@@ -33,7 +33,7 @@ const response = (runtime, readOnly = false) => ({ activePermissionProfile: { id
     ? { type: "readOnly", networkAccess: false }
     : { type: "workspaceWrite", networkAccess: false, excludeSlashTmp: true, excludeTmpdirEnvVar: true, writableRoots: [] } });
 
-test("each profile grants only its owned workspace and removes inherited knowledge and external tools", async (t) => {
+test("interactive profiles allow public Web while retaining owned workspace and disabling inherited knowledge and private tools", async (t) => {
   const f = await fixture(t);
   const runtime = await prepareOrchestratorRuntime(f.client, { workspaceDirectory: f.workspace, cwd: f.workspace });
   const canonical = await fs.realpath(f.workspace);
@@ -52,7 +52,7 @@ test("each profile grants only its owned workspace and removes inherited knowled
   assert.deepEqual(runtime.config.memories, { generate_memories: false, use_memories: false });
   assert.equal(runtime.config.apps._default.enabled, false);
   assert.equal(runtime.config.project_doc_max_bytes, 0);
-  assert.equal(runtime.config.web_search, "disabled");
+  assert.equal(runtime.config.web_search, "live");
   assert.deepEqual(runtime.config.shell_environment_policy, { inherit: "none" });
   assert.deepEqual(f.calls.map((call) => call.method), ["config/read", "skills/list"]);
   assert.equal(f.calls[1].params.forceReload, true);
@@ -67,6 +67,7 @@ test("summary and learning profiles retain restricted reads without a writable w
   const runtime = await prepareOrchestratorRuntime(f.client, { workspaceDirectory: f.workspace, cwd: nested, readOnly: true });
   assert.equal(runtime.config.permissions[runtime.permissions].filesystem[":workspace_roots"], "read");
   assert.equal(runtime.config.default_permissions, runtime.permissions);
+  assert.equal(runtime.config.web_search, "disabled", "internal read-only helpers do not gain Web access");
   assert.doesNotThrow(() => assertOrchestratorRuntime(response(runtime, true), runtime));
 });
 

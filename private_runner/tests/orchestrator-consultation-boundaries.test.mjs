@@ -501,6 +501,11 @@ test("controller drives the real scopes A-B-C-A, delivers differences, and pause
     .map(({ params }) => JSON.parse(params.input[0].text));
   assert.deepEqual([...inputs[1].newUserMessages, ...inputs[1].peerMessages].sort((a,b)=>a.seq-b.seq).map((message) => message.text), ["Synthetic team question", "A opinion"]);
   assert.ok(inputs[2].peerMessages.some((message) => message.text === "B adopts A"));
+  assert.deepEqual(inputs[0].currentParticipant, { id: "main", name: room.profiles.main.name });
+  assert.deepEqual(inputs[0].latestUserResponders, []);
+  assert.deepEqual(inputs[1].currentParticipant, { id: room.participants[1], name: "B" });
+  assert.deepEqual(inputs[1].latestUserResponders, ["main"]);
+  assert.deepEqual(inputs[3].latestUserResponders, room.participants);
   assert.deepEqual(inputs[3].peerMessages.map((message) => message.text), ["B adopts A", "C adopts B"]);
   assert.equal((await service.history("main")).messages.length, 0);
   assert.equal((await service.list()).selectedId, "main");
@@ -770,7 +775,12 @@ test("scope-only native invitation validates registered IDs, deduplicates and jo
   const second = await service.create("B"), invited = await service.create("C");
   const controller = createVoiceConsultationService({ rootDir: path.join(directory, "invite"), orchestrators: service }); track(controller);
   const room = await controller.create({ participants: ["main", second.id] });
+  const start = service.start.bind(service);
+  service.start = (message, done, approval, hooks) => start(message, done, approval, { ...hooks,
+    conversationTools: { version: "consultation-controls-v3", definitions: [], call() { throw new Error("No old controls expected"); } } });
   await ownerTurn(service, "main", "old scoped parent before invite capability", room.id);
+  service.start = start;
+  assert.equal((await json(path.join(rootDir, "scopes", room.id, "active.json"))).nativeConversationToolsVersion, "consultation-controls-v3");
   const oldParent = (await json(path.join(rootDir, "scopes", room.id, "active.json"))).nativeThreadId;
   taskCalls.push([
     { namespace: "consultation", tool: "invite", arguments: { orchestratorId: randomUUID() } },
@@ -796,7 +806,7 @@ test("scope-only native invitation validates registered IDs, deduplicates and jo
   assert.ok(inputs[1].participants.some((item) => item.orchestratorId === invited.id));
   assert.ok(inputs[2].peerMessages.some((message) => message.source === "membership"));
   const scopeActive = await json(path.join(rootDir, "scopes", room.id, "active.json"));
-  assert.equal(scopeActive.nativeConversationToolsVersion, "consultation-controls-v3");
+  assert.equal(scopeActive.nativeConversationToolsVersion, "consultation-controls-v4");
   assert.notEqual(scopeActive.nativeThreadId, oldParent, "an old scoped parent is safely replaced to register the capability");
   await ownerTurn(service, "main", "ordinary response");
   const ordinaryParent = regularParents(rpc.calls).at(-1);
@@ -1078,6 +1088,16 @@ test("handoff prioritizes the addressed unread participant, stays silent, then r
   assert.ok(normal.length >= 2);
   assert.ok(normal.every(({params}) => !params.dynamicTools?.some((tool) => tool.name === "consultation")));
   assert.ok(normal.every(({params}) => !params.developerInstructions.includes("latestUserMessage") && !params.developerInstructions.includes("consultation.handoff")));
+  const runtimeParents = rpc.calls.filter(({method,params}) => ["thread/start", "thread/resume"].includes(method) && params.permissions);
+  const interactive = runtimeParents.filter(({params}) => params.config.permissions[params.permissions].filesystem[":workspace_roots"] === "write");
+  const helpers = runtimeParents.filter(({params}) => params.config.permissions[params.permissions].filesystem[":workspace_roots"] === "read");
+  assert.ok(interactive.some(({params}) => params.developerInstructions.includes("consultation.handoff")));
+  assert.ok(interactive.some(({params}) => !params.developerInstructions.includes("consultation.handoff")));
+  assert.ok(interactive.every(({params}) => params.config.web_search === "live"), "ordinary and consultation use the same public Web capability");
+  assert.ok(helpers.length > 0 && helpers.every(({params}) => params.config.web_search === "disabled"));
+  assert.ok(runtimeParents.every(({params}) => params.config.permissions[params.permissions].network.enabled === false
+    && params.config.features.browser_use === false && params.config.features.computer_use === false
+    && params.config.apps._default.enabled === false), "public Web does not enable private browser or shell network");
   assert.ok(parents.slice(before, through).some(({params}) => params.dynamicTools?.some((tool) => tool.name === "consultation" && tool.tools.some((item) => item.name === "handoff"))));
 });
 
@@ -1202,6 +1222,27 @@ test("persisted malformed handoff reservations fail closed on reload", { timeout
   await fs.writeFile(file, JSON.stringify(conflicting));
   const restored = createVoiceConsultationService({ rootDir: path.join(directory,"rooms"), orchestrators: service }); track(restored);
   await assert.rejects(restored.get(room.id), /Invalid consultation state/);
+});
+
+test("current speaker and latest-request responders do not confuse an older in-flight answer with a new addressed request", { timeout: 20000 }, async (t) => {
+  const replies = ["Answer to the old request", "Answer to the new request", "[[PASS]]"];
+  const { controller, room, rpc } = await consultationFixture(t, { holdResponses: true, replyFor: () => replies.shift() || "[[PASS]]" });
+  const first = randomUUID(), latest = randomUUID();
+  await controller.supplement(room.id, { text: "Everyone give an opinion", messageId: first });
+  await waitFor(() => rpc.releases.length === 1);
+  await controller.supplement(room.id, { text: "Only B, try again", messageId: latest });
+  await rpc.releases.shift()(); await waitFor(() => rpc.releases.length === 1);
+  let current = JSON.parse((await controller.get(room.id)).run.inputText);
+  assert.deepEqual(current.currentParticipant, { id: room.participants[1], name: "B" });
+  assert.equal(current.latestUserMessage.id, latest);
+  assert.deepEqual(current.latestUserResponders, [], "late old answer did not read the newer user instruction");
+  assert.deepEqual(current.newUserMessages.map((message) => message.id), [first, latest], "unread historical requests remain ordered rather than silently discarded");
+  await rpc.releases.shift()(); await waitFor(() => rpc.releases.length === 1);
+  current = JSON.parse((await controller.get(room.id)).run.inputText);
+  assert.deepEqual(current.currentParticipant, { id: room.participants[2], name: "C" });
+  assert.deepEqual(current.latestUserResponders, [room.participants[1]]);
+  assert.ok(!current.handoffCandidates.includes(room.participants[1]), "the real addressee already read it; other candidates are not substitute addressees");
+  await controller.stop(room.id);
 });
 
 // Real segment queue with an in-memory audio provider; no synthesis/network.

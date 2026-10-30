@@ -1175,7 +1175,8 @@ test("new specialists use canonical defaults and expose no inherited external or
   const threads = codex.calls.filter((call) => call.method === "thread/start");
   for (const { params } of threads) {
     assert.equal(params.dynamicTools?.some((tool) => ["voice_subagent", "iphone_calendar"].includes(tool.name)), false);
-    assert.equal(params.config.web_search, "disabled");
+    const readOnly = params.config.permissions[params.permissions].filesystem[":workspace_roots"] === "read";
+    assert.equal(params.config.web_search, readOnly ? "disabled" : "live");
     assert.deepEqual(params.runtimeWorkspaceRoots, [await fs.realpath(path.join(rootDir, "orchestrators", child.id, "workspace"))]);
   }
 });

@@ -43,6 +43,12 @@ UIはjob通知を既存の発言queueへ積み、生成Promiseでなく実再生
 
 room別の新しいrouting state、追加分類LLM、日本語keyword判定、汎用queue、通常ownerの分岐は追加していない。UI・共有TTS・通常のタスク／メモリ／学習はそのまま。本人の意味解釈やPASS遵守は実モデル未検証であり、fakeで正しい応答を与えてもモデル精度の実証にはならない。
 
+## 公開Webと最新の指名範囲
+
+通常チャットと相談は元から同じ本人runtimeを使うが、その共通profileで組込Webも無効だった。相談側へ別Web実装を足さず、共通の対話profileだけ `web_search: live` に修正した。既存readOnly区分で内部helperは無効を保ち、shell networkや共有のログイン済みブラウザ・MCP・apps・記憶へは権限を広げない。組込Webによる公開ページ取得と、ログイン済みのブラウザ操作は別の能力である。[公式Web検索説明](https://learn.chatgpt.com/docs/web-search)・[設定リファレンス](https://developers.openai.com/codex/config-reference/)を参照。親が手元のcodex-cli 0.164.0で実行したオフラインschema生成でも、WebSearchActionのsearch／openPage／findInPageを確認した。モデルやサーバーは起動しておらず、実サイト取得成功の検証ではない。
+
+相談入力へ本人のid／名前と、最新userを読んで公開発言した人のid一覧を加えた。既存stepsから導くため新しい保存stateはない。未読のuser履歴を全て現在の依頼と解釈せず、最新の宛先が古い広い宛先を置き換えること、短い再依頼も直近の宛先を保つことを指示する。handoff候補は適格性の一覧であり、実際の指名相手が既読のとき別候補へ代わりに渡さない。最後に全員へ依頼された場合は、一人の発言だけで終了しないよう依頼する。これらの意味解釈をコードで分類したわけではなく、実モデルでの遵守精度は未検証である。
+
 ## 検証したこと
 
 不具合調査では、ユーザーが指定した既存相談と対応scopeの保存記録だけを読取専用で確認した。本文・個人IDは資料へ転載していない。以下の試験はfake App Server・一時filesystemで行い、実モデル／有料API／nativeサーバーの呼出しや本番データへの実行・書込はしていない。
@@ -67,7 +73,11 @@ room別の新しいrouting state、追加分類LLM、日本語keyword判定、�
 | 通常／macOS TypeScript | 両方pass |
 | 最新user／handoff修正後のscope／controller全件 | 45/45 pass、85.131秒。上記37件を含めて再実行。最新user snapshot／古い終了の再開、未読指名相手の優先、通常tool非汚染、既読循環拒否、制御予約の排他・冪等、途中新user、正常／失敗／中断回復、上限、最終指名回答→終了、破損予約のfail-closedを追加 |
 | 最新user／handoff修正後の通常voice-context全件 | 親が244/244 passを再確認、167.56秒。今回再実行した独立ファイルは合計289件で、前回の18／46／102件や型検査を今回再実行した数には含めない |
-| 変更JavaScriptの構文・diff空白・文書リンク | 最新修正で2 JS構文・diff空白・3文書31ローカルリンク／fenceを確認、pass |
+| 公開Web／指名範囲修正後のscope／controller全件 | 46/46 pass、149.879秒。v3→v4の既存native scope更新、通常／相談のstart・resumeで同じlive設定、helperのdisabled維持、本人id／名前と公開発言済みid、旧入力への後着回答の除外を確認 |
+| 公開Web／指名範囲修正後の本人サービス全件 | 42/42 pass、67.471秒。共有workspace・scope・通常履歴・隔離移行の既存回帰を再実行 |
+| 公開Web／指名範囲修正後のruntime profile全件 | 4/4 pass。公開Web以外のfilesystem／shell network／private tool隔離と内部readOnlyのWeb無効を確認 |
+| 公開Web／指名範囲修正後の通常voice-context全件 | 親が244/244 passを再確認、253.486秒。今回の独立4ファイル合計336件。前回の289件やUI／WS等の過去試験を加算しない |
+| 変更JavaScriptの構文・diff空白・文書リンク | 最新修正で5 JS構文・diff空白・3文書31ローカルリンク／fenceを確認、pass |
 
 統合試験は実factory・実memory・実learning.observeを使い、以下を確認した。
 
@@ -84,7 +94,7 @@ room別の新しいrouting state、追加分類LLM、日本語keyword判定、�
 
 ## 残る制限
 
-現在の本人runtimeはWeb検索・shellの任意network・共有MCP／appsを無効にしており、今回その権限は拡大していない。toolが動いたことと、最新外部情報を取得できたことを同一視しない。実能力の説明は送信前のbyte予算にも含める。実LLMで反復や事実誤認が解消したという結果ではなく、追加の有料モデル呼出しはゼロである。
+共通本人runtimeの対話用profileは組込の公開Web検索・ページ取得をliveに設定する。通常と相談のthread/start／resumeで同じ設定を使い、readOnlyのpreflight／summary／learningはdisabledを維持する。shellの任意network・共有MCP／apps／plugins・ログイン済みブラウザ／computer操作は無効のまま。configの有効化やtoolが動いたことと、最新外部情報を実際に取得できたことを同一視しない。実能力の説明は送信前のbyte予算にも含める。実LLMで反復や事実誤認が解消したという結果ではなく、追加の有料モデル呼出しはゼロである。
 完全にphase情報のない旧native形式は互換動作を維持するため、過去のcommentaryを正しく識別できる保証はない。相談の未知phaseは確定本文まで音声を保留する。既に発声した文は後の失敗で戻せず、cancelは後続生成と遅いemitを止める。既に開始したproviderリクエスト自体の取消は保証しない。同processの再接続はlive snapshotを再取得できるが、process再起動前の未確定trace全体の復元は保証しない。
 
 終了toolを本人が適切な意味で呼ぶこと、実nativeと端末の音声再生は有料モデル／実機で確認していない。fake試験は制御・配送・再生状態の境界を検証したもので、実会話で挨拶の反復が解消したという結果ではない。
