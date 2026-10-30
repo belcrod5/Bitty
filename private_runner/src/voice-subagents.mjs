@@ -3,7 +3,6 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 const NAMESPACE = "voice_subagent";
-export const VOICE_SUBAGENT_TOOLS_VERSION = 1;
 const TERMINAL = new Set(["completed", "failed", "interrupted"]);
 const response = (value) => ({ success: true, contentItems: [{ type: "inputText", text: JSON.stringify(value) }] });
 const keyOf = (record) => record.sessionId ? `${record.backendId}\u0000${record.sessionId}` : `run:${record.runId}`;

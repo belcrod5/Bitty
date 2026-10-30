@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { createServer } from "node:http";
 import os from "node:os";
+import net from "node:net";
 import path from "node:path";
 import test from "node:test";
 import { createOrchestratorRuntime } from "../src/orchestrator-runtime.mjs";
@@ -12,6 +13,7 @@ import { createVoiceSubagentService, voiceSubagentTools } from "../src/voice-sub
 import { createAgentService } from "../src/agent/agent-service.mjs";
 import { operationStore, sessionStore, status } from "./agent-service-fixtures.mjs";
 import { randomUUID } from "node:crypto";
+import { patchOrchestratorRunnerTools } from "../scripts/patch-orchestrator-runner-tools.mjs";
 
 const enabled = process.env.RUN_ORCHESTRATOR_RUNTIME_CODEX_INTEGRATION === "1";
 const OTHER = "12345678-1234-4234-8234-123456789abc";
@@ -206,7 +208,7 @@ test("real App Servers isolate prompt, file access and durable sessions across o
   restarted.close(); b.close();
 });
 
-test("real voice parents upgrade hidden Runner tools and keep them callable after runtime restart", { skip: !enabled, timeout: 30_000 }, async (t) => {
+test("offline patch repairs hidden Runner tools and keeps them callable after runtime restart", { skip: !enabled, timeout: 30_000 }, async (t) => {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), "orchestrator-bridge-test-"));
   const root = path.join(temp, "owner");
   const requests = [], rpcCalls = [], launches = [], admissions = [];
@@ -304,10 +306,14 @@ test("real voice parents upgrade hidden Runner tools and keep them callable afte
   const activeFile = path.join(root, "active.json"), before = JSON.parse(await fs.readFile(activeFile, "utf8"));
   delete before.nativeManagedSessionsVersion; before.nativeManagedSessionsEnabled = true;
   await fs.writeFile(activeFile, JSON.stringify(before));
-  legacy = false; service = context(); await turn("AFTER_UPGRADE");
+  await manager.shutdown();
+  const probe = net.createServer(); await new Promise((resolve) => probe.listen(0, "127.0.0.1", resolve));
+  const port = probe.address().port; await new Promise((resolve) => probe.close(resolve));
+  assert.equal((await patchOrchestratorRunnerTools({ rootDir: root, runnerPort: port, codexPort: port, apply: true })).status, "applied");
+  manager = runtime(); legacy = false; service = context(); await turn("AFTER_UPGRADE");
   const after = JSON.parse(await fs.readFile(activeFile, "utf8"));
   assert.notEqual(after.nativeThreadId, before.nativeThreadId);
-  assert.equal(after.nativeManagedSessionsVersion, 1);
+  assert.equal(after.nativeManagedSessionsVersion, undefined);
   assert.equal(after.logicalConversationId, before.logicalConversationId);
   assert.deepEqual(launches, [{ request: "Read using the approved external CLI", policyProfileId: "ask" }]);
   assert.deepEqual(admissions, [{ subject: "voice-owner", cwd: "/approved/workspace" }]);

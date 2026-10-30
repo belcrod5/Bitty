@@ -11,6 +11,7 @@ import { createCodexScheduleService } from "../src/codex-schedule-service.mjs";
 import { createVoiceContextService } from "../src/voice-context-service.mjs";
 import { createVoiceOrchestratorService } from "../src/voice-orchestrator-service.mjs";
 import { prepareOrchestratorIsolation } from "../scripts/prepare-orchestrator-isolation.mjs";
+import { patchOrchestratorRunnerTools } from "../scripts/patch-orchestrator-runner-tools.mjs";
 
 function fakeCodex({ hold = false, failSummary = false, failTurn = false,
   checklistWrites = [], archiveReads = [], managedCalls = [], reportedApprovalPolicy, failModelList = () => false } = {}) {
@@ -136,6 +137,14 @@ async function prepareLegacy(rootDir, apply = true) {
   const port = server.address().port;
   await new Promise((resolve) => server.close(resolve));
   return prepareOrchestratorIsolation({ rootDir, runnerPort: port, codexPort: port, apply });
+}
+
+async function patchRunnerTools(rootDir, apply = true) {
+  const server = net.createServer();
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  await new Promise((resolve) => server.close(resolve));
+  return patchOrchestratorRunnerTools({ rootDir, runnerPort: port, codexPort: port, apply });
 }
 
 async function turn(service, orchestratorId, conversationId, text, operationId = randomUUID(), conversationKey) {
@@ -1283,7 +1292,7 @@ test("environment work uses owned Runner delegation while individual and consult
   await waitFor(async () => !await service.isBusy("main"));
 });
 
-test("existing isolated parents acquire the Runner bridge once without losing conversation or native work", async (t) => {
+test("offline Runner patch preserves conversation and waits for native work before switching", async (t) => {
   const { rootDir, service, codex } = await fixture(t);
   const main = await service.open("main");
   assert.equal((await (await turn(service, "main", main.logicalConversationId, "Remember this task")).finished).status, "completed");
@@ -1294,17 +1303,18 @@ test("existing isolated parents acquire the Runner bridge once without losing co
     agentsStates: { [childId]: { status: "running" } } });
   codex.threads.set(childId, { id: childId, status: { type: "active" }, turns: [] });
   await service.close();
+  assert.equal((await patchRunnerTools(rootDir)).status, "applied");
   const upgraded = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient,
     getAgentService: () => ({ inspectRun: async () => ({ state: "running", actions: [] }) }), subjectId: "voice-owner" });
-  const blocked = await (await turn(upgraded, "main", main.logicalConversationId, "Continue")).finished;
-  assert.equal(blocked.code, "session_busy");
+  const continued = await (await turn(upgraded, "main", main.logicalConversationId, "Continue")).finished;
+  assert.equal(continued.status, "completed");
   assert.equal(JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8")).nativeThreadId, before.nativeThreadId);
   codex.threads.get(childId).status = { type: "idle" };
-  rootThread.turns.at(-1).items.at(-1).agentsStates[childId].status = "completed";
+  rootThread.turns.flatMap(({ items }) => items).find((item) => item.receiverThreadIds?.includes(childId)).agentsStates[childId].status = "completed";
   assert.equal((await (await turn(upgraded, "main", main.logicalConversationId, "Continue after native work")).finished).status, "completed");
   const after = JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8"));
   assert.notEqual(after.nativeThreadId, before.nativeThreadId);
-  assert.equal(after.nativeManagedSessionsVersion, 1);
+  assert.equal(after.nativeManagedSessionsVersion, undefined);
   assert.equal(after.logicalConversationId, before.logicalConversationId);
   assert.ok((await upgraded.history("main")).messages.some((message) => message.text === "Remember this task"));
   const parentCount = codex.calls.filter(({ method, params }) => method === "thread/start" && !params.ephemeral).length;
@@ -1313,7 +1323,7 @@ test("existing isolated parents acquire the Runner bridge once without losing co
   await upgraded.close();
 });
 
-for (const scoped of [false, true]) test(`previously marked deferred Runner parents upgrade safely in ${scoped ? "consultation" : "individual"} chats`, async (t) => {
+for (const scoped of [false, true]) test(`offline Runner patch repairs previously marked parents in ${scoped ? "consultation" : "individual"} chats`, async (t) => {
   let delegatedState = "running";
   const getAgentService = () => ({ inspectRun: async () => ({ state: delegatedState, actions: [] }) });
   const { rootDir, service, codex } = await fixture(t, { getAgentService });
@@ -1330,16 +1340,19 @@ for (const scoped of [false, true]) test(`previously marked deferred Runner pare
     orchestratorId: "main", backendId: "test", sessionId: "existing-session", runId: "existing-run",
     request: "Already running", clientOperationId: "existing-operation", requestHash: "existing-hash", status: "running",
   }]));
+  await assert.rejects(patchRunnerTools(rootDir), /delegated operations/);
+  assert.deepEqual(JSON.parse(await fs.readFile(activeFile, "utf8")), before);
+  delegatedState = "completed";
+  const delegatesFile = path.join(rootDir, "subagents.json");
+  const delegates = JSON.parse(await fs.readFile(delegatesFile, "utf8"));
+  await fs.writeFile(delegatesFile, JSON.stringify(delegates.map((entry) => ({ ...entry, status: "completed" }))));
+  assert.equal((await patchRunnerTools(rootDir)).status, "applied");
   const upgraded = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient,
     getAgentService, subjectId: "voice-owner" });
-  const blocked = await (await turn(upgraded, "main", opened.logicalConversationId, "Continue", undefined, key)).finished;
-  assert.equal(blocked.code, "session_busy");
-  assert.equal(JSON.parse(await fs.readFile(activeFile, "utf8")).nativeThreadId, before.nativeThreadId);
-  delegatedState = "completed";
   assert.equal((await (await turn(upgraded, "main", opened.logicalConversationId, "Continue after work", undefined, key)).finished).status, "completed");
   const after = JSON.parse(await fs.readFile(activeFile, "utf8"));
   assert.notEqual(after.nativeThreadId, before.nativeThreadId);
-  assert.equal(after.nativeManagedSessionsVersion, 1);
+  assert.equal(after.nativeManagedSessionsVersion, undefined);
   assert.equal(after.nativeManagedSessionsEnabled, undefined);
   assert.equal(after.logicalConversationId, before.logicalConversationId);
   assert.ok((await upgraded.history("main", key)).messages.some(({ text }) => text === "Keep this context"));
@@ -1350,6 +1363,8 @@ for (const scoped of [false, true]) test(`previously marked deferred Runner pare
   assert.equal(JSON.parse(await fs.readFile(activeFile, "utf8")).nativeThreadId, after.nativeThreadId);
   assert.equal(codex.calls.filter(({ method, params }) => method === "thread/start" && !params.ephemeral).length, parentCount);
   await upgraded.close();
+  assert.equal((await patchRunnerTools(rootDir)).status, "already_applied");
+  assert.equal(JSON.parse(await fs.readFile(activeFile, "utf8")).pendingSwitch, undefined);
 });
 
 
