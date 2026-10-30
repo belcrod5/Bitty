@@ -182,6 +182,7 @@ export function createClaudeBackend({
   interruptGraceMs = 1500,
   generateSessionId = randomUUID,
   developerInstructions = "",
+  onSessionChildrenChanged = () => {},
 } = {}) {
   if (typeof sessionStore?.getBinding !== "function") throw new TypeError("sessionStore.getBinding is required");
   const activeRuns = new Map();
@@ -365,6 +366,7 @@ export function createClaudeBackend({
       startedToolIds: new Set(),
       completedToolIds: new Set(),
       completedSubagentItemIds: new Set(),
+      childToolIds: new Set(),
       runningToolIds: new Set(),
       latestAssistantContext: null,
       processing: Promise.resolve(),
@@ -514,9 +516,14 @@ export function createClaudeBackend({
     // user tool_resultの未startedフォールバック、3経路のどれが先に来ても
     // 同じtoolCallIdは一度しかemitしない(重複emitはemitFromBackendの
     // startedTools検査でprotocol_errorとして落ちるため)。
+    const childrenChanged = () => onSessionChildrenChanged({ backendId: "claude", nativeSessionId: freshSessionId });
     const announceTool = ({ toolCallId, name, inputSummary, parentItemId, tracksRunning = true }) => {
       if (!toolCallId || state.startedToolIds.has(toolCallId)) return false;
       state.startedToolIds.add(toolCallId);
+      if (name === "Task" || name === "Agent") {
+        state.childToolIds.add(toolCallId);
+        childrenChanged();
+      }
       if (tracksRunning) state.runningToolIds.add(toolCallId);
       resetNoOutput();
       emit("tool.started", { toolCallId, name, inputSummary, ...(parentItemId ? { parentItemId } : {}) });
@@ -601,6 +608,10 @@ export function createClaudeBackend({
           const itemId = String(message.uuid || message.message?.id || `${runId}:subagent:${parentItemId}`);
           if (state.completedSubagentItemIds.has(itemId)) return;
           state.completedSubagentItemIds.add(itemId);
+          if (!state.childToolIds.has(parentItemId)) {
+            state.childToolIds.add(parentItemId);
+            childrenChanged();
+          }
           const text = extractText(message.message?.content);
           emit("item.started", { itemId, itemType: "subagent", parentItemId });
           emit("item.completed", {
@@ -653,6 +664,7 @@ export function createClaudeBackend({
             resultSummary: extractText(block.content).slice(0, 4096),
           });
           state.completedToolIds.add(toolCallId);
+          if (state.childToolIds.has(toolCallId)) childrenChanged();
           state.runningToolIds.delete(toolCallId);
           resetNoOutput();
         }
@@ -680,6 +692,7 @@ export function createClaudeBackend({
         // 受信時のみ行う(ここで閉じると自動継続前にCLIがexitし得るため)。
         const taskId = String(message.task_id || "").trim();
         if (taskId) state.pendingBackgroundTaskIds.delete(taskId);
+        if (state.childToolIds.has(String(message.tool_use_id || ""))) childrenChanged();
         return;
       }
       if (type === "result") {

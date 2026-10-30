@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { createLlmCliSessionIndex } from "../src/llm-cli-session-index.mjs";
+import { createCodexSessionChildrenObserver } from "../src/codex-session-children.mjs";
 
 import {
   __TESTING__,
@@ -1035,4 +1040,44 @@ test("duplicate CLI rollout IDs keep HTTP selection instead of embedding file-sp
   const http = await service.getLlmSessionSummaries({ directory: "/workspace", sessionIds: ["duplicate"] });
   assert.equal(http.sessions[0].modelRef, "/new");
   assert.equal(http.sessions[0].contextUsage.usedPct, 63);
+});
+
+test("native child changes refresh the real index inside its TTL, once per paged query", async (t) => {
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), "native-child-index-"));
+  t.after(() => fs.rm(temp, { recursive: true, force: true }));
+  const root = path.join(temp, "workspace"), sessionsDir = path.join(temp, "sessions");
+  await Promise.all([fs.mkdir(root), fs.mkdir(sessionsDir)]);
+  const write = (id) => fs.writeFile(path.join(sessionsDir, `rollout-${id}.jsonl`), `${JSON.stringify({ type: "session_meta", payload: {
+    id, cwd: root, timestamp: "2026-10-30T00:00:00.000Z", ...(id !== "parent" ? { parent_thread_id: "parent", source: { subagent: true } } : {}),
+  } })}\n`);
+  await write("parent");
+  let scans = 0;
+  const index = createLlmCliSessionIndex({
+    cliSessionIndexPath: path.join(temp, "index.json"), cliSessionIndexRefreshMinIntervalMs: 60_000, codeCliSessionsDir: sessionsDir,
+    fileSystem: { ...fs, readdir: async (...args) => { scans++; return fs.readdir(...args); } },
+    compareSessionHistoryEntries: (a, b) => String(b.sessionId).localeCompare(String(a.sessionId)),
+    normalizeLlmExecutionSessionId: String, normalizeReasoningEffort: String, normalizeSessionRootRelativePath: String,
+    normalizeSessionUpdatedAt: (value) => String(value || ""), toUnixPath: String, toWorkspaceRelativeFromAbsolutePath: String,
+  });
+  const service = createService({
+    listCliSessionsForDirectory: index.listCliSessionsForDirectory, resolveCanonicalDirectoryIdentity: async (value) => value,
+    compareSessionHistoryEntries: (a, b) => String(b.sessionId).localeCompare(String(a.sessionId)),
+  });
+  await service.listLlmSessions(root, { source: "cli" });
+  await write("child-a");
+  assert.equal((await index.listCliSessionsForDirectory(root)).length, 1, "unforced index is still warm and stale");
+  const work = [];
+  const observe = createCodexSessionChildrenObserver({ resolveSession: async () => null, onChanged: (parent) => {
+    work.push(service.listLlmSessions(root, { source: "cli", parentSessionRefs: [parent], limit: 1 }));
+  } });
+  await observe("item/completed", { threadId: "parent", item: { type: "collabAgentToolCall", tool: "spawnAgent", receiverThreadIds: ["child-a"] } });
+  assert.deepEqual((await work[0]).sessions.map((entry) => entry.sessionId), ["child-a"]);
+  await write("child-b");
+  await observe("item/completed", { threadId: "parent", item: { type: "collabAgentToolCall", tool: "spawnAgent", receiverThreadIds: ["child-b"] } });
+  const first = await work[1];
+  assert.deepEqual(first.sessions.map((entry) => entry.sessionId), ["child-b"]);
+  const afterFirstPageScans = scans;
+  const second = await service.listLlmSessions(root, { source: "cli", parentSessionRefs: [{ backendId: "codex", nativeSessionId: "parent" }], limit: 1, cursor: first.cursor });
+  assert.deepEqual(second.sessions.map((entry) => entry.sessionId), ["child-a"]);
+  assert.equal(scans, afterFirstPageScans, "keyset continuation uses the freshly scanned index");
 });

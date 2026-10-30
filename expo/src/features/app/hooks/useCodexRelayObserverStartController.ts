@@ -139,7 +139,6 @@ type UseCodexRelayObserverStartControllerArgs = {
     startedAtMs: number;
     reason: string;
   }) => unknown;
-  onSessionStreamBoundary?: (sessionId: string) => void | Promise<void>;
 };
 
 function findLatestAssistantMessage(messages: ConversationMessage[]) {
@@ -206,7 +205,6 @@ export function useCodexRelayObserverStartController({
   onAssistantTurnCompleted,
   onRuntimeStatus,
   ensureRuntimeRequestForRelay,
-  onSessionStreamBoundary,
 }: UseCodexRelayObserverStartControllerArgs) {
   const startCodexRelayObserverForSession = useCallback((threadIdRaw: unknown, options?: StartCodexRelayObserverOptions) => {
     const threadId = parseOptionalSessionId(threadIdRaw);
@@ -688,9 +686,6 @@ export function useCodexRelayObserverStartController({
         onEvent: (method, params) => {
           const active = codexRelayObserverRef.current;
           if (!active || active.threadId !== threadId) return;
-          if (method === "item/completed") {
-            void onSessionStreamBoundary?.(threadId);
-          }
           const payload = params && typeof params === "object" ? params as Record<string, unknown> : {};
           if (
             (method === "item/started" || method === "item/completed") &&
@@ -946,7 +941,6 @@ export function useCodexRelayObserverStartController({
     onAssistantTurnCompleted,
     onRuntimeStatus,
     ensureRuntimeRequestForRelay,
-    onSessionStreamBoundary,
     parseLlmDirectory,
     parseOptionalSessionId,
     rememberSessionRuntimeStatus,

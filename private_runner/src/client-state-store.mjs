@@ -85,12 +85,12 @@ export function createClientStateStore(storePath) {
         state.directories = state.directories.filter((item) => item.path !== next.path && item.id !== next.id);
         state.directories.splice(index < 0 ? state.directories.length : index, 0, next);
         if (state.directories.length > 100) throw new Error("too many directories");
-        return true;
+        return { directories: state.directories };
       }
       case "directory.remove": {
         const id = requiredString(operation.id, "id", 200);
         state.directories = state.directories.filter((item) => item.id !== id);
-        return true;
+        return { directories: state.directories };
       }
       case "session.set": {
         const key = sessionKey(requiredString(operation.backendId, "backendId", 100), requiredString(operation.sessionId, "sessionId", 200));
@@ -110,7 +110,7 @@ export function createClientStateStore(storePath) {
           next.markerColor = operation.markerColor;
         }
         state.sessions[key] = next;
-        return true;
+        return { sessions: { [key]: next } };
       }
       case "title-settings.set": {
         const modelId = requiredString(operation.modelId, "modelId", 200);
@@ -118,12 +118,12 @@ export function createClientStateStore(storePath) {
         if (!REASONING_EFFORTS.has(effort)) throw new Error("invalid title reasoningEffort");
         state.titleModelId = modelId;
         state.titleReasoningEffort = effort;
-        return true;
+        return { titleModelId: modelId, titleReasoningEffort: effort };
       }
       case "composer.append": {
         const text = requiredString(operation.text, "text", 100_000);
         state.composerHistory = [text, ...state.composerHistory].slice(0, 40);
-        return true;
+        return { composerHistory: state.composerHistory };
       }
       case "draft.set": {
         const key = sessionKey(requiredString(operation.backendId, "backendId", 100), requiredString(operation.sessionId, "sessionId", 200));
@@ -133,7 +133,7 @@ export function createClientStateStore(storePath) {
         else delete state.drafts[key];
         const keys = Object.keys(state.drafts).sort((a, b) => state.drafts[b].updatedAt - state.drafts[a].updatedAt);
         for (const oldKey of keys.slice(10)) delete state.drafts[oldKey];
-        return true;
+        return { drafts: state.drafts };
       }
       default: throw new Error("invalid operation");
     }
@@ -142,23 +142,27 @@ export function createClientStateStore(storePath) {
   async function commit(change) {
     const before = snapshot();
     try {
-      if (!change()) return false;
+      const changes = change();
+      if (!changes) return false;
       state.revision += 1;
       await fs.mkdir(path.dirname(storePath), { recursive: true });
       const temporaryPath = `${storePath}.${randomUUID()}.tmp`;
       await fs.writeFile(temporaryPath, `${JSON.stringify(state)}\n`, { encoding: "utf8", mode: 0o600 });
       await fs.rename(temporaryPath, storePath);
-      return true;
+      return { previousSnapshot: before, changes };
     } catch (error) {
       state = before;
       throw error;
     }
   }
 
-  async function mutate(operation) {
+  async function mutate(operation, { includeChanges = false } = {}) {
     return serialize(async () => {
-      await commit(() => apply(operation));
-      return snapshot();
+      const { previousSnapshot, changes } = await commit(() => apply(operation));
+      const next = snapshot();
+      return includeChanges
+        ? { previousSnapshot, snapshot: next, changes: structuredClone({ revision: state.revision, ...changes }) }
+        : next;
     });
   }
 
@@ -173,13 +177,13 @@ export function createClientStateStore(storePath) {
   }
 
   function setGeneratedTitle(sessionRef, title) {
-    return serialize(() => commit(() => {
+    return serialize(async () => Boolean(await commit(() => {
       const key = sessionKey(sessionRef.backendId, sessionRef.nativeSessionId);
       const previous = state.sessions[key];
       if (previous?.titleSource === "manual" || previous?.title) return false;
       state.sessions[key] = { ...previous, title, markerColor: previous?.markerColor || "none", titleSource: "generated" };
       return true;
-    }));
+    })));
   }
 
   return {

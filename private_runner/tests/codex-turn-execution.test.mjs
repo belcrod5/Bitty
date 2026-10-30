@@ -1065,3 +1065,42 @@ test("resume must confirm the exact requested thread before starting the control
     assert.equal(client.calls.some((call) => call.method === "turn/start"), false);
   }
 });
+
+test("neutral Codex normalizes native child events without making every item a list invalidation", async () => {
+  const changed = [];
+  const notifications = Array.from({ length: 100 }, (_, index) => ({ method: "item/completed", params: { item: { id: `item-${index}`, type: "reasoning" } } }));
+  notifications.push({ method: "item/completed", params: { item: { id: "spawn", type: "collabAgentToolCall", tool: "spawnAgent", receiverThreadIds: ["child"], agentsStates: { child: { status: "pendingInit" } } } } });
+  notifications.push({ method: "turn/completed", params: { threadId: "child" } });
+  notifications.push({ method: "turn/completed", params: {} });
+  const client = fakeClient(notifications);
+  const backend = createCodexBackend({ createClient: () => client, resolveSessionCwd: async () => "/workspace",
+    onSessionChildrenChanged: (parent) => changed.push(parent) });
+  await backend.startTurn({ runId: "native-children", cwd: "/workspace", input: { blocks: [{ type: "text", text: "synthetic" }] },
+    resolveSession: async () => {}, emit() {} });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(changed, [{ backendId: "codex", nativeSessionId: "thread-new" }, { backendId: "codex", nativeSessionId: "thread-new" }]);
+});
+
+test("turn completion cannot suppress the native idle change that updates list activity", async () => {
+  const client = fakeClient([]);
+  let finish;
+  client.waitForTurnCompletion = () => ({ promise: new Promise((resolve) => { finish = resolve; }), expect() {} });
+  const snapshots = [];
+  const backend = createCodexBackend({ createClient: () => client, resolveSessionCwd: async () => "/workspace",
+    resolveNativeActiveSession: async (id) => id === "child" ? { sessionRef: { backendId: "codex", nativeSessionId: id }, canonicalCwd: "/workspace", parentSessionRef: { backendId: "codex", nativeSessionId: "thread-new" } } : null,
+    listSessions: async () => ({ sessions: [{ sessionRef: { backendId: "codex", nativeSessionId: "child" }, canonicalCwd: "/workspace" }] }),
+    onSessionChildrenChanged: () => snapshots.push(backend.listSessions({ cwd: "/workspace" })),
+  });
+  const run = backend.startTurn({ runId: "idle-order", cwd: "/workspace", input: { blocks: [{ type: "text", text: "synthetic" }] }, resolveSession: async () => {}, emit() {} });
+  while (!client.calls.some((call) => call.method === "turn/start")) await new Promise((resolve) => setImmediate(resolve));
+  const send = (method, params) => { for (const listener of client.listeners) listener(method, params); };
+  send("thread/status/changed", { threadId: "child", status: "active" });
+  await new Promise((resolve) => setImmediate(resolve));
+  send("turn/completed", { threadId: "child" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal((await snapshots.at(-1)).sessions[0].isActive, true);
+  send("thread/status/changed", { threadId: "child", status: "idle" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal((await snapshots.at(-1)).sessions[0].isActive, undefined);
+  send("turn/completed", { threadId: "thread-new", turnId: "turn-1" }); finish(); await run;
+});

@@ -493,9 +493,11 @@ export function createAgentService({
   async function withClientTitles(sessions) {
     if (sessions.length === 0) return sessions;
     const titles = await getSessionTitles(sessions.map((session) => session.sessionRef));
-    return sessions.map((session, index) => (
-      titles[index] ? { ...session, title: titles[index] } : session
-    ));
+    return sessions.map((session, index) => {
+      if (!titles[index] && session.title === undefined) return session;
+      const title = Array.from(String(titles[index] || session.title || "").replace(/\s+/gu, " ").trim());
+      return { ...session, title: title.length > 200 ? `${title.slice(0, 199).join("")}…` : title.join("") };
+    });
   }
 
   async function finish(run, outcome, error = null) {

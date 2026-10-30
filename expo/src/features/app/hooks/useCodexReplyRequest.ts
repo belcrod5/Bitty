@@ -173,7 +173,6 @@ type UseCodexReplyRequestOptions<
   reportError: (raw: unknown, scope?: string) => void;
   updateConversationRuntimeRequest?: (input: ConversationRuntimeRequestSnapshotInput) => void;
   onLlmMessageCompleted?: (completion: LlmMessageCompletion) => void | Promise<void>;
-  onSessionStreamBoundary?: (sessionId: string) => void | Promise<void>;
   startCodexRelayObserverForSession?: (
     threadIdRaw: unknown,
     options?: {
@@ -1174,12 +1173,6 @@ export function useCodexReplyRequest<
           }
           if (!method) return;
           if (!isActiveRequest() || isCancelledRequest()) return;
-          if (method === "item/completed") {
-            const boundarySessionId = String(
-              trackedThreadId || requestThreadId || requestUiSessionId || ""
-            ).trim();
-            if (boundarySessionId) void current.onSessionStreamBoundary?.(boundarySessionId);
-          }
           if (trackedThreadId) {
             const inFlightState = inFlightByThreadRef.current[trackedThreadId];
             if (inFlightState && inFlightState.requestSeq === requestSeq) {

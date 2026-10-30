@@ -11,6 +11,7 @@ import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManag
 import type { LlmSessionHistoryBatchGroup, LlmSessionHistoryResult } from "./useLlmSessionExplorer";
 import { IDLE_DIRECTORY_SESSION_SYNC } from "../types/directorySessions";
 import { findDirectoryForSessionTree } from "../utils/sessionHistoryContext";
+import { subscribeSessionChildrenChanges } from "../../agent/client";
 
 type FetchSessionHistoryOptions = {
   limit: number;
@@ -762,7 +763,8 @@ export function useDirectorySessionTreeController({
 
   const refreshSessionChildTreesAtBoundary = useCallback((
     sessionIdRaw: string,
-    relationship: "parent_progress" | "child_completed"
+    relationship: "parent_changed" | "child_completed",
+    backendId?: string,
   ): Promise<void> => {
     const sessionId = String(sessionIdRaw || "").trim();
     if (!sessionId) return Promise.resolve();
@@ -771,7 +773,9 @@ export function useDirectorySessionTreeController({
     for (const [directoryId, state] of Object.entries(directorySessionsByIdRef.current)) {
       for (const [parentId, childState] of Object.entries(state.childrenByParentId)) {
         if (!childState.loaded && !childState.loading) continue;
-        const matches = relationship === "parent_progress"
+        const parents = state.entries.filter((entry) => entry.sessionId === parentId);
+        if (backendId && parents.length > 0 && !parents.some((entry) => entry.backendId === backendId)) continue;
+        const matches = relationship === "parent_changed"
           ? parentId === sessionId
           : childState.entries.some((entry) => entry.sessionId === sessionId);
         if (!matches) continue;
@@ -805,6 +809,28 @@ export function useDirectorySessionTreeController({
       return refreshAfterActive;
     })).then(() => undefined);
   }, [loadSessionChildTrees]);
+
+  useEffect(() => {
+    if (!runnerWebSocketManager) return;
+    return subscribeSessionChildrenChanges(runnerWebSocketManager, (sessionId, relationship, backendId) => {
+      if (bootstrapReadyRef.current) void refreshSessionChildTreesAtBoundary(sessionId, relationship, backendId);
+    });
+  }, [runnerWebSocketManager, refreshSessionChildTreesAtBoundary]);
+
+  const lastChildrenReadyRef = useRef("");
+  useEffect(() => {
+    const snapshot = runnerWebSocketManager?.getSnapshot();
+    if (!canSync || !snapshot || snapshot.connectionState !== "ready") return;
+    const ready = JSON.stringify([connectionScope, snapshot.generation, snapshot.connectionId, snapshot.url]);
+    if (lastChildrenReadyRef.current === ready) return;
+    lastChildrenReadyRef.current = ready;
+    // Child notifications are transient. Reconcile loaded lists once after a
+    // reconnect, including external CLI changes made while no client listened.
+    const parents = new Set(Object.values(directorySessionsByIdRef.current).flatMap((state) => (
+      Object.entries(state.childrenByParentId).filter(([, child]) => child.loaded || child.loading).map(([parent]) => parent)
+    )));
+    for (const parent of parents) void refreshSessionChildTreesAtBoundary(parent, "parent_changed");
+  }, [canSync, connection, connectionScope, refreshSessionChildTreesAtBoundary, runnerWebSocketManager]);
 
   const runSyncCycle = useCallback(async (intent: RegisteredSyncIntent) => {
     const cycleId = ++nextCycleIdRef.current;

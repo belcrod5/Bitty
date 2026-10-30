@@ -16,7 +16,7 @@ beforeEach(() => {
   process.mockReset();
   process.mockResolvedValue("file:///tmp/prepared.caf");
   (NativeModules as Record<string, unknown>).BittyTtsEffects = { process, cancel, remove };
-  configureCloudflareAccessFetch({ runnerUrl: "https://cloudflare.example.com",
+  configureCloudflareAccessFetch({ runnerUrl: "https://cloudflare.example.com", cloudflareRunnerUrl: "https://cloudflare.example.com",
     credentials: { clientId: "test-access-id", clientSecret: "test-access-secret" } });
 });
 

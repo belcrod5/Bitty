@@ -12,7 +12,9 @@ import { StreamingSttFooter } from "../components/StreamingSttFooter";
 import { useConsultationSpeech } from "../hooks/useConsultationSpeech";
 import type { VoiceConversationPlayback } from "./VoiceConversationScreen";
 import { MarkdownText } from "../components/MarkdownText";
-import { VoiceTurnTrace, type VoiceTurnTraceData } from "../components/VoiceTurnTrace";
+import { VoiceTurnTrace } from "../components/VoiceTurnTrace";
+import { useConsultationRooms, type ConsultationRoom } from "../hooks/useConsultationRooms";
+export type { ConsultationRoom } from "../hooks/useConsultationRooms";
 import { formatMessageTimestampLabel } from "../utils/formatting";
 import { VoiceConversationMessages } from "../components/VoiceConversationMessages";
 import { VoiceOrchestratorIcon, type VoiceOrchestrator } from "../components/VoiceOrchestratorIcon";
@@ -21,16 +23,6 @@ import { resolveTtsAudioQuality } from "../utils/ttsAudioQuality";
 import { useVoiceUserInput } from "../hooks/useVoiceUserInput";
 
 type Owner = VoiceOrchestrator;
-type Progress = VoiceTurnTraceData & { roomId: string; runId: string; generation: number; seq: number; textInterrupted?: boolean };
-type Profile = { orchestratorId: string; name: string; introduction: string };
-export type ConsultationRoom = {
-  id: string; question: string; participants: string[]; profiles: Record<string, Profile>; template: string;
-  generation: number; turns: number; maxTurns: number; revision: number; state: "idle" | "running" | "paused" | "stopped"; reason: string;
-  messages: { id: string; seq: number; speakerId: string; source: string; text: string; at?: string; outputTokens?: number }[];
-  steps?: { runId: string; orchestratorId: string; action: string; trace?: VoiceTurnTraceData }[];
-  run: { id: string; orchestratorId: string; progress?: Progress } | null;
-  resetConfirmation?: { required?: boolean };
-};
 
 const reasonText: Record<string, string> = {
   ended: "相談を終了しました", ready: "相談を始められます", all_pass: "今のところ、追加の発言はありません", limit: "回数または時間の上限に達しました",
@@ -45,7 +37,7 @@ export function VoiceConsultationScreen({ onClose, playback }: { onClose: () => 
   const { connected, generation } = useRunnerWebSocketSnapshot();
   const { theme } = useVisualTheme();
   const reduceMotion = useReduceMotionEnabled();
-  const [owners, setOwners] = useState<Owner[]>([]), [rooms, setRooms] = useState<ConsultationRoom[]>([]);
+  const [owners, setOwners] = useState<Owner[]>([]);
   const [selectedRoom, setSelectedRoom] = useState("");
   const [mode, setMode] = useState<"list" | "new" | "room" | "settings">("list");
   const [selected, setSelected] = useState<string[]>([]);
@@ -57,31 +49,12 @@ export function VoiceConsultationScreen({ onClose, playback }: { onClose: () => 
   const speech = useConsultationSpeech(mode === "room" && connected ? selectedRoom : "", playback);
   const ownersRef = useRef(owners); ownersRef.current = owners;
   const speechSubscription = useRef<{ roomId: string; id: string; connect: () => Promise<unknown>; ready: Promise<unknown> | null } | null>(null);
-  const roomSnapshots = useRef(new Map<string, ConsultationRoom>());
   useEffect(() => { setEditingTranscript(false); }, [selectedRoom, mode]);
   const [error, setError] = useState(""), [busy, setBusy] = useState(false), [resetDeadline, setResetDeadline] = useState<number | null>(null);
   const scroll = useRef<ScrollView>(null);
   const historyAtBottom = useRef(true);
   useEffect(() => { historyAtBottom.current = true; }, [selectedRoom, mode]);
   const pendingSend = useRef<{ roomId: string; text: string; messageId: string } | null>(null);
-  const room = rooms.find((item) => item.id === selectedRoom);
-  const userInput = useVoiceUserInput(manager, room?.run?.orchestratorId || "");
-  const applyRoom = useCallback((value: ConsultationRoom) => {
-    const previous = roomSnapshots.current.get(value.id);
-    if (previous && previous.revision > value.revision) return;
-    roomSnapshots.current.set(value.id, value);
-    setRooms((current) => {
-      const previous = current.find((item) => item.id === value.id);
-      if (previous && previous.revision > value.revision) return current;
-      if (previous?.generation === value.generation && previous?.run?.id === value.run?.id && value.run && value.state !== "stopped"
-        && previous?.run?.progress && (!value.run.progress || previous.run.progress.seq > value.run.progress.seq))
-        value = { ...value, run: { ...value.run, progress: previous.run.progress } };
-      return [value, ...current.filter((item) => item.id !== value.id)];
-    });
-  }, []);
-  useEffect(() => {
-    setRooms((current) => current.map((room) => room.run?.progress ? { ...room, run: { ...room.run, progress: undefined } } : room));
-  }, [generation]);
   const send = useCallback(async (operation: string, payload: Record<string, unknown> = {}) => {
     const response = await manager.request({ channel: "agent", op: `voice.consultations.${operation}`, payload });
     if (response.op !== `voice.consultations.${operation}.result`) {
@@ -89,12 +62,16 @@ export function VoiceConsultationScreen({ onClose, playback }: { onClose: () => 
     }
     return response.payload;
   }, [manager]);
+  const { rooms, room, roomSnapshots, applyRoom, defaultTemplate } = useConsultationRooms({ manager, connected, generation,
+    selectedRoom: mode === "room" || mode === "settings" ? selectedRoom : "", send, onError: setError });
+  const userInput = useVoiceUserInput(manager, room?.run?.orchestratorId || "");
+  useEffect(() => { setTemplate((existing) => existing || defaultTemplate); }, [defaultTemplate]);
   useEffect(() => manager.subscribe({ channel: "agent", op: "voice.consultations.speech" }, (message) => {
     const event = message.payload as { roomId: string; subscriptionId: string; runId: string; orchestratorId: string; jobId: string; generation: number; inputUserSeq: number; status: string };
     const subscription = speechSubscription.current;
     if (!subscription || event.roomId !== subscription.roomId || event.subscriptionId !== subscription.id) return;
     if (event.status === "cancelled") { speech.cancel(event.jobId); return; }
-    const room = roomSnapshots.current.get(event.roomId);
+    const room = roomSnapshots.current[event.roomId];
     if (!room || room.generation !== event.generation || room.messages.findLast((item) => item.source === "user")?.seq !== event.inputUserSeq) return;
     const owner = ownersRef.current.find((item) => item.id === event.orchestratorId);
     if (owner && event.status === "ready") speech.enqueue({ id: event.runId, jobId: event.jobId, text: "", owner });
@@ -139,34 +116,13 @@ export function VoiceConsultationScreen({ onClose, playback }: { onClose: () => 
   useEffect(() => {
     let current = true;
     void manager.connect().then(async () => {
-      const [ownerResponse, result] = await Promise.all([
-        manager.request({ channel: "agent", op: "voice.orchestrators.list" }), send("list"),
-      ]);
+      const ownerResponse = await manager.request({ channel: "agent", op: "voice.orchestrators.list" });
       if (!current) return;
       const ownerPayload = ownerResponse.payload as { orchestrators: Owner[] };
-      const value = result as { rooms: ConsultationRoom[]; defaultTemplate: string };
       setOwners(ownerPayload.orchestrators);
-      for (const item of value.rooms) applyRoom(item);
-      setTemplate((existing) => existing || value.defaultTemplate);
     }).catch((cause) => { if (current) setError(cause instanceof Error ? cause.message : "相談を読み込めません"); });
     return () => { current = false; };
-  }, [manager, connected, generation, send, applyRoom]);
-  useEffect(() => manager.subscribe({ channel: "agent", op: "voice.consultations.changed" }, (message) => {
-    const value = message.payload as ConsultationRoom;
-    if (value?.id && Array.isArray(value.messages)) applyRoom(value);
-  }), [manager, applyRoom]);
-  useEffect(() => {
-    let current = true;
-    const remove = manager.subscribe({ channel: "agent", op: "voice.consultations.progress" }, (message) => {
-      if (!current) return;
-      const value = message.payload as Progress;
-      if (!value || !Array.isArray(value.messages) || !Array.isArray(value.tools) || !Number.isInteger(value.seq)) return;
-      setRooms((rooms) => rooms.map((room) => room.id === value.roomId && room.generation === value.generation
-        && room.state === "running" && room.run?.id === value.runId && (room.run.progress?.seq || 0) < value.seq
-        ? { ...room, run: { ...room.run, progress: value } } : room));
-    });
-    return () => { current = false; remove(); };
-  }, [manager, generation]);
+  }, [manager, connected, generation]);
   const decideReset = useCallback((decision: "reset" | "continue") => {
     if (!room) return;
     void act(async () => { await ensureSpeechReady(); applyRoom(await send("reset", { roomId: room.id, decision }) as ConsultationRoom); });
@@ -207,9 +163,9 @@ export function VoiceConsultationScreen({ onClose, playback }: { onClose: () => 
     style={({ pressed }) => [styles.button, { opacity: disabled || busy ? 0.4 : pressed ? 0.8 : 1 }]}>
     <Text style={styles.action}>{label}</Text>
   </Pressable>;
-  const ownerFor = (id: string, source = room): Owner => owners.find((owner) => owner.id === id)
+  const ownerFor = (id: string, source: Pick<ConsultationRoom, "profiles"> | undefined = room): Owner => owners.find((owner) => owner.id === id)
     || { id, name: source?.profiles[id]?.name || "参加者", icon: "" };
-  const avatars = (ids: string[], source?: ConsultationRoom) => <View style={{ flexDirection: "row", paddingLeft: 0 }}>
+  const avatars = (ids: string[], source?: Pick<ConsultationRoom, "profiles">) => <View style={{ flexDirection: "row", paddingLeft: 0 }}>
     {ids.slice(0, 4).map((id, index) => <View key={id} style={{ marginLeft: index ? -9 : 0,
       borderRadius: 22, borderWidth: 3, borderColor: theme.colors.canvas }}>
       <VoiceOrchestratorIcon orchestrator={ownerFor(id, source)} size={34} />
@@ -287,13 +243,13 @@ export function VoiceConsultationScreen({ onClose, playback }: { onClose: () => 
                 <Text numberOfLines={2} style={[styles.text, { fontWeight: "600", lineHeight: 23 }]}>{item.question || "新しい相談"}</Text>
                 <View style={styles.row}>
                   <View pointerEvents="none" style={{ flex: 1, maxHeight: 20, overflow: "hidden" }}>
-                    <MarkdownText tone="assistant" content={item.messages.at(-1)?.source === "participant"
-                      ? `${item.profiles[item.messages.at(-1)!.speakerId]?.name || "参加者"}：${item.messages.at(-1)?.text}`
-                      : item.messages.at(-1)?.text || "メッセージを送って始める"}
+                    <MarkdownText tone="assistant" content={item.lastMessage?.source === "participant"
+                      ? `${item.profiles[item.lastMessage!.speakerId]?.name || "参加者"}：${item.lastMessage?.text}`
+                      : item.lastMessage?.text || "メッセージを送って始める"}
                       textStyle={{ color: theme.colors.textSecondary, fontSize: 13, lineHeight: 20 }}
                       containerStyle={{ width: "auto" }} resolveImageSource={() => null} />
                   </View>
-                  <Text style={[styles.secondary, { fontSize: 11 }]}>{formatMessageTimestampLabel(item.messages.at(-1)?.at)}</Text>
+                  <Text style={[styles.secondary, { fontSize: 11 }]}>{formatMessageTimestampLabel(item.lastMessage?.at)}</Text>
                 </View>
               </View>
             </View>
@@ -352,6 +308,7 @@ export function VoiceConsultationScreen({ onClose, playback }: { onClose: () => 
             applyRoom(await send("configure", { roomId: room?.id, template, maxTurns: Number(maxTurns) }) as ConsultationRoom); setMode("room");
           }), !connected)}
         </> : null}
+        {mode === "room" && !room && connected ? <Text style={styles.secondary}>相談を読み込んでいます…</Text> : null}
         {mode === "room" && room ? <>
           {!room.messages.length ? <View style={{ flex: 1, justifyContent: "center", alignItems: "center", gap: 10, paddingVertical: 70 }}>
             {avatars(room.participants, room)}

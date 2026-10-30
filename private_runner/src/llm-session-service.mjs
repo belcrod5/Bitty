@@ -132,6 +132,10 @@ export function createLlmSessionService(deps = {}) {
       // includeSubagents=falseはページング前に除外する(後段フィルタだとページサイズが崩れる)。
       sessions.push(...await listCliSessionsForDirectory(directory, {
         useRolloutMtime: true,
+        // Native child notifications can arrive inside the catalog TTL. Start
+        // each child query from the current index; keyset continuation pages
+        // reuse that refresh instead of rescanning the whole catalog per page.
+        ...(opts?.parentSessionRefs?.length > 0 && !cursorRaw ? { forceRefresh: true } : {}),
         ...(opts?.includeSubagents === false ? { includeSubagents: false } : {}),
       }));
     }

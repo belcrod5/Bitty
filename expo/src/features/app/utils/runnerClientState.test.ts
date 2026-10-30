@@ -66,7 +66,7 @@ describe("conditional client-state requests", () => {
     expect(await requestRunnerClientState({ ...auth, cache, operation })).toBe(changed);
     expect(headersAt(1)["if-none-match"]).toBeUndefined();
     expect(fetchMock.mock.calls[1][1].method).toBe("POST");
-    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ operation });
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ operation, baseEtag: '"first"' });
     expect(cache.entry?.etag).toBe('"second"');
     expect(await requestRunnerClientState({ ...auth, cache })).toBe(changed);
     expect(headersAt(2)["if-none-match"]).toBe('"second"');
@@ -194,4 +194,82 @@ test("interrupted response bodies are connection failures but malformed JSON sta
   await expect(requestRunnerClientState(auth)).rejects.toBeInstanceOf(RunnerClientStateConnectionError);
   await expect(requestRunnerClientState(auth)).rejects.not.toBeInstanceOf(RunnerClientStateConnectionError);
   fetchMock.mockRestore();
+});
+
+describe("canonical mutation patches", () => {
+  const auth = { runnerUrl: "http://runner.test", runnerToken: "token" };
+  const baseEtag = 'W/"before"';
+  const initial: RunnerClientState = { revision: 1, titleModelId: "fixture", titleReasoningEffort: "low", directories: [],
+    sessions: { [runnerSessionKey("codex", "existing")]: { title: "kept", markerColor: "none" } }, drafts: {}, composerHistory: [] };
+  const response = (payload: unknown, etag = 'W/"after"') => ({ status: 200, ok: true,
+    headers: { get: (key: string) => key === "etag" ? etag : null }, json: async () => payload,
+  }) as Response;
+  const operation = { type: "composer.append", text: "new message" };
+  let cache: RunnerClientStateCache;
+  let fetchMock: jest.SpyInstance;
+  beforeEach(() => {
+    cache = { entry: { url: `${auth.runnerUrl}/client-state`, token: auth.runnerToken, etag: baseEtag, snapshot: initial } };
+    fetchMock = jest.spyOn(global, "fetch");
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  test("merges canonical session upserts and replaces draft/history collections", async () => {
+    const added = runnerSessionKey("claude", "existing");
+    const changes = { revision: 2, sessions: { [added]: { title: "new", markerColor: "red" } }, drafts: {}, composerHistory: [operation.text] };
+    fetchMock.mockResolvedValue(response({ patch: { baseEtag, changes } }));
+    const result = await requestRunnerClientState({ ...auth, cache, operation });
+    expect(result.sessions).toEqual({ ...initial.sessions, ...changes.sessions });
+    expect(result.drafts).toEqual({});
+    expect(result.composerHistory).toEqual([operation.text]);
+    expect(initial.sessions[added]).toBeUndefined();
+    expect(cache.entry?.snapshot).toBe(result);
+    expect(cache.entry?.etag).toBe('W/"after"');
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ operation, baseEtag });
+  });
+
+  test.each([
+    null,
+    { baseEtag, changes: { revision: 2, drafts: { invalid: { text: "x", updatedAt: 1 } } } },
+    { baseEtag, changes: { revision: 2, sessions: { '[" codex ","one"]': { title: "x", markerColor: "none" } } } },
+    { baseEtag: '"different"', changes: { revision: 2 } },
+    { baseEtag, changes: { revision: 7 } },
+    { baseEtag, changes: { revision: 2, unknown: true } },
+    { baseEtag, changes: { revision: 2, sessions: [] } },
+    { baseEtag, changes: { revision: 2, sessions: { bad: null } } },
+    { baseEtag, changes: { revision: 2, drafts: null } },
+    { baseEtag, changes: { revision: 2, directories: [null] } },
+    { baseEtag, changes: { revision: 2, composerHistory: [1] } },
+  ])("unusable patches recover with one GET and never repeat the write: %j", async (patch) => {
+    const fresh = { ...initial, revision: 3, composerHistory: [operation.text, "other device"] };
+    fetchMock.mockResolvedValueOnce(response({ patch })).mockResolvedValueOnce(response({ snapshot: fresh }));
+    expect(await requestRunnerClientState({ ...auth, cache, operation })).toBe(fresh);
+    expect(fetchMock.mock.calls.map((call) => call[1].method)).toEqual(["POST", "GET"]);
+    expect(fetchMock.mock.calls[1][1].headers["if-none-match"]).toBeUndefined();
+  });
+
+  test("an invalid recovery GET terminates instead of looping or resending composer.append", async () => {
+    fetchMock.mockResolvedValue(response({ patch: { baseEtag: "wrong", changes: {} } }));
+    await expect(requestRunnerClientState({ ...auth, cache, operation })).rejects.toThrow("without a valid mutation base");
+    expect(fetchMock.mock.calls.map((call) => call[1].method)).toEqual(["POST", "GET"]);
+  });
+
+  test("another URL or token never sends the cached mutation base", async () => {
+    fetchMock.mockResolvedValue(response({ snapshot: initial }));
+    await requestRunnerClientState({ ...auth, runnerToken: "different", cache, operation });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ operation });
+    await requestRunnerClientState({ ...auth, runnerUrl: "https://another.test", cache, operation });
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ operation });
+  });
+
+  test("a failed mutation drops the captured base and a legacy full response remains supported", async () => {
+    fetchMock.mockImplementationOnce(() => {
+      expect(cache.entry).toBeUndefined();
+      throw new Error("offline");
+    });
+    await expect(requestRunnerClientState({ ...auth, cache, operation })).rejects.toThrow("offline");
+    expect(cache.entry).toBeUndefined();
+    fetchMock.mockResolvedValueOnce(response({ snapshot: initial }, ""));
+    expect(await requestRunnerClientState({ ...auth, cache, operation })).toBe(initial);
+    expect(cache.entry).toBeUndefined();
+  });
 });
