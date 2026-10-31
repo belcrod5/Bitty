@@ -317,7 +317,8 @@ const mockBoardVoiceHandlers = new Map<string, (message: { payload: unknown }) =
 const mockBoardVoiceRequest = jest.fn(async () => ({ op: "voice.orchestrators.list.result", payload: {
   orchestrators: [{ id: "main", name: "メイン", icon: "", unreadCount: 0 }], selectedId: "main",
 } }));
-const mockBoardVoiceManager = {
+let mockBoardVoiceManager = {
+  getSnapshot: () => ({ generation: 1, url: "url", connectionOptionsGeneration: 0 }),
   request: mockBoardVoiceRequest,
   subscribe: ({ op }: { op: string }, handler: (message: { payload: unknown }) => void) => {
     mockBoardVoiceHandlers.set(op, handler);
@@ -326,7 +327,7 @@ const mockBoardVoiceManager = {
 };
 jest.mock("../../runnerWs/RunnerWebSocketContext", () => ({
   useRunnerWebSocketManager: () => mockBoardVoiceManager,
-  useRunnerWebSocketSnapshot: () => ({ connected: true, generation: 1 }),
+  useRunnerWebSocketSnapshot: () => ({ connected: true, generation: 1, appState: "active" }),
 }));
 jest.mock("./VoiceConversationScreen", () => ({
   VoiceConversationScreen: ({ onClose, initialOrchestratorId }: { onClose: () => void; initialOrchestratorId?: string }) => {
@@ -478,6 +479,7 @@ jest.mock("../hooks/useSkiaMiniChatSessions", () => ({
 }));
 
 beforeEach(() => {
+  mockBoardVoiceManager = { ...mockBoardVoiceManager };
   (globalThis as Record<string, unknown>).__skiaBoardFrameCallback = null;
   mockDirectorySyncPhase = "idle";
   mockDrawerOpen = false;
@@ -553,7 +555,7 @@ test("activity pushes draw floating card badge and whole-board frame without add
   const screen = await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()}
     openSessionHistoryPopup={jest.fn()} />);
   await act(async () => mockBoardVoiceHandlers.get("voice.unread.changed")?.({ payload: {
-    orchestrators: [{ id: "one", name: "一", icon: "" }, { id: "two", name: "二", icon: "" }],
+    orchestrators: [{ id: "one", name: "一", icon: "" }, { id: "two", name: "二", icon: "" }], selectedId: "one",
   } }));
   await act(async () => mockBoardVoiceHandlers.get("orchestrator_activity_updated")?.({ payload: {
     instanceId: "server", revision: 1, activities: [
@@ -637,17 +639,17 @@ test("shared voice navigation waits for popup cleanup on an already open board",
   }
   const screen = await render(<BoardWithNavigation popupMounted />);
   await act(async () => mockBoardVoiceHandlers.get("voice.unread.changed")?.({ payload: {
-    orchestrators: [{ id: "main", unreadCount: 1 }, { id: "other", unreadCount: 2 }],
+    orchestrators: [{ id: "main", name: "メイン", unreadCount: 1 }, { id: "other", name: "調査", unreadCount: 2 }],
     selectedId: "main",
   } }));
   expect(screen.getByTestId("skia-board-voice-unread")).toBeTruthy();
   expect(screen.getByText("2")).toBeTruthy();
   await act(async () => resolveOld({ op: "voice.orchestrators.list.result", payload: {
-    orchestrators: [{ id: "main", unreadCount: 1 }], selectedId: "main",
+    orchestrators: [{ id: "main", name: "メイン", unreadCount: 1 }], selectedId: "main",
   } }));
   expect(screen.getByText("2")).toBeTruthy();
   await act(async () => mockBoardVoiceHandlers.get("voice.unread.changed")?.({ payload: {
-    orchestrators: [{ id: "main", unreadCount: 1 }, { id: "other", unreadCount: 2 }],
+    orchestrators: [{ id: "main", name: "メイン", unreadCount: 1 }, { id: "other", name: "調査", unreadCount: 2 }],
     selectedId: "other",
   } }));
   expect(screen.getByText("1")).toBeTruthy();

@@ -21,12 +21,13 @@ export function createCodexScheduleHttpHandler({
   json,
 }) {
   return async function handleCodexSchedules(req, res, pathname) {
+    const summary = pathname === "/codex-schedules/summary";
     const collection = pathname === "/codex-schedules";
     const rawMemberId = pathname.startsWith("/codex-schedules/")
       ? pathname.slice("/codex-schedules/".length)
       : null;
-    const member = rawMemberId !== null && rawMemberId !== "" && !rawMemberId.includes("/");
-    if (!collection && !member) return false;
+    const member = !summary && rawMemberId !== null && rawMemberId !== "" && !rawMemberId.includes("/");
+    if (!collection && !member && !summary) return false;
 
     if (!runnerToken) {
       json(res, 500, { error: "runner_token_missing", message: "RUNNER_TOKEN is required" });
@@ -37,7 +38,7 @@ export function createCodexScheduleHttpHandler({
       return true;
     }
 
-    if ((collection && !["GET", "PUT", "POST"].includes(req.method)) ||
+    if ((summary && req.method !== "GET") || (collection && !["GET", "PUT", "POST"].includes(req.method)) ||
       (member && !["PATCH", "DELETE"].includes(req.method))) {
       json(res, 405, { error: "method_not_allowed" });
       return true;
@@ -58,6 +59,10 @@ export function createCodexScheduleHttpHandler({
     }
 
     try {
+      if (summary) {
+        json(res, 200, { ok: true, ...await service.summary() });
+        return true;
+      }
       if (collection && req.method === "GET") {
         json(res, 200, { ok: true, ...await service.snapshot() });
         return true;

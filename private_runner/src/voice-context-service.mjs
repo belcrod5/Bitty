@@ -2739,7 +2739,7 @@ export function createVoiceContextService({ rootDir, createClient: clientFactory
         return checklistOverview(source.status === "present" ? checklistHash(source.markdown) : "");
       });
     },
-    async history() {
+    async history(ifNoneMatch) {
       return exclusive(async () => {
         await load();
         if (taskChecklistPath && active.checklistCompletion?.decision === "approved"
@@ -2756,24 +2756,29 @@ export function createVoiceContextService({ rootDir, createClient: clientFactory
               ...(state.outputTokens !== undefined ? { outputTokens: state.outputTokens } : {}) });
           }
         }
-        if (!taskChecklistPath) return { logicalConversationId: active.logicalConversationId, messages };
-        const taskChecklist = await readTaskChecklist();
-        const sourceHash = taskChecklist.status === "present" ? checklistHash(taskChecklist.markdown) : "";
-        if (active.checklistCompletion && active.checklistCompletion.version !== taskChecklist.version
-          && taskChecklist.status !== "unavailable") {
-          const next = { ...active };
-          delete next.checklistCompletion;
-          await saveActive(next, "Checklist completion state could not be synced");
+        let result = { logicalConversationId: active.logicalConversationId, messages };
+        if (taskChecklistPath) {
+          const taskChecklist = await readTaskChecklist();
+          const sourceHash = taskChecklist.status === "present" ? checklistHash(taskChecklist.markdown) : "";
+          if (active.checklistCompletion && active.checklistCompletion.version !== taskChecklist.version
+            && taskChecklist.status !== "unavailable") {
+            const next = { ...active };
+            delete next.checklistCompletion;
+            await saveActive(next, "Checklist completion state could not be synced");
+          }
+          const taskChecklistOverview = checklistOverview(sourceHash);
+          const taskChecklistCompletion = checklistAllComplete(taskChecklist)
+            && (active.checklistCompletion?.version !== taskChecklist.version
+              || active.checklistCompletion.decision === "offered")
+            ? { sourceHash, version: taskChecklist.version } : null;
+          const displayChecklist = taskChecklist.status === "present"
+            ? { status: "present", markdown: taskChecklist.markdown } : taskChecklist;
+          result = { ...result, taskChecklist: displayChecklist, taskChecklistOverview, taskChecklistCompletion };
         }
-        const taskChecklistOverview = checklistOverview(sourceHash);
-        const taskChecklistCompletion = checklistAllComplete(taskChecklist)
-          && (active.checklistCompletion?.version !== taskChecklist.version
-            || active.checklistCompletion.decision === "offered")
-          ? { sourceHash, version: taskChecklist.version } : null;
-        const displayChecklist = taskChecklist.status === "present"
-          ? { status: "present", markdown: taskChecklist.markdown } : taskChecklist;
-        return { logicalConversationId: active.logicalConversationId, messages, taskChecklist: displayChecklist,
-          taskChecklistOverview, taskChecklistCompletion };
+        const etag = createHash("sha256").update(JSON.stringify(result)).digest("hex");
+        return ifNoneMatch === etag
+          ? { logicalConversationId: active.logicalConversationId, etag, notModified: true }
+          : { ...result, etag };
       });
     },
     async respondToChecklistCompletion(sourceHash, version, decision) {

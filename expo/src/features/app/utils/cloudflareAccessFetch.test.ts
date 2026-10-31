@@ -1,4 +1,4 @@
-import { configureCloudflareAccessFetch, getCloudflareAccessHeadersForUrl } from "./cloudflareAccessFetch";
+import { configureCloudflareAccessFetch, getCloudflareAccessHeadersForUrl, getPendingHttpNetworkMeasurements } from "./cloudflareAccessFetch";
 import { getNetworkUsageSnapshot, resetNetworkUsage } from "../../ws/networkUsageMetrics";
 
 const originalFetch = globalThis.fetch;
@@ -81,4 +81,35 @@ test("tracks the selected Runner even when Cloudflare credentials or URL are uns
   expect(fetchMock.mock.calls[1][1]).toBeUndefined();
   expect(getCloudflareAccessHeadersForUrl(`${cloudflareUrl}/client-state`)).toEqual({});
   expect(getNetworkUsageSnapshot().httpByCategory["client-state"].receivedBytes).toBe(246);
+});
+
+test("pending measurement remains visible through deferred clone reads without delaying fetch consumers", async () => {
+  await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+  expect(getPendingHttpNetworkMeasurements()).toBe(0);
+  let resolveFetch!: (value: Response) => void;
+  let resolveBody!: (value: ArrayBuffer) => void;
+  fetchMock.mockImplementationOnce(() => new Promise<Response>((resolve) => { resolveFetch = resolve; }));
+  const request = fetch(`${localUrl}/client-state`);
+  expect(getPendingHttpNetworkMeasurements()).toBe(1);
+  resolveFetch({ headers: { get: () => null }, clone: () => ({ arrayBuffer: () => new Promise<ArrayBuffer>((resolve) => { resolveBody = resolve; }) }) } as unknown as Response);
+  await request;
+  expect(getPendingHttpNetworkMeasurements()).toBe(1);
+  expect(getNetworkUsageSnapshot().totalReceivedBytes).toBe(0);
+  resolveBody(new ArrayBuffer(500));
+  await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+  expect(getPendingHttpNetworkMeasurements()).toBe(0);
+  expect(getNetworkUsageSnapshot().httpByCategory["client-state"].receivedBytes).toBe(500);
+});
+
+test("rejections and failed clone measurements release pending counts without changing request failure", async () => {
+  await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+  fetchMock.mockRejectedValueOnce(new Error("offline"));
+  await expect(fetch(`${localUrl}/client-state`)).rejects.toThrow("offline");
+  await Promise.resolve(); await Promise.resolve();
+  expect(getPendingHttpNetworkMeasurements()).toBe(0);
+  fetchMock.mockResolvedValueOnce({ headers: { get: () => null }, clone: () => { throw new Error("cannot clone"); } });
+  await fetch(`${localUrl}/client-state`);
+  await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(getPendingHttpNetworkMeasurements()).toBe(0);
 });

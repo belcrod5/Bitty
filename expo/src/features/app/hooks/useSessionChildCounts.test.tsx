@@ -105,3 +105,36 @@ test("a burst during an active count request results in one trailing fresh reque
   expect(fixture.request.mock.calls.map(([request]) => request.op)).toEqual(["agent.hello", "sessions.children.count", "agent.hello", "sessions.children.count"]);
   expect(result.current.counts.get(JSON.stringify(["codex", "shared"]))?.totalCount).toBe(7);
 });
+
+test("progressively discovered targets retain in-flight work and fetch only newly added parents", async () => {
+  const fixture = source();
+  let resolve!: (result: Record<string, unknown>) => void;
+  fixture.pending = new Promise((next) => { resolve = next; });
+  const first = [parents[0]];
+  const { result, rerender } = await renderHook(({ targets }: { targets: typeof parents }) =>
+    useSessionChildCounts(fixture.manager, "scope", targets), { initialProps: { targets: first } });
+  await waitFor(() => expect(fixture.request).toHaveBeenCalledTimes(2));
+  await rerender({ targets: parents });
+  expect(fixture.request).toHaveBeenCalledTimes(2);
+  fixture.pending = null;
+  await act(async () => { resolve({ counts: [{ sessionRef: parents[0], totalCount: 4, runningCount: 1 }] }); });
+  expect(result.current.counts.size).toBe(2);
+  const requests = fixture.request.mock.calls.filter(([request]) => request.op === "sessions.children.count");
+  expect(requests.map(([request]) => (request.payload as { parentSessionRefs: unknown }).parentSessionRefs)).toEqual([[parents[0]], [parents[1]]]);
+  await rerender({ targets: [...parents] });
+  expect(fixture.request.mock.calls.filter(([request]) => request.op === "sessions.children.count")).toHaveLength(2);
+});
+
+test("removed and re-added parents reject the old membership's response", async () => {
+  const fixture = source();
+  let resolve!: (result: Record<string, unknown>) => void;
+  fixture.pending = new Promise((next) => { resolve = next; });
+  const { result, rerender } = await renderHook(({ targets }: { targets: typeof parents }) =>
+    useSessionChildCounts(fixture.manager, "scope", targets), { initialProps: { targets: [parents[0]] } });
+  await waitFor(() => expect(fixture.request).toHaveBeenCalledTimes(2));
+  await rerender({ targets: [] });
+  await rerender({ targets: [parents[0]] });
+  fixture.pending = null; fixture.total = 7;
+  await act(async () => { resolve({ counts: [{ sessionRef: parents[0], totalCount: 99, runningCount: 1 }] }); });
+  expect(result.current.counts.get(JSON.stringify(["codex", "shared"]))?.totalCount).toBe(7);
+});

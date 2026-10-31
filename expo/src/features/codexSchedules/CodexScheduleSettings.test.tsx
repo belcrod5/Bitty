@@ -26,9 +26,11 @@ jest.mock("./codexScheduleApi", () => ({
 
 const mockOrchestrators = [{ id: "main", name: "メイン" },
   { id: "22222222-2222-4222-8222-222222222222", name: "調査担当" }];
-const mockManager = {
+let mockManager = {
+  getSnapshot: () => ({ generation: 1, url: "url", connectionOptionsGeneration: 0 }),
+  subscribe: jest.fn(() => () => {}),
   connect: jest.fn(async () => {}),
-  request: jest.fn(async () => ({ op: "voice.orchestrators.list.result", payload: { orchestrators: mockOrchestrators } })),
+  request: jest.fn(async () => ({ op: "voice.orchestrators.list.result", payload: { orchestrators: mockOrchestrators, selectedId: "main" } })),
 };
 jest.mock("../runnerWs/RunnerWebSocketContext", () => ({ useRunnerWebSocketManager: () => mockManager }));
 
@@ -67,9 +69,10 @@ const schedule = {
 };
 
 beforeEach(() => {
+  mockManager = { ...mockManager };
   jest.clearAllMocks();
   mockManager.connect.mockResolvedValue(undefined);
-  mockManager.request.mockResolvedValue({ op: "voice.orchestrators.list.result", payload: { orchestrators: mockOrchestrators } });
+  mockManager.request.mockResolvedValue({ op: "voice.orchestrators.list.result", payload: { orchestrators: mockOrchestrators, selectedId: "main" } });
   Alert.alert = alertMock;
   warnSpy = jest.spyOn(console, "warn").mockImplementation((...args) => {
     if (!String(args[0] || "").includes("SafeAreaView has been deprecated")) {
@@ -305,7 +308,7 @@ test("voice connection failure leaves ordinary schedules editable and saveable",
 });
 
 test("failed voice list preserves existing targets and supports retry by name", async () => {
-  mockManager.request.mockResolvedValueOnce({ op: "error", payload: { orchestrators: [] } });
+  mockManager.request.mockResolvedValueOnce({ op: "error", payload: { orchestrators: [], selectedId: "" } });
   mockGet.mockResolvedValue({ revision: 1, schedules: [{ ...schedule, action: {
     kind: "voice", orchestratorId: mockOrchestrators[1].id, prompt: "調査" },
   }] });

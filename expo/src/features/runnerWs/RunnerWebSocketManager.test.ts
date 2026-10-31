@@ -1,8 +1,10 @@
+import { getNetworkUsageSnapshot, resetNetworkUsage, utf8ByteLength } from "../ws/networkUsageMetrics";
 import { createWebSocketWithOptionalAuth } from "../ws/webSocketAuth";
 import { tokenFingerprint } from "../ws/tokenFingerprint";
 import { RunnerWebSocketManager } from "./RunnerWebSocketManager";
 import { VoiceControl, type VoiceSurface } from "../appControl/voiceControl";
 import type { RunnerWsMessage } from "./types";
+import { getVoiceOrchestrators, mutateVoiceOrchestrators, subscribeVoiceOrchestrators } from "../app/utils/voiceOrchestratorClient";
 
 jest.mock("../ws/webSocketAuth", () => ({
   createWebSocketWithOptionalAuth: jest.fn(),
@@ -1496,5 +1498,132 @@ test("control event support follows each connection's ready advertisement", asyn
   second.message({ channel: "control", op: "ready" });
   await reconnect;
   expect(manager.getSnapshot().supportedControlEvents).toEqual([]);
+  manager.disconnect();
+});
+
+
+test("operation byte counters match the decoded socket frames once, including malformed input", async () => {
+  resetNetworkUsage();
+  const socket = nextSocket(); const manager = createManager();
+  await connectReady(manager, socket);
+  const request = { channel: "agent" as const, op: "voice.history", payload: { orchestratorId: "main" } };
+  manager.send(request);
+  const received = { channel: "agent" as const, op: "voice.history.result", payload: { text: "日本語" } };
+  socket.message(received);
+  socket.onmessage?.({ data: "invalid json" } as MessageEvent);
+  const snapshot = getNetworkUsageSnapshot();
+  expect(snapshot.runnerWsByOperation["agent/voice.history"].sentBytes).toBe(utf8ByteLength(JSON.stringify(request)));
+  expect(snapshot.runnerWsByOperation["agent/voice.history.result"].receivedBytes).toBe(utf8ByteLength(JSON.stringify(received)));
+  expect(snapshot.runnerWsByOperation.other.receivedBytes).toBe(12);
+  expect(Object.values(snapshot.runnerWsByOperation).reduce((n, value) => n + value.receivedBytes, 0)).toBe(snapshot.runnerWs.receivedBytes);
+  manager.disconnect();
+});
+
+test("response consumers run once before await and callback errors reject only their request", async () => {
+  const socket = nextSocket(), manager = createManager();
+  await connectReady(manager, socket);
+  const delivered = jest.fn(); manager.subscribe({ channel: "agent" }, delivered);
+  const consume = jest.fn(() => { throw new Error("invalid application response"); });
+  const pending = manager.request({ channel: "agent", op: "sessions.list" }, { onResponse: consume });
+  const rejection = expect(pending).rejects.toThrow("invalid application response");
+  const outbound = JSON.parse(socket.sent.at(-1)!);
+  const response: RunnerWsMessage = { channel: "agent", op: "sessions.list.result", requestId: outbound.requestId, payload: {} };
+  socket.message(response); socket.message(response);
+  expect(consume).toHaveBeenCalledTimes(1);
+  expect(delivered).toHaveBeenCalledTimes(2);
+  expect(manager.getSnapshot().pendingRequestCount).toBe(0);
+  await rejection;
+  manager.disconnect();
+});
+
+test("aborted and timed-out requests never invoke response consumers for late replies", async () => {
+  jest.useFakeTimers();
+  const socket = nextSocket(), manager = createManager();
+  await connectReady(manager, socket);
+  const consume = jest.fn(), controller = new AbortController();
+  const aborted = manager.request({ channel: "agent", op: "sessions.list" }, { signal: controller.signal, onResponse: consume });
+  const abortedCheck = expect(aborted).rejects.toThrow("runner_ws_request_aborted");
+  const first = JSON.parse(socket.sent.at(-1)!);
+  controller.abort();
+  socket.message({ channel: "agent", op: "sessions.list.result", requestId: first.requestId });
+  await abortedCheck;
+  const timed = manager.request({ channel: "agent", op: "sessions.list" }, { timeoutMs: 10, onResponse: consume });
+  const timedCheck = expect(timed).rejects.toThrow("runner_ws_request_timeout");
+  const second = JSON.parse(socket.sent.at(-1)!);
+  jest.advanceTimersByTime(11);
+  socket.message({ channel: "agent", op: "sessions.list.result", requestId: second.requestId });
+  await timedCheck;
+  expect(consume).not.toHaveBeenCalled();
+  expect(manager.getSnapshot().pendingRequestCount).toBe(0);
+  manager.disconnect();
+});
+
+test("a notification preceding the mutation response does not discard the valid mutation", async () => {
+  const socket = nextSocket(), manager = createManager();
+  await connectReady(manager, socket);
+  const observed = jest.fn(); subscribeVoiceOrchestrators(manager, observed);
+  socket.message({ channel: "agent", op: "voice.unread.changed", payload: { etag: "old", selectedId: "main",
+    orchestrators: [{ id: "main", name: "Main", icon: "old", unreadCount: 1, learningUnreadCount: 0 }] } });
+  const mutation = mutateVoiceOrchestrators(manager, "update", { orchestratorId: "main" });
+  const outbound = JSON.parse(socket.sent.at(-1)!);
+  socket.message({ channel: "agent", op: "voice.unread.changed", payload: { etag: "old", notModified: true,
+    unreadCounts: [{ id: "main", unreadCount: 9, learningUnreadCount: 0 }] } });
+  socket.message({ channel: "agent", op: "voice.orchestrators.update.result", requestId: outbound.requestId,
+    payload: { etag: "edited", selectedId: "main", orchestrators: [{ id: "main", name: "Edited", icon: "edited", unreadCount: 9, learningUnreadCount: 0 }] } });
+  await mutation;
+  expect(observed.mock.calls.at(-1)).toEqual([expect.objectContaining({ orchestrators: [expect.objectContaining({ icon: "edited", unreadCount: 9 })] }), true]);
+  manager.disconnect();
+});
+
+test.each(["metadata", "counts"])("mutation response then %s notification cannot roll shared state back in an await continuation", async (kind) => {
+  const socket = nextSocket(), manager = createManager();
+  await connectReady(manager, socket);
+  const list = (etag: string, icon: string, unreadCount: number) => ({ etag, selectedId: "other", orchestrators: [
+    { id: "other", name: "Other", icon, unreadCount, learningUnreadCount: 0 },
+  ] });
+  const observed: Array<[string, number, boolean]> = [];
+  subscribeVoiceOrchestrators(manager, (value, fromMutation) => observed.push([
+    value.orchestrators[0].icon, value.orchestrators[0].unreadCount || 0, fromMutation,
+  ]));
+  const changing = mutateVoiceOrchestrators(manager, "select", { orchestratorId: "other" });
+  const outbound = JSON.parse(socket.sent.at(-1)!);
+  socket.message({ channel: "agent", op: "voice.orchestrators.select.result", requestId: outbound.requestId, payload: list("A", "mutation-icon", 1) });
+  expect(observed).toEqual([["mutation-icon", 1, true]]);
+  socket.message({ channel: "agent", op: "voice.unread.changed", payload: kind === "metadata"
+    ? list("B", "newer-icon", 2)
+    : { etag: "A", notModified: true, unreadCounts: [{ id: "other", unreadCount: 2, learningUnreadCount: 0 }] } });
+  await changing;
+  expect(observed).toEqual([["mutation-icon", 1, true], [kind === "metadata" ? "newer-icon" : "mutation-icon", 2, false]]);
+  const mounted = jest.fn(); subscribeVoiceOrchestrators(manager, mounted);
+  expect(mounted.mock.calls[0][0].orchestrators[0]).toMatchObject({ icon: kind === "metadata" ? "newer-icon" : "mutation-icon", unreadCount: 2 });
+  manager.disconnect();
+});
+
+test.each(["url", "credentials"])("a source %s change between response delivery and await never applies the old mutation to the new source", async (kind) => {
+  const first = nextSocket(), manager = createManager();
+  await connectReady(manager, first);
+  const mutation = mutateVoiceOrchestrators(manager, "update", { orchestratorId: "main", name: "Edited" });
+  const retiredMutation = expect(mutation).rejects.toThrow();
+  const outbound = JSON.parse(first.sent.at(-1)!);
+  const second = nextSocket();
+  let freshRead!: ReturnType<typeof getVoiceOrchestrators>;
+  let switched!: () => void;
+  const afterSwitch = new Promise<void>((resolve) => { switched = resolve; });
+  queueMicrotask(() => {
+    manager.setConnectionOptions({ url: kind === "url" ? "ws://different/runner-ws" : manager.getSnapshot().url, token: "different-token" });
+    second.open(); second.message({ channel: "control", op: "ready" });
+    freshRead = getVoiceOrchestrators(manager);
+    switched();
+  });
+  first.message({ channel: "agent", op: "voice.orchestrators.update.result", requestId: outbound.requestId,
+    payload: { etag: "old", selectedId: "main", orchestrators: [{ id: "main", name: "Edited", icon: "old-mutation" }] } });
+  await afterSwitch;
+  const freshRequest = JSON.parse(second.sent.at(-1)!);
+  second.message({ channel: "agent", op: "voice.orchestrators.list.result", requestId: freshRequest.requestId,
+    payload: { etag: "new", selectedId: "main", orchestrators: [{ id: "main", name: "Fresh", icon: "fresh-source" }] } });
+  await retiredMutation;
+  expect((await freshRead).orchestrators[0].icon).toBe("fresh-source");
+  const mounted = jest.fn(); subscribeVoiceOrchestrators(manager, mounted);
+  expect(mounted.mock.calls[0][0].orchestrators[0].icon).toBe("fresh-source");
   manager.disconnect();
 });

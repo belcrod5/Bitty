@@ -15,6 +15,7 @@ export type SkiaBoardRunnerSnapshot = {
   initialized: boolean;
   revision: number;
   board: SkiaBoardState | null;
+  etag?: string;
 };
 
 export type SkiaBoardOpsResult =
@@ -35,14 +36,15 @@ function requireAuth({ runnerUrl, runnerToken }: RunnerAuth): { baseUrl: string;
   return { baseUrl, token };
 }
 
-async function fetchJson(url: string, init: RequestInit): Promise<{ status: number; data: Record<string, unknown> }> {
+async function fetchJson(url: string, init: RequestInit): Promise<{ status: number; data: Record<string, unknown>; etag?: string }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), SKIA_BOARD_FETCH_TIMEOUT_MS);
   try {
     const response = await fetch(url, { ...init, signal: controller.signal });
-    const data = await response.json().catch(() => ({}));
+    const data = response.status === 304 ? {} : await response.json().catch(() => ({}));
     return {
       status: response.status,
+      etag: response.headers?.get?.("etag") || undefined,
       data: data && typeof data === "object" ? data as Record<string, unknown> : {},
     };
   } finally {
@@ -79,14 +81,15 @@ function errorMessage(data: Record<string, unknown>, status: number): string {
   return String(data.message || data.error || `HTTP ${status}`);
 }
 
-export async function fetchSkiaBoard(auth: RunnerAuth): Promise<SkiaBoardRunnerSnapshot> {
+export async function fetchSkiaBoard(auth: RunnerAuth, previous?: SkiaBoardRunnerSnapshot | null): Promise<SkiaBoardRunnerSnapshot> {
   const { baseUrl, token } = requireAuth(auth);
-  const { status, data } = await fetchJson(`${baseUrl}/skia-board`, {
+  const { status, data, etag } = await fetchJson(`${baseUrl}/skia-board`, {
     method: "GET",
-    headers: { authorization: `Bearer ${token}` },
+    headers: { authorization: `Bearer ${token}`, ...(previous?.etag ? { "if-none-match": previous.etag } : {}) },
   });
+  if (status === 304 && previous?.etag && (!etag || etag === previous.etag)) return previous;
   if (status !== 200) throw new Error(errorMessage(data, status));
-  return snapshotFromData(data);
+  return { ...snapshotFromData(data), ...(etag ? { etag } : {}) };
 }
 
 export async function postSkiaBoardOps(

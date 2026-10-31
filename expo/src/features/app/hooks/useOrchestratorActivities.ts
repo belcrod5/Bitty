@@ -1,3 +1,4 @@
+import { getVoiceOrchestrators, subscribeVoiceOrchestrators } from "../utils/voiceOrchestratorClient";
 import { useEffect, useRef, useState } from "react";
 import { useRunnerWebSocketManager, useRunnerWebSocketSnapshot } from "../../runnerWs/RunnerWebSocketContext";
 import type { VoiceOrchestrator } from "../components/VoiceOrchestratorIcon";
@@ -37,7 +38,6 @@ export function useOrchestratorActivities(runnerUrl: string, runnerToken: string
   const [activities, setActivities] = useState<OrchestratorActivity[]>([]);
   const [orchestrators, setOrchestrators] = useState<VoiceOrchestrator[]>([]);
   const [selectedId, setSelectedId] = useState("");
-  const metadataRevision = useRef(0);
   const siriNamesKey = useRef("");
   const credentials = useRef({ runnerUrl, runnerToken });
 
@@ -48,7 +48,7 @@ export function useOrchestratorActivities(runnerUrl: string, runnerToken: string
       setOrchestrators([]);
       setSelectedId("");
     }
-    if (!enabled || !connected || appState === "background") return;
+    if (!enabled || !connected || appState !== "active") return;
 
     let current = true;
     let latest: ActivitySnapshot | null = null;
@@ -93,24 +93,12 @@ export function useOrchestratorActivities(runnerUrl: string, runnerToken: string
       { channel: "control", op: "orchestrator_activity_updated" },
       (message) => applySnapshot(message.payload, true),
     );
-    const unsubscribeMetadata = manager.subscribe(
-      { channel: "agent", op: "voice.unread.changed" },
-      (message) => {
-        metadataRevision.current += 1;
-        applyMetadata(message.payload);
-      },
-    );
-    const revision = metadataRevision.current;
+    const unsubscribeMetadata = subscribeVoiceOrchestrators(manager, applyMetadata);
     void manager.request({ channel: "control", op: "orchestrator_activity_snapshot" })
       .then((response) => {
         if (response.op === "orchestrator_activity_snapshot") applySnapshot(response.payload, false);
       }).catch(() => undefined);
-    void manager.request({ channel: "agent", op: "voice.orchestrators.list" })
-      .then((response) => {
-        if (revision === metadataRevision.current && response.op === "voice.orchestrators.list.result") {
-          applyMetadata(response.payload);
-        }
-      }).catch(() => undefined);
+    void getVoiceOrchestrators(manager).catch(() => undefined);
     return () => {
       current = false;
       unsubscribeActivity();

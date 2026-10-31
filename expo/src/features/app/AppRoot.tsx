@@ -1,3 +1,4 @@
+import { getVoiceOrchestrators } from "./utils/voiceOrchestratorClient";
 import { getVoiceControl } from "../appControl/voiceControl";
 import { WidgetSnapshotPublisher } from "./components/WidgetSnapshotPublisher";
 import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
@@ -49,7 +50,8 @@ import {
 import { PushNotificationRegistrar } from "./components/PushNotificationRegistrar";
 import type { PopupChatSourceRect, SessionPopupOrigin, SkiaBoardPopupHandle } from "./components/popupChatTypes";
 import { useBufferedClientLogs } from "./hooks/useBufferedClientLogs";
-import { getNetworkUsageSnapshot } from "../ws/networkUsageMetrics";
+import { captureNetworkUsageInteraction, endNetworkUsageIdleObservation } from "../ws/networkUsageMetrics";
+import { useNetworkUsageLogging } from "./hooks/useNetworkUsageLogging";
 import { useUiSfxController } from "./hooks/useUiSfxController";
 import { useThemeSfxController } from "./hooks/useThemeSfxController";
 import { useAssistantEventSfxController } from "./hooks/useAssistantEventSfxController";
@@ -405,7 +407,6 @@ const SESSION_DIAG_LOG_BUFFER_MAX = 240;
 const SESSION_DIAG_LOG_FLUSH_BATCH_SIZE = 40;
 const SESSION_DIAG_LOG_FLUSH_DELAY_MS = 700;
 const SESSION_DIAG_LOG_RETRY_MS = 3000;
-const NETWORK_USAGE_LOG_INTERVAL_MS = 60_000;
 const SESSION_DIAG_EVENT_THROTTLE_DEFAULT_MS = 1200;
 const SESSION_DIAG_DETAIL_EVENTS_ENABLED = (() => {
   const env = (globalThis as { process?: { env?: Record<string, unknown> } }).process?.env || {};
@@ -1119,34 +1120,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     retryMs: SESSION_DIAG_LOG_RETRY_MS,
   });
   sessionDiagEnqueueRef.current = sessionDiagClientLogs.enqueue;
-  useEffect(() => {
-    let lastLogged: ReturnType<typeof getNetworkUsageSnapshot> | null = null;
-    const logUsage = () => {
-      const snapshot = getNetworkUsageSnapshot();
-      if (snapshot.totalSentBytes === 0 && snapshot.totalReceivedBytes === 0) return;
-      if (
-        lastLogged?.sinceMs === snapshot.sinceMs &&
-        lastLogged.totalSentBytes === snapshot.totalSentBytes &&
-        lastLogged.totalReceivedBytes === snapshot.totalReceivedBytes
-      ) return;
-      lastLogged = snapshot;
-      logSessionDiag("network_usage_snapshot", {
-        ...snapshot,
-        sampledAtMs: Date.now(),
-        ttsMediaMeasurement: "server_reported_estimate",
-        runnerWsMeasurement: "decoded_payload_bytes",
-        httpMeasurement: "content_length_or_decoded_body_bytes",
-      }, { throttleMs: 0 });
-    };
-    const timer = setInterval(logUsage, NETWORK_USAGE_LOG_INTERVAL_MS);
-    const subscription = AppState.addEventListener("change", (state) => {
-      if (state !== "active") logUsage();
-    });
-    return () => {
-      clearInterval(timer);
-      subscription.remove();
-    };
-  }, [logSessionDiag]);
+  useNetworkUsageLogging(logSessionDiag, runnerWebSocketManager);
 
   const conversationMessagesRef = useRef<ConversationMessage[]>([]);
   const setReplyLoadingWithRefDelegateRef = useRef<(next: boolean) => void>(() => {});
@@ -4402,6 +4376,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     transcriptOverride?: string,
     options?: SendReplyOptions
   ) {
+    endNetworkUsageIdleObservation("send_action");
     const requestPanelId = normalizeRuntimePanelId(options?.panelId);
     const requestSessionSnapshot = options?.sessionSnapshot;
     logSessionDiag("reply_send_requested", {
@@ -6002,9 +5977,8 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     },
     preflight: async (target) => {
       if (target.kind === "orchestrator") {
-        const response = await runnerWebSocketManager.request({ channel: "agent", op: "voice.orchestrators.list" });
-        const items = (response.payload as { orchestrators?: Array<{ id: string }> })?.orchestrators;
-        if (!items?.some((item) => item.id === target.orchestratorId)) return "target_not_found";
+        const { orchestrators } = await getVoiceOrchestrators(runnerWebSocketManager);
+        if (!orchestrators.some((item) => item.id === target.orchestratorId)) return "target_not_found";
         const opened = await runnerWebSocketManager.request({ channel: "agent", op: "voice.open", payload: { orchestratorId: target.orchestratorId } });
         const status = (opened.payload as { status?: string })?.status;
         return status === "accepted" || status === "running" ? "target_busy" : null;
@@ -6062,7 +6036,10 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   useEffect(() => {
     const openVoiceLink = (url: string | null) => {
       const id = parseVoiceDeepLink(url);
-      if (id) setPendingVoiceOrchestratorId(id);
+      if (id) {
+        endNetworkUsageIdleObservation("external_action");
+        setPendingVoiceOrchestratorId(id);
+      }
     };
     void Linking.getInitialURL().then(openVoiceLink);
     const voiceLink = Linking.addEventListener("url", ({ url }) => openVoiceLink(url));
@@ -6113,7 +6090,10 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     [appDrawerProps]
   );
   return (
-      <GestureHandlerRootView style={styles.safeArea}>
+      <GestureHandlerRootView style={styles.safeArea}
+        onStartShouldSetResponderCapture={captureNetworkUsageInteraction}
+        {...{ onChangeCapture: captureNetworkUsageInteraction }}
+        {...(Platform.OS === "macos" || Platform.OS === "web" ? { onKeyDownCapture: captureNetworkUsageInteraction } : {})}>
       <RunnerWebSocketProvider
         bootstrapReady={settingsLoaded}
         url={codexWsUrl}

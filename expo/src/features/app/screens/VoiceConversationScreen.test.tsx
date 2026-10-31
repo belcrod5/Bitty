@@ -17,7 +17,7 @@ const mockSynthesizeSpeechStream = jest.fn(async (_text: string, _target: { mess
 let mockMainTts: { ttsProvider: string; voiceId: string } | null = null;
 let mockTurnTts: unknown;
 const mockOnClose = jest.fn();
-const mockRequest = jest.fn(async (message: { op: string; payload?: { orchestratorId?: string } }) => {
+const mockRequest = jest.fn(async (message: { op: string; payload?: { orchestratorId?: string } }, _options?: { timeoutMs?: number }) => {
   if (message.op === "voice.orchestrators.list") return { op: "voice.orchestrators.list.result",
     payload: { orchestrators: [{ id: "main", name: "メイン", icon: "", ...mockMainTts },
       { id: "other", name: "調査", icon: "" }], selectedId: "main" } };
@@ -30,7 +30,11 @@ const mockRequest = jest.fn(async (message: { op: string; payload?: { orchestrat
   throw new Error(`unexpected ${message.op}`);
 });
 const mockQuestionHandlers = new Map<string, Set<(message: RunnerWsMessage) => void>>();
-const mockManager = { connect: jest.fn(async () => undefined), request: mockRequest,
+let mockManager = { connect: jest.fn(async () => undefined),
+  request: async (message: Parameters<typeof mockRequest>[0], options?: { timeoutMs?: number; onResponse?: (message: unknown) => void }) => {
+    const response = options?.timeoutMs ? await mockRequest(message, { timeoutMs: options.timeoutMs }) : await mockRequest(message);
+    options?.onResponse?.(response); return response;
+  },
   subscribe: ({ op }: { op: string }, listener: (message: RunnerWsMessage) => void) => {
     if (!mockQuestionHandlers.has(op)) mockQuestionHandlers.set(op, new Set());
     mockQuestionHandlers.get(op)?.add(listener);
@@ -40,7 +44,7 @@ const mockManager = { connect: jest.fn(async () => undefined), request: mockRequ
       if (handlers?.size === 0) mockQuestionHandlers.delete(op);
     };
   },
-  subscribeSnapshot: () => () => undefined, getSnapshot: () => ({ connected: true }),
+  subscribeSnapshot: () => () => undefined, getSnapshot: () => ({ connected: true, generation: mockGeneration, url: "url", connectionOptionsGeneration: 0 }),
 };
 let mockManagerVisible = false;
 let mockManagerOnClose: (() => void) | null = null;
@@ -276,6 +280,7 @@ function ClosableVoiceScreen() {
 }
 
 beforeEach(() => {
+  mockManager = { ...mockManager };
   AppState.currentState = "active";
   jest.clearAllMocks();
   mockLastSttOptions = null;
@@ -1504,3 +1509,37 @@ jest.mock("react-native-enriched-markdown", () => ({ EnrichedMarkdownText: (prop
   return React.createElement(Text, props, props.markdown);
 } }));
 jest.mock("../components/MermaidCodeBlock", () => ({ MermaidCodeBlock: () => null }));
+
+
+test("metadata notified after list application wins the caller continuation", async () => {
+  let resolveList!: (value: unknown) => void;
+  mockRequest.mockImplementationOnce(() => new Promise((resolve) => { resolveList = resolve as (value: unknown) => void; }));
+  const screen = await testingRender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await waitFor(() => expect(resolveList).toBeDefined());
+  await act(async () => {
+    resolveList({ op: "voice.orchestrators.list.result", payload: { etag: "A", selectedId: "main",
+      orchestrators: [{ id: "main", name: "Old", icon: "", unreadCount: 0 }] } });
+    queueMicrotask(() => mockQuestionHandlers.get("voice.unread.changed")?.forEach((listener) => listener({
+      channel: "agent", op: "voice.unread.changed", payload: { etag: "B", selectedId: "main",
+        orchestrators: [{ id: "main", name: "New", icon: "", unreadCount: 9 }] },
+    })));
+  });
+  expect(screen.getByTestId("voice-orchestrator-floating").props.accessibilityLabel).toContain("New");
+  expect(screen.getByTestId("voice-orchestrator-unread-main")).toBeTruthy();
+});
+
+
+test("metadata revalidation does not refresh history, while an unread-count event does", async () => {
+  const screen = await testingRender(<VoiceConversationScreen {...playback} onClose={mockOnClose}
+    initialOrchestratorId="main" />);
+  await waitFor(() => expect(screen.getByTestId("voice-conversation-history")).toBeTruthy());
+  mockVoice.refreshHistory.mockClear();
+  mockGeneration += 1;
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} initialOrchestratorId="main" />);
+  expect(mockVoice.refreshHistory).not.toHaveBeenCalled();
+  await act(async () => mockQuestionHandlers.get("voice.unread.changed")?.forEach((listener) => listener({
+    channel: "agent", op: "voice.unread.changed", payload: { etag: "A", notModified: true,
+      unreadCounts: [{ id: "main", unreadCount: 1, learningUnreadCount: 0 }] },
+  })));
+  expect(mockVoice.refreshHistory).toHaveBeenCalledTimes(1);
+});

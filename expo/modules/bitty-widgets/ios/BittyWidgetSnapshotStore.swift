@@ -23,6 +23,22 @@ struct IncomingWidgetSnapshot: Codable {
   let usageLimitReached: Bool
   let usageFetchedAt: Double
   var updatedAt: Double?
+  var metadataEtag: String?
+  var iconsUnchanged: Bool?
+
+  func mergingCachedIcons(_ previous: IncomingWidgetSnapshot?) -> IncomingWidgetSnapshot? {
+    guard valid else { return nil }
+    guard iconsUnchanged == true else { return self }
+    guard let previous, previous.valid, let metadataEtag, !metadataEtag.isEmpty,
+      previous.metadataEtag == metadataEtag, previous.orchestrators.count == orchestrators.count else { return nil }
+    let icons = Dictionary(uniqueKeysWithValues: previous.orchestrators.map { ($0.id, $0.icon) })
+    var result = self
+    for index in result.orchestrators.indices {
+      guard let icon = icons[result.orchestrators[index].id] else { return nil }
+      result.orchestrators[index].icon = icon
+    }
+    return result
+  }
 
   var valid: Bool {
     version == 1 && !orchestrators.isEmpty && orchestrators.count <= 100
@@ -30,6 +46,8 @@ struct IncomingWidgetSnapshot: Codable {
       && Set(orchestrators.map(\.id)).count == orchestrators.count
       && orchestrators.allSatisfy { !$0.name.isEmpty && $0.name.count <= 200 && $0.id.count <= 200
         && $0.id.range(of: "^[A-Za-z0-9._:-]+$", options: .regularExpression) != nil && $0.icon.utf8.count <= 1_500_000 }
+      && (metadataEtag.map { $0.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil } ?? true)
+      && (iconsUnchanged != true || metadataEtag != nil)
       && (runningCount ?? 0) >= 0 && overview.count <= 1200
       && overviewFetchedAt.isFinite && overviewFetchedAt >= 0 && usageFetchedAt.isFinite && usageFetchedAt >= 0
       && [fiveHourRemaining, weeklyRemaining].allSatisfy { $0 == nil || (0...100).contains($0!) }
@@ -92,6 +110,12 @@ final class BittyWidgetSnapshotStore: NSObject, URLSessionTaskDelegate {
         self.logger.notice("[widget-refresh] event=refresh id=\(diagnosticID, privacy: .public) outcome=request_unavailable")
         completion(.noData); return
       }
+      let previous: IncomingWidgetSnapshot? = self.snapshotFile().flatMap { try? Data(contentsOf: $0) }
+        .flatMap { try? JSONDecoder().decode(IncomingWidgetSnapshot.self, from: $0) }
+        .flatMap { $0.valid ? $0 : nil }
+      if let etag = previous?.metadataEtag, !etag.isEmpty {
+        request.setValue(etag, forHTTPHeaderField: "If-Bitty-Orchestrator-Metadata-Match")
+      }
       request.setValue(diagnosticID, forHTTPHeaderField: "X-Bitty-Widget-Refresh-ID")
       let task = self.session.dataTask(with: request) { data, response, error in
         self.queue.async {
@@ -125,21 +149,29 @@ final class BittyWidgetSnapshotStore: NSObject, URLSessionTaskDelegate {
             self.logger.notice("[widget-refresh] event=refresh id=\(diagnosticID, privacy: .public) outcome=schema_invalid")
             completion(.failed); return
           }
+          guard let merged = snapshot.mergingCachedIcons(previous) else {
+            self.logger.notice("[widget-refresh] event=refresh id=\(diagnosticID, privacy: .public) outcome=metadata_missing")
+            completion(.failed); return
+          }
+          snapshot = merged
           self.logger.notice("[widget-refresh] event=decoded id=\(diagnosticID, privacy: .public) count=\(snapshot.runningCount ?? -1)")
           // Keep bounded images at actual pixel size. The extension never fetches image URLs.
-          snapshot.orchestrators = snapshot.orchestrators.map { record in
-            var result = record
-            result.icon = ""
-            if record.icon.hasPrefix("data:image/"), let comma = record.icon.firstIndex(of: ","),
-              let bytes = Data(base64Encoded: String(record.icon[record.icon.index(after: comma)...])),
-              bytes.count <= 1_100_000, let image = UIImage(data: bytes) {
-              let format = UIGraphicsImageRendererFormat()
-              format.scale = 1
-              let renderer = UIGraphicsImageRenderer(size: CGSize(width: 96, height: 96), format: format)
-              result.icon = renderer.pngData { _ in image.draw(in: CGRect(x: 0, y: 0, width: 96, height: 96)) }.base64EncodedString()
+          if snapshot.iconsUnchanged != true {
+            snapshot.orchestrators = snapshot.orchestrators.map { record in
+              var result = record
+              result.icon = ""
+              if record.icon.hasPrefix("data:image/"), let comma = record.icon.firstIndex(of: ","),
+                let bytes = Data(base64Encoded: String(record.icon[record.icon.index(after: comma)...])),
+                bytes.count <= 1_100_000, let image = UIImage(data: bytes) {
+                let format = UIGraphicsImageRendererFormat()
+                format.scale = 1
+                let renderer = UIGraphicsImageRenderer(size: CGSize(width: 96, height: 96), format: format)
+                result.icon = renderer.pngData { _ in image.draw(in: CGRect(x: 0, y: 0, width: 96, height: 96)) }.base64EncodedString()
+              }
+              return result
             }
-            return result
           }
+          snapshot.iconsUnchanged = nil
           guard let file = self.snapshotFile() else {
             self.logger.notice("[widget-refresh] event=save id=\(diagnosticID, privacy: .public) outcome=container_unavailable")
             completion(.failed); return

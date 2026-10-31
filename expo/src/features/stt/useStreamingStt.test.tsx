@@ -4,6 +4,8 @@ import { CONTINUOUS_DICTATION_IDLE_MS, REPLY_CYCLE_START_TIMEOUT_MS, TTS_START_G
 import { playVoiceSound } from "../app/voiceSounds";
 import type { StreamingSttTransportCallbacks } from "./streamingSttTransport";
 import { correctSttTranscript, type SttCorrectionContext } from "./sttSettingsClient";
+import { recordHttpNetworkUsage, subscribeNetworkUsageIdleObservations, updateNetworkUsageObservationAppState,
+  type NetworkUsageIdleObservation } from "../ws/networkUsageMetrics";
 
 const mockSessions: MockSession[] = [];
 const mockConnect = jest.fn((_url: string, _token: string, callbacks: StreamingSttTransportCallbacks) => {
@@ -2213,4 +2215,26 @@ test("an unsafe ready sound release stops capture instead of unmuting it", async
   expect(session.setInputMuted.mock.calls).toEqual([[true]]);
   expect(session.abort).toHaveBeenCalledTimes(1);
   expect(result.current.isArmed()).toBe(false);
+});
+
+test("speech input closes idle measurement before either voice screen's speech callback can request data", async () => {
+  updateNetworkUsageObservationAppState("active");
+  updateNetworkUsageObservationAppState("background");
+  updateNetworkUsageObservationAppState("active");
+  const observations: NetworkUsageIdleObservation[] = [];
+  const unsubscribe = subscribeNetworkUsageIdleObservations((value) => observations.push(value));
+  observations.length = 0;
+  const options = createOptions();
+  options.onSpeechBegin.mockImplementation(() => {
+    expect(observations[0]).toMatchObject({ endReason: "voice_input", comparisonEligible: false,
+      usage: { totalReceivedBytes: 10 } });
+    recordHttpNetworkUsage("https://runner/session-messages", 0, 1000);
+  });
+  const { result } = await renderHook(() => useStreamingStt(options));
+  const session = await openReady(result);
+  recordHttpNetworkUsage("https://runner/client-state", 0, 10);
+  await emit(session, { type: "speech_activity_begin" });
+  expect(options.onSpeechBegin).toHaveBeenCalledTimes(1);
+  expect(observations[0].usage.totalReceivedBytes).toBe(10);
+  unsubscribe();
 });

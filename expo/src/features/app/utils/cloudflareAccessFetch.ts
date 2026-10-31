@@ -16,6 +16,11 @@ let originalFetch: typeof fetch | null = null;
 let activeRunnerOrigin = "";
 let cloudflareAccessOrigin = "";
 let activeHeaders: Record<string, string> = {};
+let pendingHttpMeasurements = 0;
+
+export function getPendingHttpNetworkMeasurements() {
+  return pendingHttpMeasurements;
+}
 
 function normalizeOrigin(rawUrl: string) {
   const value = String(rawUrl || "").trim();
@@ -87,7 +92,7 @@ function requestBodyBytes(body: BodyInit | null | undefined): number {
   return typeof maybeBlobSize === "number" && Number.isFinite(maybeBlobSize) ? maybeBlobSize : 0;
 }
 
-function recordHttpResponseUsage(url: string, response: Response, runnerOrigin: string) {
+async function recordHttpResponseUsage(url: string, response: Response, runnerOrigin: string) {
   const headers = response?.headers;
   const contentLength = Number(headers?.get?.("content-length") || 0);
   if (Number.isFinite(contentLength) && contentLength > 0) {
@@ -101,9 +106,8 @@ function recordHttpResponseUsage(url: string, response: Response, runnerOrigin: 
     return;
   }
   try {
-    response.clone().arrayBuffer()
-      .then((buffer) => recordHttpNetworkUsage(url, 0, buffer.byteLength, runnerOrigin))
-      .catch(() => undefined);
+    const buffer = await response.clone().arrayBuffer();
+    recordHttpNetworkUsage(url, 0, buffer.byteLength, runnerOrigin);
   } catch {
     // clone不可(既に消費済み等)の応答は未計上のまま許容する。
   }
@@ -127,22 +131,17 @@ export function configureCloudflareAccessFetch(config: FetchPatchConfig) {
       ? { ...(init || {}), headers: mergeHeaders(init?.headers, activeHeaders) }
       : init;
     const responsePromise = originalFetch(input, finalInit);
+    pendingHttpMeasurements += 1;
     try {
       const url = requestUrl(input);
       const runnerOrigin = activeRunnerOrigin;
       recordHttpNetworkUsage(url, requestBodyBytes(finalInit?.body), 0, runnerOrigin);
-      responsePromise.then(
-        (response) => {
-          try {
-            recordHttpResponseUsage(url, response, runnerOrigin);
-          } catch {
-            // 計測失敗は通信本体に影響させない。
-          }
-        },
-        () => undefined
-      );
+      void responsePromise.then((response) => recordHttpResponseUsage(url, response, runnerOrigin))
+        .catch(() => undefined)
+        .finally(() => { pendingHttpMeasurements -= 1; });
     } catch {
       // 計測失敗は通信本体に影響させない。
+      pendingHttpMeasurements -= 1;
     }
     return responsePromise;
   }) as typeof fetch;

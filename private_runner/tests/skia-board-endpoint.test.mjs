@@ -126,3 +126,22 @@ test("POST /skia-board/ingest-directories merges directories", async () => {
     assert.deepEqual(second.response.payload.ingestDirectories, ["/a", "/b"]);
   });
 });
+
+
+test("GET validates the post-ingest body, including changes with an unchanged revision", async () => {
+  let board = { initialized: true, revision: 4, origin: "same", board: { cards: [], sections: [] } };
+  let sweeps = 0;
+  const replies = [];
+  const handler = createSkiaBoardHttpHandler({ service: { getBoard: async () => board }, ingest: { sweep: async () => { sweeps++; } },
+    runnerToken: "token", parseAuthToken: () => "token", readJsonBody: async () => {},
+    json: (_res, status, body, headers) => replies.push({ status, body, headers }) });
+  const response = { writeHead(status, headers) { replies.push({ status, headers }); }, end() {} };
+  await handler({ method: "GET", headers: {} }, response, "/skia-board");
+  const first = replies.pop();
+  assert.equal(first.status, 200); assert.match(first.headers.etag, /^W\//);
+  await handler({ method: "GET", headers: { "if-none-match": first.headers.etag } }, response, "/skia-board");
+  assert.equal(replies.pop().status, 304); assert.equal(sweeps, 2);
+  board = { ...board, board: { cards: [{ id: "new" }], sections: [] } };
+  await handler({ method: "GET", headers: { "if-none-match": first.headers.etag } }, response, "/skia-board");
+  const changed = replies.pop(); assert.equal(changed.status, 200); assert.notEqual(changed.headers.etag, first.headers.etag);
+});

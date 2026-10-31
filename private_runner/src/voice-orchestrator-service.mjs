@@ -1,10 +1,16 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { createVoiceContextService, readVoiceEventState } from "./voice-context-service.mjs";
 import { openOrchestratorLearning } from "./orchestrator-learning-service.mjs";
 import { createOrchestratorLearningUsage } from "./orchestrator-learning-usage.mjs";
 import { createVoiceSubagentService } from "./voice-subagents.mjs";
+
+export function conditionalOrchestratorList(list, ifNoneMatch) {
+  if (!ifNoneMatch || ifNoneMatch !== list.etag) return list;
+  return { etag: list.etag, notModified: true, unreadCounts: list.orchestrators.map(({ id, unreadCount, learningUnreadCount }) =>
+    ({ id, unreadCount, learningUnreadCount })) };
+}
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_ICON_BYTES = 1024 * 1024;
@@ -114,7 +120,8 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
     ({ ...item, ttsProvider: item.ttsProvider || defaultTtsProvider, voiceId: item.voiceId || "",
       unreadCount: await (await loadedContext(item.id)).unread(),
       learningUnreadCount: learnings.get(item.id)?.unreadCount() || 0 }))),
-  selectedId: registry.selectedId });
+  selectedId: registry.selectedId,
+  etag: createHash("sha256").update(JSON.stringify([registry.orchestrators, registry.selectedId, defaultTtsProvider])).digest("hex") });
 
   const ownerDirectory = (id) => id === "main" ? root : path.join(orchestratorRoot, id);
   function scopeOf(key) {
@@ -503,8 +510,8 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
       return result;
     }); },
     async taskOverview() { return (await context("main")).taskOverview(); },
-    async history(id, conversationKey) { return exclusive(async () => { await load(); await ownerContexts(idOf(id));
-      return (await loadedContext(id, scopeOf(conversationKey))).history(); }); },
+    async history(id, conversationKey, ifNoneMatch) { return exclusive(async () => { await load(); await ownerContexts(idOf(id));
+      return (await loadedContext(id, scopeOf(conversationKey))).history(ifNoneMatch); }); },
     async respondToChecklistCompletion(id, sourceHash, version, decision, conversationKey) {
       return exclusive(async () => { await load();
         const target = await loadedContext(idOf(id), scopeOf(conversationKey));

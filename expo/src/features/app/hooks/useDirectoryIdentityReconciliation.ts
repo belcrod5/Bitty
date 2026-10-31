@@ -72,6 +72,7 @@ export function useDirectoryIdentityReconciliation({
         try {
           const url = new URL(`${baseUrl}/directories`);
           url.searchParams.set("path", directory);
+          url.searchParams.set("view", "identity");
           const response = await fetch(url.toString(), {
             headers: { authorization: `Bearer ${token}` },
             signal: controller.signal,

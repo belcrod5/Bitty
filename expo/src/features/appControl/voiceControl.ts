@@ -1,3 +1,4 @@
+import { endNetworkUsageIdleObservation } from "../ws/networkUsageMetrics";
 import type { RunnerWebSocketManager } from "../runnerWs/RunnerWebSocketManager";
 import type { RunnerWsMessage } from "../runnerWs/types";
 
@@ -271,6 +272,7 @@ export class VoiceControl {
     throw new Error("operation_cancelled");
   }
   private async execute(message: RunnerWsMessage) {
+    endNetworkUsageIdleObservation("external_action");
     const p = message.payload as { action?: string; surfaceId?: string; expectedGeneration?: number; connectionGeneration?: string;
       target?: VoiceTarget; expiresAt?: string; callerOperationId?: string } | undefined;
     const id = message.operationId;

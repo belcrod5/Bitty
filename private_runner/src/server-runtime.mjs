@@ -47,7 +47,7 @@ import {
 } from "./codex-turn-execution.mjs";
 import { createCodexAppServerClient } from "./codex-app-server-client.mjs";
 import { createOrchestratorRuntime } from "./orchestrator-runtime.mjs";
-import { createVoiceOrchestratorService } from "./voice-orchestrator-service.mjs";
+import { conditionalOrchestratorList, createVoiceOrchestratorService } from "./voice-orchestrator-service.mjs";
 import { createVoiceConsultationService, consultationRoomSummary } from "./voice-consultation-service.mjs";
 import { createCodexSessionChildrenObserver } from "./codex-session-children.mjs";
 import { createStreamTtsSegments, TTS_SEGMENT_BOUNDARY } from "./stream-tts-segments.mjs";
@@ -1131,7 +1131,7 @@ async function resolveCanonicalDirectoryIdentity(rawDirectory, fallback = DEFAUL
   }
 }
 
-async function listLlmDirectories(rawPath) {
+async function listLlmDirectories(rawPath, identityOnly = false) {
   const requestedPath = String(rawPath || "").trim() || DEFAULT_LLM_FILE_ROOT_RELATIVE;
   let resolved = null;
   try {
@@ -1142,6 +1142,12 @@ async function listLlmDirectories(rawPath) {
       throw makeApiError(404, "directory_not_found", "directory not found");
     }
     throw err;
+  }
+  if (identityOnly) {
+    try {
+      if (!(await fs.stat(resolved.rootReal)).isDirectory()) throw new Error("not a directory");
+    } catch (error) { throw makeApiError(500, "directory_list_failed", errorMessage(error)); }
+    return { basePath: toUnixPath(resolved.rootReal) };
   }
   const rootAbs = path.parse(resolved.rootReal).root || path.sep;
   let rootReal = rootAbs;
@@ -6030,9 +6036,9 @@ const handleRunnerRequest = async (req, res) => {
       currentUsage: () => withCodexAuthLease(async () => codexUsageService.snapshot(await captureCodexUsageAccount())),
     });
     try {
-      const result = await snapshot();
+      const result = await snapshot(req.headers["if-bitty-orchestrator-metadata-match"]);
       responseCount = Number.isSafeInteger(result.runningCount) ? result.runningCount : -1;
-      return json(res, 200, result);
+      return json(res, 200, result, { vary: "Authorization, If-Bitty-Orchestrator-Metadata-Match, Accept-Encoding" });
     }
     catch { return json(res, 503, { error: "app_status_unavailable" }); }
   }
@@ -6547,7 +6553,7 @@ const handleRunnerRequest = async (req, res) => {
     }
     try {
       const pathParam = String(reqUrl.searchParams.get("path") || "").trim();
-      const payload = await listLlmDirectories(pathParam || DEFAULT_LLM_FILE_ROOT_RELATIVE);
+      const payload = await listLlmDirectories(pathParam || DEFAULT_LLM_FILE_ROOT_RELATIVE, reqUrl.searchParams.get("view") === "identity");
       return json(res, 200, payload);
     } catch (err) {
       if (isApiError(err)) {
@@ -7188,11 +7194,20 @@ const server = http.createServer(handleRunnerRequest);
 
 const runnerWsEnvelopeClients = new WeakSet();
 const runnerWsActiveClients = new Set();
+const runnerWsOrchestratorEtags = new WeakMap();
+function sendOrchestratorList(ws, message) {
+  const list = message.payload;
+  const payload = runnerWsOrchestratorEtags.has(ws)
+    ? conditionalOrchestratorList(list, runnerWsOrchestratorEtags.get(ws)) : list;
+  if (sendRunnerWsEnvelope(ws, { ...message, payload }) && runnerWsOrchestratorEtags.has(ws)) {
+    runnerWsOrchestratorEtags.set(ws, list.etag);
+  }
+}
 async function broadcastVoiceUnreadState() {
   try {
     const payload = await voiceContextService.list();
     for (const client of runnerWsActiveClients) {
-      sendRunnerWsEnvelope(client, { channel: "agent", op: "voice.unread.changed", payload });
+      sendOrchestratorList(client, { channel: "agent", op: "voice.unread.changed", payload });
     }
   } catch (error) {
     console.warn(`[voice] unread broadcast failed: ${errorMessage(error)}`);
@@ -7396,6 +7411,9 @@ runnerWsServer.on("connection", (ws, req) => {
     const orchestratorId = message.payload?.orchestratorId || "main";
     if (["voice.orchestrators.list", "voice.orchestrators.select", "voice.orchestrators.create",
       "voice.orchestrators.update", "voice.orchestrators.delete", "voice.orchestrators.introduction.draft"].includes(message.op)) {
+      if (message.op === "voice.orchestrators.list" && message.payload?.updates === "conditional") {
+        runnerWsOrchestratorEtags.set(ws, typeof message.payload.ifNoneMatch === "string" ? message.payload.ifNoneMatch : "");
+      }
       const operation = message.op === "voice.orchestrators.list" ? voiceContextService.list()
         : message.op === "voice.orchestrators.select" ? voiceContextService.select(orchestratorId)
           : message.op === "voice.orchestrators.create"
@@ -7410,8 +7428,9 @@ runnerWsServer.on("connection", (ws, req) => {
                 ? voiceContextService.draftIntroduction(orchestratorId, message.payload)
                 : voiceContextService.remove(orchestratorId);
       void operation.then((payload) => {
-        sendRunnerWsEnvelope(ws, { channel: "agent", op: `${message.op}.result`,
-          requestId: message.requestId || "", payload });
+        if (message.op === "voice.orchestrators.list" && message.payload?.updates === "conditional") {
+          sendOrchestratorList(ws, { channel: "agent", op: `${message.op}.result`, requestId: message.requestId || "", payload });
+        } else sendRunnerWsEnvelope(ws, { channel: "agent", op: `${message.op}.result`, requestId: message.requestId || "", payload });
         if (["voice.orchestrators.select", "voice.orchestrators.create",
           "voice.orchestrators.update", "voice.orchestrators.delete"].includes(message.op)) {
           widgetRefreshNotifier.changed();
@@ -7423,7 +7442,7 @@ runnerWsServer.on("connection", (ws, req) => {
     if (message.op === "voice.open" || message.op === "voice.status" || message.op === "voice.history") {
       const operation = message.op === "voice.open"
         ? voiceContextService.open(orchestratorId, message.payload?.conversationKey)
-        : message.op === "voice.history" ? voiceContextService.history(orchestratorId, message.payload?.conversationKey)
+        : message.op === "voice.history" ? voiceContextService.history(orchestratorId, message.payload?.conversationKey, message.payload?.ifNoneMatch)
           : voiceContextService.status(orchestratorId, message.payload?.logicalConversationId, message.payload?.clientOperationId, message.payload?.conversationKey);
       void operation.then((payload) => {
         const job = resolveRunnerWsTtsOperationJob(payload.clientOperationId);

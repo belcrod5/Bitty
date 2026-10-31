@@ -1,3 +1,4 @@
+import { getVoiceOrchestrators } from "../app/utils/voiceOrchestratorClient";
 import { randomUUID } from "expo-crypto";
 import { useMemo, useState } from "react";
 import {
@@ -110,12 +111,7 @@ export function CodexScheduleSettings(props: Props) {
     setOrchestratorError("");
     try {
       await manager.connect();
-      const response = await manager.request({ channel: "agent", op: "voice.orchestrators.list" });
-      const list = response.payload as { orchestrators?: { id: string; name: string }[] } | undefined;
-      if (response.op !== "voice.orchestrators.list.result" || !Array.isArray(list?.orchestrators)
-        || !list.orchestrators.every((item) => typeof item?.id === "string" && typeof item.name === "string")) {
-        throw new Error("オーケストレーターを読み込めません。");
-      }
+      const list = await getVoiceOrchestrators(manager);
       setOrchestrators(list.orchestrators);
     } catch (error) {
       setOrchestratorError(error instanceof Error ? error.message : String(error));

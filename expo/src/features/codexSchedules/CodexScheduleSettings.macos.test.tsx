@@ -111,7 +111,7 @@ test("macOS opens shared scheduling, edits native dates and nested options, then
   const closeTitleMenu = jest.fn();
   const manager = new RunnerWebSocketManager({ bootstrapReady: false, url: "", token: "", appState: "unknown" });
   jest.spyOn(manager, "connect").mockResolvedValue(undefined);
-  jest.spyOn(manager, "request").mockResolvedValue({ channel: "agent", op: "voice.orchestrators.list.result", payload: { orchestrators: [] } });
+  jest.spyOn(manager, "request").mockResolvedValue({ channel: "agent", op: "voice.orchestrators.list.result", payload: { orchestrators: [], selectedId: "" } });
   const screen = await render(<RunnerWebSocketProvider bootstrapReady={false} url="" token="" cloudflareRunnerUrl=""
     cloudflareAccessClientId="" cloudflareAccessClientSecret="" manager={manager}>
     <CodexSchedulesProvider runnerUrl={props.runnerUrl} runnerToken={props.runnerToken}>

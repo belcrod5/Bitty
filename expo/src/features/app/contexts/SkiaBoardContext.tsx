@@ -103,9 +103,8 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
   const refreshQueuedRef = useRef(false);
   const lastReadyGenerationRef = useRef(0);
   const authRef = useRef({ runnerUrl, runnerToken });
-  useEffect(() => {
-    authRef.current = { runnerUrl, runnerToken };
-  }, [runnerUrl, runnerToken]);
+  if (authRef.current.runnerUrl !== runnerUrl || authRef.current.runnerToken !== runnerToken) authRef.current = { runnerUrl, runnerToken };
+  const serverSnapshotRef = useRef<{ auth: typeof authRef.current; snapshot: SkiaBoardRunnerSnapshot } | null>(null);
 
   const emptyBoardState = useCallback((): SkiaBoardState => ({
     cards: [],
@@ -170,8 +169,10 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
     }
     refreshInFlightRef.current = true;
     try {
-      const snapshot = await fetchSkiaBoard(auth);
-      if (!mountedRef.current) return;
+      const cached = serverSnapshotRef.current;
+      const snapshot = await fetchSkiaBoard(auth, cached?.auth === auth ? cached.snapshot : undefined);
+      if (!mountedRef.current || authRef.current !== auth) return;
+      serverSnapshotRef.current = { auth, snapshot };
       adoptSnapshot(snapshot);
     } catch (error) {
       console.warn("[skia_board] failed to load board from runner", error);
@@ -291,12 +292,11 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
       } catch (error) {
         console.warn("[skia_board] failed to read local board bootstrap data", error);
       }
-      await refreshFromServer();
     })();
     return () => {
       mountedRef.current = false;
     };
-  }, [emptyBoardState, markLoaded, refreshFromServer, setDisplayState]);
+  }, [emptyBoardState, markLoaded, setDisplayState]);
 
   // 接続先の変更時に取得し直す(設定ロード完了で空→実値になるケースを含む)。
   useEffect(() => {

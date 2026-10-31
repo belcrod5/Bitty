@@ -1302,3 +1302,22 @@ test("immediate script and voice failures retain their start IDs", async (t) => 
     else assert.equal(dispatch.result.logicalConversationId, ID_B);
   }
 });
+
+
+test("thread summary excludes action bodies and follows runtime recurrence without a definition edit", async (t) => {
+  const harness = await makeHarness();
+  t.after(async () => { harness.service.stop(); await fs.rm(harness.directory, { recursive: true, force: true }); });
+  await harness.service.replaceSchedules({ baseRevision: 0, schedules: [
+    definition({ threadId: "existing", prompt: "PRIVATE".repeat(1000) }),
+    definition({ id: ID_B, enabled: false, threadId: "disabled" }),
+    definition({ id: "33333333-3333-4333-8333-333333333333" }),
+  ] });
+  const first = await harness.service.summary();
+  assert.deepEqual(first, { scheduledThreads: [{ threadId: "existing", nextOccurrenceAt: "2026-08-14T00:00:00.000Z" }] });
+  assert.equal(JSON.stringify(first).includes("PRIVATE"), false);
+  harness.currentClock.set("2026-08-14T00:00:00.000Z");
+  await harness.service.evaluate(); await harness.service.whenIdle();
+  const next = await harness.service.summary();
+  assert.equal(next.scheduledThreads[0].nextOccurrenceAt, "2026-08-15T00:00:00.000Z");
+  assert.equal((await harness.service.snapshot()).revision, 1);
+});

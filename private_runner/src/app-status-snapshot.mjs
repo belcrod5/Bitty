@@ -1,6 +1,6 @@
 // A shared read model for foreground and background clients. No turns, history or task mutations.
 export function createAppStatusSnapshot({ listOrchestrators, countActiveSessions, taskOverview, currentUsage, now = Date.now }) {
-  return async function snapshot() {
+  return async function snapshot(ifMetadataMatch) {
     const [metadata, running, overview, usage] = await Promise.allSettled([
       listOrchestrators(), countActiveSessions(), taskOverview(), currentUsage(),
     ]);
@@ -17,9 +17,12 @@ export function createAppStatusSnapshot({ listOrchestrators, countActiveSessions
       .replace(/^\s*(?:#{1,6}\s+|[-*+]\s+)/u, "")
       .replace(/\*\*([^*]+)\*\*/gu, "$1").trim())
       .filter(Boolean).slice(0, 8).join("\n").slice(0, 1200);
+    const iconsUnchanged = Boolean(ifMetadataMatch && ifMetadataMatch === list.etag);
     return {
       version: 1, connected: true,
-      orchestrators: (list?.orchestrators || []).map(({ id, name, icon }) => ({ id, name, icon })),
+      ...(typeof list.etag === "string" ? { metadataEtag: list.etag } : {}),
+      ...(iconsUnchanged ? { iconsUnchanged: true } : {}),
+      orchestrators: (list?.orchestrators || []).map(({ id, name, icon }) => ({ id, name, icon: iconsUnchanged ? "" : icon })),
       selectedId: list?.selectedId || "", runningCount: value(running)?.count ?? null,
       overview: text, overviewFetchedAt: overview.status === "fulfilled" ? now() : 0,
       fiveHourRemaining: quota?.fiveHourRemaining ?? null, weeklyRemaining: quota?.weeklyRemaining ?? null,

@@ -1,3 +1,4 @@
+import { mutateVoiceOrchestrators, getVoiceOrchestrators, subscribeVoiceOrchestrators } from "../utils/voiceOrchestratorClient";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Ionicons } from "@expo/vector-icons";
 import { randomUUID } from "expo-crypto";
@@ -55,11 +56,14 @@ export function VoiceConversationScreen(props: VoiceConversationPlayback & { onC
   const consumedInitialTargetRef = useRef("");
   useEffect(() => { if (props.initialOrchestratorId) setHistoryExpanded(true); }, [props.initialOrchestratorId]);
   const [loadError, setLoadError] = useState("");
-  const listRevisionRef = useRef(0);
   const userInput = useVoiceUserInput(manager, managerOpen ? "" : selectedId);
 
-  const applyList = useCallback((value: { orchestrators: VoiceOrchestrator[]; selectedId: string }) => {
+  const applyList = useCallback((value: { orchestrators: VoiceOrchestrator[]; selectedId: string }, fromMutation: boolean) => {
     setList(value);
+    if (fromMutation) {
+      setSelectedId(value.selectedId);
+      return;
+    }
     if (props.initialOrchestratorId) {
       const target = props.initialOrchestratorId;
       const newTarget = consumedInitialTargetRef.current !== target;
@@ -76,46 +80,18 @@ export function VoiceConversationScreen(props: VoiceConversationPlayback & { onC
     }
   }, [props.initialOrchestratorId]);
 
+  useEffect(() => subscribeVoiceOrchestrators(manager, applyList), [applyList, manager]);
+
   useEffect(() => {
     let current = true;
-    const revision = listRevisionRef.current;
-    void manager.connect().then(() => manager.request({ channel: "agent", op: "voice.orchestrators.list" }))
-      .then((response) => {
-        if (!current || revision !== listRevisionRef.current) return;
-        const value = response.payload as { orchestrators?: VoiceOrchestrator[]; selectedId?: string } | undefined;
-        if (response.op !== "voice.orchestrators.list.result" || !Array.isArray(value?.orchestrators)
-          || typeof value.selectedId !== "string" || !value.orchestrators.some((item) => item.id === value.selectedId)) {
-          throw new Error("オーケストレータを読み込めません。");
-        }
-        applyList({ orchestrators: value.orchestrators, selectedId: value.selectedId });
-        setLoadError("");
+    void manager.connect().then(() => getVoiceOrchestrators(manager))
+      .then(() => {
+        if (current) setLoadError("");
       }).catch((cause) => { if (current) setLoadError(cause instanceof Error ? cause.message : "接続できません。"); });
     return () => { current = false; };
   }, [applyList, connected, generation, manager]);
 
-  useEffect(() => manager.subscribe({ channel: "agent", op: "voice.unread.changed" }, (message) => {
-    const value = message.payload as { orchestrators?: VoiceOrchestrator[]; selectedId?: string } | undefined;
-    if (Array.isArray(value?.orchestrators) && typeof value.selectedId === "string") {
-      listRevisionRef.current += 1;
-      applyList({ orchestrators: value.orchestrators, selectedId: value.selectedId });
-    }
-  }), [applyList, manager]);
-
-  const select = useCallback(async (id: string) => {
-    const response = await manager.request({ channel: "agent", op: "voice.orchestrators.select",
-      payload: { orchestratorId: id } });
-    if (response.op !== "voice.orchestrators.select.result") throw new Error("切り替えられません。");
-    const value = response.payload as { orchestrators: VoiceOrchestrator[]; selectedId: string };
-    listRevisionRef.current += 1;
-    setList(value);
-    setSelectedId(value.selectedId);
-  }, [manager]);
-
-  const listChanged = useCallback((value: { orchestrators: VoiceOrchestrator[]; selectedId: string }) => {
-    listRevisionRef.current += 1;
-    setList(value);
-    setSelectedId(value.selectedId);
-  }, []);
+  const select = useCallback((id: string) => mutateVoiceOrchestrators(manager, "select", { orchestratorId: id }), [manager]);
   const conversationChanged = useCallback((id: string) => {
     if (id === selectedId || !list?.orchestrators.some((item) => item.id === selectedId)) {
       setRevision((current) => current + 1);
@@ -139,7 +115,7 @@ export function VoiceConversationScreen(props: VoiceConversationPlayback & { onC
       </View>
     )}
     {list ? <VoiceOrchestratorManager visible={managerOpen} list={list}
-      onListChanged={listChanged} onConversationChanged={conversationChanged}
+      onConversationChanged={conversationChanged}
       runnerBaseUrl={props.runnerBaseUrl} runnerToken={props.runnerToken}
       onClose={() => setManagerOpen(false)} /> : null}
   </>;
@@ -254,8 +230,9 @@ function VoiceConversationSession({
     return () => subscription.remove();
   }, []);
   useEffect(() => manager.subscribe({ channel: "agent", op: "voice.unread.changed" }, (message) => {
-    if (historyExpanded && appActive && !paused && (message.payload as { orchestrators?: VoiceOrchestrator[] })
-      ?.orchestrators?.some((item) => item.id === orchestrator.id)) void voice.refreshHistory();
+    const value = message.payload as { orchestrators?: { id: string }[]; unreadCounts?: { id: string }[] } | undefined;
+    if (historyExpanded && appActive && !paused && (value?.orchestrators || value?.unreadCounts)
+      ?.some((item) => item.id === orchestrator.id)) void voice.refreshHistory();
   }), [appActive, historyExpanded, manager, orchestrator.id, paused, voice.refreshHistory]);
   useEffect(() => {
     if (!appActive || paused || !voice.ready) return;

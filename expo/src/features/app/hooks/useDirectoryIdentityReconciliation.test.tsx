@@ -57,6 +57,7 @@ describe("useDirectoryIdentityReconciliation", () => {
       await Promise.resolve();
     });
     expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(new URL(String(jest.mocked(global.fetch).mock.calls[0][0])).searchParams.get("view")).toBe("identity");
 
     await act(async () => {
       await jest.advanceTimersByTimeAsync(2_000);
