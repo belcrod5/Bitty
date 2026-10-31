@@ -52,6 +52,7 @@ type RunnerWsPendingRequest = {
   reject: (error: Error) => void;
   cleanup: () => void;
   onResponseBytes?: (bytes: number) => void;
+  onResponse?: (message: RunnerWsMessage) => void;
 };
 
 type RunnerWsSubscriber = {
@@ -541,7 +542,7 @@ export class RunnerWebSocketManager {
 
   request<TResponse extends RunnerWsMessage = RunnerWsMessage>(
     message: RunnerWsMessage,
-    options: { timeoutMs?: number; signal?: AbortSignal; onResponseBytes?: (bytes: number) => void } = {}
+    options: { timeoutMs?: number; signal?: AbortSignal; onResponseBytes?: (bytes: number) => void; onResponse?: (message: RunnerWsMessage) => void } = {}
   ): Promise<TResponse> {
     if (this.connectionState !== "ready") {
       return Promise.reject(this.connectionUnavailableError());
@@ -594,6 +595,7 @@ export class RunnerWebSocketManager {
         reject: finishReject,
         cleanup,
         onResponseBytes: options.onResponseBytes,
+        onResponse: options.onResponse,
       });
       this.emitSnapshot();
       try {
@@ -701,7 +703,10 @@ export class RunnerWebSocketManager {
       if (pending) {
         this.pendingRequests.delete(message.requestId);
         try { pending.onResponseBytes?.(receivedBytes); } catch { /* diagnostics cannot interrupt a request */ }
-        pending.resolve(message);
+        // Response consumers can commit state in wire order, before an await
+        // continuation or a later notification runs. Fail only this request.
+        try { pending.onResponse?.(message); pending.resolve(message); }
+        catch (error) { pending.reject(error instanceof Error ? error : makeError("runner_ws_response_failed")); }
         shouldNotifySnapshot = true;
       }
     }

@@ -17,7 +17,7 @@ const mockSynthesizeSpeechStream = jest.fn(async (_text: string, _target: { mess
 let mockMainTts: { ttsProvider: string; voiceId: string } | null = null;
 let mockTurnTts: unknown;
 const mockOnClose = jest.fn();
-const mockRequest = jest.fn(async (message: { op: string; payload?: { orchestratorId?: string } }) => {
+const mockRequest = jest.fn(async (message: { op: string; payload?: { orchestratorId?: string } }, _options?: { timeoutMs?: number }) => {
   if (message.op === "voice.orchestrators.list") return { op: "voice.orchestrators.list.result",
     payload: { orchestrators: [{ id: "main", name: "メイン", icon: "", ...mockMainTts },
       { id: "other", name: "調査", icon: "" }], selectedId: "main" } };
@@ -30,7 +30,11 @@ const mockRequest = jest.fn(async (message: { op: string; payload?: { orchestrat
   throw new Error(`unexpected ${message.op}`);
 });
 const mockQuestionHandlers = new Map<string, Set<(message: RunnerWsMessage) => void>>();
-let mockManager = { connect: jest.fn(async () => undefined), request: mockRequest,
+let mockManager = { connect: jest.fn(async () => undefined),
+  request: async (message: Parameters<typeof mockRequest>[0], options?: { timeoutMs?: number; onResponse?: (message: unknown) => void }) => {
+    const response = options?.timeoutMs ? await mockRequest(message, { timeoutMs: options.timeoutMs }) : await mockRequest(message);
+    options?.onResponse?.(response); return response;
+  },
   subscribe: ({ op }: { op: string }, listener: (message: RunnerWsMessage) => void) => {
     if (!mockQuestionHandlers.has(op)) mockQuestionHandlers.set(op, new Set());
     mockQuestionHandlers.get(op)?.add(listener);

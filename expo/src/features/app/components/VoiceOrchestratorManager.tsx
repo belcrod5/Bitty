@@ -1,3 +1,4 @@
+import { mutateVoiceOrchestrators } from "../utils/voiceOrchestratorClient";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Platform, Pressable, SafeAreaView, Text, TextInput, TouchableOpacity, View } from "react-native";
 import { useRunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketContext";
@@ -27,9 +28,9 @@ const EFFORT_LABELS: Record<ReasoningEffort, string> = {
   low: "低", medium: "中", high: "高", xhigh: "非常に高い", max: "最大", ultra: "Ultra",
 };
 
-export function VoiceOrchestratorManager({ visible, list, onListChanged, onConversationChanged,
+export function VoiceOrchestratorManager({ visible, list, onConversationChanged,
   onClose, runnerBaseUrl, runnerToken }: {
-  visible: boolean; list: List; onListChanged: (list: List) => void;
+  visible: boolean; list: List;
   onConversationChanged: (id: string) => void; onClose: () => void;
   runnerBaseUrl?: string; runnerToken?: string;
 }) {
@@ -141,19 +142,12 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
       && catalogKey === voiceCatalogKeyRef.current) setVoicesLoading(false); }
   }, [detail, detailId, runnerBaseUrl, runnerToken, voicesLoading]);
 
-  const applyList = (value: Record<string, unknown>) => {
-    if (!Array.isArray(value.orchestrators) || typeof value.selectedId !== "string") {
-      throw new Error("一覧を更新できません。");
-    }
-    onListChanged(value as List);
-  };
-
   const save = async () => {
     if (!detail || detailId === null) return;
     setBusy(true);
     setError("");
     try {
-      const result = await request(detailId === "new" ? "voice.orchestrators.create" : "voice.orchestrators.update", {
+      await mutateVoiceOrchestrators(manager, detailId === "new" ? "create" : "update", {
         ...(detailId === "new" ? {} : { orchestratorId: detailId }),
         name: detail.name, icon: detail.icon, publicIntroduction: detail.publicIntroduction, model: detail.model,
         ttsProvider: detail.ttsProvider, voiceId: detail.voiceId,
@@ -162,7 +156,6 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
         ...(detail.overviewModel && detail.overviewEffort
           ? { overviewModel: detail.overviewModel, overviewEffort: detail.overviewEffort } : {}),
       });
-      applyList(result);
       setDetailId(null);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "保存できません。"); }
     finally { setBusy(false); }
@@ -187,8 +180,8 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
       { text: "キャンセル", style: "cancel" },
       { text: "削除", style: "destructive", onPress: () => {
         setBusy(true);
-        void request("voice.orchestrators.delete", { orchestratorId: detailId })
-          .then((result) => { applyList(result); onConversationChanged(detailId); setDetailId(null); })
+        void mutateVoiceOrchestrators(manager, "delete", { orchestratorId: detailId })
+          .then(() => { onConversationChanged(detailId); setDetailId(null); })
           .catch((cause) => setError(cause instanceof Error ? cause.message : "削除できません。"))
           .finally(() => setBusy(false));
       } },

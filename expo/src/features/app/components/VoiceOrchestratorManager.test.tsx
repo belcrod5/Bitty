@@ -1,3 +1,5 @@
+import { subscribeVoiceOrchestrators } from "../utils/voiceOrchestratorClient";
+import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import { act, fireEvent, render, waitFor, within } from "@testing-library/react-native";
 import { Alert, StyleSheet } from "react-native";
 import { AppModal } from "./AppModal";
@@ -10,7 +12,7 @@ let mockMainInstruction = "Be helpful.";
 let mockIsolationVersion = 1;
 let mockRealSettingsSelect = false;
 const mockPickIcon = jest.fn(async () => icon);
-const mockRequest = jest.fn(async (message: { op: string; payload?: Record<string, unknown> }) => {
+const mockRequest = jest.fn(async (message: { op: string; payload?: Record<string, unknown> }, _options?: { timeoutMs?: number }) => {
   const { op, payload } = message;
   if (op === "voice.settings") return { op: `${op}.result`, payload: {
     orchestratorId: payload?.orchestratorId,
@@ -52,7 +54,14 @@ const mockRequest = jest.fn(async (message: { op: string; payload?: Record<strin
 });
 const list = { orchestrators: [{ id: "main", name: "メイン", icon: "" },
   { id: "other", name: "調査", icon: "" }], selectedId: "main" };
-const mockManager = { request: mockRequest };
+const mockManager = {
+  request: async (message: Parameters<typeof mockRequest>[0], options?: { timeoutMs?: number; onResponse?: (message: unknown) => void }) => {
+    const response = options?.timeoutMs ? await mockRequest(message, { timeoutMs: options.timeoutMs }) : await mockRequest(message);
+    options?.onResponse?.(response); return response;
+  },
+  getSnapshot: () => ({ url: "ws://runner/runner-ws", generation: 1, connectionOptionsGeneration: 0 }),
+  subscribe: () => () => {},
+} as unknown as RunnerWebSocketManager;
 
 jest.mock("../../runnerWs/RunnerWebSocketContext", () => ({
   useRunnerWebSocketManager: () => mockManager,
@@ -95,9 +104,11 @@ jest.mock("./SettingsSelect", () => ({
 const onListChanged = jest.fn();
 const onConversationChanged = jest.fn();
 const onClose = jest.fn();
-const props = { visible: true, list, onListChanged, onConversationChanged, onClose };
+const props = { visible: true, list, onConversationChanged, onClose };
+let unsubscribe = () => {};
 
-beforeEach(() => { jest.clearAllMocks(); mockLegacySettings = false; mockSaveFailure = false; mockMainInstruction = "Be helpful."; mockIsolationVersion = 1; mockRealSettingsSelect = false; });
+afterEach(() => unsubscribe());
+beforeEach(() => { unsubscribe = subscribeVoiceOrchestrators(mockManager, onListChanged); jest.clearAllMocks(); mockLegacySettings = false; mockSaveFailure = false; mockMainInstruction = "Be helpful."; mockIsolationVersion = 1; mockRealSettingsSelect = false; });
 
 test("opens through the platform modal and closes detail before the manager", async () => {
   const screen = await render(<VoiceOrchestratorManager {...props} />);

@@ -1,5 +1,5 @@
 import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
-import { acceptVoiceOrchestrators, getVoiceOrchestrators, subscribeVoiceOrchestrators } from "./voiceOrchestratorClient";
+import { mutateVoiceOrchestrators, getVoiceOrchestrators, subscribeVoiceOrchestrators } from "./voiceOrchestratorClient";
 
 const full = (etag = "metadata-1", unreadCount = 0, icon = "data:image/png;base64,large") => ({
   etag, selectedId: "main", orchestrators: [{ id: "main", name: "Main", icon, unreadCount, learningUnreadCount: 0 }],
@@ -10,7 +10,11 @@ const counts = (etag = "metadata-1", unreadCount = 1) => ({
 function fixture() {
   let snapshot = { url: "ws://runner/runner-ws", connectionOptionsGeneration: 0, generation: 1 };
   let onUpdate: (message: { payload: unknown }) => void = () => {};
-  const request = jest.fn(async (_message: unknown) => ({ op: "voice.orchestrators.list.result", payload: full() } as { op: string; payload: unknown }));
+  const request = jest.fn(async (_message: unknown, options?: { onResponse?: (message: any) => void }) => {
+    const response = { op: "voice.orchestrators.list.result", payload: full() };
+    options?.onResponse?.(response);
+    return response as { op: string; payload: unknown };
+  });
   const subscribe = jest.fn((_filter: unknown, handler: typeof onUpdate) => { onUpdate = handler; return () => {}; });
   const manager = { request, subscribe, getSnapshot: () => snapshot } as unknown as RunnerWebSocketManager;
   return { manager, request, subscribe, emit: (payload: unknown) => onUpdate({ payload }),
@@ -18,10 +22,10 @@ function fixture() {
     configure: (url = snapshot.url) => { snapshot = { ...snapshot, url,
       connectionOptionsGeneration: snapshot.connectionOptionsGeneration + 1, generation: snapshot.generation + 1 }; } };
 }
-function deferred() {
+function deferred(op = "voice.orchestrators.list.result") {
   let resolve!: (value: { op: string; payload: unknown }) => void;
   const promise = new Promise<{ op: string; payload: unknown }>((done) => { resolve = done; });
-  return { promise, resolve: (payload: unknown) => resolve({ op: "voice.orchestrators.list.result", payload }) };
+  return { promise, resolve: (payload: unknown) => resolve({ op, payload }) };
 }
 
 test("coalesces first-load callers and revalidates retained metadata after a real reconnect", async () => {
@@ -102,7 +106,11 @@ test("old servers keep returning full lists without validators", async () => {
 test("mutation results invalidate pending reads before their broadcast arrives", async () => {
   const f = fixture(); await getVoiceOrchestrators(f.manager);
   const old = deferred(); f.request.mockReturnValueOnce(old.promise); const loading = getVoiceOrchestrators(f.manager);
-  acceptVoiceOrchestrators(f.manager, full("metadata-2", 3, "edited"));
+  f.request.mockImplementationOnce(async (_message, options) => {
+    const response = { op: "voice.orchestrators.update.result", payload: full("metadata-2", 3, "edited") };
+    options?.onResponse?.(response); return response;
+  });
+  await mutateVoiceOrchestrators(f.manager, "update", { orchestratorId: "main" });
   old.resolve(full());
   expect((await loading).orchestrators[0].icon).toBe("edited");
   f.request.mockResolvedValueOnce({ op: "voice.orchestrators.list.result", payload: counts("metadata-2", 4) });
@@ -142,4 +150,56 @@ test("credential replacement retires the old metadata subscription as well as it
   f.emit(counts("new-scope", 2));
   expect(listener.mock.calls.at(-1)?.[0].orchestrators[0]).toMatchObject({ icon: "new", unreadCount: 2 });
   expect(f.subscribe).toHaveBeenCalledTimes(2);
+});
+
+test.each(["url-change", "credential-change"])("an old mutation cannot poison the new source's pending read on %s", async (kind) => {
+  const f = fixture(); await getVoiceOrchestrators(f.manager);
+  const oldResponse = deferred("voice.orchestrators.update.result");
+  f.request.mockReturnValueOnce(oldResponse.promise);
+  const mutation = mutateVoiceOrchestrators(f.manager, "update", { orchestratorId: "main", name: "Edited" }).catch(() => {});
+  const mutationOptions = f.request.mock.calls.at(-1)?.[1];
+  const freshResponse = deferred();
+  let freshRead!: ReturnType<typeof getVoiceOrchestrators>;
+  queueMicrotask(() => {
+    f.configure(kind === "url-change" ? "ws://different/runner-ws" : undefined);
+    f.request.mockReturnValueOnce(freshResponse.promise);
+    freshRead = getVoiceOrchestrators(f.manager);
+  });
+  queueMicrotask(() => {
+    try { mutationOptions?.onResponse?.({ op: "voice.orchestrators.update.result", payload: full("old-mutation", 0, "old-mutation-icon") }); } catch {}
+    oldResponse.resolve(full("old-mutation", 0, "old-mutation-icon"));
+  });
+  await mutation;
+  freshResponse.resolve(full("new-source", 0, "new-source-icon"));
+  expect((await freshRead).orchestrators[0].icon).toBe("new-source-icon");
+  const mounted = jest.fn(); subscribeVoiceOrchestrators(f.manager, mounted);
+  expect(mounted.mock.calls.at(-1)?.[0].orchestrators[0].icon).toBe("new-source-icon");
+});
+
+test.each(["select", "create", "update", "delete"] as const)("%s publishes a valid legacy full mutation once without a validator", async (action) => {
+  const f = fixture(); await getVoiceOrchestrators(f.manager);
+  const listener = jest.fn(); subscribeVoiceOrchestrators(f.manager, listener); listener.mockClear();
+  const { etag: _etag, ...legacy } = full("ignored", 2, "edited");
+  f.request.mockImplementationOnce(async (_message, options) => {
+    const response = { op: `voice.orchestrators.${action}.result`, payload: legacy };
+    options?.onResponse?.(response); return response;
+  });
+  await mutateVoiceOrchestrators(f.manager, action, { orchestratorId: "main" });
+  expect(listener).toHaveBeenCalledTimes(1);
+  expect(listener).toHaveBeenCalledWith(legacy, true);
+});
+
+test.each([
+  { op: "error", payload: { message: "保存エラー" } },
+  { op: "unexpected", payload: full() },
+  { op: "voice.orchestrators.update.result", payload: { ...full(), orchestratorId: "another" } },
+  { op: "voice.orchestrators.update.result", payload: { ...full(), selectedId: "missing" } },
+])("invalid mutation response never changes the published list: $op", async (response) => {
+  const f = fixture(); await getVoiceOrchestrators(f.manager);
+  const listener = jest.fn(); subscribeVoiceOrchestrators(f.manager, listener); listener.mockClear();
+  f.request.mockImplementationOnce(async (_message, options) => { options?.onResponse?.(response); return response; });
+  await expect(mutateVoiceOrchestrators(f.manager, "update", { orchestratorId: "main" })).rejects.toThrow();
+  expect(listener).not.toHaveBeenCalled();
+  const mounted = jest.fn(); subscribeVoiceOrchestrators(f.manager, mounted);
+  expect(mounted.mock.calls[0][0].orchestrators[0].icon).toBe(full().orchestrators[0].icon);
 });

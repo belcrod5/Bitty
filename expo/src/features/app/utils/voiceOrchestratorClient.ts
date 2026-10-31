@@ -10,7 +10,7 @@ type State = {
   list: VoiceOrchestratorList | null;
   etag: string;
   pending?: { generation: number; etag: string; promise: Promise<VoiceOrchestratorList> };
-  listeners: Set<(list: VoiceOrchestratorList) => void>;
+  listeners: Set<(list: VoiceOrchestratorList, fromMutation: boolean) => void>;
   unsubscribe: () => void;
 };
 const states = new WeakMap<Manager, State>();
@@ -51,7 +51,7 @@ function stateFor(manager: Manager) {
   return state;
 }
 
-function apply(state: State, payload: unknown): VoiceOrchestratorList {
+function apply(state: State, payload: unknown, fromMutation = false): VoiceOrchestratorList {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw failure();
   const value = payload as Record<string, unknown>;
   let list: VoiceOrchestratorList;
@@ -84,7 +84,7 @@ function apply(state: State, payload: unknown): VoiceOrchestratorList {
   state.etag = typeof value.etag === "string" ? value.etag : "";
   state.revision += 1;
   for (const listener of state.listeners) {
-    try { listener(list); } catch { /* one observer cannot block the remaining observers */ }
+    try { listener(list, fromMutation); } catch { /* one observer cannot block the remaining observers */ }
   }
   return list;
 }
@@ -114,15 +114,32 @@ export function getVoiceOrchestrators(manager: Manager): Promise<VoiceOrchestrat
   return task;
 }
 
-export function subscribeVoiceOrchestrators(manager: Manager, listener: (list: VoiceOrchestratorList) => void) {
+export function subscribeVoiceOrchestrators(manager: Manager, listener: (list: VoiceOrchestratorList, fromMutation: boolean) => void) {
   const state = stateFor(manager);
   state.listeners.add(listener);
-  if (state.list) listener(state.list);
+  if (state.list) listener(state.list, false);
   return () => { state.listeners.delete(listener); };
 }
 
-// Mutation responses carry the full list, and must invalidate older list reads too.
-export function acceptVoiceOrchestrators(manager: Manager, list: VoiceOrchestratorList) {
+// Commit mutation results at response delivery, before later notifications. An
+// old source must never invalidate a fresh source's in-flight list read.
+export async function mutateVoiceOrchestrators(manager: Manager,
+  action: "select" | "create" | "update" | "delete", payload: Record<string, unknown>) {
   const state = stateFor(manager);
-  apply(state, list);
+  const scope = state.scope, generation = manager.getSnapshot().generation;
+  const assertCurrentSource = () => {
+    if (stateFor(manager).scope !== scope || manager.getSnapshot().generation !== generation) throw failure();
+  };
+  const op = `voice.orchestrators.${action}`;
+  await manager.request({ channel: "agent", op, payload }, { onResponse: (response) => {
+    assertCurrentSource();
+    const result = response.payload && typeof response.payload === "object" && !Array.isArray(response.payload)
+      ? response.payload as Record<string, unknown> : {};
+    if (response.op === "error") throw new Error(String(result.message || result.code || "操作に失敗しました。"));
+    if (response.op !== `${op}.result`) throw failure();
+    if (payload.orchestratorId !== undefined && result.orchestratorId !== undefined
+      && result.orchestratorId !== payload.orchestratorId) throw failure();
+    apply(state, response.payload, true);
+  } });
+  assertCurrentSource();
 }
