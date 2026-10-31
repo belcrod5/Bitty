@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState } from "react-native";
+import { endNetworkUsageIdleObservation } from "../ws/networkUsageMetrics";
 import { useStreamingSttTransport } from "./useStreamingSttTransport";
 import { playVoiceSound } from "../app/voiceSounds";
 import type { StreamingSttSession } from "./streamingSttTransport";
@@ -694,6 +695,7 @@ export function useStreamingStt(options: Options) {
       return;
     }
     if (message.type === "speech_activity_begin") {
+      endNetworkUsageIdleObservation("voice_input");
       pauseDictationIdle();
       latestRef.current.onError("");
       latestRef.current.onSpeechBegin();

@@ -1,6 +1,8 @@
 import { VoiceControl, type VoiceSurface, type VoiceTarget, type VoiceSnapshot } from "./voiceControl";
 import type { RunnerWsMessage } from "../runnerWs/types";
 import type { RunnerWebSocketManager } from "../runnerWs/RunnerWebSocketManager";
+import { recordHttpNetworkUsage, subscribeNetworkUsageIdleObservations, updateNetworkUsageObservationAppState,
+  type NetworkUsageIdleObservation } from "../ws/networkUsageMetrics";
 
 const a: VoiceTarget = { kind: "orchestrator", orchestratorId: "main" };
 const b: VoiceTarget = { kind: "session", sessionRef: { backendId: "claude", nativeSessionId: "chat-b" }, cwd: "/work" };
@@ -312,5 +314,24 @@ test("handoff diagnostics expose finite stages and operation correlation without
     ["accepted", "handoff"], ["release_input"], ["release_speech"], ["open_target"], ["announce_target"], ["start_input"], ["result", "applied"],
   ]);
   expect(f.navigation.diag.mock.calls.every((call) => call[0] === id)).toBe(true);
+  f.stop();
+});
+
+test("a remote voice command interrupts idle observation before executing or returning a result", async () => {
+  const f = fixture(); await f.begin();
+  updateNetworkUsageObservationAppState("active");
+  updateNetworkUsageObservationAppState("background");
+  updateNetworkUsageObservationAppState("active");
+  const observations: NetworkUsageIdleObservation[] = [];
+  const unsubscribe = subscribeNetworkUsageIdleObservations((value) => observations.push(value));
+  observations.length = 0;
+  recordHttpNetworkUsage("https://runner/client-state", 0, 20);
+  const id = f.command("stop");
+  expect(observations).toHaveLength(1);
+  expect(observations[0]).toMatchObject({ endReason: "external_action", comparisonEligible: false,
+    usage: { totalReceivedBytes: 20 } });
+  await settle();
+  expect(f.result(id)?.status).toBe("applied");
+  unsubscribe();
   f.stop();
 });

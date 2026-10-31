@@ -55,6 +55,124 @@ let runnerWs = createCounter();
 let runnerWsByOperation: NetworkUsageSnapshot["runnerWsByOperation"] = {};
 let streamTts = createCounter();
 
+// An idle observation measures a time prefix, not completion of every startup
+// task. Responses arriving after interruption belong only to the cumulative
+// counters, even when their requests were sent during the observation.
+export const NETWORK_USAGE_IDLE_OBSERVATION_MS = 60_000;
+export type NetworkUsageIdleEndReason = "observation_elapsed" | "user_input" | "voice_input"
+  | "external_action" | "send_action" | "app_not_active" | "counter_reset";
+export type NetworkUsageIdleObservation = {
+  kind: "startup_idle" | "foreground_idle";
+  startedAtMs: number;
+  endedAtMs: number;
+  elapsedMs: number;
+  requestedDurationMs: number;
+  endReason: NetworkUsageIdleEndReason;
+  // Eligible for comparing uninterrupted idle observation intervals, not proof
+  // that initialization finished or that every possible native input was seen.
+  comparisonEligible: boolean;
+  appStateVerified: boolean;
+  measurementScope: "bytes_recorded_during_idle_prefix";
+  startupCompletionInferred: false;
+  usage: NetworkUsageSnapshot;
+};
+let observedAppState: string | null = null;
+let pendingForegroundInterruption: NetworkUsageIdleEndReason | null = null;
+let idleObservation: { kind: NetworkUsageIdleObservation["kind"]; startedAtMs: number; baseline: NetworkUsageSnapshot; appStateVerified: boolean | null } | null = {
+  kind: "startup_idle", startedAtMs: sinceMs, baseline: getNetworkUsageSnapshot(), appStateVerified: null,
+};
+let idleObservationListener: ((observation: NetworkUsageIdleObservation, atBoundary: boolean) => void) | null = null;
+let unreportedIdleObservation: NetworkUsageIdleObservation | null = null;
+
+function subtractCounter(value: NetworkUsageCounter, baseline: NetworkUsageCounter): NetworkUsageCounter {
+  return { sentBytes: value.sentBytes - baseline.sentBytes, receivedBytes: value.receivedBytes - baseline.receivedBytes };
+}
+
+export function endNetworkUsageIdleObservation(endReason: NetworkUsageIdleEndReason) {
+  if (observedAppState !== "active" && ["user_input", "voice_input", "external_action", "send_action"].includes(endReason)) {
+    pendingForegroundInterruption = endReason;
+  }
+  if (!idleObservation) return;
+  const { kind, startedAtMs, baseline, appStateVerified } = idleObservation;
+  const endedAtMs = Date.now();
+  const elapsedMs = Math.max(0, endedAtMs - startedAtMs);
+  const snapshot = getNetworkUsageSnapshot();
+  idleObservation = null;
+  const observation: NetworkUsageIdleObservation = {
+    kind, startedAtMs, endedAtMs, elapsedMs, requestedDurationMs: NETWORK_USAGE_IDLE_OBSERVATION_MS, endReason,
+    comparisonEligible: endReason === "observation_elapsed" && elapsedMs >= NETWORK_USAGE_IDLE_OBSERVATION_MS && observedAppState === "active" && appStateVerified === true,
+    appStateVerified: appStateVerified === true,
+    measurementScope: "bytes_recorded_during_idle_prefix", startupCompletionInferred: false,
+    usage: {
+      sinceMs: startedAtMs,
+      http: subtractCounter(snapshot.http, baseline.http),
+      httpByCategory: Object.fromEntries(HTTP_CATEGORIES.map((category) =>
+        [category, subtractCounter(snapshot.httpByCategory[category], baseline.httpByCategory[category])])) as NetworkUsageSnapshot["httpByCategory"],
+      runnerWs: subtractCounter(snapshot.runnerWs, baseline.runnerWs),
+      runnerWsByOperation: Object.fromEntries(Object.entries(snapshot.runnerWsByOperation).map(([key, counter]) => {
+        const previous = baseline.runnerWsByOperation[key] || { sentBytes: 0, receivedBytes: 0, sentCount: 0, receivedCount: 0 };
+        return [key, { ...subtractCounter(counter, previous), sentCount: counter.sentCount - previous.sentCount, receivedCount: counter.receivedCount - previous.receivedCount }] as const;
+      }).filter(([, counter]) => counter.sentCount || counter.receivedCount)),
+      streamTts: subtractCounter(snapshot.streamTts, baseline.streamTts),
+      totalSentBytes: snapshot.totalSentBytes - baseline.totalSentBytes,
+      totalReceivedBytes: snapshot.totalReceivedBytes - baseline.totalReceivedBytes,
+    },
+  };
+  if (idleObservationListener) {
+    try { idleObservationListener(observation, true); } catch { /* diagnostics cannot interrupt input */ }
+  } else {
+    // Before the logging hook mounts only the startup observation can finish.
+    unreportedIdleObservation = observation;
+  }
+}
+
+export function subscribeNetworkUsageIdleObservations(listener: NonNullable<typeof idleObservationListener>) {
+  idleObservationListener = listener;
+  if (unreportedIdleObservation) {
+    const observation = unreportedIdleObservation;
+    unreportedIdleObservation = null;
+    listener(observation, false);
+  }
+  return () => { if (idleObservationListener === listener) idleObservationListener = null; };
+}
+
+export function updateNetworkUsageObservationAppState(state: string | null) {
+  // RN can initially report null/unknown. Keep that startup prefix, but do not
+  // certify it as an uninterrupted foreground observation afterwards.
+  if (!["active", "inactive", "background"].includes(state || "")) {
+    if (idleObservation) idleObservation.appStateVerified = false;
+    return;
+  }
+  const previous = observedAppState;
+  observedAppState = state;
+  if (idleObservation?.appStateVerified === null) idleObservation.appStateVerified = true;
+  if (state !== "active") endNetworkUsageIdleObservation("app_not_active");
+  else {
+    if (previous !== null && previous !== "active") {
+      idleObservation = { kind: "foreground_idle", startedAtMs: Date.now(), baseline: getNetworkUsageSnapshot(), appStateVerified: true };
+    }
+    if (pendingForegroundInterruption) {
+      const reason = pendingForegroundInterruption;
+      pendingForegroundInterruption = null;
+      endNetworkUsageIdleObservation(reason);
+    }
+  }
+}
+
+export function getNetworkUsageIdleObservationDeadline() {
+  return idleObservation ? idleObservation.startedAtMs + NETWORK_USAGE_IDLE_OBSERVATION_MS : null;
+}
+
+export function completeNetworkUsageIdleObservation() {
+  const deadline = getNetworkUsageIdleObservationDeadline();
+  if (deadline !== null && Date.now() >= deadline) endNetworkUsageIdleObservation("observation_elapsed");
+}
+
+export function captureNetworkUsageInteraction() {
+  endNetworkUsageIdleObservation("user_input");
+  return false; // Observe responder capture without claiming the gesture.
+}
+
 export function utf8ByteLength(text: string): number {
   let bytes = 0;
   for (let i = 0; i < text.length; i += 1) {
@@ -150,6 +268,7 @@ export function getNetworkUsageSnapshot(): NetworkUsageSnapshot {
 }
 
 export function resetNetworkUsage() {
+  endNetworkUsageIdleObservation("counter_reset");
   sinceMs = Date.now();
   httpByCategory = createHttpCategoryCounters();
   runnerWs = createCounter();

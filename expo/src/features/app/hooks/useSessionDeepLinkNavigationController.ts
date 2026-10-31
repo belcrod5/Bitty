@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
 import { Linking } from "react-native";
+import { endNetworkUsageIdleObservation } from "../../ws/networkUsageMetrics";
 import type { ConversationMessage } from "../types/appTypes";
 import { codexItemMessageId } from "../utils/codexItemMessageId";
 import {
@@ -95,21 +96,20 @@ export function useSessionDeepLinkNavigationController(options: {
   }, [closeDrawer, getMessages, loadOlder, onNotFound, openSession, setJumpTarget, settingsLoaded]);
   navigatePendingRef.current = navigatePending;
 
+  const acceptUrl = useCallback((url: string | null) => {
+    if (!url || !parseSessionDeepLink(url)) return;
+    endNetworkUsageIdleObservation("external_action");
+    pendingUrlRef.current = url;
+    navigatePendingRef.current();
+  }, []);
+
   useEffect(() => {
     if (initialUrlReadRef.current) return;
     initialUrlReadRef.current = true;
-    void Linking.getInitialURL().then((url) => {
-      if (!url || !parseSessionDeepLink(url)) return;
-      pendingUrlRef.current = url;
-      navigatePendingRef.current();
-    });
-  }, []);
+    void Linking.getInitialURL().then(acceptUrl);
+  }, [acceptUrl]);
 
-  useEffect(() => Linking.addEventListener("url", ({ url }) => {
-    if (!parseSessionDeepLink(url)) return;
-    pendingUrlRef.current = url;
-    navigatePendingRef.current();
-  }).remove, []);
+  useEffect(() => Linking.addEventListener("url", ({ url }) => acceptUrl(url)).remove, [acceptUrl]);
 
   useEffect(() => {
     navigatePending();

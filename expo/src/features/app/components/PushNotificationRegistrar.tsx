@@ -1,3 +1,4 @@
+import { endNetworkUsageIdleObservation } from "../../ws/networkUsageMetrics";
 import { useEffect, useMemo, useRef } from "react";
 import * as Notifications from "expo-notifications";
 import { useAppSettings } from "../contexts/AppSettingsContext";
@@ -67,12 +68,14 @@ export function PushNotificationRegistrar({
         if (categoryIdentifier === VOICE_COMPLETED_CATEGORY && orchestratorId) {
           if (processedResponseKeysRef.current.has(responseKey)) return true;
           processedResponseKeysRef.current.add(responseKey);
+          endNetworkUsageIdleObservation("external_action");
           setPendingVoiceOrchestratorId(orchestratorId);
           return true;
         }
         if (!sessionId) return false;
         if (processedResponseKeysRef.current.has(responseKey)) return true;
         processedResponseKeysRef.current.add(responseKey);
+        endNetworkUsageIdleObservation("external_action");
         // Plain tap: the app is guaranteed to be foregrounded by iOS. Stash the session id for
         // usePendingPushSessionNavigationController (AppRoot.tsx) to pick up once ready.
         setPendingPushSessionTarget({ ...(backendId ? { backendId } : {}), sessionId, directory });
@@ -82,6 +85,7 @@ export function PushNotificationRegistrar({
       if (categoryIdentifier !== APPROVAL_REQUEST_CATEGORY || !approvalId) return false;
       if (processedResponseKeysRef.current.has(responseKey)) return true;
       processedResponseKeysRef.current.add(responseKey);
+      endNetworkUsageIdleObservation("external_action");
       void handlePushApprovalAction({ categoryIdentifier, actionIdentifier: response.actionIdentifier, approvalId });
       return true;
     };
