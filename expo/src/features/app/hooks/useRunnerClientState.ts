@@ -1,3 +1,4 @@
+import { runnerConnectionIdentity } from "../../runnerWs/runnerConnectionIdentity";
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { Alert, AppState } from "react-native";
 import type { RegisteredDirectoryEntry } from "../types/directorySessions";
@@ -21,10 +22,7 @@ type Connection = { runnerUrl: string; runnerToken: string; backendId: string; i
 const pendingKey = (connection: Connection, key: string) => `${connection.id}\u0000${key}`;
 function selectedConnection(runnerUrl: string, runnerToken: string, backendId: string, localRunnerUrl: string, cloudflareRunnerUrl: string): Connection {
   const url = runnerUrl.trim().replace(/\/+$/, "");
-  const local = localRunnerUrl.trim().replace(/\/+$/, "");
-  const cloudflare = cloudflareRunnerUrl.trim().replace(/\/+$/, "");
-  const canonicalUrl = cloudflare && local && (url === local || url === cloudflare) ? cloudflare : url;
-  return { runnerUrl: url, runnerToken, backendId, id: JSON.stringify([canonicalUrl, runnerToken]) };
+  return { runnerUrl: url, runnerToken, backendId, id: runnerConnectionIdentity(url, runnerToken, localRunnerUrl, cloudflareRunnerUrl) };
 }
 
 function reportSaveError(error: unknown) {
@@ -94,13 +92,13 @@ export function useRunnerClientState({
     const active = connection.id === connectionRef.current.id ? connectionRef.current : connection;
     const { runnerUrl: url, runnerToken: token } = active;
     if (!url || !token) return;
-    let snapshot = await requestRunnerClientState({ runnerUrl: url, runnerToken: token, cache: requestCache.current });
+    let snapshot = await requestRunnerClientState({ runnerUrl: url, runnerToken: token, connectionIdentity: active.id, cache: requestCache.current });
     applySnapshot(snapshot, connection);
     for (const [key, pending] of Object.entries(pendingDrafts.current)) {
       if (pending.connection.id !== connection.id) continue;
       if (draftTimers.current[key] || queuedDrafts.current.has(key)) continue;
       const [draftBackendId, sessionId] = JSON.parse(key.slice(connection.id.length + 1)) as [string, string];
-      snapshot = await requestRunnerClientState({ runnerUrl: url, runnerToken: token, cache: requestCache.current, operation: {
+      snapshot = await requestRunnerClientState({ runnerUrl: url, runnerToken: token, connectionIdentity: active.id, cache: requestCache.current, operation: {
         type: "draft.set", backendId: draftBackendId, sessionId, text: pending.text,
       } });
       applySnapshot(snapshot, connection);
@@ -116,7 +114,7 @@ export function useRunnerClientState({
           const active = connection.id === connectionRef.current.id ? connectionRef.current : connection;
           const { runnerUrl: url, runnerToken: token } = active;
           if (!url || !token) throw new Error("Runner connection is not configured");
-          applySnapshot(await requestRunnerClientState({ runnerUrl: url, runnerToken: token, cache: requestCache.current, operation }), connection);
+          applySnapshot(await requestRunnerClientState({ runnerUrl: url, runnerToken: token, connectionIdentity: active.id, cache: requestCache.current, operation }), connection);
         }
         if (connection.id === connectionRef.current.id) setInterruptedConnectionId("");
       } catch (error) {

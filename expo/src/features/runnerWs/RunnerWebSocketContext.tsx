@@ -10,6 +10,7 @@ type RunnerWebSocketProviderProps = {
   bootstrapReady: boolean;
   url: string;
   token: string;
+  localRunnerUrl?: string;
   cloudflareRunnerUrl: string;
   cloudflareAccessClientId: string;
   cloudflareAccessClientSecret: string;
@@ -28,6 +29,7 @@ export function RunnerWebSocketProvider({
   bootstrapReady,
   url,
   token,
+  localRunnerUrl,
   cloudflareRunnerUrl,
   cloudflareAccessClientId,
   cloudflareAccessClientSecret,
@@ -42,6 +44,7 @@ export function RunnerWebSocketProvider({
       bootstrapReady,
       url,
       token,
+      localRunnerUrl,
       cloudflareRunnerUrl,
       cloudflareAccessClientId,
       cloudflareAccessClientSecret,
@@ -57,6 +60,7 @@ export function RunnerWebSocketProvider({
       bootstrapReady,
       url,
       token,
+      localRunnerUrl,
       cloudflareRunnerUrl,
       cloudflareAccessClientId,
       cloudflareAccessClientSecret,
@@ -67,6 +71,7 @@ export function RunnerWebSocketProvider({
     bootstrapReady,
     cloudflareAccessClientId,
     cloudflareAccessClientSecret,
+    localRunnerUrl,
     cloudflareRunnerUrl,
     onConnectionProblem,
     onDiagEvent,

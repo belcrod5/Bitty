@@ -524,3 +524,35 @@ test("child count RPC advertises its bound and forwards authenticated ownership"
   assert.deepEqual(calls, [{ options: payload, context: { subjectId: "owner" } }]);
   assert.equal(sent[1].op, "sessions.children.count.result");
 });
+
+
+test("conditional hello revalidates metadata and always reports current readiness/auth/availability", async () => {
+  let statuses = [{ backendId: "codex", readiness: { ready: true }, available: true, auth: { state: "unknown" },
+    capabilities: { model: { catalog: Array.from({ length: 50 }, (_, i) => ({ modelId: `model-${i}`, label: `Model ${i}` })) } } }];
+  const sent = []; let checks = 0;
+  const connection = createAgentWsConnection({ service: { getStatuses: async () => { checks++; return statuses; } },
+    ws: {}, subjectId: "owner", sendEnvelope: (_ws, envelope) => sent.push(envelope) });
+  const hello = async (ifNoneMatch) => {
+    connection.handleMessage({ channel: "agent", op: "agent.hello", requestId: "hello", payload: { ifNoneMatch } });
+    await new Promise((resolve) => setImmediate(resolve));
+    return sent.at(-1).payload;
+  };
+  const first = await hello();
+  assert.ok(first.operations.includes("history.read")); assert.equal(first.backends[0].readiness.ready, true);
+  statuses = [{ ...statuses[0], readiness: { ready: false, reason: "temporarily unavailable" }, available: false, auth: { state: "expired" } }];
+  const second = await hello(first.etag);
+  assert.equal(second.notModified, true); assert.equal(second.backends[0].readiness.ready, false);
+  assert.equal(second.backends[0].available, false); assert.equal(second.backends[0].auth.state, "expired");
+  assert.equal(second.backends[0].capabilities, undefined);
+  assert.ok(JSON.stringify(second).length < JSON.stringify(first).length / 4);
+  statuses = [{ ...statuses[0], capabilities: { model: { catalog: [{ modelId: "new" }] } } }];
+  const third = await hello(first.etag);
+  assert.notEqual(third.etag, first.etag); assert.equal(third.notModified, undefined);
+  assert.equal(third.backends[0].capabilities.model.catalog[0].modelId, "new");
+  statuses = [{ backendId: "claude", readiness: { ready: true }, available: true }];
+  const fourth = await hello(third.etag);
+  assert.notEqual(fourth.etag, third.etag); assert.equal(fourth.backends[0].backendId, "claude");
+  assert.equal(checks, 4);
+  const legacy = await hello();
+  assert.ok(legacy.operations); assert.equal(legacy.notModified, undefined);
+});

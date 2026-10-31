@@ -1,3 +1,4 @@
+import { runnerConnectionIdentity, runnerResponseCacheKey } from "./runnerConnectionIdentity";
 import {
   createWebSocketWithOptionalAuth,
   isWebSocketForCloudflareRunner,
@@ -32,6 +33,7 @@ type RunnerWebSocketConnectionOptions = {
   bootstrapReady?: boolean;
   url: string;
   token: string;
+  localRunnerUrl?: string;
   cloudflareRunnerUrl?: string;
   cloudflareAccessClientId?: string;
   cloudflareAccessClientSecret?: string;
@@ -180,6 +182,8 @@ export class RunnerWebSocketManager {
   private bootstrapReady: boolean;
   private url: string;
   private token: string;
+  private localRunnerUrl: string;
+  private responseCacheKey?: Promise<string | null>;
   private cloudflareRunnerUrl: string;
   private cloudflareAccessClientId: string;
   private cloudflareAccessClientSecret: string;
@@ -233,6 +237,7 @@ export class RunnerWebSocketManager {
     this.bootstrapReady = options.bootstrapReady ?? true;
     this.url = normalizeUrl(options.url);
     this.token = normalizeText(options.token);
+    this.localRunnerUrl = normalizeText(options.localRunnerUrl);
     this.cloudflareRunnerUrl = normalizeText(options.cloudflareRunnerUrl);
     this.cloudflareAccessClientId = normalizeText(options.cloudflareAccessClientId);
     this.cloudflareAccessClientSecret = normalizeText(options.cloudflareAccessClientSecret);
@@ -250,6 +255,7 @@ export class RunnerWebSocketManager {
     const nextBootstrapReady = options.bootstrapReady ?? this.bootstrapReady;
     const nextUrl = normalizeUrl(options.url);
     const nextToken = normalizeText(options.token);
+    const nextLocalRunnerUrl = "localRunnerUrl" in options ? normalizeText(options.localRunnerUrl) : this.localRunnerUrl;
     const nextCloudflareRunnerUrl = "cloudflareRunnerUrl" in options
       ? normalizeText(options.cloudflareRunnerUrl)
       : this.cloudflareRunnerUrl;
@@ -269,6 +275,7 @@ export class RunnerWebSocketManager {
       nextBootstrapReady === this.bootstrapReady &&
       nextUrl === this.url &&
       nextToken === this.token &&
+      nextLocalRunnerUrl === this.localRunnerUrl &&
       nextCloudflareRunnerUrl === this.cloudflareRunnerUrl &&
       nextCloudflareAccessClientId === this.cloudflareAccessClientId &&
       nextCloudflareAccessClientSecret === this.cloudflareAccessClientSecret
@@ -285,6 +292,8 @@ export class RunnerWebSocketManager {
     this.bootstrapReady = nextBootstrapReady;
     this.url = nextUrl;
     this.token = nextToken;
+    this.localRunnerUrl = nextLocalRunnerUrl;
+    this.responseCacheKey = undefined;
     this.cloudflareRunnerUrl = nextCloudflareRunnerUrl;
     this.cloudflareAccessClientId = nextCloudflareAccessClientId;
     this.cloudflareAccessClientSecret = nextCloudflareAccessClientSecret;
@@ -627,6 +636,10 @@ export class RunnerWebSocketManager {
       this.snapshotSubscribers.delete(handler);
     };
   };
+
+  getResponseCacheKey() {
+    return this.responseCacheKey ??= runnerResponseCacheKey(runnerConnectionIdentity(this.url, this.token, this.localRunnerUrl, this.cloudflareRunnerUrl));
+  }
 
   getSnapshot = (): RunnerWsConnectionSnapshot => this.cachedSnapshot;
 

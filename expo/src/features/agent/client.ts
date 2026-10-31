@@ -105,12 +105,49 @@ function interruptedError() {
   return error;
 }
 
-async function getAgentHello(manager: RunnerWebSocketManager) {
-  const response = await manager.request({ channel: "agent", op: "agent.hello" }, { timeoutMs: 10_000 });
-  if (response.channel !== "agent" || response.op !== "agent.ready") return null;
-  const payload = object(response.payload);
-  if (Number(payload.protocolVersion) !== PROTOCOL_VERSION) return null;
-  return payload;
+type HelloState = { scope: string; payload?: Record<string, unknown>; pending?: Promise<Record<string, unknown> | null> };
+const hellos = new WeakMap<RunnerWebSocketManager, HelloState>();
+function helloScope(manager: RunnerWebSocketManager) {
+  const snapshot = manager.getSnapshot?.();
+  return JSON.stringify([snapshot?.url, snapshot?.connectionOptionsGeneration, snapshot?.generation, snapshot?.connectionId]);
+}
+function getAgentHello(manager: RunnerWebSocketManager): Promise<Record<string, unknown> | null> {
+  const scope = helloScope(manager);
+  let state = hellos.get(manager);
+  if (!state || state.scope !== scope) { state = { scope }; hellos.set(manager, state); }
+  if (state.pending) return state.pending;
+  const current = state;
+  const previous = current.payload;
+  const task = (async () => {
+    let validator = typeof previous?.etag === "string" ? previous.etag : "";
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const response = await manager.request({ channel: "agent", op: "agent.hello",
+        ...(validator ? { payload: { ifNoneMatch: validator } } : {}) }, { timeoutMs: 10_000 });
+      if (helloScope(manager) !== scope) throw new Error("Agent connection changed");
+      if (response.channel !== "agent" || response.op !== "agent.ready") return null;
+      const payload = object(response.payload);
+      if (Number(payload.protocolVersion) !== PROTOCOL_VERSION) return null;
+      if (payload.notModified === true) {
+        const old = Array.isArray(previous?.backends) ? previous.backends : [];
+        const dynamic = Array.isArray(payload.backends) ? payload.backends : [];
+        if (!validator || payload.etag !== validator || !previous || old.length !== dynamic.length
+          || new Set(dynamic.map((entry) => object(entry).backendId)).size !== dynamic.length
+          || !old.every((entry) => dynamic.some((item) => object(item).backendId === object(entry).backendId))) {
+          validator = "";
+          continue;
+        }
+        current.payload = { ...previous, backends: old.map((entry) => {
+          const { readiness, available, auth, ...metadata } = object(entry);
+          return { ...metadata, ...object(dynamic.find((item) => object(item).backendId === metadata.backendId)) };
+        }) };
+      } else current.payload = payload;
+      return current.payload;
+    }
+    throw new Error("Invalid Agent capability response");
+  })();
+  current.pending = task;
+  void task.finally(() => { if (current.pending === task) current.pending = undefined; }).catch(() => {});
+  return task;
 }
 
 export async function getAgentBackendStatuses(manager: RunnerWebSocketManager) {
@@ -951,7 +988,7 @@ export async function getAgentSessionChildCounts(manager: RunnerWebSocketManager
 
 export type AgentSessionListGroup = { cwd: string; payload?: Record<string, unknown>; error?: Error };
 
-// One invocation is one sync cycle; no readiness or capability cache survives it.
+// Each sync cycle revalidates capabilities and obtains current backend readiness.
 export async function listAgentSessionsBatch(
   manager: RunnerWebSocketManager, cwds: string[], limit: number,
 ): Promise<AgentSessionListGroup[]> {
