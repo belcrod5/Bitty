@@ -47,7 +47,7 @@ import {
 } from "./codex-turn-execution.mjs";
 import { createCodexAppServerClient } from "./codex-app-server-client.mjs";
 import { createOrchestratorRuntime } from "./orchestrator-runtime.mjs";
-import { createVoiceOrchestratorService } from "./voice-orchestrator-service.mjs";
+import { conditionalOrchestratorList, createVoiceOrchestratorService } from "./voice-orchestrator-service.mjs";
 import { createVoiceConsultationService, consultationRoomSummary } from "./voice-consultation-service.mjs";
 import { createCodexSessionChildrenObserver } from "./codex-session-children.mjs";
 import { createStreamTtsSegments, TTS_SEGMENT_BOUNDARY } from "./stream-tts-segments.mjs";
@@ -7188,11 +7188,20 @@ const server = http.createServer(handleRunnerRequest);
 
 const runnerWsEnvelopeClients = new WeakSet();
 const runnerWsActiveClients = new Set();
+const runnerWsOrchestratorEtags = new WeakMap();
+function sendOrchestratorList(ws, message) {
+  const list = message.payload;
+  const payload = runnerWsOrchestratorEtags.has(ws)
+    ? conditionalOrchestratorList(list, runnerWsOrchestratorEtags.get(ws)) : list;
+  if (sendRunnerWsEnvelope(ws, { ...message, payload }) && runnerWsOrchestratorEtags.has(ws)) {
+    runnerWsOrchestratorEtags.set(ws, list.etag);
+  }
+}
 async function broadcastVoiceUnreadState() {
   try {
     const payload = await voiceContextService.list();
     for (const client of runnerWsActiveClients) {
-      sendRunnerWsEnvelope(client, { channel: "agent", op: "voice.unread.changed", payload });
+      sendOrchestratorList(client, { channel: "agent", op: "voice.unread.changed", payload });
     }
   } catch (error) {
     console.warn(`[voice] unread broadcast failed: ${errorMessage(error)}`);
@@ -7396,6 +7405,9 @@ runnerWsServer.on("connection", (ws, req) => {
     const orchestratorId = message.payload?.orchestratorId || "main";
     if (["voice.orchestrators.list", "voice.orchestrators.select", "voice.orchestrators.create",
       "voice.orchestrators.update", "voice.orchestrators.delete", "voice.orchestrators.introduction.draft"].includes(message.op)) {
+      if (message.op === "voice.orchestrators.list" && message.payload?.updates === "conditional") {
+        runnerWsOrchestratorEtags.set(ws, typeof message.payload.ifNoneMatch === "string" ? message.payload.ifNoneMatch : "");
+      }
       const operation = message.op === "voice.orchestrators.list" ? voiceContextService.list()
         : message.op === "voice.orchestrators.select" ? voiceContextService.select(orchestratorId)
           : message.op === "voice.orchestrators.create"
@@ -7410,8 +7422,9 @@ runnerWsServer.on("connection", (ws, req) => {
                 ? voiceContextService.draftIntroduction(orchestratorId, message.payload)
                 : voiceContextService.remove(orchestratorId);
       void operation.then((payload) => {
-        sendRunnerWsEnvelope(ws, { channel: "agent", op: `${message.op}.result`,
-          requestId: message.requestId || "", payload });
+        if (message.op === "voice.orchestrators.list" && message.payload?.updates === "conditional") {
+          sendOrchestratorList(ws, { channel: "agent", op: `${message.op}.result`, requestId: message.requestId || "", payload });
+        } else sendRunnerWsEnvelope(ws, { channel: "agent", op: `${message.op}.result`, requestId: message.requestId || "", payload });
         if (["voice.orchestrators.select", "voice.orchestrators.create",
           "voice.orchestrators.update", "voice.orchestrators.delete"].includes(message.op)) {
           widgetRefreshNotifier.changed();

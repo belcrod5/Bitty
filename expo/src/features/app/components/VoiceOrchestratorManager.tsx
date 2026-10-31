@@ -145,7 +145,7 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
     if (!Array.isArray(value.orchestrators) || typeof value.selectedId !== "string") {
       throw new Error("一覧を更新できません。");
     }
-    onListChanged({ orchestrators: value.orchestrators as VoiceOrchestrator[], selectedId: value.selectedId });
+    onListChanged(value as List);
   };
 
   const save = async () => {

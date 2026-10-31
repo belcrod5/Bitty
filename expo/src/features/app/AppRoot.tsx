@@ -1,3 +1,4 @@
+import { getVoiceOrchestrators } from "./utils/voiceOrchestratorClient";
 import { getVoiceControl } from "../appControl/voiceControl";
 import { WidgetSnapshotPublisher } from "./components/WidgetSnapshotPublisher";
 import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
@@ -6002,9 +6003,8 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     },
     preflight: async (target) => {
       if (target.kind === "orchestrator") {
-        const response = await runnerWebSocketManager.request({ channel: "agent", op: "voice.orchestrators.list" });
-        const items = (response.payload as { orchestrators?: Array<{ id: string }> })?.orchestrators;
-        if (!items?.some((item) => item.id === target.orchestratorId)) return "target_not_found";
+        const { orchestrators } = await getVoiceOrchestrators(runnerWebSocketManager);
+        if (!orchestrators.some((item) => item.id === target.orchestratorId)) return "target_not_found";
         const opened = await runnerWebSocketManager.request({ channel: "agent", op: "voice.open", payload: { orchestratorId: target.orchestratorId } });
         const status = (opened.payload as { status?: string })?.status;
         return status === "accepted" || status === "running" ? "target_busy" : null;

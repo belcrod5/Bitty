@@ -25,7 +25,8 @@ const mockRequest = jest.fn(async (message: { op: string; payload?: Record<strin
   } };
   return { op: `${message.op}.result`, payload: mockRoom };
 });
-const mockManager = {
+let mockManager = {
+  getSnapshot: () => ({ generation: mockGeneration, url: "url", connectionOptionsGeneration: 0 }),
   connect: jest.fn(async () => {}), request: mockRequest,
   subscribe: ({ op }: { op: string }, handler: (message: unknown) => void) => {
     mockHandlers.set(op, handler); return () => mockHandlers.delete(op);
@@ -73,7 +74,8 @@ async function submitTranscript(screen: Awaited<ReturnType<typeof render>>) {
   await fireEvent(input, "submitEditing", { nativeEvent: { text: input.props.value } });
 }
 
-beforeEach(() => { jest.clearAllMocks(); mockHandlers.clear(); mockVisibleOwner = ""; mockMessageSequence = 0; mockGeneration = 1; mockListedRoom = mockRoom; });
+beforeEach(() => {
+  mockManager = { ...mockManager }; jest.clearAllMocks(); mockHandlers.clear(); mockVisibleOwner = ""; mockMessageSequence = 0; mockGeneration = 1; mockListedRoom = mockRoom; });
 
 test("gathers identity icons in selected order and creates only an empty room", async () => {
   const alert = jest.spyOn(Alert, "alert").mockImplementation(() => {});

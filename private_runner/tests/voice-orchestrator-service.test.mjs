@@ -9,7 +9,7 @@ import { createAgentService } from "../src/agent/agent-service.mjs";
 import { operationStore, sessionStore, status } from "./agent-service-fixtures.mjs";
 import { createCodexScheduleService } from "../src/codex-schedule-service.mjs";
 import { createVoiceContextService } from "../src/voice-context-service.mjs";
-import { createVoiceOrchestratorService } from "../src/voice-orchestrator-service.mjs";
+import { conditionalOrchestratorList, createVoiceOrchestratorService } from "../src/voice-orchestrator-service.mjs";
 import { prepareOrchestratorIsolation } from "../scripts/prepare-orchestrator-isolation.mjs";
 import { patchOrchestratorRunnerTools } from "../scripts/patch-orchestrator-runner-tools.mjs";
 
@@ -1375,4 +1375,42 @@ test("isolated owners reject a runtime that retains shell escalation before disp
   assert.equal(result.status, "preflight_failed");
   assert.equal(result.code, "capability_unsupported");
   assert.equal(codex.calls.some(({ method }) => method === "turn/start"), false);
+});
+
+
+test("conditional orchestrator metadata stays valid across counts, clears and restart, and changes with edited metadata", async (t) => {
+  const { rootDir, codex, service } = await fixture(t);
+  const before = await service.list();
+  assert.equal(conditionalOrchestratorList(before), before);
+  assert.equal(conditionalOrchestratorList(before, "wrong"), before);
+  const mainId = (await service.open("main")).logicalConversationId;
+  await (await turn(service, "main", mainId, "hello")).finished;
+  const unread = await service.list();
+  assert.equal(unread.etag, before.etag);
+  assert.deepEqual(conditionalOrchestratorList(unread, before.etag), { etag: before.etag, notModified: true,
+    unreadCounts: [{ id: "main", unreadCount: 1, learningUnreadCount: 0 }] });
+  await service.markRead("main", mainId, 1);
+  await service.clearMessages("main");
+  assert.equal((await service.list()).etag, before.etag);
+  const restarted = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
+  assert.equal((await restarted.list()).etag, before.etag);
+  await restarted.close();
+  const icon = "data:image/png;base64," + Buffer.from("89504e470d0a1a0a", "hex").toString("base64");
+  let previous = before.etag;
+  for (const edit of [{ name: "renamed", icon: "" }, { name: "renamed", icon },
+    { name: "renamed", icon, ttsProvider: "google", voiceId: "voice" },
+    { name: "renamed", icon, publicIntroduction: "new profile" }]) {
+    await service.update("main", edit);
+    const next = await service.list();
+    assert.notEqual(next.etag, previous);
+    assert.equal(conditionalOrchestratorList(next, previous), next);
+    previous = next.etag;
+  }
+  const child = await service.create("child");
+  assert.notEqual(child.etag, previous);
+  const selected = await service.select(child.id);
+  assert.notEqual(selected.etag, child.etag);
+  const deleted = await service.remove(child.id);
+  assert.notEqual(deleted.etag, selected.etag);
+  assert.deepEqual(deleted.orchestrators.map(({ id }) => id), ["main"]);
 });

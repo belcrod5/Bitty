@@ -9,6 +9,7 @@ jest.mock("../utils/persistedSettingsFile", () => ({
     mockMutatePersistedSettings(mutate),
 }));
 
+let mockConfigurationGeneration = 0;
 let mockConnection = { connected: true, generation: 1, appState: "active" };
 const mockHandlers = new Map<string, (message: { payload: unknown }) => void>();
 const mockPendingSnapshots: Array<(response: unknown) => void> = [];
@@ -18,7 +19,8 @@ const mockDefaultRequest = ({ op }: { op: string }) => op === "voice.orchestrato
     ], selectedId: "parent" } })
   : new Promise((resolve) => mockPendingSnapshots.push(resolve));
 const mockRequest = jest.fn(mockDefaultRequest);
-const mockManager = {
+let mockManager = {
+  getSnapshot: () => ({ ...mockConnection, url: "url", connectionOptionsGeneration: mockConfigurationGeneration }),
   request: mockRequest,
   subscribe: ({ op }: { op: string }, handler: (message: { payload: unknown }) => void) => {
     mockHandlers.set(op, handler);
@@ -37,6 +39,8 @@ const snapshot = (instanceId: string, revision: number, activities = [activity])
 });
 
 beforeEach(() => {
+  mockConfigurationGeneration = 0;
+  mockManager = { ...mockManager };
   mockConnection = { connected: true, generation: 1, appState: "active" };
   mockHandlers.clear();
   mockPendingSnapshots.length = 0;
@@ -99,11 +103,11 @@ test("selected orchestrator metadata arrives with unread counts and wins over an
     : new Promise((resolve) => mockPendingSnapshots.push(resolve)));
   const hook = await renderHook(() => useOrchestratorActivities("url", "token", true));
   await act(async () => mockHandlers.get("voice.unread.changed")?.({ payload: {
-    orchestrators: [{ id: "parent", unreadCount: 3 }, { id: "other", unreadCount: 1 }],
+    orchestrators: [{ id: "parent", name: "親", unreadCount: 3 }, { id: "other", name: "調査", unreadCount: 1 }],
     selectedId: "other",
   } }));
   await act(async () => resolveList({ op: "voice.orchestrators.list.result", payload: {
-    orchestrators: [{ id: "parent", unreadCount: 2 }], selectedId: "parent",
+    orchestrators: [{ id: "parent", name: "親", unreadCount: 2 }], selectedId: "parent",
   } }));
   expect(hook.result.current.selectedId).toBe("other");
   expect(hook.result.current.orchestrators.map((item) => item.unreadCount)).toEqual([3, 1]);
@@ -137,8 +141,9 @@ test("disconnect, connection generation, foreground, and credentials discard sta
 
   await act(async () => mockHandlers.get("orchestrator_activity_updated")?.({ payload: snapshot("first", 3) }));
   mockRequest.mockImplementation(({ op }: { op: string }) => op === "voice.orchestrators.list"
-    ? Promise.resolve({ op: "voice.orchestrators.list.result", payload: { orchestrators: [] } })
+    ? Promise.resolve({ op: "voice.orchestrators.list.result", payload: { orchestrators: [], selectedId: "" } })
     : new Promise((resolve) => mockPendingSnapshots.push(resolve)));
+  mockConfigurationGeneration += 1;
   token = "two";
   await hook.rerender(undefined);
   expect(hook.result.current.activities).toEqual([]);
@@ -155,11 +160,44 @@ test("learning metadata follows pushes, excludes invalid counts, and clears on c
   } }));
   expect(hook.result.current.orchestrators.map((item) => item.learningUnreadCount)).toEqual([4, 0]);
   const stale = mockHandlers.get("voice.unread.changed")!;
+  mockConfigurationGeneration += 1;
   token = "two";
   await hook.rerender(undefined);
   await act(async () => stale({ payload: {
     orchestrators: [{ id: "main", name: "古い", learningUnreadCount: 9 }], selectedId: "main",
   } }));
   expect(hook.result.current.orchestrators.some((item) => item.learningUnreadCount === 9)).toBe(false);
+  await hook.unmount();
+});
+
+
+test("inactive does not start synchronization; returning active revalidates once", async () => {
+  const hook = await renderHook(() => useOrchestratorActivities("url", "token", true));
+  await act(async () => undefined);
+  const before = mockRequest.mock.calls.length;
+  mockConnection = { ...mockConnection, appState: "inactive" };
+  await hook.rerender(undefined);
+  expect(mockRequest).toHaveBeenCalledTimes(before);
+  mockConnection = { ...mockConnection, appState: "active" };
+  await hook.rerender(undefined);
+  expect(mockRequest).toHaveBeenCalledTimes(before + 2); // one activity snapshot and one metadata validation
+  await hook.unmount();
+});
+
+
+test("a queued notification after domain apply cannot be overwritten by the request continuation", async () => {
+  let resolveList!: (value: unknown) => void;
+  mockRequest.mockImplementation(({ op }: { op: string }) => op === "voice.orchestrators.list"
+    ? new Promise((resolve) => { resolveList = resolve; })
+    : new Promise((resolve) => mockPendingSnapshots.push(resolve)));
+  const hook = await renderHook(() => useOrchestratorActivities("url", "token", true));
+  await act(async () => {
+    resolveList({ op: "voice.orchestrators.list.result", payload: { etag: "A", selectedId: "parent",
+      orchestrators: [{ id: "parent", name: "Old", unreadCount: 1 }] } });
+    queueMicrotask(() => mockHandlers.get("voice.unread.changed")?.({ payload: { etag: "B", selectedId: "other",
+      orchestrators: [{ id: "other", name: "New", icon: "new", unreadCount: 9 }] } }));
+  });
+  expect(hook.result.current.selectedId).toBe("other");
+  expect(hook.result.current.orchestrators[0]).toMatchObject({ name: "New", icon: "new", unreadCount: 9 });
   await hook.unmount();
 });

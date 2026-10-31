@@ -39,6 +39,8 @@ export type RunnerWsConnectionSnapshot = {
   clientInstanceId: string;
   connectionId?: string;
   generation: number;
+  // URL/auth configuration changes independently of physical reconnects.
+  connectionOptionsGeneration?: number;
   pendingRequestCount: number;
   subscriptionCount: number;
   lastPongAt?: number;

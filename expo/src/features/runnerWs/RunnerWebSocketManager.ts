@@ -1019,6 +1019,7 @@ export class RunnerWebSocketManager {
       clientInstanceId: this.clientInstanceId,
       connectionId: this.connectionId,
       generation: this.generation,
+      connectionOptionsGeneration: this.connectionOptionsGeneration,
       pendingRequestCount: this.pendingRequests.size,
       subscriptionCount: this.subscribers.size,
       bufferedAmount: this.ws?.bufferedAmount || 0,

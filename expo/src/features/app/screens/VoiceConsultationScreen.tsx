@@ -1,3 +1,4 @@
+import { getVoiceOrchestrators } from "../utils/voiceOrchestratorClient";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { randomUUID } from "expo-crypto";
 import Reanimated, { FadeOut, ZoomIn } from "react-native-reanimated";
@@ -116,10 +117,8 @@ export function VoiceConsultationScreen({ onClose, playback }: { onClose: () => 
   useEffect(() => {
     let current = true;
     void manager.connect().then(async () => {
-      const ownerResponse = await manager.request({ channel: "agent", op: "voice.orchestrators.list" });
-      if (!current) return;
-      const ownerPayload = ownerResponse.payload as { orchestrators: Owner[] };
-      setOwners(ownerPayload.orchestrators);
+      const owners = await getVoiceOrchestrators(manager);
+      if (current) setOwners(owners.orchestrators);
     }).catch((cause) => { if (current) setError(cause instanceof Error ? cause.message : "相談を読み込めません"); });
     return () => { current = false; };
   }, [manager, connected, generation]);
