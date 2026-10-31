@@ -1021,7 +1021,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   const knownCodexThreadIdsRef = useRef<Set<string>>(new Set());
   const sessionRuntimeStatusByIdRef = useRef<Record<string, SessionRuntimeStatus>>({});
   const startupSessionRestoreAttemptedRef = useRef(false);
-  const llmSessionDirectoryRef = useRef(DEFAULT_LLM_DIRECTORY);
+  const llmSessionDirectoryRef = useRef("");
   const llmActiveToolCallsRef = useRef(0);
   const llmToolCallArgsByIdRef = useRef<Record<string, unknown>>({});
   const replyLoadingRef = useRef(false);
@@ -2023,8 +2023,8 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     directorySessionSync,
     ensureRegisteredDirectorySessions,
     loadMoreDirectorySessionTree,
-    loadSessionChildTree,
     loadSessionChildTreesForSessions,
+    watchSessionChildTreesForSessions,
     prepareDirectorySessionTargetChange, reconcileDirectorySessionTree,
     toggleDirectoryExpanded,
     refreshDirectorySessionTree,
@@ -3631,29 +3631,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     appResumeStreamRecoveryNonActiveMinMs: APP_RESUME_STREAM_RECOVERY_NON_ACTIVE_MIN_MS,
   });
 
-  useEffect(() => {
-    if (activeScreen !== "skia_board") return;
-    if (appStateRef.current !== "active") return;
-    if (!runnerToken.trim()) return;
-    for (const directory of registeredDirectories) {
-      void refreshGitChangedFiles(directory.path, { force: true });
-    }
-  }, [activeScreen, refreshGitChangedFiles, registeredDirectories, runnerToken]);
-
-  useEffect(() => {
-    const sub = AppState.addEventListener("change", (nextState) => {
-      if (nextState !== "active") return;
-      if (activeScreen !== "skia_board") return;
-      if (!runnerToken.trim()) return;
-      for (const directory of registeredDirectories) {
-        void refreshGitChangedFiles(directory.path, { force: true });
-      }
-    });
-    return () => {
-      sub.remove();
-    };
-  }, [activeScreen, refreshGitChangedFiles, registeredDirectories, runnerToken]);
-
   useCodexStatusRefreshEffects({
     runnerUrl,
     runnerToken,
@@ -3731,7 +3708,9 @@ function AppContent({ onReady }: { onReady?: () => void }) {
 
   useEffect(() => {
     const normalizedDirectory = normalizedLlmDirectoryForRequest();
-    if (!settingsLoaded) {
+    if (!settingsLoaded) return;
+    // 保存済み設定の初期反映では、選択済みの会話を新規会話に置き換えない。
+    if (!llmSessionDirectoryRef.current) {
       llmSessionDirectoryRef.current = normalizedDirectory;
       return;
     }
@@ -4787,7 +4766,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     ensureRegisteredDirectorySessions,
     refreshRegisteredDirectorySessions,
     loadSessionChildren: loadSessionChildrenFromContext,
-    loadSessionChildrenBatch: loadSessionChildTreesForSessions,
+    watchSessionChildren: watchSessionChildTreesForSessions,
     openSessionHistoryEntry: openSessionHistoryEntryFromContext,
     markSessionRead: markSessionReadFromContext,
     markSessionReadManually: markSessionRead,
@@ -6123,7 +6102,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     openDirectoryExplorer,
     toggleDirectoryExpanded,
     loadMoreDirectorySessionTree,
-    loadSessionChildTree,
+    watchSessionChildren: watchSessionChildTreesForSessions,
     selectLlmDirectory,
     openNewSessionPopup,
     openSessionHistoryPopup,

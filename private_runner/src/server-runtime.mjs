@@ -1255,6 +1255,7 @@ const {
   selectCliSessionIndexEntryBySessionId,
   getCliSessionIndexStats,
   listCliSessionsForDirectories,
+  listCliSessionChildren,
   listCliSessionsForDirectory,
   markCliDirectoryRead,
   markCliSessionsRead,
@@ -1562,6 +1563,7 @@ const agentRuntime = createPrivateRunnerAgentRuntime({
   findSession: findCliSessionIndexEntryBySessionId, resolveSessionDirectory: resolveCliSessionEntryExecutionCwd,
   selectCachedSession: selectCliSessionIndexEntryBySessionId,
   listSessions: listLlmSessions, listSessionsForDirectories: listLlmSessionsForDirectories,
+  listSessionChildren: listCliSessionChildren,
   getSessionTitles: clientStateStore.getSessionTitles,
   onNewRegularSession: async ({ sessionRef, input }) => {
     const { status } = await agentService.validateExecutionOptions({ backendId: "codex" });

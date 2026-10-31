@@ -937,3 +937,47 @@ test("rollout writer rejects archives without appending plaintext to the source"
   await assert.rejects(writer.appendAppConversationToCliRollout({ sessionId: "archived", userText: "new" }), /compressed rollout/);
   assert.deepEqual(await fs.readFile(file), archive);
 });
+
+
+test("child relationships use current catalog identity across worktrees and refresh deleted/reparented entries", async (t) => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-cli-child-counts-"));
+  t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));
+  const sessionsDir = path.join(tempRoot, "sessions");
+  const rootDir = path.join(tempRoot, "parent");
+  const childCwd = path.join(tempRoot, "isolated-child");
+  const indexPath = path.join(tempRoot, "index.json");
+  await Promise.all([fs.mkdir(sessionsDir), fs.mkdir(rootDir), fs.mkdir(childCwd)]);
+  async function write(name, parent, mtime) {
+    const file = path.join(sessionsDir, name);
+    await fs.writeFile(file, JSON.stringify({ type: "session_meta", payload: {
+      id: "same-child", cwd: childCwd, timestamp: "2026-10-30T00:00:00Z", parent_thread_id: parent,
+      source: { subagent: true },
+    } }) + "\n" + JSON.stringify({ type: "response_item", payload: { content: "body not needed for counting" } }));
+    await fs.utimes(file, mtime, mtime);
+    return file;
+  }
+  const old = await write("rollout-old.jsonl", "one", 1700000000);
+  const current = await write("rollout-current.jsonl", "two", 1700000001);
+  const index = createLlmCliSessionIndex({
+    cliSessionIndexPath: indexPath,
+    cliSessionIndexRefreshMinIntervalMs: 60_000,
+    cliSessionScanMaxFiles: 10,
+    codeCliSessionsDir: sessionsDir,
+    compareSessionHistoryEntries: (a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)),
+    normalizeLlmExecutionSessionId: (value) => String(value || "").trim(),
+    normalizeReasoningEffort: (value) => String(value || "").trim(),
+    normalizeSessionRootRelativePath: (value) => String(value || "").trim(),
+    normalizeSessionUpdatedAt: (value) => String(value || "").trim(),
+    toUnixPath: (value) => String(value || "").replaceAll("\\", "/"),
+    toWorkspaceRelativeFromAbsolutePath: () => "",
+  });
+  assert.deepEqual(await index.listCliSessionChildren(["one", "two"]), [{ sessionId: "same-child", parentSessionId: "two" }]);
+  assert.deepEqual(await index.listCliSessionsForDirectory(rootDir, { parentSessionIds: ["one"] }), []);
+  const detail = await index.listCliSessionsForDirectory(rootDir, { parentSessionIds: ["two"] });
+  assert.equal(detail.length, 1);
+  assert.equal(detail[0].cwd, childCwd);
+  await write("rollout-current.jsonl", "three", 1700000002);
+  assert.deepEqual(await index.listCliSessionChildren(["one", "two", "three"]), [{ sessionId: "same-child", parentSessionId: "three" }]);
+  await Promise.all([fs.unlink(old), fs.unlink(current)]);
+  assert.deepEqual(await index.listCliSessionChildren(["one", "two", "three"]), []);
+});

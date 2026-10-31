@@ -144,7 +144,7 @@ function renderDrawer(overrides: Partial<AppDrawerProps> = {}) {
     onOpenDirectoryExplorer: jest.fn(),
     onToggleDirectoryExpanded: jest.fn(),
     onLoadMoreSessions: jest.fn(),
-    onLoadSessionChildren: jest.fn(),
+    watchSessionChildren: jest.fn(() => () => {}),
     onStartNewSessionInDirectory: jest.fn(),
     onSelectSessionHistoryEntry: jest.fn(),
     onMarkDirectorySessionsRead: jest.fn(),
@@ -1033,7 +1033,7 @@ test("refreshes and expands loaded subagent children in the drawer", async () =>
     source: "subagent",
     firstUserMessage: "Child agent task",
   });
-  const onLoadSessionChildren = jest.fn();
+  const watchSessionChildren = jest.fn(() => () => {});
   const drawer = await renderDrawer({
     directorySessionsById: {
       "dir-1": directoryState([parent], {
@@ -1045,13 +1045,13 @@ test("refreshes and expands loaded subagent children in the drawer", async () =>
         },
       }),
     },
-    onLoadSessionChildren,
+    watchSessionChildren,
   });
 
   await fireEvent.press(drawer.getByLabelText("サブエージェントを開く"));
 
   expect(drawer.getByText("Child agent task")).toBeTruthy();
-  expect(onLoadSessionChildren).toHaveBeenCalledWith("dir-1", "/work/bitty", "parent-session");
+  expect(watchSessionChildren).toHaveBeenCalledWith(["parent-session"], "/work/bitty");
 });
 
 test("does not show or load grandchildren until their parent is expanded", async () => {
@@ -1068,7 +1068,7 @@ test("does not show or load grandchildren until their parent is expanded", async
     source: "subagent",
     firstUserMessage: "Grandchild agent task",
   });
-  const onLoadSessionChildren = jest.fn();
+  const watchSessionChildren = jest.fn(() => () => {});
   const drawer = await renderDrawer({
     directorySessionsById: {
       "dir-1": directoryState([parent], {
@@ -1076,23 +1076,23 @@ test("does not show or load grandchildren until their parent is expanded", async
         "child-session": { loading: false, loaded: true, error: "", entries: [grandchild] },
       }),
     },
-    onLoadSessionChildren,
+    watchSessionChildren,
   });
 
   await fireEvent.press(drawer.getByLabelText("サブエージェントを開く"));
 
   expect(drawer.getByText("Child agent task")).toBeTruthy();
   expect(drawer.queryByText("Grandchild agent task")).toBeNull();
-  expect(onLoadSessionChildren).not.toHaveBeenCalledWith("dir-1", "/work/bitty", "child-session");
+  expect(watchSessionChildren).not.toHaveBeenCalledWith(["child-session"], "/work/bitty");
 
   await fireEvent.press(drawer.getByLabelText("サブエージェントを開く"));
 
   expect(drawer.getByText("Grandchild agent task")).toBeTruthy();
-  expect(onLoadSessionChildren).toHaveBeenCalledWith("dir-1", "/work/bitty", "child-session");
+  expect(watchSessionChildren).toHaveBeenLastCalledWith(["child-session", "parent-session"], "/work/bitty");
 });
 
 test("loads subagent children when an unloaded drawer session is expanded", async () => {
-  const onLoadSessionChildren = jest.fn();
+  const watchSessionChildren = jest.fn(() => () => {});
   const drawer = await renderDrawer({
     directorySessionsById: {
       "dir-1": directoryState([
@@ -1102,12 +1102,12 @@ test("loads subagent children when an unloaded drawer session is expanded", asyn
         }),
       ]),
     },
-    onLoadSessionChildren,
+    watchSessionChildren,
   });
 
   await fireEvent.press(drawer.getByLabelText("サブエージェントを開く"));
 
-  expect(onLoadSessionChildren).toHaveBeenCalledWith("dir-1", "/work/bitty", "parent-session");
+  expect(watchSessionChildren).toHaveBeenCalledWith(["parent-session"], "/work/bitty");
 });
 
 
@@ -1148,21 +1148,21 @@ test("keeps ordinary row controls and manually expanded children in unread mode"
   const parent = session({ sessionId: "parent", firstUserMessage: "Unread parent", lastReadAt: "" });
   const child = session({ sessionId: "child", parentSessionId: "parent", firstUserMessage: "Read child", source: "subagent" });
   const unreadChild = session({ sessionId: "unread-child", parentSessionId: "parent", firstUserMessage: "Unread child", source: "subagent", lastReadAt: "" });
-  const onLoadSessionChildren = jest.fn();
+  const watchSessionChildren = jest.fn(() => () => {});
   const onSelectSessionHistoryEntry = jest.fn();
   const drawer = await renderDrawer({
     directoryUnreadCountByPath: { "/work/bitty": 1 },
     directorySessionsById: { "dir-1": directoryState([parent], {
       parent: { loading: false, loaded: true, error: "", entries: [child, unreadChild] },
     }) },
-    onLoadSessionChildren,
+    watchSessionChildren,
     onSelectSessionHistoryEntry,
   });
   await fireEvent.press(drawer.getByLabelText("未読のみ表示"));
   expect(drawer.getByLabelText("Bittyの履歴を閉じる")).toBeTruthy();
   expect(drawer.queryByText("Unread child")).toBeNull();
   await fireEvent.press(drawer.getByLabelText("サブエージェントを開く"));
-  expect(onLoadSessionChildren).toHaveBeenCalledWith("dir-1", "/work/bitty", "parent");
+  expect(watchSessionChildren).toHaveBeenCalledWith(["parent"], "/work/bitty");
   expect(drawer.getByText("Read child")).toBeTruthy();
   expect(drawer.getByText("Unread child")).toBeTruthy();
   await fireEvent.press(drawer.getByText("Unread parent"), { nativeEvent: { pageX: 30, pageY: 60 } });

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 export const AGENT_PROTOCOL_VERSION = 2;
+export const SESSION_CHILD_COUNTS_MAX_PARENTS = 512;
 export const SESSION_LIST_BATCH_MAX_DIRECTORIES = 64;
 export const SESSION_LIST_BATCH_MAX_BYTES = 64 * 1024;
 // sessions.listのprovider-neutralスコープ。backendId未指定と等価で、

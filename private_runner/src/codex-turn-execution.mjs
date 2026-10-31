@@ -273,6 +273,7 @@ export function createCodexBackend({
   resolveSessionCwd,
   listSessions,
   listSessionsForDirectories,
+  listSessionChildren,
   readHistory,
   getStatus,
   listModels,
@@ -778,6 +779,9 @@ export function createCodexBackend({
         };
       }
       : listSessionsForDirectories,
+    listSessionChildren: typeof listSessionChildren === "function"
+      ? async (options) => withNativeThreadActivity(await listSessionChildren(options))
+      : listSessionChildren,
     readHistory,
     listModels: loadModels,
     compactSession,

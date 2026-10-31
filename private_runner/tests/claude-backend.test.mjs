@@ -1922,3 +1922,28 @@ test("Claude child notifications follow Agent tools instead of ordinary tool and
   await backend.startTurn({ runId: "claude-children", cwd: "/workspace", input: { blocks: [{ type: "text", text: "synthetic" }] }, resolveSession: async () => {}, emit() {} });
   assert.deepEqual(changed, [{ backendId: "claude", nativeSessionId: SESSION_ID }, { backendId: "claude", nativeSessionId: SESSION_ID }]);
 });
+
+test("Claude child counts use catalog relations without transcript reads and details retain isolated cwd", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-claude-counts-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const projectsRoot = path.join(root, "projects");
+  const childDirectory = path.join(projectsRoot, "project", SESSION_ID, "subagents");
+  const cwd = path.join(root, "parent");
+  const childCwd = path.join(root, "isolated-child");
+  await Promise.all([fs.mkdir(childDirectory, { recursive: true }), fs.mkdir(cwd), fs.mkdir(childCwd)]);
+  const file = path.join(childDirectory, "agent-fixture.jsonl");
+  await fs.writeFile(file, JSON.stringify({ type: "user", cwd: childCwd, timestamp: "2026-10-31T00:00:00Z", message: { content: "child prompt" } }));
+  let reads = 0;
+  const backend = createClaudeBackend({ projectsRoot, fileSystem: { ...fs,
+    readFile: async (...args) => { reads += 1; return fs.readFile(...args); },
+  }, sessionStore: { getBinding: async () => null } });
+  const parentSessionRefs = [{ backendId: "claude", nativeSessionId: SESSION_ID }];
+  const refs = await backend.listSessionChildren({ parentSessionRefs });
+  assert.equal(refs.length, 1);
+  assert.equal(reads, 0, "neither a parent nor child transcript is read for counts");
+  const listed = await backend.listSessions({ cwd, parentSessionRefs, includeSubagents: true });
+  assert.equal(listed.sessions[0].canonicalCwd, await fs.realpath(childCwd));
+  assert.equal(listed.sessions[0].parentSessionRef.nativeSessionId, SESSION_ID);
+  await fs.unlink(file);
+  assert.deepEqual(await backend.listSessionChildren({ parentSessionRefs }), []);
+});

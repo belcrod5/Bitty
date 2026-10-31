@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, type ReactNode } from "react";
+import { AppState } from "react-native";
 import type {
   CodexAuthProfileEntry,
   GitChangedFilesDirectoryState,
@@ -62,7 +63,13 @@ export function useDirectoryGitChangedFiles(directoryRaw: unknown) {
 
   useEffect(() => {
     if (!directory) return;
-    void refreshGitChangedFiles(directory);
+    // Revalidate only a displayed chat directory, retaining its cached snapshot.
+    const refreshVisible = () => { void refreshGitChangedFiles(directory, { force: true }); };
+    if (!AppState.currentState || AppState.currentState === "active") refreshVisible();
+    const subscription = AppState.addEventListener("change", (nextState) => {
+      if (nextState === "active") refreshVisible();
+    });
+    return () => subscription.remove();
   }, [directory, refreshGitChangedFiles]);
 
   const refresh = useCallback(() => (

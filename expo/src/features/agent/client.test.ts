@@ -1,4 +1,4 @@
-import { subscribeSessionChildrenChanges, listAgentSessions, listAgentSessionsBatch, startAgentSessionObserverWithRawFallback, startAgentTurnWithRawFallback } from "./client";
+import { getAgentSessionChildCounts, subscribeSessionChildrenChanges, listAgentSessions, listAgentSessionsBatch, startAgentSessionObserverWithRawFallback, startAgentTurnWithRawFallback } from "./client";
 import type { RunnerWebSocketManager } from "../runnerWs/RunnerWebSocketManager";
 
 test("child listing sends backend-qualified parents without changing an ordinary listing", async () => {
@@ -1411,4 +1411,21 @@ test.each([true, false])("child change subscriptions preserve mixed-version beha
   ]);
   receive({ channel: "control", op: "session_children_changed", payload: { parentSessionRef: { backendId: "codex", nativeSessionId: "current-parent" } } });
   expect(onChanged).toHaveBeenLastCalledWith("current-parent", "parent_changed", "codex");
+});
+
+
+test("count pagination stops before another chunk when its connection changes", async () => {
+  let generation = 1;
+  const request = jest.fn(async (message: { op: string }) => {
+    if (message.op === "agent.hello") return { channel: "agent", op: "agent.ready", payload: {
+      protocolVersion: 2, operations: ["sessions.children.count"], sessionChildCounts: { maxParents: 1 }, backends: [],
+    } };
+    generation += 1;
+    return { channel: "agent", op: "sessions.children.count.result", payload: { counts: [] } };
+  });
+  const manager = { request, getSnapshot: () => ({ connectionState: "ready", generation, connectionId: String(generation), url: "ws://runner" }) } as unknown as RunnerWebSocketManager;
+  await expect(getAgentSessionChildCounts(manager, [
+    { backendId: "codex", nativeSessionId: "one" }, { backendId: "codex", nativeSessionId: "two" },
+  ])).rejects.toThrow("connection changed");
+  expect(request.mock.calls.map(([message]) => message.op)).toEqual(["agent.hello", "sessions.children.count"]);
 });

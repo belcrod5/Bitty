@@ -363,7 +363,7 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
     const unsubscribe = runnerWebSocketManager.subscribeSnapshot(handleSnapshot);
     handleSnapshot();
     const appStateSubscription = AppState.addEventListener("change", (nextState) => {
-      if (nextState !== "active") return;
+      if (nextState !== "active" || runnerWebSocketManager.getSnapshot().connectionState !== "ready") return;
       void refreshFromServer();
       void flushPendingOps();
     });

@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCodexSchedules } from "../../codexSchedules/CodexSchedulesContext";
+import { useRunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketContext";
+import { useSessionChildCounts } from "./useSessionChildCounts";
 import { useChatScreen } from "../contexts/ChatScreenContext";
 import { useConversation } from "../contexts/ConversationContext";
 import type { DirectoryMarkerColor } from "../types/directorySessions";
@@ -21,7 +23,7 @@ import { usePanelRuntimeStore } from "../contexts/PanelRuntimeStoreContext";
 import { useSkiaBoard } from "../contexts/SkiaBoardContext";
 import type { LlmSessionHistoryEntry, LlmSessionSource } from "./useLlmSessionExplorer";
 import { formatLlmSessionDisplayTitle, isLlmSessionUnread } from "../utils/llmSession";
-import { runnerSessionValue } from "../utils/runnerClientState";
+import { runnerSessionValue, runnerSessionKey } from "../utils/runnerClientState";
 import type { SessionActivity } from "../utils/statusIcons";
 
 // パネルIDはセッションごとに固定(インデックス割当だと並び替えで担当が入れ替わり、
@@ -47,8 +49,8 @@ export type SkiaMiniChatSession = {
   hasScheduledExecution: boolean;
   activityTrail: Array<{ kind: SessionActivity; active: boolean }>;
   subagentLoading: boolean;
-  subagentRunningCount: number;
-  subagentTotalCount: number;
+  subagentRunningCount?: number;
+  subagentTotalCount?: number;
   markerColor: DirectoryMarkerColor;
   col: number;
   row: number;
@@ -120,7 +122,6 @@ export function useSkiaMiniChatSessions() {
     sessionTitleOverridesById,
     sessionMarkerColorsById,
     ensureRegisteredDirectorySessions,
-    loadSessionChildrenBatch,
   } = useConversation();
   const { clearPanelSnapshot, hydratePanelFromSessionHistory } = usePanelRuntimeController();
   const {
@@ -328,24 +329,8 @@ export function useSkiaMiniChatSessions() {
     getPreviewRef.current = getPreview;
   }, [clearPanelSnapshot, getPreview, hydratePanelFromSessionHistory]);
 
-  const childStateByParentId = useMemo(() => new Map(
-    Object.values(directorySessionsById).flatMap((state) => (
-      Object.entries(state.childrenByParentId)
-    ))
-  ), [directorySessionsById]);
-
-  useEffect(() => {
-    const parentIdsByDirectory = new Map<string, string[]>();
-    for (const { candidate } of assignedSessions) {
-      if (childStateByParentId.has(candidate.sessionId)) continue;
-      const parentIds = parentIdsByDirectory.get(candidate.directory) || [];
-      parentIds.push(candidate.sessionId);
-      parentIdsByDirectory.set(candidate.directory, parentIds);
-    }
-    for (const [directory, parentIds] of parentIdsByDirectory) {
-      void loadSessionChildrenBatch(parentIds, directory);
-    }
-  }, [assignedSessions, childStateByParentId, loadSessionChildrenBatch]);
+  const childCounts = useSessionChildCounts(useRunnerWebSocketManager(), JSON.stringify([runnerUrl, runnerToken]),
+    assignedSessions.map(({ candidate }) => ({ backendId: candidate.backendId, nativeSessionId: candidate.sessionId })));
 
   useEffect(() => {
     const generation = hydrationGenerationRef.current + 1;
@@ -429,7 +414,7 @@ export function useSkiaMiniChatSessions() {
     const nextByCardId = new Map<string, SkiaMiniChatSession>();
     const list = assignedSessions.map(({ card, candidate, panelId, title }) => {
       const snapshot = getPreview(panelId);
-      const childState = childStateByParentId.get(candidate.sessionId);
+      const count = childCounts.counts.get(runnerSessionKey(candidate.backendId, candidate.sessionId));
       const holdsSession = snapshot.selectedSessionId === candidate.sessionId;
       const isResponding = holdsSession && snapshot.isResponding;
       const runtimeActivityTrail = holdsSession ? snapshot.runtimeActivityTrail || [] : [];
@@ -454,11 +439,9 @@ export function useSkiaMiniChatSessions() {
           kind,
           active: isResponding && index === runtimeActivityTrail.length - 1,
         })),
-        subagentLoading: !childState?.loaded,
-        subagentRunningCount: (childState?.entries || []).filter(
-          (entry) => entry.threadStatusType === "active"
-        ).length,
-        subagentTotalCount: childState?.entries.length || 0,
+        subagentLoading: !count && childCounts.loading,
+        subagentRunningCount: count?.runningCount,
+        subagentTotalCount: count?.totalCount,
         markerColor: runnerSessionValue(sessionMarkerColorsById, candidate.backendId, candidate.sessionId) || "none",
         col: card.col,
         row: card.row,
@@ -475,7 +458,7 @@ export function useSkiaMiniChatSessions() {
     return result;
   }, [
     assignedSessions,
-    childStateByParentId,
+    childCounts,
     getPreview,
     runtimeRevision,
     nowMs,

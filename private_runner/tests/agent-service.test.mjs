@@ -2714,3 +2714,68 @@ test("all list scopes enforce the existing display title contract without changi
   assert.equal(history.items[0].content[0].text, original);
   console.info(`[child title fixture] nativeListDecodedBytes=${Buffer.byteLength(JSON.stringify({ sessions: native }))} boundedListDecodedBytes=${Buffer.byteLength(JSON.stringify(single))}`);
 });
+
+test("child counts batch qualified parents from relationships without listing details or reading stored summaries", async () => {
+  const refs = Array.from({ length: 35 }, (_, i) => ({ backendId: i % 2 ? "claude" : "codex", nativeSessionId: `parent-${i}` }));
+  refs.push({ backendId: "claude", nativeSessionId: "parent-0" });
+  const calls = new Map();
+  let removed = false, completed = false;
+  const backends = ["codex", "claude"].map((backendId) => ({
+    backendId, getStatus: async () => status(),
+    listSessions: () => { throw new Error("detail listing must not run"); },
+    listSessionChildren: async ({ parentSessionRefs }) => {
+      calls.set(backendId, (calls.get(backendId) || 0) + 1);
+      return parentSessionRefs.flatMap((parentSessionRef) => removed && parentSessionRef.nativeSessionId === "parent-0" ? [] : [
+        { sessionRef: { backendId, nativeSessionId: "child-" + parentSessionRef.nativeSessionId }, parentSessionRef },
+        { sessionRef: { backendId, nativeSessionId: "child-" + parentSessionRef.nativeSessionId }, parentSessionRef },
+      ]);
+    },
+    listActiveSessions: () => completed || backendId !== "codex" ? [] : [{ sessionRef: { backendId, nativeSessionId: "child-parent-0" } }],
+  }));
+  const service = createAgentService({ backends, operationStore: operationStore(), sessionStore: sessionStore(),
+    resolveCanonicalCwd: () => { throw new Error("counts do not need child cwd"); },
+    getSessionTitles: () => { throw new Error("counts must not read titles"); },
+    listRawActiveSessions: () => completed ? [] : [{ sessionRef: { backendId: "codex", nativeSessionId: "child-parent-0" } }],
+  });
+  const query = { parentSessionRefs: refs };
+  const first = await service.countSessionChildren(query, { subjectId: "owner" });
+  assert.deepEqual([...calls.values()], [1, 1]);
+  assert.equal(first.counts.length, 36);
+  assert.deepEqual(first.counts.find((entry) => entry.sessionRef.backendId === "codex" && entry.sessionRef.nativeSessionId === "parent-0"),
+    { sessionRef: refs[0], totalCount: 1, runningCount: 1 });
+  assert.equal(first.counts.find((entry) => entry.sessionRef.backendId === "claude" && entry.sessionRef.nativeSessionId === "parent-0").runningCount, 0);
+  removed = true;
+  assert.equal((await service.countSessionChildren(query, { subjectId: "owner" })).counts.find((entry) => entry.sessionRef.nativeSessionId === "parent-0").totalCount, 0,
+    "stale activity cannot resurrect a deleted relationship");
+  removed = false; completed = true;
+  assert.ok((await service.countSessionChildren(query, { subjectId: "owner" })).counts.every((entry) => entry.runningCount === 0));
+  await assert.rejects(service.countSessionChildren({ parentSessionRefs: [null] }, { subjectId: "owner" }), /required/);
+  await assert.rejects(service.countSessionChildren({ parentSessionRefs: Array(513).fill(refs[0]) }, { subjectId: "owner" }), /bounded/);
+});
+
+test("child counts preserve successful backends when another backend is unavailable", async () => {
+  const service = createAgentService({ backends: [
+    { backendId: "codex", getStatus: async () => status(), listSessionChildren: async () => [] },
+    { backendId: "claude", getStatus: async () => { throw new Error("offline"); }, listSessionChildren: async () => [] },
+  ], operationStore: operationStore(), sessionStore: sessionStore(), resolveCanonicalCwd: async (cwd) => cwd });
+  const result = await service.countSessionChildren({ parentSessionRefs: [
+    { backendId: "codex", nativeSessionId: "parent" }, { backendId: "claude", nativeSessionId: "parent" },
+  ] }, { subjectId: "owner" });
+  assert.equal(result.counts.length, 1);
+  assert.equal(result.errors[0].backendId, "claude");
+});
+
+test("parent-filtered detail reads each child's own workspace state in single and all backend scopes", async () => {
+  const readCwds = [];
+  const store = sessionStore();
+  store.getReadState = async (_ref, cwd) => { readCwds.push(cwd); return null; };
+  const service = createAgentService({ backends: [{ backendId: "codex", getStatus: async () => ({ ...status(), capabilities: { session: { list: true } } }),
+    listSessions: async () => ({ sessions: [{ sessionRef: { backendId: "codex", nativeSessionId: "child" },
+      canonicalCwd: "/isolated-child", parentSessionRef: { backendId: "codex", nativeSessionId: "parent" } }] }),
+  }], operationStore: operationStore(), sessionStore: store, resolveCanonicalCwd: async (cwd) => cwd });
+  for (const backendId of ["codex", "all"]) {
+    const result = await service.listSessions({ backendId, cwd: "/parent", parentSessionRefs: [{ backendId: "codex", nativeSessionId: "parent" }] }, { subjectId: "owner" });
+    assert.equal(result.sessions[0].canonicalCwd, "/isolated-child");
+  }
+  assert.deepEqual(readCwds, ["/isolated-child", "/isolated-child"]);
+});

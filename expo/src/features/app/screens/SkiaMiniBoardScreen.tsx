@@ -456,7 +456,7 @@ const BoardCard = memo(function BoardCard({
       ? ""
       : item.subagentLoading
         ? "..."
-        : `${item.subagentRunningCount}/${item.subagentTotalCount}`;
+        : item.subagentTotalCount === undefined ? "—" : `${item.subagentRunningCount}/${item.subagentTotalCount}`;
   const subagentTextWidth = useMemo(
     () => (subagentText ? paragraphTextWidth(subagentText, bodyFontSize) : 0),
     [bodyFontSize, subagentText],

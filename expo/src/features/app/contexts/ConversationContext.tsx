@@ -63,10 +63,10 @@ export type ConversationContextValue = {
     sessionId: string,
     directory: string
   ) => Promise<void>;
-  loadSessionChildrenBatch: (
+  watchSessionChildren: (
     sessionIds: string[],
     directory: string
-  ) => Promise<void>;
+  ) => () => void;
   openSessionHistoryEntry: (params: {
     backendId: string;
     sessionId: string;

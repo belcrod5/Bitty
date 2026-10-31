@@ -6,6 +6,7 @@ import {
   ALL_BACKENDS_SCOPE,
   SESSION_LIST_BATCH_MAX_DIRECTORIES,
   SESSION_LIST_BATCH_MAX_BYTES,
+  SESSION_CHILD_COUNTS_MAX_PARENTS,
   agentError,
   createAgentEvent,
   hashAgentOperationRequest,
@@ -1556,7 +1557,7 @@ export function createAgentService({
           : await backend.listSessions({ ...options, cwd, ...(parentSessionRefs ? { parentSessionRefs } : {}) });
         const sessions = await Promise.all(
           (Array.isArray(singlePage?.sessions) ? singlePage.sessions : [])
-            .map((session) => withStoredSessionState(session, cwd, context)),
+            .map((session) => withStoredSessionState(session, session.canonicalCwd || cwd, context)),
         );
         // 項目別cursorは合成層のカット専用の内部値。all-scopeと同様wireへは出さない。
         return {
@@ -1596,7 +1597,7 @@ export function createAgentService({
           });
           const sessions = await Promise.all(
             (Array.isArray(page?.sessions) ? page.sessions : [])
-              .map((session) => withStoredSessionState(session, cwd, context)),
+              .map((session) => withStoredSessionState(session, session.canonicalCwd || cwd, context)),
           );
           return { backendId: backend.backendId, page: { ...page, sessions } };
         } catch (error) {
@@ -1815,7 +1816,7 @@ export function createAgentService({
           if (!sessions) continue;
           sessions.push(...await Promise.all(
             (Array.isArray(group?.sessions) ? group.sessions : [])
-              .map((session) => withStoredSessionState(session, cwd, context)),
+              .map((session) => withStoredSessionState(session, session.canonicalCwd || cwd, context)),
           ));
         }
       }
@@ -1835,6 +1836,59 @@ export function createAgentService({
           ? { partial: true, failedBackendIds: failures.map((entry) => entry.backendId) }
           : {}),
       };
+    },
+    async countSessionChildren(options, context = {}) {
+      const subjectId = String(context.subjectId || "").trim();
+      if (!subjectId) throw agentError("turn_rejected", "authenticated subject is required");
+      if (!Array.isArray(options?.parentSessionRefs) || options.parentSessionRefs.length === 0
+        || options.parentSessionRefs.length > SESSION_CHILD_COUNTS_MAX_PARENTS) {
+        throw agentError("turn_rejected", "parentSessionRefs must be a bounded non-empty array");
+      }
+      const parents = new Map();
+      for (const raw of options.parentSessionRefs) {
+        const ref = normalizeAgentSessionRef(raw);
+        if (!ref) throw agentError("turn_rejected", "parent session reference is required");
+        parents.set(sessionKey(ref), ref);
+      }
+      const counts = [], errors = [];
+      await Promise.all([...new Set([...parents.values()].map((ref) => ref.backendId))].map(async (backendId) => {
+        try {
+          const backend = registry.get(backendId);
+          if (typeof backend?.listSessionChildren !== "function") {
+            throw agentError("capability_unsupported", "child relationship listing is unavailable", { backendId });
+          }
+          const status = await backend.getStatus();
+          if (!status?.readiness?.ready) throw agentError("backend_unavailable", "Agent Backend is not ready", { backendId });
+          const parentSessionRefs = [...parents.values()].filter((ref) => ref.backendId === backendId);
+          const children = await backend.listSessionChildren({ parentSessionRefs });
+          const activeById = new Map();
+          for (const run of runs.values()) {
+            if (!run.terminal && run.subjectId === subjectId && run.sessionRef) activeById.set(sessionKey(run.sessionRef), run);
+          }
+          for (const backend of registry.values()) {
+            for (const active of backend.listActiveSessions?.() || []) {
+              if (active.sessionRef) activeById.set(sessionKey(active.sessionRef), active);
+            }
+          }
+          for (const active of listRawActiveSessions()) {
+            if (active.sessionRef) activeById.set(sessionKey(active.sessionRef), active);
+          }
+          const childrenById = new Map();
+          for (const child of children) {
+            if (child?.sessionRef?.backendId !== backendId || child?.parentSessionRef?.backendId !== backendId
+              || !String(child.sessionRef.nativeSessionId || "").trim()) {
+              throw agentError("protocol_error", "invalid child relationship", { backendId });
+            }
+            if (parents.has(sessionKey(child.parentSessionRef))) childrenById.set(sessionKey(child.sessionRef), child);
+          }
+          for (const sessionRef of parentSessionRefs) {
+            const children = [...childrenById.values()].filter((child) => sessionKey(child.parentSessionRef) === sessionKey(sessionRef));
+            counts.push({ sessionRef, totalCount: children.length,
+              runningCount: children.filter((child) => child.isActive === true || activeById.has(sessionKey(child.sessionRef))).length });
+          }
+        } catch (error) { errors.push(serializeAgentError(error, backendId)); }
+      }));
+      return { counts, ...(errors.length ? { errors } : {}) };
     },
     async countActiveSessions(_options, context = {}) {
       const subjectId = String(context.subjectId || "").trim();

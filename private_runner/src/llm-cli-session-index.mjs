@@ -460,12 +460,14 @@ export function createLlmCliSessionIndex(deps = {}) {
     await refreshCliSessionIndex({ force: opts?.forceRefresh === true });
     const lookups = (Array.isArray(requestedDirectories) ? requestedDirectories : [])
       .map((directory) => buildDirectoryLookup(directory));
-    const entries = [...cliSessionIndexByFilePath.values()];
+    const entries = opts.parentSessionIds?.length ? currentCliSessionEntries() : [...cliSessionIndexByFilePath.values()];
     return await Promise.all(lookups.map(async (lookup) => {
       const sessions = [];
       for (const entry of entries) {
         if (opts?.includeSubagents === false && entry.isSubagent === true) continue;
-        if (!await cliSessionEntryMatchesDirectoryIdentity(entry, lookup)) continue;
+        if (opts.parentSessionIds?.length) {
+          if (!opts.parentSessionIds.includes(entry.parentSessionId)) continue;
+        } else if (!await cliSessionEntryMatchesDirectoryIdentity(entry, lookup)) continue;
         const rolloutUpdatedAt = opts?.useRolloutMtime === true && Number(entry.mtimeMs) > 0
           ? new Date(Math.floor(Number(entry.mtimeMs))).toISOString()
           : "";
@@ -485,6 +487,25 @@ export function createLlmCliSessionIndex(deps = {}) {
       sessions.sort(compareSessionHistoryEntries);
       return { directory: lookup.absolute || lookup.relative, sessions };
     }));
+  }
+
+  async function listCliSessionChildren(parentSessionIds) {
+    await refreshCliSessionIndex({ force: true });
+    const parentIds = new Set(parentSessionIds);
+    return currentCliSessionEntries()
+      .filter((entry) => parentIds.has(entry.parentSessionId))
+      .map((entry) => ({ sessionId: entry.sessionId, parentSessionId: entry.parentSessionId }));
+  }
+
+  function currentCliSessionEntries() {
+    // Rollout mtime changes on resume/reparent; session_meta.updatedAt may
+    // remain the original creation time. Filter parents after identity selection.
+    const currentById = new Map();
+    const entries = [...cliSessionIndexByFilePath.values()].sort((a, b) => (
+      (Number(b.mtimeMs) || 0) - (Number(a.mtimeMs) || 0) || compareCliSessionIndexEntries(a, b)
+    ));
+    for (const entry of entries) if (!currentById.has(entry.sessionId)) currentById.set(entry.sessionId, entry);
+    return [...currentById.values()];
   }
 
   async function listCliSessionsForDirectory(requestedDirectory, opts = {}) {
@@ -741,6 +762,7 @@ export function createLlmCliSessionIndex(deps = {}) {
     findCliSessionIndexEntryBySessionId,
     getCliSessionIndexStats,
     listCliSessionsForDirectories,
+    listCliSessionChildren,
     listCliSessionsForDirectory,
     markCliDirectoryRead,
     markCliSessionsRead,
