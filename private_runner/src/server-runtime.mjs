@@ -1131,7 +1131,7 @@ async function resolveCanonicalDirectoryIdentity(rawDirectory, fallback = DEFAUL
   }
 }
 
-async function listLlmDirectories(rawPath) {
+async function listLlmDirectories(rawPath, identityOnly = false) {
   const requestedPath = String(rawPath || "").trim() || DEFAULT_LLM_FILE_ROOT_RELATIVE;
   let resolved = null;
   try {
@@ -1142,6 +1142,12 @@ async function listLlmDirectories(rawPath) {
       throw makeApiError(404, "directory_not_found", "directory not found");
     }
     throw err;
+  }
+  if (identityOnly) {
+    try {
+      if (!(await fs.stat(resolved.rootReal)).isDirectory()) throw new Error("not a directory");
+    } catch (error) { throw makeApiError(500, "directory_list_failed", errorMessage(error)); }
+    return { basePath: toUnixPath(resolved.rootReal) };
   }
   const rootAbs = path.parse(resolved.rootReal).root || path.sep;
   let rootReal = rootAbs;
@@ -6030,9 +6036,9 @@ const handleRunnerRequest = async (req, res) => {
       currentUsage: () => withCodexAuthLease(async () => codexUsageService.snapshot(await captureCodexUsageAccount())),
     });
     try {
-      const result = await snapshot();
+      const result = await snapshot(req.headers["if-bitty-orchestrator-metadata-match"]);
       responseCount = Number.isSafeInteger(result.runningCount) ? result.runningCount : -1;
-      return json(res, 200, result);
+      return json(res, 200, result, { vary: "Authorization, If-Bitty-Orchestrator-Metadata-Match, Accept-Encoding" });
     }
     catch { return json(res, 503, { error: "app_status_unavailable" }); }
   }
@@ -6547,7 +6553,7 @@ const handleRunnerRequest = async (req, res) => {
     }
     try {
       const pathParam = String(reqUrl.searchParams.get("path") || "").trim();
-      const payload = await listLlmDirectories(pathParam || DEFAULT_LLM_FILE_ROOT_RELATIVE);
+      const payload = await listLlmDirectories(pathParam || DEFAULT_LLM_FILE_ROOT_RELATIVE, reqUrl.searchParams.get("view") === "identity");
       return json(res, 200, payload);
     } catch (err) {
       if (isApiError(err)) {
@@ -7436,7 +7442,7 @@ runnerWsServer.on("connection", (ws, req) => {
     if (message.op === "voice.open" || message.op === "voice.status" || message.op === "voice.history") {
       const operation = message.op === "voice.open"
         ? voiceContextService.open(orchestratorId, message.payload?.conversationKey)
-        : message.op === "voice.history" ? voiceContextService.history(orchestratorId, message.payload?.conversationKey)
+        : message.op === "voice.history" ? voiceContextService.history(orchestratorId, message.payload?.conversationKey, message.payload?.ifNoneMatch)
           : voiceContextService.status(orchestratorId, message.payload?.logicalConversationId, message.payload?.clientOperationId, message.payload?.conversationKey);
       void operation.then((payload) => {
         const job = resolveRunnerWsTtsOperationJob(payload.clientOperationId);

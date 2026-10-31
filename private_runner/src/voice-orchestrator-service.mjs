@@ -510,8 +510,8 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
       return result;
     }); },
     async taskOverview() { return (await context("main")).taskOverview(); },
-    async history(id, conversationKey) { return exclusive(async () => { await load(); await ownerContexts(idOf(id));
-      return (await loadedContext(id, scopeOf(conversationKey))).history(); }); },
+    async history(id, conversationKey, ifNoneMatch) { return exclusive(async () => { await load(); await ownerContexts(idOf(id));
+      return (await loadedContext(id, scopeOf(conversationKey))).history(ifNoneMatch); }); },
     async respondToChecklistCompletion(id, sourceHash, version, decision, conversationKey) {
       return exclusive(async () => { await load();
         const target = await loadedContext(idOf(id), scopeOf(conversationKey));

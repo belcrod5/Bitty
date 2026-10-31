@@ -3,6 +3,7 @@ import {
   getNetworkUsageSnapshot,
   recordHttpNetworkUsage,
   recordNetworkUsage,
+  recordRunnerWsNetworkUsage,
   resetNetworkUsage,
   utf8ByteLength,
 } from "./networkUsageMetrics";
@@ -114,4 +115,35 @@ describe("network usage accumulation", () => {
     recordNetworkUsage("runner-ws", 1, 1);
     expect(snapshot.runnerWs).toEqual({ sentBytes: 1, receivedBytes: 1 });
   });
+});
+
+
+test("operation metrics account for every parsed or malformed frame without retaining IDs", () => {
+  resetNetworkUsage();
+  recordRunnerWsNetworkUsage("sent", 10, { channel: "agent", op: "voice.history" });
+  recordRunnerWsNetworkUsage("received", 200, { channel: "agent", op: "voice.history.result" });
+  recordRunnerWsNetworkUsage("received", 7, null);
+  recordRunnerWsNetworkUsage("received", 0, null);
+  const snapshot = getNetworkUsageSnapshot();
+  expect(snapshot.runnerWs).toEqual({ sentBytes: 10, receivedBytes: 207 });
+  expect(snapshot.runnerWsByOperation["agent/voice.history.result"]).toEqual({ sentBytes: 0, receivedBytes: 200, sentCount: 0, receivedCount: 1 });
+  expect(snapshot.runnerWsByOperation.other.receivedCount).toBe(2);
+  for (let i = 0; i < 200; i++) recordRunnerWsNetworkUsage("received", 1, { channel: "agent", op: `op.${i}` });
+  const after = getNetworkUsageSnapshot();
+  expect(Object.keys(after.runnerWsByOperation).length).toBeLessThanOrEqual(97);
+  expect(Object.values(after.runnerWsByOperation).reduce((n, counter) => n + counter.receivedBytes, 0)).toBe(after.runnerWs.receivedBytes);
+  expect(snapshot.runnerWs.receivedBytes).toBe(207);
+  expect(snapshot.runnerWsByOperation.other.receivedCount).toBe(2);
+  resetNetworkUsage();
+  expect(getNetworkUsageSnapshot().runnerWsByOperation).toEqual({});
+});
+
+
+test("fixed HTTP categories distinguish startup sources without exposing paths or queries", () => {
+  const origin = "https://runner.example";
+  for (const [path, category] of [["/codex-schedules/summary", "codex-schedules"], ["/codex-cli/status", "codex-status"],
+    ["/codex-auth/profiles", "codex-auth"], ["/directories?path=private", "directories"],
+    ["/files/media?path=private", "file-media"], ["/app/status-snapshot", "app-status"]]) {
+    expect(categorizeHttpUrl(origin + path, origin)).toBe(category);
+  }
 });

@@ -5017,3 +5017,25 @@ test("native recovery honors persisted message phases and preserves legacy unpha
     await restored.close(); await service.close();
   }
 });
+
+
+test("history validators cover persisted messages, checklist changes, restart and conversation clear", async (t) => {
+  const { rootDir, service, conversation, codex } = await fixture(t, { taskChecklistPath: "task-checklists/main.md", nativeRequests: [checklistReadCall()] });
+  assert.equal((await complete(service, conversation, "persisted user")).result.status, "completed");
+  const first = await service.history();
+  assert.equal(first.messages.length, 2);
+  assert.deepEqual(await service.history(first.etag), { logicalConversationId: first.logicalConversationId, etag: first.etag, notModified: true });
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient, taskChecklistPath: "task-checklists/main.md" });
+  assert.equal((await restarted.history(first.etag)).notModified, true);
+  const workspace = await service.getWorkspaceDirectory();
+  await fs.writeFile(path.join(workspace, "task-checklists/main.md"), "- [ ] new task");
+  const changed = await service.history(first.etag);
+  assert.notEqual(changed.etag, first.etag);
+  assert.equal(changed.messages.length, 2);
+  assert.equal(changed.taskChecklist.markdown, "- [ ] new task");
+  await service.clearMessages();
+  const cleared = await service.history(changed.etag);
+  assert.notEqual(cleared.logicalConversationId, first.logicalConversationId);
+  assert.deepEqual(cleared.messages, []);
+  assert.equal(cleared.notModified, undefined);
+});

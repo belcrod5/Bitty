@@ -64,6 +64,8 @@ export type CodexSchedule = CodexScheduleDefinition & {
   lastDispatch: CodexScheduleDispatch | null;
 };
 
+export type CodexScheduleSummary = { scheduledThreads: { threadId: string; nextOccurrenceAt: string }[] };
+
 export type CodexScheduleSnapshot = {
   revision: number;
   schedules: CodexSchedule[];
@@ -293,4 +295,11 @@ export function dateFromCodexScheduleStartLocal(value: string): Date {
 export function codexScheduleStartLocalFromDate(value: Date): string {
   const two = (part: number) => String(part).padStart(2, "0");
   return `${value.getFullYear()}-${two(value.getMonth() + 1)}-${two(value.getDate())}T${two(value.getHours())}:${two(value.getMinutes())}:00`;
+}
+
+
+export function codexScheduleSummary(snapshot: CodexScheduleSnapshot): CodexScheduleSummary {
+  return { scheduledThreads: snapshot.schedules.flatMap((schedule) => schedule.enabled && schedule.action.kind === "llm"
+    && schedule.action.threadId && schedule.nextOccurrenceAt
+    ? [{ threadId: schedule.action.threadId, nextOccurrenceAt: schedule.nextOccurrenceAt }] : []) };
 }

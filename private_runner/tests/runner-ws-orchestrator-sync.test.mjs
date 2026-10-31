@@ -82,3 +82,18 @@ test("socket opt-in synchronizes metadata once, retains legacy lists and resends
     assert.ok((await legacy.request("voice.orchestrators.list")).payload.orchestrators);
   } finally { modern.socket.close(); legacy.socket.close(); resumed?.socket.close(); }
 });
+
+
+test("directory identity projection avoids the explorer payload and preserves invalid-path errors", async () => {
+  const directory = path.join(temp, "identity-directory");
+  await fs.mkdir(directory);
+  const file = path.join(directory, "example.txt");
+  await fs.writeFile(file, "fixture");
+  const canonical = await fs.realpath(directory);
+  assert.deepEqual(await __TESTING__.listLlmDirectories(directory, true), { basePath: canonical });
+  const explorer = await __TESTING__.listLlmDirectories(directory);
+  assert.equal(explorer.basePath, canonical);
+  assert.equal(explorer.files.length, 1);
+  await assert.rejects(__TESTING__.listLlmDirectories(path.join(directory, "missing"), true), (error) => error.apiStatus === 404);
+  await assert.rejects(__TESTING__.listLlmDirectories(file, true), (error) => error.apiStatus === 500);
+});

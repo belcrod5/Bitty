@@ -90,3 +90,15 @@ test("importSkiaBoard returns already_initialized with the current snapshot", as
   expect(result.snapshot.revision).toBe(4);
   expect(result.snapshot.board?.cards[0]).toMatchObject({ sessionId: "kept" });
 });
+
+
+test("unchanged board revalidation retains the cached canonical snapshot", async () => {
+  const cached = { initialized: true, revision: 2, board: null, etag: 'W/"same"' };
+  const body = jest.fn();
+  mockFetch.mockResolvedValueOnce({ status: 304, headers: { get: () => 'W/"same"' }, json: body });
+  expect(await fetchSkiaBoard(auth, cached)).toBe(cached);
+  expect(mockFetch.mock.calls.at(-1)?.[1].headers["if-none-match"]).toBe('W/"same"');
+  expect(body).not.toHaveBeenCalled();
+  mockFetch.mockResolvedValueOnce({ status: 304, headers: { get: () => 'W/"same"' }, json: body });
+  await expect(fetchSkiaBoard(auth)).rejects.toThrow("HTTP 304");
+});

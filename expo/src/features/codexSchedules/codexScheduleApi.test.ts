@@ -1,5 +1,6 @@
 import {
   getCodexSchedules,
+  getCodexScheduleSummary,
   putCodexSchedules,
 } from "./codexScheduleApi";
 import type { CodexSchedule } from "./codexScheduleTypes";
@@ -70,4 +71,24 @@ test("409 exposes the latest revision without hiding the conflict", async () => 
     status: 409,
     revision: 8,
   }));
+});
+
+
+test("summary GET does not request or retain schedule prompts/dispatch data", async () => {
+  const fetchMock = jest.spyOn(global, "fetch").mockResolvedValue({ ok: true, status: 200,
+    json: async () => ({ ok: true, scheduledThreads: [{ threadId: "existing", nextOccurrenceAt: "2026-10-24T00:00:00Z", prompt: "PRIVATE" }] }),
+  } as Response);
+  expect(await getCodexScheduleSummary({ runnerUrl: "http://runner", runnerToken: "token" })).toEqual({
+    scheduledThreads: [{ threadId: "existing", nextOccurrenceAt: "2026-10-24T00:00:00Z" }],
+  });
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(fetchMock.mock.calls[0][0]).toBe("http://runner/codex-schedules/summary");
+});
+
+test("an older Runner without summary support retains marker compatibility", async () => {
+  jest.spyOn(global, "fetch").mockResolvedValueOnce({ ok: false, status: 405,
+    json: async () => ({ error: "method_not_allowed" }),
+  } as Response).mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ ok: true, revision: 1, schedules: [schedule] }) } as Response);
+  expect((await getCodexScheduleSummary({ runnerUrl: "http://runner", runnerToken: "token" })).scheduledThreads)
+    .toEqual([{ threadId: "thread-current", nextOccurrenceAt: schedule.nextOccurrenceAt }]);
 });

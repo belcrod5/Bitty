@@ -1628,3 +1628,51 @@ test("closing voice while network detection is pending prevents a late turn.star
   await Promise.resolve();
   expect(mockManager.request.mock.calls.some(([message]) => message.op === "turn.start")).toBe(false);
 });
+
+
+test("revalidates unchanged voice history without replacing messages or checklist", async () => {
+  const request = mockManager.request.getMockImplementation();
+  mockManager.request.mockImplementation((message: { op: string; payload?: { ifNoneMatch?: string } }) => {
+    if (message.op !== "voice.history") return request?.(message);
+    return Promise.resolve({ op: "voice.history.result", payload: message.payload?.ifNoneMatch === "etag-a"
+      ? { logicalConversationId: conversationId, etag: "etag-a", notModified: true }
+      : { logicalConversationId: conversationId, etag: "etag-a",
+        messages: [{ role: "user", text: "saved", clientOperationId: operationId }],
+        taskChecklist: { status: "present", markdown: "- [ ] saved" } } });
+  });
+  const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
+  await waitFor(() => expect(result.current.history[0]?.text).toBe("saved"));
+  await act(async () => { await result.current.refreshHistory(); });
+  expect(mockManager.request).toHaveBeenLastCalledWith({ channel: "agent", op: "voice.history", payload: { orchestratorId: "main", ifNoneMatch: "etag-a" } });
+  expect(result.current.history[0].text).toBe("saved");
+  expect(result.current.taskChecklist).toEqual({ status: "present", markdown: "- [ ] saved" });
+  expect(result.current.historyError).toBe("");
+  mockManager.request.mockRejectedValueOnce(new Error("offline"));
+  await act(async () => { await result.current.refreshHistory(); });
+  await act(async () => { await result.current.refreshHistory(); });
+  expect(mockManager.request).toHaveBeenLastCalledWith({ channel: "agent", op: "voice.history", payload: { orchestratorId: "main" } });
+  expect(result.current.taskChecklist?.status).toBe("present");
+});
+
+test("clearing visible history on A to B to A also retires A's validator", async () => {
+  const otherId = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
+  const calls: { generation: number; ifNoneMatch?: string }[] = [];
+  mockManager.request.mockImplementation(({ op, payload }: { op: string; payload?: { ifNoneMatch?: string } }) => {
+    const id = mockSnapshot.generation === 2 ? otherId : conversationId;
+    if (op === "voice.open") return Promise.resolve({ op: "voice.open.result", payload: { logicalConversationId: id, contextMode: "self_context_array", ...initialStats } });
+    if (op === "voice.history") {
+      calls.push({ generation: mockSnapshot.generation, ifNoneMatch: payload?.ifNoneMatch });
+      if (mockSnapshot.generation === 2) return new Promise(() => {});
+      return Promise.resolve({ op: "voice.history.result", payload: { logicalConversationId: id, etag: "a",
+        messages: [{ role: "user", text: "saved", clientOperationId: operationId }] } });
+    }
+    throw new Error(`unexpected ${op}`);
+  });
+  const { result, rerender } = await renderHook(() => useVoiceConversation(jest.fn()));
+  await waitFor(() => expect(result.current.history[0]?.text).toBe("saved"));
+  mockSnapshot = { connected: true, generation: 2 }; await rerender(undefined);
+  await waitFor(() => expect(result.current.logicalConversationId).toBe(otherId));
+  mockSnapshot = { connected: true, generation: 3 }; await rerender(undefined);
+  await waitFor(() => expect(result.current.history[0]?.text).toBe("saved"));
+  expect(calls.find((call) => call.generation === 3)?.ifNoneMatch).toBeUndefined();
+});

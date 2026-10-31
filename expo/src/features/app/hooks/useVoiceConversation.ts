@@ -100,6 +100,7 @@ export function useVoiceConversation(
   const [taskChecklistOverview, setTaskChecklistOverview] = useState<VoiceTaskChecklistOverview | null>(null);
   const [taskChecklistCompletion, setTaskChecklistCompletion] = useState<VoiceTaskChecklistCompletion | null>(null);
   const historyRequestRef = useRef(0);
+  const historyValidatorRef = useRef<{ scope: string; etag: string } | null>(null);
   const pendingRef = useRef<PendingTurn | null>(null);
   const startTurnTasksRef = useRef(new Map<string, Promise<void>>());
   const turnRevisionRef = useRef(0);
@@ -326,6 +327,7 @@ export function useVoiceConversation(
       }
       if (conversationIdRef.current && conversationIdRef.current !== conversationId) {
         historyRequestRef.current += 1;
+        historyValidatorRef.current = null;
         settledOperationRef.current = "";
         setSettledOperationId("");
         syncErrorRef.current = "";
@@ -546,19 +548,32 @@ export function useVoiceConversation(
     const startedGeneration = manager.getSnapshot().generation;
     if (!conversationId || !manager.getSnapshot().connected) return;
     const requestNumber = ++historyRequestRef.current;
+    const snapshot = manager.getSnapshot();
+    const scope = JSON.stringify([snapshot.url, snapshot.connectionOptionsGeneration, orchestratorId, conversationId]);
+    const ifNoneMatch = historyValidatorRef.current?.scope === scope ? historyValidatorRef.current.etag : "";
     try {
       const response = await manager.request({ channel: "agent", op: "voice.history",
-        payload: { orchestratorId } });
+        payload: { orchestratorId, ...(ifNoneMatch ? { ifNoneMatch } : {}) } });
       const payload = payloadOf(response);
       if (response.op !== "voice.history.result" || payload.logicalConversationId !== conversationId
-        || (payload.orchestratorId && payload.orchestratorId !== orchestratorId)
-        || !Array.isArray(payload.messages) || !payload.messages.every((message) =>
-          message && typeof message === "object" && (message.role === "user" || message.role === "assistant")
-          && typeof message.text === "string" && typeof message.clientOperationId === "string")) {
+        || (payload.orchestratorId && payload.orchestratorId !== orchestratorId)) {
         throw new Error("音声会話の履歴を読み込めません。");
       }
       if (!aliveRef.current || historyRequestRef.current !== requestNumber || conversationIdRef.current !== conversationId
         || manager.getSnapshot().generation !== startedGeneration) return;
+      if (payload.notModified === true) {
+        if (!ifNoneMatch || payload.etag !== ifNoneMatch || historyValidatorRef.current?.scope !== scope) {
+          throw new Error("音声会話の履歴を読み込めません。");
+        }
+        setHistoryError("");
+        return;
+      }
+      if (!Array.isArray(payload.messages) || !payload.messages.every((message) =>
+        message && typeof message === "object" && (message.role === "user" || message.role === "assistant")
+        && typeof message.text === "string" && typeof message.clientOperationId === "string")) {
+        throw new Error("音声会話の履歴を読み込めません。");
+      }
+      historyValidatorRef.current = typeof payload.etag === "string" && payload.etag ? { scope, etag: payload.etag } : null;
       const messages = payload.messages as VoiceHistoryMessage[];
       setHistory((current) => messages.map((message) => message.role === "user" && current.some((old) =>
         old.clientOperationId === message.clientOperationId && old.sessionSwitched === true)
@@ -591,6 +606,7 @@ export function useVoiceConversation(
     } catch (cause) {
       if (aliveRef.current && historyRequestRef.current === requestNumber && conversationIdRef.current === conversationId
         && manager.getSnapshot().generation === startedGeneration) {
+        historyValidatorRef.current = null;
         setHistoryError(cause instanceof Error ? cause.message : "音声会話の履歴を読み込めません。");
         setTaskChecklist({ status: "unavailable" });
         setTaskChecklistOverview(null);

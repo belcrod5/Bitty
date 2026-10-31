@@ -1,6 +1,7 @@
 // Skiaボード状態のHTTPハンドラ。server-runtime のif連鎖から1行で差し込む。
 // 認証・ボディ読取・JSON応答は server-runtime のヘルパーを注入して使う。
 
+import { createHash } from "node:crypto";
 import {
   SkiaBoardAlreadyInitializedError,
   SkiaBoardNotInitializedError,
@@ -86,7 +87,15 @@ export function createSkiaBoardHttpHandler({
         ? { backendId: matches[0].backendId, nativeSessionId: sessionId } : null;
       try { activity?.observeHttp(req, res, { label: route.method === "GET" ? "取得中" : "更新中",
         ...(target ? { sessionRef: target } : {}) }); } catch {}
-      json(res, 200, await route.handle(body));
+      const result = await route.handle(body);
+      if (route.method === "GET") {
+        const etag = `W/"${createHash("sha256").update(JSON.stringify(result)).digest("hex")}"`;
+        const headers = { etag, "cache-control": "private, no-cache", vary: "Authorization, Accept-Encoding" };
+        if (req.headers?.["if-none-match"] === etag) {
+          res.writeHead(304, headers);
+          res.end();
+        } else json(res, 200, result, headers);
+      } else json(res, 200, result);
     } catch (error) {
       if (error instanceof SkiaBoardRevisionConflictError) {
         json(res, 409, { error: "revision_conflict", ...error.snapshot });

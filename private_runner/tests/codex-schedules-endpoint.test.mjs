@@ -200,3 +200,13 @@ test("missing runner token and unsupported methods do not enter the service", as
     payload: { error: "method_not_allowed" },
   });
 });
+
+
+test("summary endpoint uses the domain read model without loading full schedule snapshots", async () => {
+  const summary = { scheduledThreads: [{ threadId: "existing", nextOccurrenceAt: "2026-10-24T00:00:00Z" }] };
+  const h = harness({ service: { summary: async () => summary, snapshot: () => { throw new Error("must not load prompts"); } } });
+  await h.handler({ method: "GET", auth: "secret" }, {}, "/codex-schedules/summary");
+  assert.deepEqual(h.responses.pop(), { status: 200, payload: { ok: true, ...summary } });
+  await h.handler({ method: "GET", auth: "bad" }, {}, "/codex-schedules/summary");
+  assert.equal(h.responses.pop().status, 401);
+});

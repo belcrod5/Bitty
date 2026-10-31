@@ -2,11 +2,12 @@ import { useEffect } from "react";
 import { AppState, Text, type AppStateStatus } from "react-native";
 import { act, render } from "@testing-library/react-native";
 import { CodexSchedulesProvider, useCodexSchedules } from "./CodexSchedulesContext";
-import { getCodexSchedules, putCodexSchedules } from "./codexScheduleApi";
-import type { CodexSchedule, CodexScheduleSnapshot } from "./codexScheduleTypes";
+import { getCodexSchedules, getCodexScheduleSummary, putCodexSchedules } from "./codexScheduleApi";
+import { codexScheduleSummary, type CodexSchedule, type CodexScheduleSnapshot } from "./codexScheduleTypes";
 
-jest.mock("./codexScheduleApi", () => ({ getCodexSchedules: jest.fn(), putCodexSchedules: jest.fn() }));
+jest.mock("./codexScheduleApi", () => ({ getCodexSchedules: jest.fn(), getCodexScheduleSummary: jest.fn(), putCodexSchedules: jest.fn() }));
 const mockGet = jest.mocked(getCodexSchedules);
+const mockSummary = jest.mocked(getCodexScheduleSummary);
 const mockPut = jest.mocked(putCodexSchedules);
 const auth = { runnerUrl: "http://runner", runnerToken: "token" };
 let current: ReturnType<typeof useCodexSchedules>;
@@ -45,6 +46,7 @@ beforeEach(() => {
     return { remove: jest.fn() };
   });
   mockGet.mockResolvedValue({ revision: 0, schedules: [] });
+  mockSummary.mockImplementation(async (auth) => codexScheduleSummary(await mockGet(auth)));
 });
 
 afterEach(() => {
@@ -163,4 +165,18 @@ test("failed reads retain known schedules and concurrent refreshes share one req
   });
   expect(view.getByText("none")).toBeTruthy();
   expect(mockGet).toHaveBeenCalledTimes(3);
+});
+
+
+test("startup, foreground and periodic markers request only thread summaries", async () => {
+  mockSummary.mockResolvedValue({ scheduledThreads: [{ threadId: "light", nextOccurrenceAt: "2026-10-24T00:00:00Z" }] });
+  const view = await render(<CodexSchedulesProvider {...auth}><Probe /></CodexSchedulesProvider>);
+  expect(view.getByText("light")).toBeTruthy();
+  await act(async () => { jest.advanceTimersByTime(30_000); onAppState("active"); });
+  expect(mockGet).not.toHaveBeenCalled();
+  expect(mockSummary).toHaveBeenCalledTimes(2);
+  mockGet.mockResolvedValue({ revision: 3, schedules: [schedule("editor")] });
+  await act(async () => { await current.refresh(); });
+  expect(view.getByText("editor")).toBeTruthy();
+  expect(mockGet).toHaveBeenCalledTimes(1);
 });

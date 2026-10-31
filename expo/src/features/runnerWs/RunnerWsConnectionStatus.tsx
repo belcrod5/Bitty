@@ -148,16 +148,10 @@ export function RunnerWsConnectionStatus({
     ["HTTP", formatUsageCounter(networkUsage.http)],
     ["runner WS（展開後）", formatUsageCounter(networkUsage.runnerWs)],
     ["stream-tts WS", formatUsageCounter(networkUsage.streamTts)],
-    ["HTTP: session-messages", formatUsageCounter(networkUsage.httpByCategory["session-messages"])],
-    ["HTTP: session-summaries", formatUsageCounter(networkUsage.httpByCategory["session-summaries"])],
-    ["HTTP: tts-media", formatUsageCounter(networkUsage.httpByCategory["tts-media"])],
-    ["HTTP: client-state", formatUsageCounter(networkUsage.httpByCategory["client-state"])],
-    ["HTTP: agent-history", formatUsageCounter(networkUsage.httpByCategory["agent-history"])],
-    ["HTTP: skia-board", formatUsageCounter(networkUsage.httpByCategory["skia-board"])],
-    ["HTTP: git", formatUsageCounter(networkUsage.httpByCategory.git)],
-    ["HTTP: client-logs", formatUsageCounter(networkUsage.httpByCategory["client-logs"])],
-    ["HTTP: 選択中Runner以外", formatUsageCounter(networkUsage.httpByCategory["other-origin"])],
-    ["HTTP: その他", formatUsageCounter(networkUsage.httpByCategory.other)],
+    ...Object.entries(networkUsage.httpByCategory).map(([category, counter]): [string, string] => [
+      `HTTP: ${category === "other" ? "その他" : category === "other-origin" ? "選択中Runner以外" : category}`,
+      formatUsageCounter(counter),
+    ]),
   ];
 
   return (

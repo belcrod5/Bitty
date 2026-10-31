@@ -896,6 +896,14 @@ export function createCodexScheduleService({
     return serialize(async () => buildSnapshot(definitionsStore.schedules, runtimeStore));
   }
 
+  async function summary() {
+    return serialize(async () => ({ scheduledThreads: definitionsStore.schedules.flatMap((definition) => {
+      const nextOccurrenceAt = runtimeStore.runtimes[definition.id]?.nextOccurrenceAt;
+      return definition.enabled && definition.action.kind === "llm" && definition.action.threadId && nextOccurrenceAt
+        ? [{ threadId: definition.action.threadId, nextOccurrenceAt }] : [];
+    }) }));
+  }
+
   async function commitNormalizedDefinitions(schedules, at) {
     const previousDefinitions = new Map(
       definitionsStore.schedules.map((definition) => [definition.id, definition]),
@@ -1141,6 +1149,7 @@ export function createCodexScheduleService({
     patchSchedule,
     deleteSchedule,
     snapshot,
+    summary,
     whenIdle,
     get activeStartCount() { return activeStarts; },
     get timerArmed() { return Boolean(timer); },

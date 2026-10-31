@@ -4,17 +4,7 @@
 // を読み出す(ポーリング)。
 export type NetworkUsageRoute = "runner-ws" | "stream-tts";
 
-export type NetworkUsageHttpCategory =
-  | "session-messages"
-  | "session-summaries"
-  | "tts-media"
-  | "client-state"
-  | "agent-history"
-  | "skia-board"
-  | "git"
-  | "client-logs"
-  | "other-origin"
-  | "other";
+export type NetworkUsageHttpCategory = typeof HTTP_CATEGORIES[number];
 
 export type NetworkUsageCounter = {
   sentBytes: number;
@@ -26,12 +16,13 @@ export type NetworkUsageSnapshot = {
   http: NetworkUsageCounter;
   httpByCategory: Record<NetworkUsageHttpCategory, NetworkUsageCounter>;
   runnerWs: NetworkUsageCounter;
+  runnerWsByOperation: Record<string, NetworkUsageCounter & { sentCount: number; receivedCount: number }>;
   streamTts: NetworkUsageCounter;
   totalSentBytes: number;
   totalReceivedBytes: number;
 };
 
-const HTTP_CATEGORIES: NetworkUsageHttpCategory[] = [
+export const HTTP_CATEGORIES = [
   "session-messages",
   "session-summaries",
   "tts-media",
@@ -40,32 +31,28 @@ const HTTP_CATEGORIES: NetworkUsageHttpCategory[] = [
   "skia-board",
   "git",
   "client-logs",
+  "codex-schedules",
+  "codex-status",
+  "app-status",
+  "file-media",
+  "directories",
+  "codex-auth",
   "other-origin",
   "other",
-];
+] as const;
 
 function createCounter(): NetworkUsageCounter {
   return { sentBytes: 0, receivedBytes: 0 };
 }
 
 function createHttpCategoryCounters(): Record<NetworkUsageHttpCategory, NetworkUsageCounter> {
-  return {
-    "session-messages": createCounter(),
-    "session-summaries": createCounter(),
-    "tts-media": createCounter(),
-    "client-state": createCounter(),
-    "agent-history": createCounter(),
-    "skia-board": createCounter(),
-    git: createCounter(),
-    "client-logs": createCounter(),
-    "other-origin": createCounter(),
-    other: createCounter(),
-  };
+  return Object.fromEntries(HTTP_CATEGORIES.map((category) => [category, createCounter()])) as Record<NetworkUsageHttpCategory, NetworkUsageCounter>;
 }
 
 let sinceMs = Date.now();
 let httpByCategory = createHttpCategoryCounters();
 let runnerWs = createCounter();
+let runnerWsByOperation: NetworkUsageSnapshot["runnerWsByOperation"] = {};
 let streamTts = createCounter();
 
 export function utf8ByteLength(text: string): number {
@@ -104,6 +91,12 @@ export function categorizeHttpUrl(url: string, runnerOrigin?: string): NetworkUs
   if (path === "/skia-board" || path.startsWith("/skia-board/")) return "skia-board";
   if (path.startsWith("/git/")) return "git";
   if (path === "/client-logs") return "client-logs";
+  if (path === "/codex-schedules" || path.startsWith("/codex-schedules/")) return "codex-schedules";
+  if (path.startsWith("/codex-cli/")) return "codex-status";
+  if (path === "/app/status-snapshot") return "app-status";
+  if (path === "/files/media") return "file-media";
+  if (path === "/directories") return "directories";
+  if (path.startsWith("/codex-auth/")) return "codex-auth";
   return "other";
 }
 
@@ -114,6 +107,21 @@ function addTo(counter: NetworkUsageCounter, sentBytes: number, receivedBytes: n
 
 export function recordNetworkUsage(route: NetworkUsageRoute, sentBytes: number, receivedBytes: number) {
   addTo(route === "runner-ws" ? runnerWs : streamTts, sentBytes, receivedBytes);
+}
+
+// Bound both key size and cardinality; never retain IDs, request payloads or text.
+export function recordRunnerWsNetworkUsage(direction: "sent" | "received", bytes: number,
+  message?: { channel: string; op: string } | null) {
+  if (!Number.isFinite(bytes) || bytes < 0) return;
+  const channel = message?.channel || "";
+  const op = message?.op || "";
+  let key = ["agent", "control", "llm", "tts", "relay"].includes(channel)
+    && /^[a-z][a-z0-9_.-]{0,95}$/.test(op) ? `${channel}/${op}` : "other";
+  if (!runnerWsByOperation[key] && Object.keys(runnerWsByOperation).length >= 96) key = "other";
+  const counter = runnerWsByOperation[key] ||= { sentBytes: 0, receivedBytes: 0, sentCount: 0, receivedCount: 0 };
+  if (direction === "sent") { counter.sentBytes += bytes; counter.sentCount += 1; }
+  else { counter.receivedBytes += bytes; counter.receivedCount += 1; }
+  addTo(runnerWs, direction === "sent" ? bytes : 0, direction === "received" ? bytes : 0);
 }
 
 export function recordHttpNetworkUsage(url: string, sentBytes: number, receivedBytes: number, runnerOrigin?: string) {
@@ -134,6 +142,7 @@ export function getNetworkUsageSnapshot(): NetworkUsageSnapshot {
     http,
     httpByCategory: byCategory,
     runnerWs: { ...runnerWs },
+    runnerWsByOperation: Object.fromEntries(Object.entries(runnerWsByOperation).map(([key, value]) => [key, { ...value }])),
     streamTts: { ...streamTts },
     totalSentBytes: http.sentBytes + runnerWs.sentBytes + streamTts.sentBytes,
     totalReceivedBytes: http.receivedBytes + runnerWs.receivedBytes + streamTts.receivedBytes,
@@ -144,5 +153,6 @@ export function resetNetworkUsage() {
   sinceMs = Date.now();
   httpByCategory = createHttpCategoryCounters();
   runnerWs = createCounter();
+  runnerWsByOperation = {};
   streamTts = createCounter();
 }

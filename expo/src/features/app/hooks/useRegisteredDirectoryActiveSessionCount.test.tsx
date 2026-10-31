@@ -109,3 +109,17 @@ test("refreshes on foreground and reports unknown while backgrounded", async () 
   await waitFor(() => expect(hook.result.current).toBe(4));
   hook.unmount();
 });
+
+
+test("inactive does not trigger an extra request before the foreground revalidation", async () => {
+  const hook = await renderHook(({ version }: { version: number }) => {
+    void version; return useRegisteredDirectoryActiveSessionCount();
+  }, { initialProps: { version: 0 } });
+  await waitFor(() => expect(hook.result.current).toBe(2));
+  const requests = mockRequest.mock.calls.length;
+  mockAppState = "inactive"; await hook.rerender({ version: 1 });
+  expect(mockRequest).toHaveBeenCalledTimes(requests);
+  mockAppState = "active"; await hook.rerender({ version: 2 });
+  await waitFor(() => expect(mockRequest).toHaveBeenCalledTimes(requests + 1));
+  await hook.unmount();
+});

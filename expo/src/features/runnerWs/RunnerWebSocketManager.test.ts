@@ -1,3 +1,4 @@
+import { getNetworkUsageSnapshot, resetNetworkUsage, utf8ByteLength } from "../ws/networkUsageMetrics";
 import { createWebSocketWithOptionalAuth } from "../ws/webSocketAuth";
 import { tokenFingerprint } from "../ws/tokenFingerprint";
 import { RunnerWebSocketManager } from "./RunnerWebSocketManager";
@@ -1496,5 +1497,23 @@ test("control event support follows each connection's ready advertisement", asyn
   second.message({ channel: "control", op: "ready" });
   await reconnect;
   expect(manager.getSnapshot().supportedControlEvents).toEqual([]);
+  manager.disconnect();
+});
+
+
+test("operation byte counters match the decoded socket frames once, including malformed input", async () => {
+  resetNetworkUsage();
+  const socket = nextSocket(); const manager = createManager();
+  await connectReady(manager, socket);
+  const request = { channel: "agent" as const, op: "voice.history", payload: { orchestratorId: "main" } };
+  manager.send(request);
+  const received = { channel: "agent" as const, op: "voice.history.result", payload: { text: "日本語" } };
+  socket.message(received);
+  socket.onmessage?.({ data: "invalid json" } as MessageEvent);
+  const snapshot = getNetworkUsageSnapshot();
+  expect(snapshot.runnerWsByOperation["agent/voice.history"].sentBytes).toBe(utf8ByteLength(JSON.stringify(request)));
+  expect(snapshot.runnerWsByOperation["agent/voice.history.result"].receivedBytes).toBe(utf8ByteLength(JSON.stringify(received)));
+  expect(snapshot.runnerWsByOperation.other.receivedBytes).toBe(12);
+  expect(Object.values(snapshot.runnerWsByOperation).reduce((n, value) => n + value.receivedBytes, 0)).toBe(snapshot.runnerWs.receivedBytes);
   manager.disconnect();
 });

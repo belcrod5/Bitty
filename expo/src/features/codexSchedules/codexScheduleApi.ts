@@ -1,8 +1,10 @@
 import {
   codexScheduleDefinitionOnly,
+  codexScheduleSummary,
   parseCodexScheduleSnapshot,
   type CodexSchedule,
   type CodexScheduleSnapshot,
+  type CodexScheduleSummary,
 } from "./codexScheduleTypes";
 
 export class CodexScheduleApiError extends Error {
@@ -21,11 +23,11 @@ export class CodexScheduleApiError extends Error {
 
 type Auth = { runnerUrl: string; runnerToken: string };
 
-async function request(auth: Auth, init?: RequestInit): Promise<CodexScheduleSnapshot> {
+async function request(auth: Auth, init?: RequestInit, path = "/codex-schedules"): Promise<unknown> {
   const runnerUrl = String(auth.runnerUrl || "").trim().replace(/\/+$/, "");
   const runnerToken = String(auth.runnerToken || "").trim();
   if (!runnerUrl || !runnerToken) throw new CodexScheduleApiError("Runnerへ接続する設定がありません。", 0, "runner_unavailable");
-  const response = await fetch(`${runnerUrl}/codex-schedules`, {
+  const response = await fetch(`${runnerUrl}${path}`, {
     ...init,
     headers: {
       authorization: `Bearer ${runnerToken}`,
@@ -45,11 +47,11 @@ async function request(auth: Auth, init?: RequestInit): Promise<CodexScheduleSna
     const revision = Number.isInteger(body.revision) ? Number(body.revision) : null;
     throw new CodexScheduleApiError(message, response.status, code, revision);
   }
-  return parseCodexScheduleSnapshot(payload);
+  return payload;
 }
 
 export function getCodexSchedules(auth: Auth): Promise<CodexScheduleSnapshot> {
-  return request(auth);
+  return request(auth).then(parseCodexScheduleSnapshot);
 }
 
 export function putCodexSchedules(
@@ -63,5 +65,24 @@ export function putCodexSchedules(
       baseRevision,
       schedules: schedules.map(codexScheduleDefinitionOnly),
     }),
-  });
+  }).then(parseCodexScheduleSnapshot);
+}
+
+
+export async function getCodexScheduleSummary(auth: Auth): Promise<CodexScheduleSummary> {
+  let value: CodexScheduleSummary | null;
+  try { value = await request(auth, undefined, "/codex-schedules/summary") as CodexScheduleSummary | null; }
+  catch (error) {
+    if (error instanceof CodexScheduleApiError && (error.status === 404 || error.code === "invalid_codex_schedule_id"
+      || error.status === 405 && error.code === "method_not_allowed")) {
+      return codexScheduleSummary(await getCodexSchedules(auth));
+    }
+    throw error;
+  }
+  if (!value || !Array.isArray(value.scheduledThreads) || !value.scheduledThreads.every((entry) => entry
+    && typeof entry.threadId === "string" && entry.threadId && typeof entry.nextOccurrenceAt === "string"
+    && Number.isFinite(Date.parse(entry.nextOccurrenceAt)))) {
+    throw new CodexScheduleApiError("Runnerから不正な応答を受信しました。", 200, "invalid_response");
+  }
+  return { scheduledThreads: value.scheduledThreads.map(({ threadId, nextOccurrenceAt }) => ({ threadId, nextOccurrenceAt })) };
 }

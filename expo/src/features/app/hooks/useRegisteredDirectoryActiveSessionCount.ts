@@ -14,7 +14,7 @@ export function useRegisteredDirectoryActiveSessionCount() {
   const [count, setCount] = useState<number | null>(null);
 
   useEffect(() => {
-    if (!connected || appState === "background" || activeScreen !== "skia_board") {
+    if (!connected || appState !== "active" || activeScreen !== "skia_board") {
       setCount(null);
       return;
     }

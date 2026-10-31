@@ -3,7 +3,7 @@ import {
   isWebSocketForCloudflareRunner,
 } from "../ws/webSocketAuth";
 import { tokenFingerprint, tokenLength } from "../ws/tokenFingerprint";
-import { recordNetworkUsage, utf8ByteLength } from "../ws/networkUsageMetrics";
+import { recordRunnerWsNetworkUsage, utf8ByteLength } from "../ws/networkUsageMetrics";
 import {
   isRunnerWsMessage,
   normalizeRunnerWsServerStatus,
@@ -535,7 +535,7 @@ export class RunnerWebSocketManager {
         ? body.cwds.length : message.op === "sessions.list" ? 1 : 0;
       this.emitDiag("runner_ws_session_list_sent", { operation: message.op, targetCount });
     }
-    recordNetworkUsage("runner-ws", utf8ByteLength(payload), 0);
+    recordRunnerWsNetworkUsage("sent", utf8ByteLength(payload), message);
     this.refreshSnapshot();
   }
 
@@ -671,9 +671,10 @@ export class RunnerWebSocketManager {
   }
 
   private handleMessage(data: unknown) {
-    const receivedBytes = typeof data === "string" ? utf8ByteLength(data) : null;
-    if (receivedBytes !== null) recordNetworkUsage("runner-ws", 0, receivedBytes);
+    const receivedBytes = typeof data === "string" ? utf8ByteLength(data)
+      : data instanceof ArrayBuffer || ArrayBuffer.isView(data) ? data.byteLength : 0;
     const message = parseMessage(data);
+    recordRunnerWsNetworkUsage("received", receivedBytes, message);
     if (!message) return;
     this.receivedCount += 1;
     this.lastMessageAtMs = Date.now();
@@ -699,9 +700,7 @@ export class RunnerWebSocketManager {
       const pending = this.pendingRequests.get(message.requestId);
       if (pending) {
         this.pendingRequests.delete(message.requestId);
-        if (receivedBytes !== null) {
-          try { pending.onResponseBytes?.(receivedBytes); } catch { /* diagnostics cannot interrupt a request */ }
-        }
+        try { pending.onResponseBytes?.(receivedBytes); } catch { /* diagnostics cannot interrupt a request */ }
         pending.resolve(message);
         shouldNotifySnapshot = true;
       }
