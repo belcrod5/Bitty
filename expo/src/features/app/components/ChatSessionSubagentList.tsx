@@ -21,6 +21,7 @@ type ChatSessionSubagentListProps = {
   sessionTitleOverridesById: Record<string, string>;
   formatSessionUpdatedAt: (updatedAt: string) => string;
   loadSessionChildren: (sessionId: string, directory: string) => Promise<void>;
+  watchSessionChildren: (sessionIds: string[], directory: string) => () => void;
   openSessionHistoryEntry: (params: {
     backendId: string;
     sessionId: string;
@@ -45,6 +46,7 @@ export function ChatSessionSubagentList({
   sessionTitleOverridesById,
   formatSessionUpdatedAt,
   loadSessionChildren,
+  watchSessionChildren,
   openSessionHistoryEntry,
   onCloseMenu,
 }: ChatSessionSubagentListProps) {
@@ -85,15 +87,8 @@ export function ChatSessionSubagentList({
 
   useEffect(() => {
     if (!selectedSessionId || !selectedDirectoryPath) return;
-    if (childState?.loaded || childState?.loading) return;
-    void loadSessionChildren(selectedSessionId, selectedDirectoryPath);
-  }, [
-    childState?.loaded,
-    childState?.loading,
-    loadSessionChildren,
-    selectedDirectoryPath,
-    selectedSessionId,
-  ]);
+    return watchSessionChildren([selectedSessionId], selectedDirectoryPath);
+  }, [selectedSessionId, selectedDirectoryPath, watchSessionChildren]);
 
   const children = childState?.entries || [];
 

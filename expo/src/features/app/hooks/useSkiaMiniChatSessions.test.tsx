@@ -30,6 +30,12 @@ import { useConversationRuntimeStoreController } from "./useConversationRuntimeS
 import type { PanelRuntimePreview, PanelRuntimeSnapshot } from "../contexts/PanelRuntimeStoreContext";
 import type { SkiaBoardCard, SkiaBoardState } from "../utils/skiaBoardState";
 
+import { useSessionChildCounts } from "./useSessionChildCounts";
+jest.mock("./useSessionChildCounts", () => ({
+  ...jest.requireActual("./useSessionChildCounts"),
+  useSessionChildCounts: jest.fn(),
+}));
+
 let mockScheduledThreadIds = new Set<string>();
 jest.mock("../../codexSchedules/CodexSchedulesContext", () => ({
   useCodexSchedules: () => ({ scheduledThreadIds: mockScheduledThreadIds }),
@@ -130,6 +136,7 @@ function sessionCard(sessionId: string, col: number, row: number): Extract<SkiaB
 
 beforeEach(() => {
   jest.clearAllMocks();
+  jest.mocked(useSessionChildCounts).mockReturnValue({ counts: new Map(), loading: false } as ReturnType<typeof useSessionChildCounts>);
   mockScheduledThreadIds = new Set();
   mockRunnerAuth = { runnerUrl: "http://runner", runnerToken: "runner-token" };
   persistedFile = {};
@@ -606,6 +613,9 @@ describe("useSkiaMiniChatSessions", () => {
       },
     });
 
+    jest.mocked(useSessionChildCounts).mockReturnValue({ counts: new Map([[JSON.stringify(["codex", parent.sessionId]), {
+      sessionRef: { backendId: "codex", nativeSessionId: parent.sessionId }, totalCount: 2, runningCount: 1,
+    }]]), loading: false } as ReturnType<typeof useSessionChildCounts>);
     const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
     await flush();
 
@@ -695,7 +705,7 @@ describe("useSkiaMiniChatSessions", () => {
     ]);
   });
 
-  it("requests missing child trees once per directory", async () => {
+  it("requests qualified counts without loading board child details", async () => {
     const loadSessionChildrenBatch = jest.fn().mockResolvedValue(undefined);
     seedRunnerBoard([
       sessionCard("session-2", 0, 0),
@@ -706,11 +716,10 @@ describe("useSkiaMiniChatSessions", () => {
     await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
     await flush();
 
-    expect(loadSessionChildrenBatch).toHaveBeenCalledTimes(1);
-    expect(loadSessionChildrenBatch).toHaveBeenCalledWith(
-      ["session-2", "session-1"],
-      "/workspace"
-    );
+    expect(loadSessionChildrenBatch).not.toHaveBeenCalled();
+    expect(useSessionChildCounts).toHaveBeenLastCalledWith(expect.anything(), expect.any(String), [
+      { backendId: "codex", nativeSessionId: "session-2" }, { backendId: "codex", nativeSessionId: "session-1" },
+    ]);
   });
 
   it("restores runner card positions instead of re-initializing", async () => {

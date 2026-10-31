@@ -1104,6 +1104,36 @@ export function createClaudeBackend({
       || compareOrdinalDesc(String(a?.sessionId || ""), String(b?.sessionId || ""));
   }
 
+  async function listSessionChildren({ parentSessionRefs }) {
+    const parentIds = new Set(parentSessionRefs.map((ref) => ref.nativeSessionId));
+    // Directory structure owns these relationships. Counts never need to read a
+    // child (or parent) transcript, including children in isolated worktrees.
+    return (await transcriptFileEntries()).filter((entry) => parentIds.has(entry.parentSessionId))
+      .map((entry) => ({
+        sessionRef: { backendId: "claude", nativeSessionId: entry.nativeSessionId },
+        parentSessionRef: { backendId: "claude", nativeSessionId: entry.parentSessionId },
+      }));
+  }
+
+  async function listedTranscriptSession(entry) {
+    const metadata = await transcriptMetadata(entry.file);
+    if (!metadata) return null;
+    return {
+      sessionRef: { backendId: "claude", nativeSessionId: entry.nativeSessionId },
+      canonicalCwd: metadata.realCwd,
+      createdAt: metadata.createdAt,
+      updatedAt: metadata.stat.mtime.toISOString(),
+      title: metadata.title,
+      modelId: metadata.modelId,
+      summary: { contextUsage: null, modelRef: metadata.modelId, reasoningEffort: "", lastReadAt: "" },
+      sourceKind: "cli",
+      isSubagent: Boolean(entry.parentSessionId),
+      ...(entry.parentSessionId
+        ? { parentSessionRef: { backendId: "claude", nativeSessionId: entry.parentSessionId } }
+        : {}),
+    };
+  }
+
   async function listSessionsForDirectories({ cwds, includeSubagents, parentSessionRefs }) {
     const canonicalCwds = await Promise.all(
       (Array.isArray(cwds) ? cwds : []).map((cwd) => realpathCwd(path.resolve(String(cwd || "")))),
@@ -1115,23 +1145,8 @@ export function createClaudeBackend({
       : null;
     for (const entry of await transcriptFileEntries(includeSubagents)) {
       if (parentIds && !parentIds.has(entry.parentSessionId)) continue;
-      const metadata = await transcriptMetadata(entry.file);
-      const sessions = metadata ? sessionsByCwd.get(metadata.realCwd) : null;
-      if (!sessions) continue;
-      sessions.push({
-        sessionRef: { backendId: "claude", nativeSessionId: entry.nativeSessionId },
-        canonicalCwd: metadata.realCwd,
-        createdAt: metadata.createdAt,
-        updatedAt: metadata.stat.mtime.toISOString(),
-        title: metadata.title,
-        modelId: metadata.modelId,
-        summary: { contextUsage: null, modelRef: metadata.modelId, reasoningEffort: "", lastReadAt: "" },
-        sourceKind: "cli",
-        isSubagent: Boolean(entry.parentSessionId),
-        ...(entry.parentSessionId
-          ? { parentSessionRef: { backendId: "claude", nativeSessionId: entry.parentSessionId } }
-          : {}),
-      });
+      const session = await listedTranscriptSession(entry);
+      if (session) sessionsByCwd.get(session.canonicalCwd)?.push(session);
     }
     return {
       groups: canonicalCwds.map((cwd) => ({
@@ -1152,7 +1167,18 @@ export function createClaudeBackend({
     if (cursorRaw && !String(cursorKey?.sessionId || "").trim()) {
       throw agentError("turn_rejected", "session list cursor is invalid", { backendId: "claude" });
     }
-    const [{ sessions }] = (await listSessionsForDirectories({ cwds: [canonicalCwd], includeSubagents, parentSessionRefs })).groups;
+    let sessions;
+    if (parentSessionRefs?.length) {
+      const parentIds = new Set(parentSessionRefs.filter((ref) => ref.backendId === "claude").map((ref) => ref.nativeSessionId));
+      sessions = [];
+      for (const entry of await transcriptFileEntries(includeSubagents)) {
+        if (!parentIds.has(entry.parentSessionId)) continue;
+        const session = await listedTranscriptSession(entry);
+        if (session) sessions.push(session);
+      }
+    } else {
+      [{ sessions }] = (await listSessionsForDirectories({ cwds: [canonicalCwd], includeSubagents })).groups;
+    }
     const pageKey = (session) => ({ updatedAt: session.updatedAt, sessionId: session.sessionRef.nativeSessionId });
     sessions.sort((a, b) => compareListPageKeys(pageKey(a), pageKey(b)));
     const positioned = cursorKey
@@ -1284,6 +1310,7 @@ export function createClaudeBackend({
     resolveSessionCwd,
     listSessions,
     listSessionsForDirectories,
+    listSessionChildren,
     readHistory,
     compactSession,
     listModels: async () => CLAUDE_MODELS,

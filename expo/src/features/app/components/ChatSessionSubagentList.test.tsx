@@ -65,6 +65,7 @@ test("shows and opens the direct parent of the selected subagent", async () => {
       directorySessionsById={{ "dir-1": directoryState }}
       sessionTitleOverridesById={{}}
       formatSessionUpdatedAt={() => "today"}
+      watchSessionChildren={jest.fn(() => () => {})}
       loadSessionChildren={jest.fn(async () => undefined)}
       openSessionHistoryEntry={openSessionHistoryEntry}
       onCloseMenu={onCloseMenu}
@@ -120,6 +121,7 @@ test("resolves children by the selected directory when the session is outside th
       directorySessionsById={{ "dir-1": directoryState }}
       sessionTitleOverridesById={{}}
       formatSessionUpdatedAt={() => "now"}
+      watchSessionChildren={jest.fn(() => () => {})}
       loadSessionChildren={jest.fn(async () => undefined)}
       openSessionHistoryEntry={jest.fn()}
       onCloseMenu={jest.fn()}
@@ -143,6 +145,7 @@ test("loads children for an uncached session through the selected directory", as
     entries: [session({ sessionId: "recent" })],
     childrenByParentId: {},
   };
+  const watchSessionChildren = jest.fn(() => () => {});
   const loadSessionChildren = jest.fn(async () => undefined);
   await render(
     <ChatSessionSubagentList
@@ -157,13 +160,15 @@ test("loads children for an uncached session through the selected directory", as
       directorySessionsById={{ "dir-1": directoryState }}
       sessionTitleOverridesById={{}}
       formatSessionUpdatedAt={() => "now"}
+      watchSessionChildren={watchSessionChildren}
       loadSessionChildren={loadSessionChildren}
       openSessionHistoryEntry={jest.fn()}
       onCloseMenu={jest.fn()}
     />
   );
 
-  expect(loadSessionChildren).toHaveBeenCalledWith("out-of-window-parent", "/work/bitty");
+  expect(watchSessionChildren).toHaveBeenCalledWith(["out-of-window-parent"], "/work/bitty");
+  expect(loadSessionChildren).not.toHaveBeenCalled();
 });
 
 test("opens a child with the child's own working directory", async () => {
@@ -204,6 +209,7 @@ test("opens a child with the child's own working directory", async () => {
       directorySessionsById={{ "dir-1": directoryState }}
       sessionTitleOverridesById={{}}
       formatSessionUpdatedAt={() => "now"}
+      watchSessionChildren={jest.fn(() => () => {})}
       loadSessionChildren={jest.fn()}
       openSessionHistoryEntry={openSessionHistoryEntry}
       onCloseMenu={jest.fn()}

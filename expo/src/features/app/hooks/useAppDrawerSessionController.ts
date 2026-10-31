@@ -30,7 +30,7 @@ type UseAppDrawerSessionControllerArgs = {
   openDirectoryExplorer: () => void;
   toggleDirectoryExpanded: (directoryId: string, directoryPath: string) => void;
   loadMoreDirectorySessionTree: (directoryId: string, directoryPath: string) => Promise<void>;
-  loadSessionChildTree: (directoryId: string, directoryPath: string, parentSessionId: string) => Promise<void>;
+  watchSessionChildren: (sessionIds: string[], directory: string) => () => void;
   selectLlmDirectory: (directoryPath: string) => void;
   openNewSessionPopup: (params: { directory: string }) => void;
   openSessionHistoryPopup: (params: {
@@ -64,7 +64,7 @@ export function useAppDrawerSessionController({
   openDirectoryExplorer,
   toggleDirectoryExpanded,
   loadMoreDirectorySessionTree,
-  loadSessionChildTree,
+  watchSessionChildren,
   selectLlmDirectory,
   openNewSessionPopup,
   openSessionHistoryPopup,
@@ -88,14 +88,6 @@ export function useAppDrawerSessionController({
     if (state?.loading || state?.refreshing || state?.loadingMore) return;
     void loadMoreDirectorySessionTree(directoryId, directoryPath);
   }, [directorySessionsById, loadMoreDirectorySessionTree]);
-
-  const handleLoadSessionChildren = useCallback((
-    directoryId: string,
-    directoryPath: string,
-    parentSessionId: string
-  ) => {
-    void loadSessionChildTree(directoryId, directoryPath, parentSessionId);
-  }, [loadSessionChildTree]);
 
   const handleSelectDirectory = useCallback((directoryPath: string) => {
     selectLlmDirectory(directoryPath);
@@ -147,7 +139,7 @@ export function useAppDrawerSessionController({
     onOpenDirectoryExplorer: handleOpenDirectoryExplorer,
     onToggleDirectoryExpanded: handleToggleDirectoryExpanded,
     onLoadMoreSessions: handleLoadMoreSessions,
-    onLoadSessionChildren: handleLoadSessionChildren,
+    watchSessionChildren,
     onStartNewSessionInDirectory: handleSelectDirectory,
     onSelectSessionHistoryEntry: handleSelectSessionHistoryEntry,
     onMarkDirectorySessionsRead: handleMarkDirectorySessionsRead,
@@ -169,7 +161,7 @@ export function useAppDrawerSessionController({
     handleOpenDirectoryExplorer,
     handleToggleDirectoryExpanded,
     handleLoadMoreSessions,
-    handleLoadSessionChildren,
+    watchSessionChildren,
     handleSelectDirectory,
     handleSelectSessionHistoryEntry,
     handleMarkDirectorySessionsRead,

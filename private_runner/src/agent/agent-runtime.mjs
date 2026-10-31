@@ -49,6 +49,7 @@ export function createPrivateRunnerAgentRuntime({
   resolveSessionDirectory,
   listSessions,
   listSessionsForDirectories,
+  listSessionChildren,
   getSessionTitles,
   onNewRegularSession,
   listMessages,
@@ -145,6 +146,13 @@ export function createPrivateRunnerAgentRuntime({
         })),
         ...(page.cursor ? { cursor: String(page.cursor) } : {}),
       };
+    },
+    async listSessionChildren({ parentSessionRefs }) {
+      const children = await listSessionChildren(parentSessionRefs.map((ref) => ref.nativeSessionId));
+      return children.map((child) => ({
+        sessionRef: { backendId: "codex", nativeSessionId: child.sessionId },
+        parentSessionRef: { backendId: "codex", nativeSessionId: child.parentSessionId },
+      }));
     },
     async listSessionsForDirectories({ cwds, includeSubagents }) {
       const groups = await listSessionsForDirectories(cwds, { includeSubagents });

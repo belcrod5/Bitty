@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { act, renderHook } from "@testing-library/react-native";
 import type { DirectorySessionTreeState } from "../components/AppDrawer";
 import type { LlmSessionHistoryBatchGroup, LlmSessionHistoryEntry } from "./useLlmSessionExplorer";
@@ -71,6 +71,7 @@ function useTestController(params: {
   fetchSessionHistoryBatch?: jest.Mock;
   runnerWebSocketManager?: Parameters<typeof useDirectorySessionTreeController>[0]["runnerWebSocketManager"];
   connectionScope?: string;
+  watchedParents?: Array<{ parents: string[]; directory: string }>;
 }) {
   const [directorySessionsById, setDirectorySessionsById] = useState<
     Record<string, DirectorySessionTreeState>
@@ -90,6 +91,12 @@ function useTestController(params: {
     directorySessionPrefetchConcurrency: params.concurrency || 2,
     registeredDirectories: params.registeredDirectories || [workspaceDirectory],
   });
+  const watchKey = JSON.stringify(params.watchedParents || []);
+  useEffect(() => {
+    const releases = (JSON.parse(watchKey) as Array<{ parents: string[]; directory: string }>)
+      .map((target) => controller.watchSessionChildTreesForSessions(target.parents, target.directory));
+    return () => releases.forEach((release) => release());
+  }, [watchKey, controller.watchSessionChildTreesForSessions]);
   return { controller, directorySessionsById };
 }
 
@@ -355,11 +362,7 @@ test("does not let a stale child fetch overwrite a read completed while loading"
 
   let loading!: Promise<void>;
   await act(async () => {
-    loading = result.current.controller.loadSessionChildTree(
-      "workspace",
-      "/workspace",
-      "parent"
-    );
+    loading = result.current.controller.loadSessionChildTreesForSessions(["parent"], "/workspace");
     await Promise.resolve();
   });
   expect(
@@ -937,11 +940,7 @@ test("keeps and applies a child load across an unrelated first-page generation c
   let childLoading!: Promise<void>;
   let refresh!: Promise<unknown>;
   await act(async () => {
-    childLoading = result.current.controller.loadSessionChildTree(
-      "workspace",
-      "/workspace",
-      "parent"
-    );
+    childLoading = result.current.controller.loadSessionChildTreesForSessions(["parent"], "/workspace");
     await Promise.resolve();
     refresh = result.current.controller.refreshDirectorySessionTree(
       workspaceDirectory,
@@ -1008,7 +1007,7 @@ test("discards a child load after its registered directory path changes", async 
 
   let loading!: Promise<void>;
   await act(async () => {
-    loading = result.current.controller.loadSessionChildTree("workspace", "/workspace", "parent");
+    loading = result.current.controller.loadSessionChildTreesForSessions(['parent'], '/workspace');
     await Promise.resolve();
     result.current.move();
     childFetch.resolve({ parent: [{
@@ -1069,6 +1068,7 @@ test("refreshes a cached parent on child completion and coalesces duplicate boun
     .mockImplementationOnce(() => firstRefresh.promise)
     .mockResolvedValueOnce({ parent: [{ ...child, threadStatusType: "idle" }] });
   const { result } = await renderHook(() => useTestController({
+    watchedParents: [{ parents: ["parent"], directory: "/workspace" }],
     fetchSessionHistory: jest.fn(),
     fetchSessionChildrenHistory,
     initialTrees: {
@@ -1116,6 +1116,7 @@ test("runs one final child refresh after a boundary arrives during the queued re
     .mockImplementationOnce(() => trailingRefresh.promise)
     .mockResolvedValueOnce({ parent: [{ ...child, threadStatusType: "idle" }] });
   const { result } = await renderHook(() => useTestController({
+    watchedParents: [{ parents: ["parent"], directory: "/workspace" }],
     fetchSessionHistory: jest.fn(),
     fetchSessionChildrenHistory,
     initialTrees: {
@@ -1528,7 +1529,7 @@ test.each(['success', 'error'])('a previous Runner child %s cannot alter the new
     fetchSessionHistoryBatch: jest.fn(async () => [{ cwd: '/workspace', result: { latestSessionId: 'new', nextCursor: '', entries: [session('', 'new')] } }]),
   }), { initialProps: { scope: 'old' } });
   let child!: Promise<void>;
-  await act(async () => { child = result.current.controller.loadSessionChildTree('workspace', '/workspace', 'parent'); });
+  await act(async () => { child = result.current.controller.loadSessionChildTreesForSessions(['parent'], '/workspace'); });
   await rerender({ scope: 'new' });
   await act(async () => {
     if (outcome === 'success') resolve({ parent: [session('', 'old-child')] });
@@ -1577,6 +1578,7 @@ test('an old child queue cleanup cannot erase the new scope queue for the same p
   const newChild = deferred<Record<string, LlmSessionHistoryEntry[]>>();
   const children = jest.fn().mockReturnValueOnce(oldChild.promise).mockReturnValueOnce(newChild.promise).mockResolvedValue({ parent: [] });
   const { result, rerender } = await renderHook(({ scope }: { scope: string }) => useTestController({
+    watchedParents: [{ parents: ["parent"], directory: "/workspace" }],
     connectionScope: scope, initialTrees: { workspace: { ...emptyState, loaded: true, entries: [session('', 'parent')] } },
     fetchSessionHistory: jest.fn(), fetchSessionChildrenHistory: children,
     fetchSessionHistoryBatch: jest.fn(async () => [{ cwd: '/workspace', result: { latestSessionId: 'parent', nextCursor: '', entries: [session('', 'parent')] } }]),
@@ -1584,14 +1586,14 @@ test('an old child queue cleanup cannot erase the new scope queue for the same p
   let oldActive!: Promise<void>;
   let oldQueue!: Promise<void>;
   await act(async () => {
-    oldActive = result.current.controller.loadSessionChildTree('workspace', '/workspace', 'parent');
+    oldActive = result.current.controller.loadSessionChildTreesForSessions(['parent'], '/workspace');
     oldQueue = result.current.controller.refreshSessionChildTreesAtBoundary('parent', 'parent_changed');
   });
   await rerender({ scope: 'new' });
   let newActive!: Promise<void>;
   let newQueue!: Promise<void>;
   await act(async () => {
-    newActive = result.current.controller.loadSessionChildTree('workspace', '/workspace', 'parent');
+    newActive = result.current.controller.loadSessionChildTreesForSessions(['parent'], '/workspace');
     newQueue = result.current.controller.refreshSessionChildTreesAtBoundary('parent', 'parent_changed');
   });
   await act(async () => { oldChild.resolve({ parent: [] }); await Promise.all([oldActive, oldQueue]); });
@@ -1627,6 +1629,7 @@ test("child notifications refresh only the loaded parent with the matching backe
   const source = childNotificationManager();
   const fetchChildren = jest.fn(async () => ({}));
   const { result } = await renderHook(() => useTestController({
+    watchedParents: [{ parents: ["same"], directory: "/workspace" }, { parents: ["same"], directory: "/claude" }],
     fetchSessionHistory: jest.fn(), fetchSessionChildrenHistory: fetchChildren, runnerWebSocketManager: source.manager,
     registeredDirectories: [workspaceDirectory, { ...workspaceDirectory, id: "claude-dir", path: "/claude" }],
     initialTrees: {
@@ -1653,6 +1656,7 @@ test("reconnect waits for an older in-flight child request then fetches the new 
   const old = new Promise<Record<string, LlmSessionHistoryEntry[]>>((_resolve, reject) => { rejectOld = reject; });
   const fetchChildren = jest.fn().mockImplementationOnce(() => old).mockResolvedValue({ parent: [session("", "fresh-child")] });
   const { result } = await renderHook(() => useTestController({
+    watchedParents: [{ parents: ["parent"], directory: "/workspace" }],
     fetchSessionHistory: jest.fn(), fetchSessionChildrenHistory: fetchChildren, runnerWebSocketManager: source.manager,
     initialTrees: { workspace: { ...emptyState, loaded: true, entries: [session("", "parent")], childrenByParentId: { parent: { loaded: true, loading: false, error: "", entries: [] } } } },
   }));
@@ -1674,6 +1678,7 @@ test("duplicate child notifications coalesce and retain the latest child snapsho
   const fetchChildren = jest.fn().mockImplementationOnce(() => pending.promise)
     .mockResolvedValue({ parent: [session("", "completed-child")] });
   const { result } = await renderHook(() => useTestController({
+    watchedParents: [{ parents: ["parent"], directory: "/workspace" }],
     fetchSessionHistory: jest.fn(), fetchSessionChildrenHistory: fetchChildren, runnerWebSocketManager: source.manager,
     initialTrees: { workspace: { ...emptyState, loaded: true, entries: [session("", "parent")], childrenByParentId: { parent: { loaded: true, loading: false, error: "", entries: [] } } } },
   }));
@@ -1683,4 +1688,75 @@ test("duplicate child notifications coalesce and retain the latest child snapsho
   await act(async () => { pending.resolve({ parent: [session("", "initial-child")] }); });
   expect(fetchChildren).toHaveBeenCalledTimes(2);
   expect(result.current.directorySessionsById.workspace.childrenByParentId.parent.entries[0].sessionId).toBe("completed-child");
+});
+
+test("ready reconciles only watched detail lists and leaves cached closed lists untouched", async () => {
+  const source = childNotificationManager();
+  const fetchChildren = jest.fn(async (_parents: string[], _directory: string) => ({}));
+  const child = { loaded: true, loading: false, error: "", entries: [] };
+  await renderHook(() => useTestController({
+    watchedParents: [{ parents: ["parent-0"], directory: "/workspace" }],
+    fetchSessionHistory: jest.fn(), fetchSessionChildrenHistory: fetchChildren, runnerWebSocketManager: source.manager,
+    registeredDirectories: [workspaceDirectory, { ...workspaceDirectory, id: "other", path: "/other" }],
+    initialTrees: {
+      workspace: { ...emptyState, loaded: true, childrenByParentId: Object.fromEntries(Array.from({ length: 35 }, (_, i) => [`parent-${i}`, child])) },
+      other: { ...emptyState, loaded: true, childrenByParentId: { another: child } },
+    },
+  }));
+  await act(async () => { source.ready(1); });
+  expect(fetchChildren).toHaveBeenCalledTimes(1);
+  expect(fetchChildren.mock.calls[0][0]).toEqual(["parent-0"]);
+  await act(async () => { source.disconnect(); source.ready(2); });
+  expect(fetchChildren).toHaveBeenCalledTimes(2);
+});
+
+test("closed cached detail lists do not refresh on reconnect, reopen is fresh, and closing cancels queued work", async () => {
+  const source = childNotificationManager();
+  const first = deferred<Record<string, LlmSessionHistoryEntry[]>>();
+  const fetchChildren = jest.fn().mockReturnValueOnce(first.promise).mockResolvedValue({ parent: [session("", "fresh")] });
+  const { result } = await renderHook(() => useTestController({
+    fetchSessionHistory: jest.fn(), fetchSessionChildrenHistory: fetchChildren, runnerWebSocketManager: source.manager,
+    initialTrees: { workspace: { ...emptyState, loaded: true, childrenByParentId: { parent: { loaded: true, loading: false, error: "", entries: [] } } } },
+  }));
+  await act(async () => { source.ready(1); });
+  expect(fetchChildren).not.toHaveBeenCalled();
+  let release = () => {};
+  await act(async () => { release = result.current.controller.watchSessionChildTreesForSessions(["parent"], "/workspace"); });
+  expect(fetchChildren).toHaveBeenCalledTimes(1);
+  await act(async () => { source.changed("codex", "parent"); release(); first.resolve({ parent: [] }); });
+  expect(fetchChildren).toHaveBeenCalledTimes(1);
+  await act(async () => { source.disconnect(); source.ready(2); });
+  expect(fetchChildren).toHaveBeenCalledTimes(1);
+  await act(async () => { release = result.current.controller.watchSessionChildTreesForSessions(["parent"], "/workspace"); });
+  expect(fetchChildren).toHaveBeenCalledTimes(2);
+  expect(result.current.directorySessionsById.workspace.childrenByParentId.parent.entries[0].sessionId).toBe("fresh");
+  release();
+});
+
+test("an open child demand survives late registered directories and missing initial tree state", async () => {
+  const source = childNotificationManager();
+  const fetchChildren = jest.fn().mockResolvedValue({ parent: [] });
+  const { result, rerender } = await renderHook(({ directories }: { directories: typeof workspaceDirectory[] }) => useTestController({
+    registeredDirectories: directories, fetchSessionHistory: jest.fn().mockResolvedValue({ entries: [], nextCursor: "", latestSessionId: "" }),
+    fetchSessionChildrenHistory: fetchChildren, runnerWebSocketManager: source.manager,
+    watchedParents: [{ parents: ["parent"], directory: "/workspace" }],
+  }), { initialProps: { directories: [] as typeof workspaceDirectory[] } });
+  await act(async () => { source.ready(1); });
+  expect(fetchChildren).not.toHaveBeenCalled();
+  await rerender({ directories: [workspaceDirectory] });
+  expect(fetchChildren).toHaveBeenCalledTimes(1);
+  expect(result.current.directorySessionsById.workspace.childrenByParentId.parent.loaded).toBe(true);
+});
+
+test("reconciling a directory reloads the open child demand instead of leaving an empty cleared cache", async () => {
+  const fetchChildren = jest.fn().mockResolvedValueOnce({ parent: [session("", "before")] })
+    .mockResolvedValue({ parent: [session("", "after")] });
+  const { result } = await renderHook(() => useTestController({
+    fetchSessionHistory: jest.fn().mockResolvedValue({ entries: [session("", "parent")], nextCursor: "", latestSessionId: "parent" }),
+    fetchSessionChildrenHistory: fetchChildren, watchedParents: [{ parents: ["parent"], directory: "/workspace" }],
+    initialTrees: { workspace: { ...emptyState, loaded: true } },
+  }));
+  await act(async () => { await result.current.controller.reconcileDirectorySessionTree("/workspace"); });
+  expect(fetchChildren).toHaveBeenCalledTimes(2);
+  expect(result.current.directorySessionsById.workspace.childrenByParentId.parent.entries[0].sessionId).toBe("after");
 });

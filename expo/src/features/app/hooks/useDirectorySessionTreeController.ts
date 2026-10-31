@@ -182,6 +182,7 @@ export function useDirectorySessionTreeController({
   const inFlightByKeyRef = useRef(new Map<string, Promise<DirectoryLoadOutcome>>());
   const refreshAfterActiveByKeyRef = useRef(new Map<string, Promise<DirectoryLoadOutcome>>());
   const inFlightChildByKeyRef = useRef(new Map<string, Promise<void>>());
+  const childWatchesRef = useRef(new Map<symbol, { directoryPath: string; parentIds: string[] }>());
   const refreshAfterActiveChildByKeyRef = useRef(new Map<string, Promise<void>>());
   const dirtyChildRefreshKeysRef = useRef(new Set<string>());
   const readOverridesByActiveFetchRef = useRef(new Set<Map<string, string>>());
@@ -522,44 +523,6 @@ export function useDirectorySessionTreeController({
     reason: DirectorySessionSyncReason
   ) => loadFirstPage(directory, "refresh", reason), [loadFirstPage]);
 
-  const reconcileDirectorySessionTree = useCallback((
-    directoryRaw: string,
-    requestedDirectoryRaw?: string
-  ) => {
-    const directoryPaths = new Set([
-      normalizeDirectoryPath(directoryRaw),
-      normalizeDirectoryPath(requestedDirectoryRaw),
-    ].filter(Boolean));
-    const target = registeredDirectoriesRef.current.find((directory) => (
-      directoryPaths.has(normalizeDirectoryPath(directory.path))
-      || directorySessionsByIdRef.current[directory.id]?.entries.some(
-        (entry) => directoryPaths.has(normalizeDirectoryPath(entry.directory))
-      )
-    ));
-    if (!target) {
-      return Promise.resolve<DirectoryLoadOutcome>({
-        status: "skipped",
-        directoryId: "",
-        directoryPath: normalizeDirectoryPath(directoryRaw),
-        reason: "not_registered",
-        hasUsableData: false,
-      });
-    }
-    nextGeneration(target.id);
-    supersededReasonByDirectoryIdRef.current.set(target.id, "newer_request");
-    const currentTrees = directorySessionsByIdRef.current;
-    commitTrees({
-      ...currentTrees,
-      [target.id]: { ...emptyDirectorySessionTreeState, childrenByParentId: {} },
-    });
-    return refreshDirectorySessionTree(target, "read_reconcile");
-  }, [
-    commitTrees,
-    emptyDirectorySessionTreeState,
-    nextGeneration,
-    refreshDirectorySessionTree,
-  ]);
-
   const loadMoreDirectorySessionTree = useCallback(async (
     directoryId: string,
     directoryPathRaw: string
@@ -644,8 +607,8 @@ export function useDirectorySessionTreeController({
       parentSessionIdsRaw.map((value) => String(value || "").trim()).filter(Boolean)
     ));
     const requestScope = scopeRef.current;
-    const current = directorySessionsByIdRef.current[directoryId];
-    if (parentIds.length <= 0 || !current) return Promise.resolve();
+    const current = directorySessionsByIdRef.current[directoryId] || emptyDirectorySessionTreeState;
+    if (parentIds.length <= 0 || registeredDirectoryPathByIdRef.current.get(directoryId) !== directoryPath) return Promise.resolve();
     const joined = parentIds.flatMap((parentId) => {
       const request = inFlightChildByKeyRef.current.get(`${directoryId}\u0000${parentId}`);
       return request ? [request] : [];
@@ -733,13 +696,7 @@ export function useDirectorySessionTreeController({
       inFlightChildByKeyRef.current.set(`${directoryId}\u0000${parentId}`, request);
     }
     return Promise.all([...joined, request]).then(() => undefined);
-  }, [commitTrees]);
-
-  const loadSessionChildTree = useCallback((
-    directoryId: string,
-    directoryPath: string,
-    parentSessionId: string
-  ) => loadSessionChildTrees(directoryId, directoryPath, [parentSessionId]), [loadSessionChildTrees]);
+  }, [commitTrees, emptyDirectorySessionTreeState]);
 
   const loadSessionChildTreesForSessions = useCallback((
     parentSessionIdsRaw: string[],
@@ -761,29 +718,53 @@ export function useDirectorySessionTreeController({
     return loadSessionChildTrees(directory.id, directory.path, parentIds);
   }, [loadSessionChildTrees]);
 
+  const watchedChildTargets = useCallback(() => {
+    const targets = new Map<string, { directoryPath: string; parentIds: Set<string> }>();
+    for (const watch of childWatchesRef.current.values()) {
+      const directory = findDirectoryForSessionTree(registeredDirectoriesRef.current, directorySessionsByIdRef.current,
+        watch.parentIds, watch.directoryPath);
+      if (!directory) continue;
+      const target = targets.get(directory.id) || { directoryPath: directory.path, parentIds: new Set<string>() };
+      watch.parentIds.forEach((id) => target.parentIds.add(id));
+      targets.set(directory.id, target);
+    }
+    return targets;
+  }, []);
+
   const refreshSessionChildTreesAtBoundary = useCallback((
-    sessionIdRaw: string,
+    sessionIdRaw: string | null,
     relationship: "parent_changed" | "child_completed",
     backendId?: string,
   ): Promise<void> => {
     const sessionId = String(sessionIdRaw || "").trim();
-    if (!sessionId) return Promise.resolve();
+    if (sessionIdRaw !== null && !sessionId) return Promise.resolve();
     const requestScope = scopeRef.current;
     const targets: Array<{ directoryId: string; directoryPath: string; parentId: string }> = [];
-    for (const [directoryId, state] of Object.entries(directorySessionsByIdRef.current)) {
-      for (const [parentId, childState] of Object.entries(state.childrenByParentId)) {
-        if (!childState.loaded && !childState.loading) continue;
-        const parents = state.entries.filter((entry) => entry.sessionId === parentId);
+    for (const [directoryId, { directoryPath, parentIds }] of watchedChildTargets()) {
+      const state = directorySessionsByIdRef.current[directoryId];
+      for (const parentId of parentIds) {
+        const childState = state?.childrenByParentId[parentId];
+        const parents = state?.entries.filter((entry) => entry.sessionId === parentId) || [];
         if (backendId && parents.length > 0 && !parents.some((entry) => entry.backendId === backendId)) continue;
         const matches = relationship === "parent_changed"
-          ? parentId === sessionId
-          : childState.entries.some((entry) => entry.sessionId === sessionId);
-        if (!matches) continue;
-        const directoryPath = registeredDirectoryPathByIdRef.current.get(directoryId);
-        if (directoryPath) targets.push({ directoryId, directoryPath, parentId });
+          ? sessionIdRaw === null || parentId === sessionId
+          : childState?.entries.some((entry) => entry.sessionId === sessionId);
+        if (matches) targets.push({ directoryId, directoryPath, parentId });
       }
     }
-    return Promise.all(targets.map(({ directoryId, directoryPath, parentId }) => {
+    const idleParentsByDirectory = new Map<string, { path: string; parents: string[] }>();
+    const pending = targets.filter(({ directoryId, directoryPath, parentId }) => {
+      const key = `${directoryId}\u0000${parentId}`;
+      if (inFlightChildByKeyRef.current.has(key) || refreshAfterActiveChildByKeyRef.current.has(key)) return true;
+      const group = idleParentsByDirectory.get(directoryId) || { path: directoryPath, parents: [] };
+      group.parents.push(parentId);
+      idleParentsByDirectory.set(directoryId, group);
+      return false;
+    });
+    const requests = Array.from(idleParentsByDirectory, ([directoryId, group]) => (
+      loadSessionChildTrees(directoryId, group.path, group.parents.sort())
+    ));
+    return Promise.all([...requests, ...pending.map(({ directoryId, directoryPath, parentId }) => {
       const key = `${directoryId}\u0000${parentId}`;
       const queued = refreshAfterActiveChildByKeyRef.current.get(key);
       if (queued) {
@@ -797,6 +778,7 @@ export function useDirectorySessionTreeController({
       refreshAfterActive = (async () => {
         await active;
         while (scopeRef.current === requestScope && dirtyChildRefreshKeysRef.current.delete(key)) {
+          if (!watchedChildTargets().get(directoryId)?.parentIds.has(parentId)) break;
           await loadSessionChildTrees(directoryId, directoryPath, [parentId]);
         }
       })().finally(() => {
@@ -807,8 +789,68 @@ export function useDirectorySessionTreeController({
       });
       refreshAfterActiveChildByKeyRef.current.set(key, refreshAfterActive);
       return refreshAfterActive;
-    })).then(() => undefined);
-  }, [loadSessionChildTrees]);
+    })]).then(() => undefined);
+  }, [loadSessionChildTrees, watchedChildTargets]);
+
+  const watchSessionChildTreesForSessions = useCallback((parentIdsRaw: string[], directoryPath: string) => {
+    const parentIds = [...new Set(parentIdsRaw.map((id) => String(id || "").trim()).filter(Boolean))];
+    if (!parentIds.length) return () => {};
+    const token = Symbol();
+    childWatchesRef.current.set(token, { directoryPath: normalizeDirectoryPath(directoryPath), parentIds });
+    const directory = findDirectoryForSessionTree(registeredDirectoriesRef.current, directorySessionsByIdRef.current,
+      parentIds, normalizeDirectoryPath(directoryPath));
+    if (directory && bootstrapReadyRef.current) {
+      if (parentIds.some((id) => inFlightChildByKeyRef.current.has(`${directory.id}\u0000${id}`))) {
+        void refreshSessionChildTreesAtBoundary(null, "parent_changed");
+      } else void loadSessionChildTrees(directory.id, directory.path, parentIds);
+    }
+    return () => { childWatchesRef.current.delete(token); };
+  }, [loadSessionChildTrees, refreshSessionChildTreesAtBoundary]);
+
+  const reconcileDirectorySessionTree = useCallback((
+    directoryRaw: string,
+    requestedDirectoryRaw?: string
+  ) => {
+    const directoryPaths = new Set([
+      normalizeDirectoryPath(directoryRaw),
+      normalizeDirectoryPath(requestedDirectoryRaw),
+    ].filter(Boolean));
+    const target = registeredDirectoriesRef.current.find((directory) => (
+      directoryPaths.has(normalizeDirectoryPath(directory.path))
+      || directorySessionsByIdRef.current[directory.id]?.entries.some(
+        (entry) => directoryPaths.has(normalizeDirectoryPath(entry.directory))
+      )
+    ));
+    if (!target) {
+      return Promise.resolve<DirectoryLoadOutcome>({
+        status: "skipped",
+        directoryId: "",
+        directoryPath: normalizeDirectoryPath(directoryRaw),
+        reason: "not_registered",
+        hasUsableData: false,
+      });
+    }
+    const requestScope = scopeRef.current;
+    nextGeneration(target.id);
+    supersededReasonByDirectoryIdRef.current.set(target.id, "newer_request");
+    const currentTrees = directorySessionsByIdRef.current;
+    commitTrees({
+      ...currentTrees,
+      [target.id]: { ...emptyDirectorySessionTreeState, childrenByParentId: {} },
+    });
+    return refreshDirectorySessionTree(target, "read_reconcile").then(async (outcome) => {
+      if (scopeRef.current === requestScope && bootstrapReadyRef.current) {
+        await refreshSessionChildTreesAtBoundary(null, "parent_changed");
+      }
+      return outcome;
+    });
+  }, [
+    commitTrees,
+    emptyDirectorySessionTreeState,
+    nextGeneration,
+    refreshDirectorySessionTree,
+    refreshSessionChildTreesAtBoundary,
+  ]);
 
   useEffect(() => {
     if (!runnerWebSocketManager) return;
@@ -816,21 +858,6 @@ export function useDirectorySessionTreeController({
       if (bootstrapReadyRef.current) void refreshSessionChildTreesAtBoundary(sessionId, relationship, backendId);
     });
   }, [runnerWebSocketManager, refreshSessionChildTreesAtBoundary]);
-
-  const lastChildrenReadyRef = useRef("");
-  useEffect(() => {
-    const snapshot = runnerWebSocketManager?.getSnapshot();
-    if (!canSync || !snapshot || snapshot.connectionState !== "ready") return;
-    const ready = JSON.stringify([connectionScope, snapshot.generation, snapshot.connectionId, snapshot.url]);
-    if (lastChildrenReadyRef.current === ready) return;
-    lastChildrenReadyRef.current = ready;
-    // Child notifications are transient. Reconcile loaded lists once after a
-    // reconnect, including external CLI changes made while no client listened.
-    const parents = new Set(Object.values(directorySessionsByIdRef.current).flatMap((state) => (
-      Object.entries(state.childrenByParentId).filter(([, child]) => child.loaded || child.loading).map(([parent]) => parent)
-    )));
-    for (const parent of parents) void refreshSessionChildTreesAtBoundary(parent, "parent_changed");
-  }, [canSync, connection, connectionScope, refreshSessionChildTreesAtBoundary, runnerWebSocketManager]);
 
   const runSyncCycle = useCallback(async (intent: RegisteredSyncIntent) => {
     const cycleId = ++nextCycleIdRef.current;
@@ -1096,6 +1123,13 @@ export function useDirectorySessionTreeController({
     void enqueueRegisteredSyncRef.current("refresh", "auth_recovery");
   }, [runnerWebSocketManager, connectionScope, commitTrees, nextGeneration]);
 
+  useEffect(() => {
+    if (!canSync) return;
+    // Watches are raw demand intents; late settings/directories are resolved
+    // here without making child-cache commits trigger another network fetch.
+    void refreshSessionChildTreesAtBoundary(null, "parent_changed");
+  }, [canSync, connection, connectionScope, initialTargets.key, refreshSessionChildTreesAtBoundary, runnerWebSocketManager]);
+
   const toggleDirectoryExpanded = useCallback((directoryId: string) => {
     setExpandedDirectoryIds((current) => current.includes(directoryId)
       ? current.filter((id) => id !== directoryId)
@@ -1109,8 +1143,8 @@ export function useDirectorySessionTreeController({
     applyDirectoryLastReadAtToDirectoryTrees,
     applySessionLastReadAtByIdToDirectoryTrees,
     loadMoreDirectorySessionTree,
-    loadSessionChildTree,
     loadSessionChildTreesForSessions,
+    watchSessionChildTreesForSessions,
     refreshSessionChildTreesAtBoundary,
     prepareDirectorySessionTargetChange,
     reconcileDirectorySessionTree,

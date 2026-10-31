@@ -508,3 +508,19 @@ test("WS advertises bounded session batching and forwards the authenticated subj
   assert.equal(sent[1].op, 'sessions.list.batch.result');
   assert.equal(sent[1].requestId, 'batch');
 });
+
+test("child count RPC advertises its bound and forwards authenticated ownership", async () => {
+  const sent = [], calls = [];
+  const connection = createAgentWsConnection({ ws: {}, subjectId: "owner", sendEnvelope: (_ws, message) => sent.push(message),
+    service: { getStatuses: async () => [], countSessionChildren: async (options, context) => { calls.push({ options, context }); return { counts: [] }; } },
+  });
+  connection.handleMessage({ channel: "agent", op: "agent.hello" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(sent[0].payload.operations.includes("sessions.children.count"));
+  assert.equal(sent[0].payload.sessionChildCounts.maxParents, 512);
+  const payload = { parentSessionRefs: [{ backendId: "codex", nativeSessionId: "parent" }] };
+  connection.handleMessage({ channel: "agent", op: "sessions.children.count", requestId: "count", payload });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls, [{ options: payload, context: { subjectId: "owner" } }]);
+  assert.equal(sent[1].op, "sessions.children.count.result");
+});

@@ -340,6 +340,7 @@ export function ChatScreen({
     saveSessionNote,
     formatSessionUpdatedAt,
     loadSessionChildren,
+    watchSessionChildren,
     openSessionHistoryEntry,
     markSessionRead,
     markSessionUnread,
@@ -2821,7 +2822,7 @@ export function ChatScreen({
                     <Text style={styles.chatDirectoryRenameSecondaryButtonText}>戻る</Text>
                   </TouchableOpacity>
                 </View>
-              ) : directoryMenuMode === "subagents" ? (
+              ) : directoryMenuMode === "subagents" && directoryMenuOpen && !approvalDialogPending ? (
                 <ChatSessionSubagentList
                   selectedSessionId={selectedSessionIdForView}
                   selectedDirectoryPath={selectedDirectoryPathForView}
@@ -2830,6 +2831,7 @@ export function ChatScreen({
                   sessionTitleOverridesById={sessionTitleOverridesById}
                   formatSessionUpdatedAt={formatSessionUpdatedAt}
                   loadSessionChildren={loadSessionChildren}
+                  watchSessionChildren={watchSessionChildren}
                   openSessionHistoryEntry={openSessionHistoryEntryForView}
                   onCloseMenu={() => {
                     setDirectoryMenuMode("actions");

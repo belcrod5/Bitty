@@ -904,6 +904,51 @@ export async function listAgentSessions(manager: RunnerWebSocketManager, options
   return object(response.payload);
 }
 
+export type AgentSessionChildCount = {
+  sessionRef: { backendId: string; nativeSessionId: string };
+  totalCount: number;
+  runningCount: number;
+};
+
+export async function getAgentSessionChildCounts(manager: RunnerWebSocketManager,
+  parentSessionRefs: AgentSessionChildCount["sessionRef"][],
+): Promise<AgentSessionChildCount[] | null> {
+  const initial = manager.getSnapshot();
+  const assertCurrent = () => {
+    const current = manager.getSnapshot();
+    if (current.connectionState !== "ready" || current.generation !== initial.generation
+      || current.connectionId !== initial.connectionId || current.url !== initial.url) throw new Error("Child count connection changed");
+  };
+  assertCurrent();
+  const hello = await getAgentHello(manager);
+  assertCurrent();
+  if (!Array.isArray(hello?.operations) || !hello.operations.includes("sessions.children.count")) return null;
+  const advertised = Number(object(hello.sessionChildCounts).maxParents);
+  const maxParents = Number.isInteger(advertised) && advertised > 0 ? Math.min(advertised, 512) : 512;
+  const counts: AgentSessionChildCount[] = [];
+  for (let start = 0; start < parentSessionRefs.length; start += maxParents) {
+    const parents = parentSessionRefs.slice(start, start + maxParents);
+    const response = await manager.request({ channel: "agent", op: "sessions.children.count", payload: { parentSessionRefs: parents } }, { timeoutMs: 30_000 });
+    assertCurrent();
+    if (response.op === "error") throw new Error(String(object(response.payload).message || "Child counts failed"));
+    const payload = object(response.payload);
+    if (response.op !== "sessions.children.count.result" || !Array.isArray(payload.counts)) throw new Error("Invalid child counts response");
+    const expected = new Set(parents.map((ref) => JSON.stringify([ref.backendId, ref.nativeSessionId])));
+    for (const raw of payload.counts) {
+      const item = object(raw), ref = object(item.sessionRef);
+      const key = JSON.stringify([ref.backendId, ref.nativeSessionId]);
+      if (!expected.delete(key) || !Number.isInteger(item.totalCount) || !Number.isInteger(item.runningCount)
+        || Number(item.runningCount) < 0 || Number(item.runningCount) > Number(item.totalCount)) throw new Error("Invalid child counts entry");
+      counts.push(item as AgentSessionChildCount);
+    }
+    const failed = new Set((Array.isArray(payload.errors) ? payload.errors : []).map((error) => object(error).backendId));
+    if (parents.some((ref) => expected.has(JSON.stringify([ref.backendId, ref.nativeSessionId])) && !failed.has(ref.backendId))) {
+      throw new Error("Child counts response omitted a parent");
+    }
+  }
+  return counts;
+}
+
 export type AgentSessionListGroup = { cwd: string; payload?: Record<string, unknown>; error?: Error };
 
 // One invocation is one sync cycle; no readiness or capability cache survives it.

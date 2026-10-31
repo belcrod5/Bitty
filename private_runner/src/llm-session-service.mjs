@@ -136,6 +136,8 @@ export function createLlmSessionService(deps = {}) {
         // each child query from the current index; keyset continuation pages
         // reuse that refresh instead of rescanning the whole catalog per page.
         ...(opts?.parentSessionRefs?.length > 0 && !cursorRaw ? { forceRefresh: true } : {}),
+        ...(opts?.parentSessionRefs?.length > 0 ? { parentSessionIds: opts.parentSessionRefs
+          .filter((ref) => ref.backendId === "codex").map((ref) => ref.nativeSessionId) } : {}),
         ...(opts?.includeSubagents === false ? { includeSubagents: false } : {}),
       }));
     }

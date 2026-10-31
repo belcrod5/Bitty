@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   ActivityIndicator,
   InputAccessoryView,
@@ -68,7 +68,7 @@ export type AppDrawerProps = {
   onOpenDirectoryExplorer: () => void;
   onToggleDirectoryExpanded: (directoryId: string, directoryPath: string) => void;
   onLoadMoreSessions: (directoryId: string, directoryPath: string) => void;
-  onLoadSessionChildren: (directoryId: string, directoryPath: string, parentSessionId: string) => void;
+  watchSessionChildren: (sessionIds: string[], directory: string) => () => void;
   onStartNewSessionInDirectory: (directoryPath: string) => void;
   onSelectSessionHistoryEntry: (
     backendId: string,
@@ -127,7 +127,7 @@ export const AppDrawer = memo(function AppDrawer({
   onOpenDirectoryExplorer,
   onToggleDirectoryExpanded,
   onLoadMoreSessions,
-  onLoadSessionChildren,
+  watchSessionChildren,
   onStartNewSessionInDirectory,
   onSelectSessionHistoryEntry,
   onMarkDirectorySessionsRead,
@@ -163,22 +163,13 @@ export const AppDrawer = memo(function AppDrawer({
     if (!reasoningEffort) return "-";
     return reasoningEffort;
   };
-  const toggleSessionChildren = useCallback((
-    directoryId: string,
-    directoryPath: string,
-    sessionId: string,
-    childState?: SessionChildTreeState
-  ) => {
-    const expanding = !expandedSessionSet.has(sessionId);
+  const toggleSessionChildren = useCallback((sessionId: string) => {
     setExpandedSessionIds((prev) => (
       prev.includes(sessionId)
         ? prev.filter((id) => id !== sessionId)
         : [...prev, sessionId]
     ));
-    if (expanding && !childState?.loading) {
-      onLoadSessionChildren(directoryId, directoryPath, sessionId);
-    }
-  }, [expandedSessionSet, onLoadSessionChildren]);
+  }, []);
   const directoryViews = useMemo(() => registeredDirectories.flatMap((directory) => {
     const expanded = expandedSet.has(directory.id);
     const selectedDirectory = selectedDirectoryPath === directory.path;
@@ -221,6 +212,25 @@ export const AppDrawer = memo(function AppDrawer({
     selectedDirectoryPath,
     unreadOnly,
   ]);
+
+  const childWatchTargets = JSON.stringify(drawerOpen ? directoryViews.flatMap(({ directory, sessionState, visibleSessionEntries, shouldShowSessionBlock }) => {
+    if (!shouldShowSessionBlock) return [];
+    const parents = new Set<string>();
+    const visit = (entries: typeof visibleSessionEntries) => {
+      for (const entry of entries) {
+        if (!expandedSessionSet.has(entry.sessionId) || parents.has(entry.sessionId)) continue;
+        parents.add(entry.sessionId);
+        visit(sessionState?.childrenByParentId[entry.sessionId]?.entries || []);
+      }
+    };
+    visit(visibleSessionEntries);
+    return parents.size ? [{ directory: directory.path, parents: [...parents].sort() }] : [];
+  }) : []);
+  useEffect(() => {
+    const releases = (JSON.parse(childWatchTargets) as Array<{ directory: string; parents: string[] }>)
+      .map((target) => watchSessionChildren(target.parents, target.directory));
+    return () => releases.forEach((release) => release());
+  }, [childWatchTargets, watchSessionChildren]);
 
   const renderSessionEntry = (
     directory: RegisteredDirectoryEntry,
@@ -283,7 +293,7 @@ export const AppDrawer = memo(function AppDrawer({
               disabled={llmSessionRestoreLoading}
               onPress={(event) => {
                 event.stopPropagation?.();
-                toggleSessionChildren(directory.id, directory.path, session.sessionId, childState);
+                toggleSessionChildren(session.sessionId);
               }}
               accessibilityRole="button"
               accessibilityLabel={childrenExpanded ? "サブエージェントを閉じる" : "サブエージェントを開く"}
