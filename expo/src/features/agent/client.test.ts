@@ -1,4 +1,4 @@
-import { getAgentSessionChildCounts, subscribeSessionChildrenChanges, listAgentSessions, listAgentSessionsBatch, startAgentSessionObserverWithRawFallback, startAgentTurnWithRawFallback } from "./client";
+import { getAgentBackendStatuses, readAgentHistory, getAgentSessionChildCounts, subscribeSessionChildrenChanges, listAgentSessions, listAgentSessionsBatch, startAgentSessionObserverWithRawFallback, startAgentTurnWithRawFallback } from "./client";
 import type { RunnerWebSocketManager } from "../runnerWs/RunnerWebSocketManager";
 
 test("child listing sends backend-qualified parents without changing an ordinary listing", async () => {
@@ -1428,4 +1428,69 @@ test("count pagination stops before another chunk when its connection changes", 
     { backendId: "codex", nativeSessionId: "one" }, { backendId: "codex", nativeSessionId: "two" },
   ])).rejects.toThrow("connection changed");
   expect(request.mock.calls.map(([message]) => message.op)).toEqual(["agent.hello", "sessions.children.count"]);
+});
+
+
+function conditionalHelloFixture() {
+  let snapshot = { url: "ws://runner", generation: 1, connectionOptionsGeneration: 1, connectionId: "one" };
+  let etag = "metadata-one", ready = true, backendId = "codex";
+  const request = jest.fn(async (message: { op: string; payload?: any }) => {
+    if (message.op === "history.read") return { channel: "agent", op: "history.read.result", payload: { items: [] } };
+    const dynamic = { backendId, readiness: { ready }, available: ready, auth: { state: "unknown" } };
+    return { channel: "agent", op: "agent.ready", payload: message.payload?.ifNoneMatch === etag
+      ? { protocolVersion: 2, notModified: true, etag, backends: [dynamic] }
+      : { protocolVersion: 2, etag, operations: ["history.read"], backends: [{ ...dynamic, capabilities: { model: { catalog: [{ modelId: etag }] } } }] } };
+  });
+  return { manager: { request, getSnapshot: () => snapshot } as unknown as RunnerWebSocketManager, request,
+    changeMetadata: () => { etag = "metadata-two"; }, setReady: (value: boolean) => { ready = value; },
+    replaceBackend: () => { backendId = "claude"; etag = "metadata-claude"; },
+    replaceConnection: (kind: string) => { snapshot = { ...snapshot, ...(kind === "url" ? { url: "ws://other" }
+      : kind === "token" ? { connectionOptionsGeneration: 2 } : { generation: 2, connectionId: "two" }) }; } };
+}
+
+test("hello coalesces concurrent callers; later checks send validators while retaining current dynamic readiness", async () => {
+  const f = conditionalHelloFixture();
+  const [first, second] = await Promise.all([getAgentBackendStatuses(f.manager), getAgentBackendStatuses(f.manager)]);
+  expect(first).toBe(second); expect(f.request).toHaveBeenCalledTimes(1);
+  f.setReady(false);
+  expect((await getAgentBackendStatuses(f.manager))[0]).toMatchObject({ readiness: { ready: false }, available: false,
+    capabilities: { model: { catalog: [{ modelId: "metadata-one" }] } } });
+  expect(f.request.mock.calls[1][0].payload).toEqual({ ifNoneMatch: "metadata-one" });
+  f.setReady(true);
+  expect((await getAgentBackendStatuses(f.manager))[0].readiness?.ready).toBe(true);
+  f.changeMetadata();
+  expect((await getAgentBackendStatuses(f.manager))[0].capabilities?.model?.catalog?.[0].modelId).toBe("metadata-two");
+  f.replaceBackend();
+  expect((await getAgentBackendStatuses(f.manager)).map((entry) => entry.backendId)).toEqual(["claude"]);
+});
+
+test("staggered history reads revalidate a lightweight hello rather than retaining readiness", async () => {
+  const f = conditionalHelloFixture();
+  await readAgentHistory(f.manager, { backendId: "codex", nativeSessionId: "one" });
+  await readAgentHistory(f.manager, { backendId: "codex", nativeSessionId: "two" });
+  expect(f.request.mock.calls.map(([message]) => message.op)).toEqual(["agent.hello", "history.read", "agent.hello", "history.read"]);
+  expect(f.request.mock.calls[2][0].payload).toEqual({ ifNoneMatch: "metadata-one" });
+  f.setReady(false);
+  expect(await readAgentHistory(f.manager, { backendId: "codex", nativeSessionId: "three" })).toBeNull();
+});
+
+test.each(["url", "token", "reconnect"])("hello discards both cached and pending old-source data after %s", async (kind) => {
+  const f = conditionalHelloFixture(); await getAgentBackendStatuses(f.manager);
+  let resolve!: (value: any) => void;
+  f.request.mockReturnValueOnce(new Promise((done) => { resolve = done; }));
+  const pending = getAgentBackendStatuses(f.manager); const rejected = expect(pending).rejects.toThrow("connection changed");
+  f.replaceConnection(kind);
+  expect((await getAgentBackendStatuses(f.manager))[0].readiness?.ready).toBe(true);
+  expect(f.request.mock.calls.at(-1)?.[0].payload).toBeUndefined();
+  resolve({ channel: "agent", op: "agent.ready", payload: { protocolVersion: 2, etag: "old", backends: [] } });
+  await rejected;
+});
+
+test("failed hello retries and malformed conditional payload requests full metadata once", async () => {
+  const f = conditionalHelloFixture(); await getAgentBackendStatuses(f.manager);
+  f.request.mockRejectedValueOnce(new Error("offline"));
+  await expect(getAgentBackendStatuses(f.manager)).rejects.toThrow("offline");
+  f.request.mockResolvedValueOnce({ channel: "agent", op: "agent.ready", payload: { protocolVersion: 2, etag: "metadata-one", notModified: true, backends: [] } } as never);
+  expect((await getAgentBackendStatuses(f.manager))[0].backendId).toBe("codex");
+  expect(f.request.mock.calls.at(-1)?.[0].payload).toBeUndefined();
 });

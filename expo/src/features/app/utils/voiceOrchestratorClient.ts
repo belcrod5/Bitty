@@ -1,14 +1,18 @@
+import { readRunnerResponseCache, writeRunnerResponseCache } from "./runnerResponseCache";
 import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import type { VoiceOrchestrator } from "../components/VoiceOrchestratorIcon";
 
 export type VoiceOrchestratorList = { orchestrators: VoiceOrchestrator[]; selectedId: string };
-type Manager = Pick<RunnerWebSocketManager, "request" | "subscribe" | "getSnapshot">;
+type Manager = Pick<RunnerWebSocketManager, "request" | "subscribe" | "getSnapshot"> & Partial<Pick<RunnerWebSocketManager, "getResponseCacheKey">>;
 type State = {
   scope: string;
   revision: number;
   requestNumber: number;
   list: VoiceOrchestratorList | null;
   etag: string;
+  verified?: boolean;
+  cacheKey?: Promise<string | null>;
+  restore?: Promise<void>;
   pending?: { generation: number; etag: string; promise: Promise<VoiceOrchestratorList> };
   listeners: Set<(list: VoiceOrchestratorList, fromMutation: boolean) => void>;
   unsubscribe: () => void;
@@ -29,9 +33,12 @@ function stateFor(manager: Manager) {
     state.scope = scope;
     state.revision += 1;
     state.list = null;
+    state.verified = false;
     state.etag = "";
     state.pending = undefined;
+    state.restore = undefined;
   }
+  state.cacheKey = manager.getResponseCacheKey?.();
   const current = state;
   // Keep metadata synchronized while screens unmount, but replace the source on
   // credential changes so an old connection cannot populate the new scope.
@@ -81,8 +88,11 @@ function apply(state: State, payload: unknown, fromMutation = false): VoiceOrche
     })) };
   }
   state.list = list;
+  state.verified = true;
   state.etag = typeof value.etag === "string" ? value.etag : "";
   state.revision += 1;
+  if (state.cacheKey && value.notModified !== true) void writeRunnerResponseCache("voice-orchestrators", state.cacheKey,
+    state.etag ? { etag: state.etag, body: list } : null);
   for (const listener of state.listeners) {
     try { listener(list, fromMutation); } catch { /* one observer cannot block the remaining observers */ }
   }
@@ -96,14 +106,34 @@ export function getVoiceOrchestrators(manager: Manager): Promise<VoiceOrchestrat
   if (state.pending && state.pending.generation === generation) return state.pending.promise;
   const scope = state.scope;
   const requestNumber = ++state.requestNumber;
-  const etag = state.etag;
+  let etag = state.etag;
   const revision = state.revision;
   const task = (async () => {
+    if (state.cacheKey && !state.restore) {
+      const cacheKey = state.cacheKey;
+      state.restore = (async () => {
+        const saved = await readRunnerResponseCache("voice-orchestrators", await cacheKey);
+        if (!saved || stateFor(manager).scope !== scope || state.revision !== revision) return;
+        try {
+          const temporary: State = { ...state, cacheKey: undefined, listeners: new Set() };
+          apply(temporary, { ...(saved.body as object), etag: saved.etag });
+          if (!temporary.list?.orchestrators.every((item) => typeof item.icon === "string"
+            && Number.isSafeInteger(item.unreadCount) && Number(item.unreadCount) >= 0
+            && Number.isSafeInteger(item.learningUnreadCount) && Number(item.learningUnreadCount) >= 0)) return;
+          state.list = temporary.list;
+          state.etag = temporary.etag;
+        } catch { /* A missing or invalid pair requires the full response. */ }
+      })();
+    }
+    if (state.restore) await state.restore;
+    if (stateFor(manager).scope !== scope || manager.getSnapshot().generation !== generation) throw failure();
+    etag = state.etag;
+    if (state.pending?.generation === generation) state.pending.etag = etag;
     const response = await manager.request({ channel: "agent", op: "voice.orchestrators.list",
       payload: { updates: "conditional", ...(etag ? { ifNoneMatch: etag } : {}) } });
     if (stateFor(manager).scope !== scope || manager.getSnapshot().generation !== generation) throw failure();
     if (state.requestNumber !== requestNumber || revision !== state.revision) {
-      if (state.list) return state.list;
+      if (state.list && state.verified) return state.list;
       throw failure();
     }
     if (response.op !== "voice.orchestrators.list.result") throw failure();
@@ -117,7 +147,7 @@ export function getVoiceOrchestrators(manager: Manager): Promise<VoiceOrchestrat
 export function subscribeVoiceOrchestrators(manager: Manager, listener: (list: VoiceOrchestratorList, fromMutation: boolean) => void) {
   const state = stateFor(manager);
   state.listeners.add(listener);
-  if (state.list) listener(state.list, false);
+  if (state.list && state.verified) listener(state.list, false);
   return () => { state.listeners.delete(listener); };
 }
 

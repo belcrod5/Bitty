@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   AGENT_EVENT_TYPES,
   AGENT_PROTOCOL_VERSION,
@@ -242,11 +243,8 @@ export function createAgentWsConnection({ service, ws, sendEnvelope, subjectId, 
   function handleMessage(message) {
     if (message.channel !== "agent") return false;
     if (message.op === "agent.hello") {
-      void service.getStatuses().then((backends) => sendEnvelope(ws, {
-        channel: "agent",
-        op: "agent.ready",
-        requestId: message.requestId || "",
-        payload: {
+      void service.getStatuses().then((backends) => {
+        const metadata = {
           protocolVersion: AGENT_PROTOCOL_VERSION,
           supportedProtocolVersions: [AGENT_PROTOCOL_VERSION],
           sessionChildCounts: { maxParents: SESSION_CHILD_COUNTS_MAX_PARENTS },
@@ -257,9 +255,16 @@ export function createAgentWsConnection({ service, ws, sendEnvelope, subjectId, 
             "workspaces.list", "workspace.prepare", "workspace.confirm", "workspace.revoke",
           ],
           events: Array.from(AGENT_EVENT_TYPES),
-          backends,
-        },
-      })).catch((error) => sendError(message, error));
+          backends: backends.map(({ readiness, available, auth, ...metadata }) => metadata),
+        };
+        const etag = createHash("sha256").update(JSON.stringify(metadata)).digest("hex");
+        const dynamic = backends.map(({ backendId, readiness, available, auth }) => ({ backendId, readiness, available, auth }));
+        const conditional = payloadObject(message).ifNoneMatch === etag;
+        sendEnvelope(ws, { channel: "agent", op: "agent.ready", requestId: message.requestId || "",
+          payload: conditional ? { protocolVersion: AGENT_PROTOCOL_VERSION, etag, notModified: true, backends: dynamic }
+            : { ...metadata, etag, backends },
+        });
+      }).catch((error) => sendError(message, error));
       return true;
     }
     if (message.op === "turn.start") {

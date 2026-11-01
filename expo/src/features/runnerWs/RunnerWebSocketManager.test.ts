@@ -1618,6 +1618,7 @@ test.each(["url", "credentials"])("a source %s change between response delivery 
   first.message({ channel: "agent", op: "voice.orchestrators.update.result", requestId: outbound.requestId,
     payload: { etag: "old", selectedId: "main", orchestrators: [{ id: "main", name: "Edited", icon: "old-mutation" }] } });
   await afterSwitch;
+  for (let i = 0; i < 100 && second.sent.length === 0; i++) await Promise.resolve();
   const freshRequest = JSON.parse(second.sent.at(-1)!);
   second.message({ channel: "agent", op: "voice.orchestrators.list.result", requestId: freshRequest.requestId,
     payload: { etag: "new", selectedId: "main", orchestrators: [{ id: "main", name: "Fresh", icon: "fresh-source" }] } });

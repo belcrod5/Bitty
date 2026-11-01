@@ -6098,6 +6098,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
         bootstrapReady={settingsLoaded}
         url={codexWsUrl}
         token={runnerToken}
+        localRunnerUrl={localRunnerUrl}
         cloudflareRunnerUrl={effectiveCloudflareRunnerUrl}
         cloudflareAccessClientId={cloudflareAccessClientId}
         cloudflareAccessClientSecret={cloudflareAccessClientSecret}
