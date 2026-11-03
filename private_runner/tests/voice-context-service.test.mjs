@@ -4717,7 +4717,7 @@ test("existing learning parents receive editing tools once outstanding child wor
   const { rootDir, service, conversation, codex } = await fixture(t, { learningContext });
   await complete(service, conversation, "first");
   const file = path.join(rootDir, "active.json"); const active = JSON.parse(await fs.readFile(file, "utf8"));
-  delete active.nativeLearningToolsVersion; active.nativeLearningEnabled = true;
+  active.nativeLearningToolsVersion = 1;
   await fs.writeFile(file, JSON.stringify(active));
   const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient, learningContext, hasOutstandingActivity: () => busy });
   busy = true;
@@ -4727,7 +4727,7 @@ test("existing learning parents receive editing tools once outstanding child wor
   busy = false;
   assert.equal((await complete(restarted, conversation, "Edit learning")).result.sessionSwitched, true);
   const saved = JSON.parse(await fs.readFile(file, "utf8"));
-  assert.equal(saved.nativeLearningToolsVersion, 1); assert.equal(saved.nativeLearningEnabled, undefined);
+  assert.equal(saved.nativeLearningToolsVersion, 2); assert.equal(saved.nativeLearningEnabled, undefined);
   const installed = codex.calls.filter(({ method, params }) => method === "thread/start" && !params.ephemeral).at(-1).params.dynamicTools;
   assert.deepEqual(installed.find(({ name }) => name === "orchestrator_learning").tools.slice(-2).map(({ name }) => name), ["read_items", "update_item"]);
   const current = createVoiceContextService({ rootDir, createClient: codex.createClient, learningContext });
@@ -4745,10 +4745,10 @@ test("editing tool migration version survives a lost native turn start response"
   await fs.writeFile(file, JSON.stringify(active));
   const legacy = createVoiceContextService({ rootDir, createClient: codex.createClient, learningContext });
   assert.equal((await complete(legacy, conversation, "Edit learning")).result.status, "unknown");
-  assert.equal(JSON.parse(await fs.readFile(file, "utf8")).pendingDispatch.learningToolsVersion, 1);
+  assert.equal(JSON.parse(await fs.readFile(file, "utf8")).pendingDispatch.learningToolsVersion, 2);
   const recovered = createVoiceContextService({ rootDir, createClient: codex.createClient, learningContext });
   await recovered.open();
-  assert.equal(JSON.parse(await fs.readFile(file, "utf8")).nativeLearningToolsVersion, 1);
+  assert.equal(JSON.parse(await fs.readFile(file, "utf8")).nativeLearningToolsVersion, 2);
   assert.equal((await complete(recovered, conversation, "Continue")).result.sessionSwitched, undefined);
   assert.equal(codex.calls.filter(({ method, params }) => method === "thread/start" && !params.ephemeral).length, 2);
 });
@@ -4823,7 +4823,7 @@ for (const answer of ["変更を適用", "見送る", "", "missing consumer"]) {
           const confirmed = await confirm({ id, name: snapshot.content, version: 2, newVersion: 3,
             changes: [{ field: "content", before: snapshot.content, after: "Prompt reports" }] });
           if (!confirmed) throw new Error("Learning was not changed; read the item again");
-          writes++; return { changed: true, item: { ...snapshot, content: "Prompt reports", version: 3 } };
+          writes++; return { changed: true, contextRevision: 2, item: { ...snapshot, content: "Prompt reports", version: 3 } };
         } } });
     const hooks = answer === "missing consumer" ? {} : { onUserInput: async (request) => {
       questions.push(request);
@@ -4840,22 +4840,19 @@ for (const answer of ["変更を適用", "見送る", "", "missing consumer"]) {
       assert.equal(questions[0].params.questions[0].isOther, false);
     }
     const exposed = JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8")).learningSnapshot;
-    assert.deepEqual(exposed.items, [{ id, version: 2 }], "management reads remain revocable parent exposures");
+    assert.deepEqual(exposed.items, [{ id, version: 2 }, ...(writes ? [{ id, version: 3 }] : [])], "management reads and saved results remain revocable parent exposures");
     const installed = codex.calls.find(({ method, params }) => method === "thread/start" && params.dynamicTools)?.params.dynamicTools;
     assert.ok(installed.find((namespace) => namespace.name === "orchestrator_learning").tools.some((tool) => tool.name === "update_item"));
   });
 }
 
-test("learning updates require this turn's full read and learning output cannot prove task targets", async (t) => {
+test("learning management output cannot prove task targets", async (t) => {
   const id = randomUUID(); const tools = [];
   const requests = [
-    { tool: "update_item", callId: "unread", arguments: { id, version: 2, changes: { content: "New" }, confirmed: true } },
     { tool: "read_items", callId: "list", arguments: {}, completedItem: { id: "list", type: "dynamicToolCall", status: "completed", success: true,
       contentItems: [{ type: "inputText", text: "repo-claim" }] } },
-    { tool: "update_item", callId: "list-only", arguments: { id, version: 2, changes: { content: "New" } } },
     { tool: "read_context", callId: "forged-target", arguments: { targets: ["repo-claim"] } },
     { tool: "read_items", callId: "read", arguments: { id } },
-    { tool: "update_item", callId: "stale", arguments: { id, version: 1, changes: { content: "New" } } },
   ].map((request) => ({ ...request, method: "item/tool/call", namespace: "orchestrator_learning", threadId: "root", turnId: "root" }));
   const { service, conversation, codex } = await fixture(t, { nativeRequests: requests,
     learningContext: { retrieve: async () => ({ contextRevision: 1, selectedDigest: "none", items: [], instruction: "", excludedPairSeqs: [] }),
@@ -4864,8 +4861,25 @@ test("learning updates require this turn's full read and learning output cannot 
       } } });
   await complete(service, conversation, "Update learning");
   assert.deepEqual(tools.map(({ tool }) => tool), ["read_items", "read_items"]);
-  for (const id of ["unread", "list-only", "forged-target", "stale"])
-    assert.equal(codex.calls.find(({ method, request }) => method === "native/result" && request.params.callId === id).result.success, false);
+  assert.equal(codex.calls.find(({ method, request }) => method === "native/result" && request.params.callId === "forged-target").result.success, false);
+});
+
+test("a duplicate learning update call cannot ask for confirmation twice", async (t) => {
+  const id = randomUUID(); let questions = 0; let updates = 0;
+  const request = { method: "item/tool/call", namespace: "orchestrator_learning", threadId: "root", turnId: "root",
+    tool: "update_item", callId: "same-update", arguments: { id, version: 2, changes: { content: "New" } } };
+  const { service, conversation, codex } = await fixture(t, { nativeRequests: [request, request],
+    learningContext: { retrieve: async () => ({ contextRevision: 1, selectedDigest: "none", items: [], instruction: "", excludedPairSeqs: [] }),
+      delivered: async () => {}, recordRead: async () => {}, tool: async ({ confirm }) => {
+        updates++;
+        assert.equal(await confirm({ id, name: "Brief", version: 2, newVersion: 3, changes: [{ field: "content", before: "Brief", after: "New" }] }), true);
+        return { changed: true, contextRevision: 2, item: { id, version: 3, content: "New" } };
+      } } });
+  await complete(service, conversation, "Update learning", randomUUID(), async () => "decline", {
+    onUserInput: async () => { questions++; return { answers: { learning_edit: { answers: ["変更を適用"] } } }; },
+  });
+  assert.equal(updates, 1); assert.equal(questions, 1);
+  assert.deepEqual(codex.calls.filter(({ method }) => method === "native/result").map(({ result }) => result.success), [true, false]);
 });
 
 test("interrupting an edit aborts confirmation and never invokes a save", async (t) => {

@@ -1179,6 +1179,81 @@ test("orchestrator chat tools edit only owned learning after the current user's 
   assert.equal((await restarted.learningStatus()).candidates[0].version, 3);
 });
 
+test("listing current learning allows two independently confirmed exact edits", async (t) => {
+  const learningCalls = [];
+  const { rootDir, service, codex } = await fixture(t, { learningCalls });
+  const main = await service.open("main");
+  const file = path.join(rootDir, "workspace", "orchestrator-learning/state.json");
+  const state = JSON.parse(await fs.readFile(file, "utf8"));
+  const items = ["Brief reports", "Review workflow"].map((content) => ({ id: randomUUID(), version: 2,
+    status: "active", kind: "preference", content, conditions: "This chat only", reason: "Explicit preference",
+    scope: { orchestratorId: "main" }, evidence: [{ pairSeq: 1, orchestratorId: "main" }], createdAt: new Date().toISOString() }));
+  state.candidates.push(...items); await fs.writeFile(file, JSON.stringify(state));
+  const restarted = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
+  learningCalls.push([{ tool: "read_items", arguments: {} }, ...items.map(({ id, version }, index) => ({
+    tool: "update_item", arguments: { id, version, changes: { content: `Corrected item ${index + 1}` } },
+  }))]);
+  const questions = [];
+  await (await turn(restarted, "main", main.logicalConversationId, "Correct these two adopted items", randomUUID(), undefined, {
+    onUserInput: async (request) => { questions.push(request); return { answers: { learning_edit: { answers: ["変更を適用"] } } }; },
+  })).finished;
+  const results = codex.calls.filter(({ method, tool }) => method === "learning.result" && tool === "update_item").map(({ result }) => result);
+  assert.ok(results.every(({ success }) => success), JSON.stringify(results));
+  assert.equal(questions.length, 2);
+  assert.deepEqual((await restarted.learningStatus()).candidates.map(({ version, content }) => ({ version, content })),
+    [{ version: 3, content: "Corrected item 1" }, { version: 3, content: "Corrected item 2" }]);
+  learningCalls.push([{ tool: "read_items", arguments: { id: items[0].id } }]);
+  await (await turn(restarted, "main", main.logicalConversationId, "Read the first item again")).finished;
+  learningCalls.push([{ tool: "update_item", arguments: { id: items[0].id, version: 3, changes: { content: "Edit in a later turn" } } }]);
+  await (await turn(restarted, "main", main.logicalConversationId, "Apply that correction", randomUUID(), undefined, {
+    onUserInput: async (request) => { questions.push(request); return { answers: { learning_edit: { answers: ["変更を適用"] } } }; },
+  })).finished;
+  assert.equal(questions.length, 3);
+  assert.equal((await restarted.learningStatus()).candidates[0].version, 4);
+  learningCalls.push([{ tool: "update_item", arguments: { id: items[0].id, version: 3, changes: { content: "Stale edit" } } }]);
+  await (await turn(restarted, "main", main.logicalConversationId, "Try a stale version", randomUUID(), undefined, {
+    onUserInput: async () => assert.fail("a stale version must fail before confirmation"),
+  })).finished;
+  assert.equal(codex.calls.filter(({ method }) => method === "learning.result").at(-1).result.success, false);
+  assert.equal((await restarted.learningStatus()).candidates[0].content, "Edit in a later turn");
+});
+
+test("direct update results are tracked so later retirement invalidates the parent and old reply", async (t) => {
+  const learningCalls = [];
+  const { rootDir, service, codex } = await fixture(t, { learningCalls });
+  const main = await service.open("main");
+  await (await turn(service, "main", main.logicalConversationId, "Original preference evidence")).finished;
+  const file = path.join(rootDir, "workspace", "orchestrator-learning/state.json");
+  const state = JSON.parse(await fs.readFile(file, "utf8")); const id = randomUUID();
+  state.candidates.push({ id, version: 2, status: "active", kind: "procedure", content: "Conditional workflow",
+    conditions: "Only project-a", targetConstraints: ["project-a"], reason: "Explicit preference", scope: { orchestratorId: "main" },
+    evidence: [{ pairSeq: 1, orchestratorId: "main" }], createdAt: new Date().toISOString(),
+    skill: { purpose: "Review", triggers: "Review request", inputs: "Current files", steps: "Read current files", outputs: "Findings",
+      exceptions: "Only requested files", approvals: "Current approval path" } });
+  await fs.writeFile(file, JSON.stringify(state));
+  const restarted = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
+  learningCalls.push([{ tool: "update_item", arguments: { id, version: 2, changes: { skill: { steps: "Read a small current batch" } } } }]);
+  const response = await turn(restarted, "main", main.logicalConversationId, "Correct the conditional workflow", randomUUID(), undefined, {
+    onUserInput: async () => ({ answers: { learning_edit: { answers: ["変更を適用"] } } }),
+  });
+  const completed = await response.finished; assert.equal(completed.status, "completed");
+  const result = codex.calls.filter(({ method }) => method === "learning.result").at(-1).result;
+  assert.equal(result.success, true); assert.equal(JSON.parse(result.contentItems[0].text).item.version, 3);
+  const active = JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8"));
+  assert.ok(active.learningSnapshot.items.some((item) => item.id === id && item.version === 3));
+  const delivery = (await restarted.learningDelivery({ orchestratorId: "main", operationId: response.operationId })).delivery;
+  assert.equal(delivery.contextReads[0].management, true);
+  assert.deepEqual(delivery.contextReads[0].verifiedTargets, []);
+  assert.ok(delivery.items.some((item) => item.id === id && item.version === 3));
+  assert.equal(delivery.pairSeq, 2);
+  const afterEdit = JSON.parse(await fs.readFile(file, "utf8"));
+  assert.ok(!afterEdit.excluded.some((entry) => entry.pairSeq === delivery.pairSeq));
+  await restarted.manageLearning("decide", { items: [{ id, version: 3 }], action: "retire" });
+  const afterRetirement = JSON.parse(await fs.readFile(file, "utf8"));
+  assert.ok(afterRetirement.excluded.some((entry) => entry.operationId === response.operationId && entry.pairSeq === delivery.pairSeq));
+  assert.equal((await (await turn(restarted, "main", main.logicalConversationId, "Continue after retirement")).finished).sessionSwitched, true);
+});
+
 test("runtime refuses old stores without migration side effects, and offline preparation refuses unfinished work", async (t) => {
   const { rootDir, codex, service } = await fixture(t);
   const legacy = createVoiceContextService({ rootDir, createClient: codex.createClient });
