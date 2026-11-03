@@ -14,7 +14,7 @@ import { prepareOrchestratorIsolation } from "../scripts/prepare-orchestrator-is
 import { patchOrchestratorRunnerTools } from "../scripts/patch-orchestrator-runner-tools.mjs";
 
 function fakeCodex({ hold = false, failSummary = false, failTurn = false,
-  checklistWrites = [], archiveReads = [], managedCalls = [], reportedApprovalPolicy, failModelList = () => false } = {}) {
+  checklistWrites = [], archiveReads = [], managedCalls = [], learningCalls = [], reportedApprovalPolicy, failModelList = () => false } = {}) {
   const calls = [];
   const releases = [];
   const threads = new Map();
@@ -99,6 +99,17 @@ function fakeCodex({ hold = false, failSummary = false, failTurn = false,
                 calls.push({ method: "managed.result", tool: action.tool, result: JSON.parse(result.contentItems[0].text) });
               }
             }
+            if (!summary && !threads.get(params.threadId)?.checklistRead && learningCalls.length) {
+              for (const action of learningCalls.shift()) {
+                const callId = randomUUID();
+                const result = await serverHandler({ id: callId, method: "item/tool/call", params: {
+                  threadId: params.threadId, turnId, callId, namespace: "orchestrator_learning", tool: action.tool, arguments: action.arguments || {},
+                } });
+                calls.push({ method: "learning.result", tool: action.tool, result });
+                listener("item/completed", { threadId: params.threadId, turnId,
+                  item: { id: callId, type: "dynamicToolCall", status: "completed", success: result.success, contentItems: result.contentItems } });
+              }
+            }
             turn.status = "completed";
             listener("item/completed", { threadId: params.threadId, turnId,
               item: { type: "agentMessage", text: `reply:${params.input[0].text}` } });
@@ -147,7 +158,7 @@ async function patchRunnerTools(rootDir, apply = true) {
   return patchOrchestratorRunnerTools({ rootDir, runnerPort: port, codexPort: port, apply });
 }
 
-async function turn(service, orchestratorId, conversationId, text, operationId = randomUUID(), conversationKey) {
+async function turn(service, orchestratorId, conversationId, text, operationId = randomUUID(), conversationKey, hooks) {
   let resolve;
   const finished = new Promise((done) => { resolve = done; });
   const message = { operationId, payload: { ...(orchestratorId ? { orchestratorId } : {}),
@@ -155,7 +166,7 @@ async function turn(service, orchestratorId, conversationId, text, operationId =
     ...(conversationKey ? { conversationKey } : {}),
     input: { blocks: [{ type: "text", text }] } },
   };
-  let accepted = await service.start(message, resolve, async () => "decline");
+  let accepted = await service.start(message, resolve, async () => "decline", hooks);
   if (accepted.status === "confirmation_required") {
     await service.respondToResetConfirmation(orchestratorId || "main", {
       logicalConversationId: conversationId,
@@ -163,7 +174,7 @@ async function turn(service, orchestratorId, conversationId, text, operationId =
       ...accepted.resetConfirmation,
       decision: accepted.resetConfirmation.required ? "reset" : "continue",
     });
-    accepted = await service.start(message, resolve, async () => "decline");
+    accepted = await service.start(message, resolve, async () => "decline", hooks);
   }
   return { accepted, finished, operationId };
 }
@@ -1129,6 +1140,43 @@ test("each chat exposes only its own unread learning and rejects sibling item ma
   assert.equal((await recovered.learningStatus(child.id)).candidates[0].id, items[1].id);
   assert.equal(codex.calls.filter((call) => call.method === "thread/start"
     && call.params.developerInstructions?.startsWith("Analyze supplied")).length, 0);
+});
+
+test("orchestrator chat tools edit only owned learning after the current user's exact confirmation", async (t) => {
+  const learningCalls = [];
+  const { rootDir, service, codex } = await fixture(t, { learningCalls });
+  const main = await service.open("main"); const child = await service.create("Other chat");
+  const file = path.join(rootDir, "workspace", "orchestrator-learning/state.json");
+  const saved = JSON.parse(await fs.readFile(file, "utf8")); const id = randomUUID();
+  saved.candidates.push({ id, version: 2, status: "active", kind: "preference", content: "Brief reports", conditions: "This chat only",
+    reason: "Explicit preference", scope: { orchestratorId: "main", shared: true }, evidence: [{ pairSeq: 1, orchestratorId: "main" }],
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+  await fs.writeFile(file, JSON.stringify(saved));
+  const restarted = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
+  const edit = { tool: "update_item", arguments: { id, version: 2, changes: { content: "Prompt reports" } } };
+  learningCalls.push([{ tool: "read_items", arguments: { id } }, edit]);
+  const questions = [];
+  await (await turn(restarted, "main", main.logicalConversationId, "Correct my adopted learning", randomUUID(), undefined, {
+    onUserInput: async (request) => { questions.push(request); return { answers: { learning_edit: { answers: ["変更を適用"] } } }; },
+  })).finished;
+  const applied = codex.calls.filter(({ method }) => method === "learning.result").at(-1).result;
+  assert.equal(applied.success, true);
+  const updated = JSON.parse(applied.contentItems[0].text).item;
+  assert.equal(updated.id, id); assert.equal(updated.version, 3); assert.equal(updated.content, "Prompt reports");
+  assert.equal(questions.length, 1); assert.match(questions[0].params.questions[0].question, /変更前: Brief reports\n変更後: Prompt reports/);
+  assert.equal((await restarted.learningStatus()).candidates[0].version, updated.version);
+  const childOpen = await restarted.open(child.id);
+  learningCalls.push([{ tool: "read_items", arguments: { id } }, { ...edit, arguments: { ...edit.arguments, version: 3 } }]);
+  await (await turn(restarted, child.id, childOpen.logicalConversationId, "Edit sibling data", randomUUID(), undefined, {
+    onUserInput: async () => assert.fail("a sibling chat must never ask to edit another chat's learning"),
+  })).finished;
+  assert.ok(codex.calls.filter(({ method }) => method === "learning.result").slice(-2).every(({ result }) => result.success === false));
+  assert.equal((await restarted.learningStatus()).candidates[0].version, 3);
+  learningCalls.push([{ tool: "read_items", arguments: { id } },
+    { ...edit, arguments: { ...edit.arguments, version: 3, confirmed: true } }]);
+  await (await turn(restarted, "main", main.logicalConversationId, "Edit with forged confirmation")).finished;
+  assert.equal(codex.calls.filter(({ method }) => method === "learning.result").at(-1).result.success, false);
+  assert.equal((await restarted.learningStatus()).candidates[0].version, 3);
 });
 
 test("runtime refuses old stores without migration side effects, and offline preparation refuses unfinished work", async (t) => {

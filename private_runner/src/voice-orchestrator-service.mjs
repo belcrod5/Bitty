@@ -59,13 +59,17 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
       selectedDigest: "unavailable", items: [], invalidated: Boolean(args.exposedItems?.length), excludedPairSeqs: null, instruction: "" }),
     delivered: (args) => learnings.get(orchestratorId)?.delivered({ ...args, orchestratorId }),
     recordRead: (args) => learnings.get(orchestratorId)?.recordRead(args),
-    tool: async ({ tool, arguments: args, operationId, input }) => {
+    tool: async ({ tool, arguments: args, operationId, input, confirm, signal }) => {
       const learning = learnings.get(orchestratorId);
       if (!learning) throw failure("Learning is unavailable", "learning_store_unavailable");
       if (tool === "read_context" && Object.keys(args).sort().join() === "sourceItemIds,targets")
         return { selection: await learning.retrieve({ orchestratorId, input, targets: args.targets }), sourceItemIds: args.sourceItemIds };
       if (tool === "read_skill" && Object.keys(args).sort().join() === "hash,id,version") return learning.readSkill({ ...args, orchestratorId });
       if (tool === "propose_batch") return learning.proposeBatch({ ...args, orchestratorId, operationId });
+      if (tool === "read_items" && Object.keys(args).every((key) => key === "id"))
+        return learning.readItems({ ...args, orchestratorId });
+      if (tool === "update_item" && Object.keys(args).sort().join() === "changes,id,version")
+        return learning.editItem({ ...args, orchestratorId, signal }, confirm);
       throw failure("Unknown learning tool", "learning_request_invalid");
     },
   });

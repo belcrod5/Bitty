@@ -37,6 +37,11 @@ const LEARNING_OUTPUT_SCHEMA = schemaObject({
 });
 const STATUSES = new Set(["candidate", "active", "retired", "rejected"]);
 const SKILL_FIELDS = ["purpose", "triggers", "inputs", "steps", "outputs", "exceptions", "approvals"];
+const EDIT_FIELDS = ["content", "conditions", "matchTerms", "targetConstraints", "skill"];
+const editableItem = (item) => structuredClone({ id: item.id, version: item.version, kind: item.kind,
+  content: item.content, conditions: item.conditions, matchTerms: item.matchTerms || [],
+  targetConstraints: item.targetConstraints || [], ...(item.skill ? { skill: item.skill } : {}),
+  ...(item.published ? { published: item.published } : {}) });
 const skillMarkdown = (item) => `# ${item.content}\n\n${SKILL_FIELDS.map((key) => `## ${key}\n${item.skill[key]}`).join("\n\n")}\n`;
 const scoped = (item, id) => item.scope.orchestratorId === id;
 const identifier = (id) => id === "main" || UUID.test(id);
@@ -205,7 +210,13 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
     if ((await fs.readdir(folder)).some((name) => !allowed.has(name))) throw fail("learning_skill_modified", "Unmanaged artifacts prevent publication");
     try {
       const handle = await fs.open(file, "wx", 0o600);
-      try { await handle.writeFile(markdown); await handle.sync(); } finally { await handle.close(); }
+      try { await handle.writeFile(markdown); await handle.sync(); }
+      catch (cause) {
+        const created = await handle.stat();
+        const current = await fs.lstat(file).catch(() => null);
+        if (current?.isFile() && current.ino === created.ino && current.dev === created.dev) await fs.unlink(file);
+        throw cause;
+      } finally { await handle.close(); }
     } catch (cause) {
       if (cause.code !== "EEXIST") throw cause;
       const handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -230,6 +241,26 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
         if (stat.isFile() && !stat.isSymbolicLink()) await fs.unlink(target);
       }
     }
+  }
+
+  async function commitPublished(next, previous) {
+    try { await save(next); }
+    catch (cause) {
+      // A failed directory sync can follow a successful rename. Only roll artifacts
+      // back when the durable store can be verified to still contain the old state.
+      const saved = await fs.readFile(file, "utf8").then(JSON.parse).catch(() => null);
+      if (saved && digest(saved) === digest(state)) {
+        for (const item of next.candidates.filter((item) => item.published)) {
+          const old = previous.find((entry) => entry.id === item.id);
+          if ([old?.published, old?.previousPublished].some((entry) => entry?.version === item.published.version)) continue;
+          await readArtifact(item);
+          await fs.unlink(path.join(directory, "skills", item.id, `${item.published.version}.md`));
+        }
+      } else if (saved && digest(saved) === digest(next)) state = next;
+      throw cause;
+    }
+    task?.controller.abort(); schedule();
+    await pruneArtifacts(next.candidates, previous);
   }
 
   async function cleanForgotten() {
@@ -695,8 +726,7 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
           history(next, action, before, item, reason);
         }
         if (next.candidates.filter((item) => item.status === "active").length > 50) throw fail("learning_capacity", "Active item capacity reached");
-        invalidate(next, action !== "reject"); trim(next); await save(next); task?.controller.abort(); schedule();
-        await pruneArtifacts(next.candidates, previousArtifacts);
+        invalidate(next, action !== "reject"); trim(next); await commitPublished(next, previousArtifacts);
       });
     },
     async requestChange({ items, instruction }) {
@@ -710,6 +740,81 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
         next.requests.push({ id: randomUUID(), at: changedAt(), kind: "change_request", items: items.map((item) => ({ ...item })),
           scope: { ...selected[0].scope }, instruction: instruction.trim() });
         invalidate(next); trim(next); await save(next); task?.controller.abort(); schedule();
+      });
+    },
+    async readItems({ orchestratorId, id }) {
+      return exclusive(() => {
+        if (!identifier(orchestratorId) || ownerId && ownerId !== orchestratorId || id !== undefined && !UUID.test(id))
+          throw fail("learning_request_invalid", "Invalid learning edit scope");
+        const items = state.candidates.filter((item) => item.status === "active" && scoped(item, orchestratorId));
+        const item = id === undefined ? null : items.find((entry) => entry.id === id);
+        if (id !== undefined && !item) throw fail("learning_conflict", "Learning is unavailable in this chat; read current items again");
+        const visible = item ? [editableItem(item)] : items.map(({ id, version, kind, content }) => ({ id, version, kind, content }));
+        return { contextRevision: state.contextRevision, selectedDigest: digest(visible), items: visible };
+      });
+    },
+    async editItem({ orchestratorId, id, version, changes, signal }, confirm) {
+      const prepared = await exclusive(async () => {
+        if (!identifier(orchestratorId) || ownerId && ownerId !== orchestratorId || !UUID.test(id) || !positive(version)
+          || !record(changes) || !Object.keys(changes).length || Object.keys(changes).some((key) => !EDIT_FIELDS.includes(key))
+          || typeof confirm !== "function") throw fail("learning_request_invalid", "Read a current item and propose only editable fields");
+        const before = state.candidates.find((item) => item.id === id && item.version === version
+          && item.status === "active" && scoped(item, orchestratorId));
+        if (!before) throw fail("learning_conflict", "Learning changed or belongs to another chat; read it again");
+        const after = structuredClone(before);
+        for (const [key, value] of Object.entries(changes)) {
+          if (key === "skill") {
+            if (!before.skill || !record(value) || !Object.keys(value).length
+              || Object.keys(value).some((field) => !SKILL_FIELDS.includes(field) || !text(value[field], 2000)))
+              throw fail("learning_request_invalid", "Edit only existing skill fields using nonempty text");
+            after.skill = { ...after.skill, ...Object.fromEntries(Object.entries(value).map(([field, text]) => [field, text.trim()])) };
+          } else if (["matchTerms", "targetConstraints"].includes(key)) {
+            if (!Array.isArray(value) || value.length > 8 || value.some((term) => !text(term, 200)))
+              throw fail("learning_request_invalid", "Use at most eight short applicability terms");
+            after[key] = [...new Set(value.map((term) => term.trim()))];
+          } else {
+            if (!text(value, key === "content" ? 2000 : 1000)) throw fail("learning_request_invalid", "Learning text is empty or too large");
+            after[key] = value.trim();
+          }
+        }
+        if (JSON.stringify(editableItem(before)) === JSON.stringify(editableItem(after)))
+          throw fail("learning_request_invalid", "No learning fields changed; read the current item again");
+        if (before.published) await readArtifact(before);
+        if (before.previousPublished) await readArtifact({ ...before, published: before.previousPublished });
+        after.version += 1;
+        // Check the existing history bound before asking the user or creating an artifact.
+        history({ changes: [] }, "edit", before, after, "Explicit chat edit");
+        return { before: structuredClone(before), after };
+      });
+      const before = editableItem(prepared.before), after = editableItem(prepared.after);
+      const diff = EDIT_FIELDS.flatMap((field) => field === "skill" ? SKILL_FIELDS
+        .filter((key) => before.skill?.[key] !== after.skill?.[key])
+        .map((key) => ({ field: `skill.${key}`, before: before.skill[key], after: after.skill[key] }))
+        : JSON.stringify(before[field]) === JSON.stringify(after[field]) ? [] : [{ field, before: before[field], after: after[field] }]);
+      if (signal?.aborted || await confirm({ id, name: before.content, version, newVersion: after.version, changes: diff }) !== true)
+        throw fail("learning_edit_declined", "Learning was not changed; read the item again before proposing another edit");
+      return exclusive(async () => {
+        const current = state.candidates.find((item) => item.id === id && item.version === version
+          && item.status === "active" && scoped(item, orchestratorId));
+        if (closed || signal?.aborted || !current) throw fail("learning_conflict", "Learning changed or the turn ended while awaiting confirmation; read it again");
+        if (current.published) await readArtifact(current);
+        if (current.previousPublished) await readArtifact({ ...current, published: current.previousPublished });
+        if (signal?.aborted) throw fail("learning_edit_declined", "The turn ended before saving; read current learning before retrying");
+        const previousArtifacts = structuredClone(state.candidates);
+        const next = structuredClone(state);
+        const item = structuredClone(prepared.after);
+        item.updatedAt = changedAt();
+        item.decision = { actor: "user", action: "edit", at: item.updatedAt, reason: "Explicit chat edit" };
+        exclude(next, current);
+        next.candidates[next.candidates.findIndex((entry) => entry.id === id)] = item;
+        if (item.published) { item.previousPublished = { ...item.published }; item.published = { version: item.version, hash: digest(skillMarkdown(item)) }; }
+        history(next, "edit", current, item, item.decision.reason);
+        invalidate(next, true); trim(next);
+        if (bytes(next) > bounds.stateBytes) throw fail("learning_capacity", "Learning state capacity reached; read current learning before retrying");
+        if (item.published) await publishArtifact({ ...item, published: current.published, previousPublished: current.previousPublished });
+        await commitPublished(next, previousArtifacts);
+        return { changed: true, contextRevision: state.contextRevision,
+          item: editableItem(state.candidates.find((entry) => entry.id === id)) };
       });
     },
     async correctEvaluation({ evaluationId, version, score: userScore, reason = "" }) {
@@ -819,7 +924,10 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
       return exclusive(async () => {
         const next = structuredClone(state);
         const use = next.uses.find((entry) => entry.operationId === operationId);
-        if (use && unconfirmed) { use.readsUnconfirmed = true; await save(next); return; }
+        if (use && unconfirmed) {
+          use.readsUnconfirmed = true;
+          if (!skill?.selection) { await save(next); return; }
+        }
         if (use && complete) { use.readsVerified = !use.readsUnconfirmed; await save(next); return; }
         if (use && skill?.selection && text(callId, 200)) {
           const snapshot = skill.selection;
@@ -830,7 +938,10 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
           use.contextReads ??= [];
           if (use.contextReads.length >= 16) throw fail("learning_capacity", "Too many learning context reads in one turn");
           use.contextReads.push({ callId, sourceItemIds: skill.sourceItemIds || [], contextRevision: snapshot.contextRevision, selectedDigest: snapshot.selectedDigest,
-            items: extra, verifiedTargets: visible.flatMap((item) => item.verifiedTargets || []) });
+            items: extra, verifiedTargets: visible.flatMap((item) => item.verifiedTargets || []), ...(skill.management ? { management: true } : {}) });
+          if (snapshot.items.some((item) => !next.candidates.some((current) => current.id === item.id && current.version === item.version && current.status === "active"))
+            && !next.excluded.some((entry) => entry.operationId === operationId))
+            next.excluded.push({ operationId, ...(use.pairSeq ? { pairSeq: use.pairSeq } : {}) });
           await save(next); return;
         }
         if (!use || !text(callId, 200) || !UUID.test(skill.id)) throw fail("learning_request_invalid", "Missing successful delivery/read proof");
