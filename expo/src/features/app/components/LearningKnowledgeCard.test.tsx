@@ -3,6 +3,7 @@ jest.mock("@expo/vector-icons", () => ({ Ionicons: () => null }));
 import { Alert } from "react-native";
 import { act, fireEvent, render } from "@testing-library/react-native";
 import { LearningKnowledgeCard, type LearningKnowledge } from "./LearningKnowledgeCard";
+import { humanLearningDate } from "./learningDashboardData";
 const item = (extra: Partial<LearningKnowledge> = {}): LearningKnowledge => ({ id: "knowledge-1", version: 3, status: "candidate", kind: "preference", content: "報告を短くする", conditions: "作業完了の報告", reason: "簡潔さを希望", scope: { orchestratorId: "main" }, evidence: [{ pairSeq: 1 }], ...extra });
 const props = { knowledge: [] as LearningKnowledge[], chatName: "メイン", selecting: false, selected: false, busy: false, onSelect: jest.fn() };
 test.each(["candidate", "active"])("%s switch changes eligibility with exact version, without running an answer", async (status) => {
@@ -51,7 +52,7 @@ test("current card opens a comparison and applies only the reviewed proposal, ne
   expect(screen.queryByText(update.content)).toBeNull(); expect(screen.getByRole("switch").props.value).toBe(true);
   await fireEvent.press(screen.getByLabelText(`更新案1件を見る: ${original.content}`));
   expect(screen.getByText("現在の内容")).toBeTruthy(); expect(screen.getByText(original.content)).toBeTruthy();
-  expect(screen.getByText("更新後")).toBeTruthy(); expect(screen.getByText(update.content)).toBeTruthy();
+  expect(screen.getByText("提案")).toBeTruthy(); expect(screen.getByText(update.content)).toBeTruthy();
   expect(screen.getAllByText("使う範囲：メイン限定")).toHaveLength(2);
   expect(screen.queryByRole("switch")).toBeNull(); expect(manage).not.toHaveBeenCalled();
   await fireEvent.press(screen.getByLabelText(`この案に更新: ${update.content}`));
@@ -59,20 +60,28 @@ test("current card opens a comparison and applies only the reviewed proposal, ne
   expect(screen.queryByTestId("learning-update-modal")).toBeNull(); await screen.unmount();
 });
 
-test("multiple update proposals are alternatives, navigation changes only the reviewed choice", async () => {
-  const original = item({ id: "original", status: "active" });
-  const first = item({ id: "first", content: "案A", replaces: [original.id], replacementVersions: [{ id: original.id, version: original.version }] });
-  const second = { ...first, id: "second", version: 8, content: "案B" };
+test("newest proposal opens first by creation time, older alternatives stay folded in chronological order", async () => {
+  const original = item({ id: "original", status: "active", updatedAt: "2026-11-03T15:00:00Z" });
+  const older = item({ id: "older", content: "古い案", createdAt: "2026-11-03T10:00:00Z", updatedAt: "2026-11-03T19:00:00Z", replaces: [original.id], replacementVersions: [{ id: original.id, version: original.version }] });
+  const newest = { ...older, id: "newest", version: 8, content: "最新の案", createdAt: "2026-11-03T12:00:00Z" };
+  const middle = { ...older, id: "middle", content: "中間の案", createdAt: "2026-11-03T11:00:00Z" };
   const manage = jest.fn(async () => null);
-  const screen = await render(<LearningKnowledgeCard {...props} item={original} knowledge={[original, first, second]} manage={manage} />);
-  await fireEvent.press(screen.getByLabelText(`更新案2件を見る: ${original.content}`));
-  expect(screen.getByText("案 1 / 2")).toBeTruthy(); expect(screen.getByText(first.content)).toBeTruthy();
-  expect(screen.getByLabelText("前の更新案")).toBeDisabled();
-  await fireEvent.press(screen.getByLabelText("次の更新案"));
-  expect(screen.getByText("案 2 / 2")).toBeTruthy(); expect(screen.getByText(second.content)).toBeTruthy();
-  expect(screen.queryByText(first.content)).toBeNull(); expect(screen.getByLabelText("次の更新案")).toBeDisabled();
-  expect(manage).not.toHaveBeenCalled(); await fireEvent.press(screen.getByLabelText(`この案を見送る: ${second.content}`));
-  expect(manage).toHaveBeenCalledWith("decide", { items: [{ id: second.id, version: 8 }], action: "reject" }, false);
+  const screen = await render(<LearningKnowledgeCard {...props} item={original} knowledge={[original, older, newest, middle]} manage={manage} />);
+  expect(screen.getByText("最新の提案を見る")).toBeTruthy();
+  await fireEvent.press(screen.getByLabelText(`更新案3件を見る: ${original.content}`));
+  expect(screen.getByText("最新の提案")).toBeTruthy(); expect(screen.getByText(newest.content)).toBeTruthy();
+  expect(screen.queryByText(older.content)).toBeNull(); expect(screen.queryByText(middle.content)).toBeNull();
+  expect(screen.queryByText(/使用中：第/)).toBeNull();
+  await fireEvent.press(screen.getByLabelText("過去の提案 · 2件（新しい順）"));
+  const alternatives = screen.getAllByLabelText(/過去の提案を見る:/);
+  expect(alternatives.map((entry) => entry.props.accessibilityLabel)).toEqual([`過去の提案を見る: ${middle.content}`, `過去の提案を見る: ${older.content}`]);
+  await fireEvent.press(screen.getByLabelText(`過去の提案を見る: ${older.content}`));
+  expect(screen.getByText("過去の提案")).toBeTruthy(); expect(screen.queryByText(newest.content)).toBeNull();
+  expect(manage).not.toHaveBeenCalled();
+  await fireEvent.press(screen.getByLabelText("最新の提案に戻る"));
+  expect(screen.getByText(newest.content)).toBeTruthy();
+  await fireEvent.press(screen.getByLabelText(`この案を見送る: ${newest.content}`));
+  expect(manage).toHaveBeenCalledWith("decide", { items: [{ id: newest.id, version: 8 }], action: "reject" }, false);
   await screen.unmount();
 });
 
@@ -82,7 +91,7 @@ test("merged update compares all sources and changed skill and retrieval fields"
   const screen = await render(<LearningKnowledgeCard {...props} item={update} knowledge={[...originals, update]} manage={jest.fn(async () => null)} />);
   await fireEvent.press(screen.getByLabelText(`更新内容を見る: ${update.content}`));
   expect(screen.getByText("現在の内容 · 2件")).toBeTruthy(); originals.forEach((value) => expect(screen.getByText(value.content)).toBeTruthy());
-  expect(screen.getByText("まとめて更新後")).toBeTruthy(); expect(screen.queryByText("第4版")).toBeNull();
+  expect(screen.getByText("提案")).toBeTruthy(); expect(screen.queryByText("第4版")).toBeNull();
   expect(screen.getByText(/手順: 元の手順/)).toBeTruthy(); expect(screen.getByText(/手順: 新しい手順/)).toBeTruthy();
   expect(screen.getByText("関連する言葉：指定なし")).toBeTruthy(); expect(screen.getByText("確認対象：対象A")).toBeTruthy();
   await screen.unmount();
@@ -94,7 +103,7 @@ test.each(["missing", "changed", "retired", "unversioned", "scope"])("%s update 
   const manage = jest.fn(async () => null);
   const screen = await render(<LearningKnowledgeCard {...props} item={update} knowledge={state === "missing" ? [update] : [original, update]} manage={manage} />);
   await fireEvent.press(screen.getByLabelText(`更新内容を見る: ${update.content}`));
-  expect(screen.getByText("更新元が変わっています。この案は適用できません。")).toBeTruthy();
+  expect(screen.getByText(state === "changed" ? "この提案のあとに、使用中の内容が更新されました。現在の内容をもとに提案し直してください。" : "現在の内容に対する提案と確認できないため、適用できません。")).toBeTruthy();
   const control = screen.getByLabelText(`この案に更新: ${update.content}`); expect(control).toBeDisabled(); await fireEvent.press(control);
   expect(manage).not.toHaveBeenCalled(); expect(screen.getByLabelText(`この案を見送る: ${update.content}`)).toBeEnabled(); await screen.unmount();
 });
@@ -109,9 +118,13 @@ test("editing a source keeps its older proposal attached but prevents applying i
   const edited = { ...original, version: 3, content: "会話から修正した方針" };
   await screen.rerender(<LearningKnowledgeCard {...props} item={edited} knowledge={[edited, update]} manage={manage} />);
   expect(screen.getByText(edited.content)).toBeTruthy();
-  expect(screen.getByText("現在：第3版 · この案の元：第2版")).toBeTruthy();
+  expect(screen.getByText("現在の内容")).toBeTruthy();
+  expect(screen.getByText("以前の内容への提案")).toBeTruthy();
+  expect(screen.queryByText(/使用中：第3版/)).toBeNull();
+  await fireEvent.press(screen.getByLabelText("版の詳細"));
+  expect(screen.getByText("使用中：第3版 · 提案の対象：第2版")).toBeTruthy();
   expect(screen.getByText(update.content)).toBeTruthy();
-  expect(screen.getByText("更新元が変わっています。この案は適用できません。")).toBeTruthy();
+  expect(screen.getByText("この提案のあとに、使用中の内容が更新されました。現在の内容をもとに提案し直してください。")).toBeTruthy();
   const control = screen.getByLabelText(`この案に更新: ${update.content}`);
   expect(control).toBeDisabled(); await fireEvent.press(control);
   expect(manage).not.toHaveBeenCalled();
@@ -172,4 +185,81 @@ test("removed conditions and skill fields are explicit without repeating unchang
   await fireEvent.press(screen.getByLabelText(`更新案1件を見る: ${original.content}`));
   expect(screen.getByText("適用：条件なし")).toBeTruthy(); expect(screen.queryByText(/同じ目的/)).toBeNull();
   expect(screen.getByText(/必要な承認: なし/)).toBeTruthy(); expect(screen.getByText(/手順: 新しい手順/)).toBeTruthy(); await screen.unmount();
+});
+
+
+test("latest stale proposal stays latest without enabling it over an older applicable proposal", async () => {
+  const original = item({ id: "original", status: "active", version: 3, updatedAt: "2026-11-03T15:00:00Z" });
+  const older = item({ id: "older", content: "適用できる古い提案", createdAt: "2026-11-03T10:00:00Z", replaces: [original.id], replacementVersions: [{ id: original.id, version: 3 }] });
+  const latest = { ...older, id: "latest", content: "適用できない最新の提案", createdAt: "2026-11-03T11:00:00Z", replacementVersions: [{ id: original.id, version: 2 }] };
+  const manage = jest.fn(async () => null);
+  const screen = await render(<LearningKnowledgeCard {...props} item={original} knowledge={[older, original, latest]} manage={manage} />);
+  await fireEvent.press(screen.getByLabelText(`更新案2件を見る: ${original.content}`));
+  expect(screen.getByText("最新の提案")).toBeTruthy();
+  expect(screen.getByText(`提案：${humanLearningDate(latest.createdAt)}`)).toBeTruthy();
+  expect(screen.getByText(`更新：${humanLearningDate(original.updatedAt!)}`)).toBeTruthy();
+  expect(screen.getByLabelText(`この案に更新: ${latest.content}`)).toBeDisabled();
+  expect(screen.queryByText(older.content)).toBeNull(); expect(manage).not.toHaveBeenCalled();
+  await screen.unmount();
+});
+
+test("unknown proposal dates are shown honestly and do not outrank a dated proposal", async () => {
+  const original = item({ id: "original", status: "active" });
+  const unknown = item({ id: "unknown", content: "日時不明の案", createdAt: "invalid", updatedAt: "2026-11-04T00:00:00Z", replaces: [original.id], replacementVersions: [{ id: original.id, version: original.version }] });
+  const dated = { ...unknown, id: "dated", content: "日時がわかる案", createdAt: "2026-11-03T10:00:00Z" };
+  const screen = await render(<LearningKnowledgeCard {...props} item={original} knowledge={[original, unknown, dated]} manage={jest.fn(async () => null)} />);
+  await fireEvent.press(screen.getByLabelText(`更新案2件を見る: ${original.content}`));
+  expect(screen.getByText(dated.content)).toBeTruthy();
+  await fireEvent.press(screen.getByLabelText("過去の提案 · 1件（新しい順）"));
+  expect(screen.getByText("提案：日時不明")).toBeTruthy();
+  await screen.unmount();
+});
+
+test("a newly arriving proposal does not silently replace the one being reviewed", async () => {
+  const original = item({ id: "original", status: "active" });
+  const first = item({ id: "first", content: "確認中の案", createdAt: "2026-11-03T10:00:00Z", replaces: [original.id], replacementVersions: [{ id: original.id, version: original.version }] });
+  const latest = { ...first, id: "latest", content: "あとから届いた案", createdAt: "2026-11-03T11:00:00Z" };
+  const manage = jest.fn(async () => null);
+  const screen = await render(<LearningKnowledgeCard {...props} item={original} knowledge={[original, first]} manage={manage} />);
+  await fireEvent.press(screen.getByLabelText(`更新案1件を見る: ${original.content}`));
+  await screen.rerender(<LearningKnowledgeCard {...props} item={original} knowledge={[original, first, latest]} manage={manage} />);
+  expect(screen.getByText(first.content)).toBeTruthy(); expect(screen.queryByText(latest.content)).toBeNull();
+  await fireEvent.press(screen.getByLabelText(`この案に更新: ${first.content}`));
+  expect(manage).toHaveBeenCalledWith("decide", { items: [{ id: first.id, version: first.version }], action: "adopt" }, false);
+  await screen.unmount();
+});
+
+test("related proposal, adoption and edit history reuses existing chronological disclosure", async () => {
+  const original = item({ id: "original", status: "active", content: "今の内容" });
+  const proposal = item({ id: "proposal", content: "最新案", createdAt: "2026-11-03T12:00:00Z", replaces: [original.id], replacementVersions: [{ id: original.id, version: original.version }] });
+  const rejected = { ...proposal, id: "rejected", status: "rejected", content: "過去に見送った案" };
+  const changes = [
+    { id: "old", at: "2026-11-03T10:00:00Z", action: "adopt", actor: "user", reason: "採用理由", before: null, after: original },
+    { id: "new", at: "2026-11-03T11:00:00Z", action: "edit", actor: "user", reason: "修正理由", before: original, after: original },
+    { id: "rejected", at: "2026-11-03T12:00:00Z", action: "reject", actor: "user", reason: "見送り理由", before: rejected, after: rejected },
+    { id: "other", at: "2026-11-03T13:00:00Z", action: "created", actor: "ai", reason: "別の学習", before: null, after: item({ id: "other", content: "無関係の内容" }) },
+  ];
+  const manage = jest.fn(async () => null);
+  const screen = await render(<LearningKnowledgeCard {...props} item={original} knowledge={[original, proposal]} changes={changes} manage={manage} />);
+  await fireEvent.press(screen.getByLabelText(`更新案1件を見る: ${original.content}`));
+  expect(screen.queryByText("過去に見送った案")).toBeNull();
+  await fireEvent.press(screen.getByLabelText("学習の履歴 · 3件"));
+  expect(screen.getByText("過去に見送った案")).toBeTruthy();
+  expect(screen.queryByText("無関係の内容")).toBeNull();
+  const dates = screen.getAllByText(/ · あなた$/).map((entry) => entry.props.children.join(""));
+  expect(dates).toEqual([changes[2], changes[1], changes[0]].map((entry) => `${humanLearningDate(entry.at)} · あなた`));
+  expect(manage).not.toHaveBeenCalled(); await screen.unmount();
+});
+
+test("opening an older standalone proposal never labels it latest and can return to the actual latest", async () => {
+  const original = item({ id: "original", status: "active" });
+  const older = item({ id: "older", content: "単独で開いた過去案", createdAt: "2026-11-03T10:00:00Z", replaces: [original.id], replacementVersions: [{ id: original.id, version: original.version }] });
+  const latest = { ...older, id: "latest", content: "実際の最新案", createdAt: "2026-11-03T11:00:00Z" };
+  const screen = await render(<LearningKnowledgeCard {...props} item={older} knowledge={[original, older, latest]} manage={jest.fn(async () => null)} />);
+  await fireEvent.press(screen.getByLabelText(`更新内容を見る: ${older.content}`));
+  expect(screen.getByText("過去の提案")).toBeTruthy(); expect(screen.queryByText("最新の提案")).toBeNull();
+  expect(screen.getByText(older.content)).toBeTruthy();
+  await fireEvent.press(screen.getByLabelText("最新の提案に戻る"));
+  expect(screen.getByText("最新の提案")).toBeTruthy(); expect(screen.getByText(latest.content)).toBeTruthy();
+  await screen.unmount();
 });

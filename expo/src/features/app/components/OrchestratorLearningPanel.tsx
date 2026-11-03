@@ -252,7 +252,7 @@ export function OrchestratorLearningPanel({ request: sendRequest, orchestrator }
           </> : null}
         </View> : null}
         {filteredKnowledge.length ? <View style={{ gap: 12 }}>{filteredKnowledge.slice(knowledgeCurrentPage * 5, knowledgeCurrentPage * 5 + 5).map((item) => (
-          <LearningKnowledgeCard key={item.id} item={item} knowledge={status.candidates}
+          <LearningKnowledgeCard key={item.id} item={item} knowledge={status.candidates} changes={status.changes || []}
             chatName={orchestrator.name}
             selecting={selecting} selected={selected.includes(item.id)} busy={busy} manage={manage}
             onSelect={() => setSelected((current) => current.includes(item.id) ? current.filter((id) => id !== item.id) : [...current, item.id])} />

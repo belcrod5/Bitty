@@ -2,11 +2,13 @@ import { Ionicons } from "@expo/vector-icons";
 import { useState } from "react";
 import { Alert, Pressable, StyleSheet, Switch, Text, View } from "react-native";
 import { useVisualTheme } from "../theme/VisualThemeContext";
-import { humanLearningDate, knowledgeState } from "./learningDashboardData";
+import { humanLearningDate, knowledgeState, type LearningChange } from "./learningDashboardData";
 import { LearningDetailsModal } from "./LearningDetailsModal";
+import { LearningChangeHistory } from "./LearningChangeHistory";
+import { LearningDisclosure } from "./LearningTimeline";
 
 export type LearningKnowledge = {
-  id: string; version: number; status: string; updatedAt?: string; kind: string; content: string; conditions: string; reason: string;
+  id: string; version: number; status: string; createdAt?: string; updatedAt?: string; kind: string; content: string; conditions: string; reason: string;
   action?: "create" | "retire"; replaces?: string[]; replacementVersions?: { id: string; version: number }[];
   scope: { orchestratorId: string; shared?: boolean }; matchTerms?: string[]; targetConstraints?: string[];
   skill?: Record<string, string>; published?: { version: number; hash: string }; evidence: { pairSeq: number }[];
@@ -25,11 +27,11 @@ export function learningUpdateSources(item: LearningKnowledge, knowledge: Learni
   return sources.every((source): source is LearningKnowledge => source?.status === "active" && source.scope.orchestratorId === item.scope.orchestratorId && source.scope.shared === item.scope.shared) ? sources : [];
 }
 
-function LearningUpdateReview({ updates, knowledge, chatName, orchestratorId, busy, manage, onClose }: {
-  updates: LearningKnowledge[]; knowledge: LearningKnowledge[]; chatName: string; orchestratorId: string; busy: boolean; manage: Manage; onClose: () => void;
+function LearningUpdateReview({ updates, initialProposal, latestProposalId, knowledge, changes, chatName, orchestratorId, busy, manage, onClose }: {
+  updates: LearningKnowledge[]; initialProposal: LearningKnowledge; latestProposalId?: string; knowledge: LearningKnowledge[]; changes: LearningChange[]; chatName: string; orchestratorId: string; busy: boolean; manage: Manage; onClose: () => void;
 }) {
   const { theme: { colors, tones } } = useVisualTheme();
-  const [selection, setSelection] = useState(() => ({ id: updates[0]?.id, version: updates[0]?.version }));
+  const [selection, setSelection] = useState(() => ({ id: initialProposal.id, version: initialProposal.version }));
   const [error, setError] = useState("");
   const currentPage = updates.findIndex((entry) => entry.id === selection.id && entry.version === selection.version);
   const proposal = updates[currentPage];
@@ -37,6 +39,9 @@ function LearningUpdateReview({ updates, knowledge, chatName, orchestratorId, bu
   const changedSkillFields = Object.entries(SKILL_LABELS).filter(([key]) => sources.some((source) => source?.skill?.[key] !== proposal?.skill?.[key]));
   const ready = proposal && learningUpdateSources(proposal, knowledge).length > 0
     && sources.every((source) => source && proposal.replacementVersions?.some((entry) => entry.id === source.id && entry.version === source.version));
+  const sourceChanged = sources.some((source) => source && proposal?.replacementVersions?.some((entry) => entry.id === source.id && entry.version !== source.version));
+  const relatedIds = new Set(updates.flatMap((entry) => [entry.id, ...(entry.replaces || [])]));
+  const history = changes.filter((entry) => [entry.before, entry.after].some((value) => value && value.scope.orchestratorId === orchestratorId && [value.id, ...(value.replaces || [])].some((id) => relatedIds.has(id))));
   const choose = async (action: "adopt" | "reject") => {
     if (!proposal || busy || action === "adopt" && !ready) return;
     setError("");
@@ -44,27 +49,22 @@ function LearningUpdateReview({ updates, knowledge, chatName, orchestratorId, bu
     if (failure) setError(failure);
     else onClose();
   };
-  return <LearningDetailsModal visible title="学習の更新" subtitle={updates.length > 1 ? `${updates.length}件の更新案から選べます` : "現在の内容と比べて確認"}
+  return <LearningDetailsModal visible title="学習の更新" subtitle="現在の内容と提案を確認"
     page={Math.max(0, currentPage)} testID="learning-update-modal" onClose={onClose}>
     {proposal ? <>
-      {updates.length > 1 ? <View style={styles.proposalNavigation}>
-        <Pressable accessibilityRole="button" accessibilityLabel="前の更新案" disabled={busy || currentPage === 0}
-          onPress={() => { setSelection({ id: updates[currentPage - 1].id, version: updates[currentPage - 1].version }); setError(""); }} style={[styles.navigationButton, { opacity: busy || currentPage === 0 ? 0.35 : 1 }]}>
-          <Ionicons name="chevron-back" size={20} color={colors.accent} /></Pressable>
-        <Text accessibilityRole="header" style={[styles.actionText, { color: colors.textPrimary }]}>案 {currentPage + 1} / {updates.length}</Text>
-        <Pressable accessibilityRole="button" accessibilityLabel="次の更新案" disabled={busy || currentPage === updates.length - 1}
-          onPress={() => { setSelection({ id: updates[currentPage + 1].id, version: updates[currentPage + 1].version }); setError(""); }} style={[styles.navigationButton, { opacity: busy || currentPage === updates.length - 1 ? 0.35 : 1 }]}>
-          <Ionicons name="chevron-forward" size={20} color={colors.accent} /></Pressable>
-      </View> : null}
+      {currentPage > 0 ? <Pressable accessibilityRole="button" accessibilityLabel="最新の提案に戻る" disabled={busy}
+        onPress={() => { setSelection({ id: updates[0].id, version: updates[0].version }); setError(""); }} style={styles.secondaryAction}>
+        <Text style={[styles.actionText, { color: colors.accent }]}>最新の提案に戻る</Text>
+      </Pressable> : null}
       <View style={[styles.comparisonPanel, { backgroundColor: colors.surfaceMuted, borderColor: colors.borderSubtle }]}>
         <View style={styles.comparisonHeading}><Ionicons name="checkmark-circle-outline" size={17} color={colors.textSecondary} />
-          <Text style={[styles.comparisonLabel, { color: colors.textSecondary }]}>{ready ? sources.length > 1 ? `現在の内容 · ${sources.length}件` : "現在の内容" : "更新元の内容"}</Text></View>
+          <Text style={[styles.comparisonLabel, { color: colors.textSecondary }]}>{sources.length > 1 ? `現在の内容 · ${sources.length}件` : "現在の内容"}</Text></View>
         {sources.map((source, index) => {
-          const expectedVersion = proposal.replacementVersions?.find((entry) => entry.id === proposal.replaces![index])?.version;
           return <View key={proposal.replaces![index]} style={styles.original}>
           {source ? <>
             <Text style={[styles.title, { color: colors.textSecondary }]}>{source.content}</Text>
-            {source.version !== expectedVersion ? <Text style={[styles.caption, { color: tones.warning.foreground }]}>現在：第{source.version}版 · この案の元：{expectedVersion ? `第${expectedVersion}版` : "版不明"}</Text> : null}
+            <View style={styles.metadata}><Text style={[styles.status, { color: colors.textSecondary, backgroundColor: colors.surface }]}>{knowledgeState(source.status)}</Text>
+              <Text style={[styles.caption, { color: colors.textMuted }]}>更新：{humanLearningDate(source.updatedAt || source.createdAt || "")}</Text></View>
             <Text style={[styles.caption, { color: colors.textMuted }]}>使う範囲：{source.scope.orchestratorId === orchestratorId ? `${chatName}限定` : "別のチャット限定"}</Text>
             <Text style={[styles.caption, { color: colors.textMuted }]}>適用：{source.conditions || "条件なし"}</Text>
             {JSON.stringify(source.matchTerms || []) !== JSON.stringify(proposal.matchTerms || []) ? <Text style={[styles.caption, { color: colors.textMuted }]}>関連する言葉：{source.matchTerms?.join("、") || "指定なし"}</Text> : null}
@@ -74,10 +74,12 @@ function LearningUpdateReview({ updates, knowledge, chatName, orchestratorId, bu
         </View>;
         })}
       </View>
-      <View style={styles.comparisonArrow}><Ionicons name="arrow-down" size={23} color={colors.accent} /></View>
+      <View style={styles.comparisonArrow}><Ionicons name={ready ? "arrow-down" : "time-outline"} size={23} color={ready ? colors.accent : tones.warning.foreground} /></View>
       <View style={[styles.comparisonPanel, { backgroundColor: tones.info.background, borderColor: colors.accent }]}>
         <View style={styles.comparisonHeading}><Ionicons name="sparkles-outline" size={17} color={colors.accent} />
-          <Text style={[styles.comparisonLabel, { color: colors.accent }]}>{sources.length > 1 ? "まとめて更新後" : "更新後"}</Text></View>
+          <Text style={[styles.comparisonLabel, { color: colors.accent }]}>{proposal.id === latestProposalId && Number.isFinite(Date.parse(proposal.createdAt || "")) ? "最新の提案" : currentPage > 0 ? "過去の提案" : "提案"}</Text>
+          <Text style={[styles.status, { color: ready ? colors.accent : tones.warning.foreground, backgroundColor: ready ? colors.surface : tones.warning.background }]}>{ready ? "確認待ち" : sourceChanged ? "以前の内容への提案" : "適用できません"}</Text></View>
+        <Text style={[styles.caption, { color: colors.textSecondary }]}>提案：{humanLearningDate(proposal.createdAt || "")}</Text>
         <Text style={[styles.title, { color: colors.textPrimary }]}>{proposal.content}</Text>
         <Text style={[styles.caption, { color: colors.textSecondary }]}>使う範囲：{proposal.scope.orchestratorId === orchestratorId ? `${chatName}限定` : "別のチャット限定"}</Text>
         <Text style={[styles.caption, { color: colors.textSecondary }]}>適用：{proposal.conditions || "条件なし"}</Text>
@@ -87,19 +89,37 @@ function LearningUpdateReview({ updates, knowledge, chatName, orchestratorId, bu
       </View>
       {proposal.reason ? <Text style={[styles.caption, { color: colors.textSecondary }]}>{proposal.reason}</Text> : null}
       {!ready ? <View style={[styles.notice, { backgroundColor: tones.warning.background }]}><Ionicons name="alert-circle-outline" size={18} color={tones.warning.foreground} />
-        <Text style={[styles.noticeCopy, { color: tones.warning.foreground }]}>更新元が変わっています。この案は適用できません。</Text></View> : null}
+        <Text style={[styles.noticeCopy, { color: tones.warning.foreground }]}>{sourceChanged ? "この提案のあとに、使用中の内容が更新されました。現在の内容をもとに提案し直してください。" : "現在の内容に対する提案と確認できないため、適用できません。"}</Text></View> : null}
       {error ? <Text accessibilityRole="alert" style={[styles.caption, { color: tones.danger.foreground }]}>{error}</Text> : null}
+      <LearningDisclosure title="版の詳細">
+        {sources.map((source, index) => {
+          const expectedVersion = proposal.replacementVersions?.find((entry) => entry.id === proposal.replaces![index])?.version;
+          return <Text key={proposal.replaces![index]} style={[styles.caption, { color: colors.textMuted }]}>
+            {source ? `${knowledgeState(source.status)}：第${source.version}版` : "現在の内容：未確認"} · 提案の対象：{expectedVersion ? `第${expectedVersion}版` : "版不明"}
+          </Text>;
+        })}
+      </LearningDisclosure>
       <Pressable accessibilityRole="button" accessibilityLabel={`この案に更新: ${proposal.content}`} disabled={busy || !ready}
         onPress={() => void choose("adopt")} style={[styles.primaryAction, { backgroundColor: colors.primaryAction, opacity: busy || !ready ? 0.4 : 1 }]}>
         <Ionicons name="checkmark" size={19} color={colors.textOnAccent} /><Text style={[styles.actionText, { color: colors.textOnAccent }]}>この案に更新</Text></Pressable>
       <Pressable accessibilityRole="button" accessibilityLabel={`この案を見送る: ${proposal.content}`} disabled={busy}
         onPress={() => void choose("reject")} style={styles.secondaryAction}><Text style={[styles.actionText, { color: colors.textSecondary }]}>この案を見送る</Text></Pressable>
+      {updates.length > 1 ? <LearningDisclosure title={`過去の提案 · ${updates.length - 1}件（新しい順）`}>
+        {updates.slice(1).map((entry) => <Pressable key={entry.id} accessibilityRole="button" accessibilityLabel={`過去の提案を見る: ${entry.content}`}
+          accessibilityState={{ selected: entry.id === proposal.id }} disabled={busy}
+          onPress={() => { setSelection({ id: entry.id, version: entry.version }); setError(""); }} style={[styles.historyEntry, { borderColor: colors.borderSubtle }]}>
+          <View style={styles.comparisonHeading}><Ionicons name="time-outline" size={16} color={colors.textMuted} />
+            <Text style={[styles.caption, { color: colors.textMuted }]}>提案：{humanLearningDate(entry.createdAt || "")}</Text></View>
+          <Text style={[styles.title, { color: colors.textSecondary }]}>{entry.content}</Text>
+        </Pressable>)}
+      </LearningDisclosure> : null}
+      {history.length ? <LearningChangeHistory changes={history} requests={[]} /> : null}
     </> : <Text style={[styles.caption, { color: colors.textSecondary }]}>この更新案は状態が変わりました。閉じて確認してください。</Text>}
   </LearningDetailsModal>;
 }
 
-export function LearningKnowledgeCard({ item, knowledge, chatName, selecting, selected, busy, onSelect, manage }: {
-  item: LearningKnowledge; knowledge: LearningKnowledge[]; chatName: string; selecting: boolean; selected: boolean; busy: boolean;
+export function LearningKnowledgeCard({ item, knowledge, changes = [], chatName, selecting, selected, busy, onSelect, manage }: {
+  item: LearningKnowledge; knowledge: LearningKnowledge[]; changes?: LearningChange[]; chatName: string; selecting: boolean; selected: boolean; busy: boolean;
   onSelect: () => void; manage: Manage;
 }) {
   const { theme: { colors, tones } } = useVisualTheme();
@@ -107,7 +127,9 @@ export function LearningKnowledgeCard({ item, knowledge, chatName, selecting, se
   const [reviewing, setReviewing] = useState(false);
   const references = { items: [{ id: item.id, version: item.version }] };
   const isUpdate = item.status === "candidate" && item.action !== "retire" && Boolean(item.replaces?.length);
-  const updates = item.status === "active" ? knowledge.filter((entry) => learningUpdateSources(entry, knowledge).some((source) => source.id === item.id)) : [];
+  const relatedSources = item.status === "active" ? [item] : isUpdate ? learningUpdateSources(item, knowledge) : [];
+  const updates = knowledge.filter((entry) => learningUpdateSources(entry, knowledge).some((source) => relatedSources.some((current) => current.id === source.id)))
+    .sort((a, b) => (Date.parse(b.createdAt || "") || 0) - (Date.parse(a.createdAt || "") || 0));
   const adoptLabel = item.action === "retire" ? "停止案を適用" : "更新内容を見る";
   const switchable = item.action !== "retire" && (item.status === "active" || item.status === "retired" || item.status === "candidate" && !item.replaces?.length);
   const restore = () => Alert.alert("この方針を再開", "置き換え先の方針が使用中なら停止し、この方針を再開します。", [
@@ -145,6 +167,7 @@ export function LearningKnowledgeCard({ item, knowledge, chatName, selecting, se
           {item.skill ? <Ionicons name="library-outline" size={13} color={colors.textMuted} accessibilityLabel="専用スキル" /> : null}
         </View>
         <Text style={[styles.title, { color: colors.textPrimary }]}>{item.content}</Text>
+        {item.status === "active" || item.status === "candidate" ? <Text style={[styles.caption, { color: colors.textMuted }]}>{item.status === "active" ? `更新：${humanLearningDate(item.updatedAt || item.createdAt || "")}` : `提案：${humanLearningDate(item.createdAt || "")}`}</Text> : null}
         {item.action === "retire" && item.status === "candidate" ? <Text style={[styles.caption, { color: colors.textSecondary }]}>既存の方針を停止する案</Text>
           : item.conditions ? <Text style={[styles.caption, { color: colors.textSecondary }]}>適用：{item.conditions}</Text> : null}
       </View>
@@ -166,11 +189,11 @@ export function LearningKnowledgeCard({ item, knowledge, chatName, selecting, se
         <Ionicons name={expanded ? "chevron-up" : "chevron-down"} size={13} color={colors.textMuted} />
       </Pressable>
     </View>
-    {!selecting && updates.length ? <Pressable accessibilityRole="button" accessibilityLabel={`更新案${updates.length}件を見る: ${item.content}`}
+    {!selecting && item.status === "active" && updates.length ? <Pressable accessibilityRole="button" accessibilityLabel={`更新案${updates.length}件を見る: ${item.content}`}
       disabled={busy} onPress={() => setReviewing(true)} style={[styles.updateEntry, { borderColor: colors.borderSubtle }]}>
       <Ionicons name="arrow-up-circle-outline" size={20} color={colors.accent} />
-      <Text style={[styles.updateLabel, { color: colors.accent }]}>更新案</Text>
-      <View style={[styles.updateCount, { backgroundColor: tones.info.background }]}><Text style={[styles.comparisonLabel, { color: colors.accent }]}>{updates.length}</Text></View>
+      <View style={styles.content}><Text style={[styles.updateLabel, { color: colors.accent }]}>{Number.isFinite(Date.parse(updates[0].createdAt || "")) ? "最新の提案を見る" : "提案を見る"}</Text>
+        <Text style={[styles.caption, { color: colors.textMuted }]}>{humanLearningDate(updates[0].createdAt || "")}</Text></View>
       <Ionicons name="chevron-forward" size={16} color={colors.accent} />
     </Pressable> : null}
     {expanded ? <View style={[styles.details, { borderColor: colors.borderSubtle }]}>
@@ -195,7 +218,7 @@ export function LearningKnowledgeCard({ item, knowledge, chatName, selecting, se
       </View>
     </View> : null}
   </View>
-    {reviewing ? <LearningUpdateReview updates={isUpdate ? [item] : updates} knowledge={knowledge} chatName={chatName} orchestratorId={item.scope.orchestratorId} busy={busy} manage={manage} onClose={() => setReviewing(false)} /> : null}
+    {reviewing ? <LearningUpdateReview updates={isUpdate && !updates.some((entry) => entry.id === item.id) ? [item] : updates} initialProposal={isUpdate ? item : updates[0]} latestProposalId={updates[0]?.id} knowledge={knowledge} changes={changes} chatName={chatName} orchestratorId={item.scope.orchestratorId} busy={busy} manage={manage} onClose={() => setReviewing(false)} /> : null}
   </>;
 }
 const styles = StyleSheet.create({
@@ -204,12 +227,11 @@ const styles = StyleSheet.create({
   metadata: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 },
   status: { fontSize: 11, fontWeight: "600", paddingHorizontal: 7, paddingVertical: 3, borderRadius: 5 },
   updateEntry: { flexDirection: "row", alignItems: "center", minHeight: 48, gap: 8, borderTopWidth: StyleSheet.hairlineWidth, marginTop: 2, paddingTop: 6 },
-  updateLabel: { flex: 1, fontSize: 13, fontWeight: "600" }, updateCount: { minWidth: 24, height: 23, paddingHorizontal: 6, borderRadius: 12, alignItems: "center", justifyContent: "center" },
-  proposalNavigation: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" }, navigationButton: { minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center" },
+  updateLabel: { fontSize: 13, fontWeight: "600" }, historyEntry: { borderLeftWidth: 2, paddingLeft: 12, paddingVertical: 8, gap: 5 },
   comparisonPanel: { borderWidth: 1, borderRadius: 14, padding: 16, gap: 12 }, original: { gap: 5 }, comparisonArrow: { alignItems: "center" },
   primaryAction: { minHeight: 48, borderRadius: 12, alignItems: "center", justifyContent: "center", flexDirection: "row", gap: 7 },
   secondaryAction: { minHeight: 44, alignItems: "center", justifyContent: "center" }, notice: { padding: 12, borderRadius: 10, flexDirection: "row", gap: 7 }, noticeCopy: { flex: 1, fontSize: 12, lineHeight: 18 },
-  comparisonHeading: { flexDirection: "row", alignItems: "center", gap: 5 }, comparisonLabel: { fontSize: 11, fontWeight: "600" },
+  comparisonHeading: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 5 }, comparisonLabel: { fontSize: 11, fontWeight: "600" },
   title: { fontSize: 14, fontWeight: "500", lineHeight: 22 }, caption: { fontSize: 12, lineHeight: 18 },
   switchRow: { width: "100%", flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12, paddingVertical: 5 }, switchCopy: { flex: 1, gap: 3 },
   actions: { flexDirection: "row", flexWrap: "wrap", columnGap: 18 },

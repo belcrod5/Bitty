@@ -520,7 +520,9 @@ test("stale updates stay linked from the current card without becoming applicabl
   expect(screen.queryByText(update.content)).toBeNull();
   await fireEvent.press(screen.getByLabelText(`更新案1件を見る: ${original.content}`));
   expect(screen.getByText(update.content)).toBeTruthy();
-  expect(screen.getByText("現在：第4版 · この案の元：第3版")).toBeTruthy();
+  expect(screen.getByText("以前の内容への提案")).toBeTruthy();
+  await fireEvent.press(screen.getByLabelText("版の詳細"));
+  expect(screen.getByText("使用中：第4版 · 提案の対象：第3版")).toBeTruthy();
   expect(screen.getByLabelText(`この案に更新: ${update.content}`)).toBeDisabled();
   await fireEvent.press(screen.getByLabelText("学習の更新を閉じる"));
   await fireEvent.press(screen.getByLabelText("学習: 確認待ち"));
