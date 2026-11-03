@@ -286,6 +286,16 @@ test("invalid, unconfirmed and cancelled edits never change stored learning", as
   assert.deepEqual((await f.service.readItems({ orchestratorId: randomUUID() })).items, []);
 });
 
+test("chat offers return the actual normalized preview without saving", async (t) => {
+  const f = await fixture(t); let [item] = await seed(f);
+  await f.service.decide({ items: [ref(item)], action: "adopt" }); item = (await f.service.status()).candidates[0];
+  const file = path.join(f.workspace, "orchestrator-learning/state.json"); const before = await fs.readFile(file, "utf8");
+  const result = await f.service.editItem({ orchestratorId: "main", ...ref(item), changes: { content: "  Proposed correction  " } }, async () => "offer");
+  assert.equal(result.changed, false); assert.equal(result.confirmationRequired, true); assert.equal(result.item.version, item.version);
+  assert.deepEqual(result.preview.changes, [{ field: "content", before: item.content, after: "Proposed correction" }]);
+  assert.equal(await fs.readFile(file, "utf8"), before);
+});
+
 test("edits recheck the version after confirmation and cannot overwrite a concurrent edit", async (t) => {
   const f = await fixture(t); let [item] = await seed(f);
   await f.service.decide({ items: [ref(item)], action: "adopt" }); item = (await f.service.status()).candidates[0];

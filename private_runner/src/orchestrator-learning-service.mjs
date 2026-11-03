@@ -791,7 +791,11 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
         .filter((key) => before.skill?.[key] !== after.skill?.[key])
         .map((key) => ({ field: `skill.${key}`, before: before.skill[key], after: after.skill[key] }))
         : JSON.stringify(before[field]) === JSON.stringify(after[field]) ? [] : [{ field, before: before[field], after: after[field] }]);
-      if (signal?.aborted || await confirm({ id, name: before.content, version, newVersion: after.version, changes: diff }) !== true)
+      const preview = { id, name: before.content, version, newVersion: after.version, changes: diff };
+      const decision = signal?.aborted ? false : await confirm(preview);
+      if (decision === "offer") return { changed: false, confirmationRequired: true, preview,
+        contextRevision: state.contextRevision, item: before };
+      if (decision !== true)
         throw fail("learning_edit_declined", "Learning was not changed; read the item again before proposing another edit");
       return exclusive(async () => {
         const current = state.candidates.find((item) => item.id === id && item.version === version

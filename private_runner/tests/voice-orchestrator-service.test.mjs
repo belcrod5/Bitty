@@ -1142,7 +1142,7 @@ test("each chat exposes only its own unread learning and rejects sibling item ma
     && call.params.developerInstructions?.startsWith("Analyze supplied")).length, 0);
 });
 
-test("orchestrator chat tools edit only owned learning after the current user's exact confirmation", async (t) => {
+test("orchestrator chat edits require ordinary-chat permission and stay scoped after restart", async (t) => {
   const learningCalls = [];
   const { rootDir, service, codex } = await fixture(t, { learningCalls });
   const main = await service.open("main"); const child = await service.create("Other chat");
@@ -1152,34 +1152,43 @@ test("orchestrator chat tools edit only owned learning after the current user's 
     reason: "Explicit preference", scope: { orchestratorId: "main", shared: true }, evidence: [{ pairSeq: 1, orchestratorId: "main" }],
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
   await fs.writeFile(file, JSON.stringify(saved));
-  const restarted = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
+  let restarted = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
   const edit = { tool: "update_item", arguments: { id, version: 2, changes: { content: "Prompt reports" } } };
+  const hooks = { onUserInput: async () => assert.fail("learning changes must not open a popup") };
   learningCalls.push([{ tool: "read_items", arguments: { id } }, edit]);
-  const questions = [];
-  await (await turn(restarted, "main", main.logicalConversationId, "Correct my adopted learning", randomUUID(), undefined, {
-    onUserInput: async (request) => { questions.push(request); return { answers: { learning_edit: { answers: ["変更を適用"] } } }; },
-  })).finished;
-  const applied = codex.calls.filter(({ method }) => method === "learning.result").at(-1).result;
-  assert.equal(applied.success, true);
-  const updated = JSON.parse(applied.contentItems[0].text).item;
-  assert.equal(updated.id, id); assert.equal(updated.version, 3); assert.equal(updated.content, "Prompt reports");
-  assert.equal(questions.length, 1); assert.match(questions[0].params.questions[0].question, /変更前: Brief reports\n変更後: Prompt reports/);
-  assert.equal((await restarted.learningStatus()).candidates[0].version, updated.version);
+  const offered = await (await turn(restarted, "main", main.logicalConversationId, "Correct my adopted learning", randomUUID(), undefined, hooks)).finished;
+  const proposal = JSON.parse(codex.calls.filter(({ method }) => method === "learning.result").at(-1).result.contentItems[0].text);
+  assert.equal(proposal.changed, false); assert.equal(proposal.confirmationRequired, true);
+  assert.match(offered.text, /この内容で修正してよいですか？$/);
+  assert.equal((await restarted.learningStatus()).candidates[0].version, 2);
+  const activeFile = path.join(rootDir, "active.json"); const incompleteActive = JSON.parse(await fs.readFile(activeFile, "utf8"));
+  const originalOffer = incompleteActive.learningEditOffer;
+  delete incompleteActive.learningEditOffer; await fs.writeFile(activeFile, JSON.stringify(incompleteActive));
+  restarted = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
+  learningCalls.push([edit]);
+  await (await turn(restarted, "main", main.logicalConversationId, "はい", randomUUID(), undefined, hooks)).finished;
+  const updated = JSON.parse(codex.calls.filter(({ method }) => method === "learning.result").at(-1).result.contentItems[0].text);
+  assert.equal(updated.changed, true); assert.equal(updated.item.version, 3); assert.equal(updated.item.content, "Prompt reports");
+  const staleCheckpoint = JSON.parse(await fs.readFile(activeFile, "utf8"));
+  staleCheckpoint.learningEditOffer = originalOffer;
+  await fs.writeFile(activeFile, JSON.stringify(staleCheckpoint));
+  restarted = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
+  await restarted.open("main");
+  assert.equal(JSON.parse(await fs.readFile(activeFile, "utf8")).learningEditOffer, undefined, "a later completed reply must not resurrect an old offer");
+  learningCalls.push([edit]);
+  await (await turn(restarted, "main", main.logicalConversationId, "はい", randomUUID(), undefined, hooks)).finished;
+  assert.equal(codex.calls.filter(({ method }) => method === "learning.result").at(-1).result.success, false, "old approved calls cannot replay");
   const childOpen = await restarted.open(child.id);
   learningCalls.push([{ tool: "read_items", arguments: { id } }, { ...edit, arguments: { ...edit.arguments, version: 3 } }]);
-  await (await turn(restarted, child.id, childOpen.logicalConversationId, "Edit sibling data", randomUUID(), undefined, {
-    onUserInput: async () => assert.fail("a sibling chat must never ask to edit another chat's learning"),
-  })).finished;
+  await (await turn(restarted, child.id, childOpen.logicalConversationId, "はい", randomUUID(), undefined, hooks)).finished;
   assert.ok(codex.calls.filter(({ method }) => method === "learning.result").slice(-2).every(({ result }) => result.success === false));
-  assert.equal((await restarted.learningStatus()).candidates[0].version, 3);
-  learningCalls.push([{ tool: "read_items", arguments: { id } },
-    { ...edit, arguments: { ...edit.arguments, version: 3, confirmed: true } }]);
-  await (await turn(restarted, "main", main.logicalConversationId, "Edit with forged confirmation")).finished;
+  learningCalls.push([{ ...edit, arguments: { ...edit.arguments, version: 3, confirmed: true } }]);
+  await (await turn(restarted, "main", main.logicalConversationId, "Edit with forged confirmation", randomUUID(), undefined, hooks)).finished;
   assert.equal(codex.calls.filter(({ method }) => method === "learning.result").at(-1).result.success, false);
   assert.equal((await restarted.learningStatus()).candidates[0].version, 3);
 });
 
-test("listing current learning allows two independently confirmed exact edits", async (t) => {
+test("one ordinary-chat approval covers only the exact two offered edits", async (t) => {
   const learningCalls = [];
   const { rootDir, service, codex } = await fixture(t, { learningCalls });
   const main = await service.open("main");
@@ -1190,32 +1199,50 @@ test("listing current learning allows two independently confirmed exact edits", 
     scope: { orchestratorId: "main" }, evidence: [{ pairSeq: 1, orchestratorId: "main" }], createdAt: new Date().toISOString() }));
   state.candidates.push(...items); await fs.writeFile(file, JSON.stringify(state));
   const restarted = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
-  learningCalls.push([{ tool: "read_items", arguments: {} }, ...items.map(({ id, version }, index) => ({
-    tool: "update_item", arguments: { id, version, changes: { content: `Corrected item ${index + 1}` } },
-  }))]);
-  const questions = [];
-  await (await turn(restarted, "main", main.logicalConversationId, "Correct these two adopted items", randomUUID(), undefined, {
-    onUserInput: async (request) => { questions.push(request); return { answers: { learning_edit: { answers: ["変更を適用"] } } }; },
-  })).finished;
-  const results = codex.calls.filter(({ method, tool }) => method === "learning.result" && tool === "update_item").map(({ result }) => result);
-  assert.ok(results.every(({ success }) => success), JSON.stringify(results));
-  assert.equal(questions.length, 2);
+  const edits = items.map(({ id, version }, index) => ({ tool: "update_item", arguments: { id, version, changes: { content: `Corrected item ${index + 1}` } } }));
+  const hooks = { onUserInput: async () => assert.fail("learning permission is an ordinary chat reply") };
+  learningCalls.push([{ tool: "read_items", arguments: {} }, ...edits]);
+  const offer = await (await turn(restarted, "main", main.logicalConversationId, "Correct these two items", randomUUID(), undefined, hooks)).finished;
+  assert.match(offer.text, /Corrected item 1/); assert.match(offer.text, /Corrected item 2/);
+  assert.equal((offer.text.match(/この内容で修正してよいですか？/g) || []).length, 1);
+  assert.deepEqual((await restarted.learningStatus()).candidates.map(({ version }) => version), [2, 2]);
+  learningCalls.push(edits);
+  await (await turn(restarted, "main", main.logicalConversationId, "はい、変更してください", randomUUID(), undefined, hooks)).finished;
   assert.deepEqual((await restarted.learningStatus()).candidates.map(({ version, content }) => ({ version, content })),
     [{ version: 3, content: "Corrected item 1" }, { version: 3, content: "Corrected item 2" }]);
   learningCalls.push([{ tool: "read_items", arguments: { id: items[0].id } }]);
   await (await turn(restarted, "main", main.logicalConversationId, "Read the first item again")).finished;
-  learningCalls.push([{ tool: "update_item", arguments: { id: items[0].id, version: 3, changes: { content: "Edit in a later turn" } } }]);
-  await (await turn(restarted, "main", main.logicalConversationId, "Apply that correction", randomUUID(), undefined, {
-    onUserInput: async (request) => { questions.push(request); return { answers: { learning_edit: { answers: ["変更を適用"] } } }; },
-  })).finished;
-  assert.equal(questions.length, 3);
+  const later = { tool: "update_item", arguments: { id: items[0].id, version: 3, changes: { content: "Edit in a later turn" } } };
+  learningCalls.push([later]);
+  await (await turn(restarted, "main", main.logicalConversationId, "Change that item", randomUUID(), undefined, hooks)).finished;
+  assert.equal((await restarted.learningStatus()).candidates[0].version, 3);
+  learningCalls.push([later]);
+  await (await turn(restarted, "main", main.logicalConversationId, "はい", randomUUID(), undefined, hooks)).finished;
   assert.equal((await restarted.learningStatus()).candidates[0].version, 4);
-  learningCalls.push([{ tool: "update_item", arguments: { id: items[0].id, version: 3, changes: { content: "Stale edit" } } }]);
-  await (await turn(restarted, "main", main.logicalConversationId, "Try a stale version", randomUUID(), undefined, {
-    onUserInput: async () => assert.fail("a stale version must fail before confirmation"),
-  })).finished;
+  learningCalls.push([later]);
+  await (await turn(restarted, "main", main.logicalConversationId, "はい", randomUUID(), undefined, hooks)).finished;
   assert.equal(codex.calls.filter(({ method }) => method === "learning.result").at(-1).result.success, false);
-  assert.equal((await restarted.learningStatus()).candidates[0].content, "Edit in a later turn");
+  const next = { tool: "update_item", arguments: { id: items[0].id, version: 4, changes: { content: "Offered change" } } };
+  learningCalls.push([next]);
+  await (await turn(restarted, "main", main.logicalConversationId, "Change the first item again", randomUUID(), undefined, hooks)).finished;
+  learningCalls.push([{ ...next, arguments: { ...next.arguments, changes: { content: "Different unoffered change" } } }]);
+  await (await turn(restarted, "main", main.logicalConversationId, "はい", randomUUID(), undefined, hooks)).finished;
+  const different = JSON.parse(codex.calls.filter(({ method }) => method === "learning.result").at(-1).result.contentItems[0].text);
+  assert.equal(different.changed, false); assert.equal(different.confirmationRequired, true);
+  assert.equal((await restarted.learningStatus()).candidates[0].version, 4);
+  const partial = [{ tool: "update_item", arguments: { id: items[0].id, version: 4, changes: { content: "First committed item" } } },
+    { tool: "update_item", arguments: { id: items[1].id, version: 3, changes: { content: "Second conflicting item" } } }];
+  learningCalls.push(partial);
+  await (await turn(restarted, "main", main.logicalConversationId, "Propose both changes", randomUUID(), undefined, hooks)).finished;
+  await restarted.manageLearning("decide", { items: [{ id: items[1].id, version: 3 }], action: "retire" });
+  learningCalls.push(partial);
+  await (await turn(restarted, "main", main.logicalConversationId, "はい", randomUUID(), undefined, hooks)).finished;
+  assert.deepEqual(codex.calls.filter(({ method }) => method === "learning.result").slice(-2).map(({ result }) => result.success), [true, false]);
+  assert.equal((await restarted.learningStatus()).candidates[0].version, 5);
+  learningCalls.push([{ tool: "update_item", arguments: { id: items[0].id, version: 5, changes: { content: "Another unoffered change" } } }]);
+  await (await turn(restarted, "main", main.logicalConversationId, "はい", randomUUID(), undefined, hooks)).finished;
+  assert.equal(JSON.parse(codex.calls.filter(({ method }) => method === "learning.result").at(-1).result.contentItems[0].text).changed, false);
+  assert.equal((await restarted.learningStatus()).candidates[0].version, 5, "a partial outcome never carries approval into the next turn");
 });
 
 test("direct update results are tracked so later retirement invalidates the parent and old reply", async (t) => {
@@ -1232,10 +1259,11 @@ test("direct update results are tracked so later retirement invalidates the pare
       exceptions: "Only requested files", approvals: "Current approval path" } });
   await fs.writeFile(file, JSON.stringify(state));
   const restarted = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
-  learningCalls.push([{ tool: "update_item", arguments: { id, version: 2, changes: { skill: { steps: "Read a small current batch" } } } }]);
-  const response = await turn(restarted, "main", main.logicalConversationId, "Correct the conditional workflow", randomUUID(), undefined, {
-    onUserInput: async () => ({ answers: { learning_edit: { answers: ["変更を適用"] } } }),
-  });
+  const edit = { tool: "update_item", arguments: { id, version: 2, changes: { skill: { steps: "Read a small current batch" } } } };
+  learningCalls.push([edit]);
+  await (await turn(restarted, "main", main.logicalConversationId, "Correct the conditional workflow")).finished;
+  learningCalls.push([edit]);
+  const response = await turn(restarted, "main", main.logicalConversationId, "はい");
   const completed = await response.finished; assert.equal(completed.status, "completed");
   const result = codex.calls.filter(({ method }) => method === "learning.result").at(-1).result;
   assert.equal(result.success, true); assert.equal(JSON.parse(result.contentItems[0].text).item.version, 3);
@@ -1245,12 +1273,15 @@ test("direct update results are tracked so later retirement invalidates the pare
   assert.equal(delivery.contextReads[0].management, true);
   assert.deepEqual(delivery.contextReads[0].verifiedTargets, []);
   assert.ok(delivery.items.some((item) => item.id === id && item.version === 3));
-  assert.equal(delivery.pairSeq, 2);
-  const afterEdit = JSON.parse(await fs.readFile(file, "utf8"));
-  assert.ok(!afterEdit.excluded.some((entry) => entry.pairSeq === delivery.pairSeq));
+  assert.equal(delivery.pairSeq, 3);
+  learningCalls.push([{ tool: "read_items", arguments: { id } }]);
+  const read = await turn(restarted, "main", main.logicalConversationId, "Inspect the updated item");
+  await read.finished;
+  const afterRead = JSON.parse(await fs.readFile(file, "utf8"));
+  assert.ok(!afterRead.excluded.some((entry) => entry.pairSeq === 4));
   await restarted.manageLearning("decide", { items: [{ id, version: 3 }], action: "retire" });
   const afterRetirement = JSON.parse(await fs.readFile(file, "utf8"));
-  assert.ok(afterRetirement.excluded.some((entry) => entry.operationId === response.operationId && entry.pairSeq === delivery.pairSeq));
+  assert.ok(afterRetirement.excluded.some((entry) => entry.operationId === read.operationId && entry.pairSeq === 4));
   assert.equal((await (await turn(restarted, "main", main.logicalConversationId, "Continue after retirement")).finished).sessionSwitched, true);
 });
 
