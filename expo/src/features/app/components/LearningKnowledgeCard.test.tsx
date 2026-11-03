@@ -99,12 +99,33 @@ test.each(["missing", "changed", "retired", "unversioned", "scope"])("%s update 
   expect(manage).not.toHaveBeenCalled(); expect(screen.getByLabelText(`この案を見送る: ${update.content}`)).toBeEnabled(); await screen.unmount();
 });
 
-test("active source ignores stale, rejected, stopping and partially invalid merged updates", async () => {
+test("editing a source keeps its older proposal attached but prevents applying it", async () => {
+  const original = item({ id: "original", status: "active", version: 2, content: "元の方針" });
+  const update = item({ id: "update", version: 1, content: "第2版への更新案", replaces: [original.id], replacementVersions: [{ id: original.id, version: 2 }] });
+  const manage = jest.fn(async () => null);
+  const screen = await render(<LearningKnowledgeCard {...props} item={original} knowledge={[original, update]} manage={manage} />);
+  await fireEvent.press(screen.getByLabelText(`更新案1件を見る: ${original.content}`));
+  expect(screen.getByLabelText(`この案に更新: ${update.content}`)).toBeEnabled();
+  const edited = { ...original, version: 3, content: "会話から修正した方針" };
+  await screen.rerender(<LearningKnowledgeCard {...props} item={edited} knowledge={[edited, update]} manage={manage} />);
+  expect(screen.getByText(edited.content)).toBeTruthy();
+  expect(screen.getByText("現在：第3版 · この案の元：第2版")).toBeTruthy();
+  expect(screen.getByText(update.content)).toBeTruthy();
+  expect(screen.getByText("更新元が変わっています。この案は適用できません。")).toBeTruthy();
+  const control = screen.getByLabelText(`この案に更新: ${update.content}`);
+  expect(control).toBeDisabled(); await fireEvent.press(control);
+  expect(manage).not.toHaveBeenCalled();
+  await fireEvent.press(screen.getByLabelText("学習の更新を閉じる"));
+  expect(screen.getByLabelText(`更新案1件を見る: ${edited.content}`)).toBeTruthy();
+  await screen.unmount();
+});
+
+test("active source ignores rejected, stopping and partially invalid merged updates", async () => {
   const original = item({ id: "original", status: "active" });
   const update = item({ id: "update", replaces: [original.id], replacementVersions: [{ id: original.id, version: original.version }] });
   const screen = await render(<LearningKnowledgeCard {...props} item={original} knowledge={[original, update]} manage={jest.fn(async () => null)} />);
   expect(screen.getByLabelText(`更新案1件を見る: ${original.content}`)).toBeTruthy();
-  for (const extra of [{ status: "rejected" }, { action: "retire" as const }, { replacementVersions: [{ id: original.id, version: 2 }] }, { replaces: [original.id, "missing"] }]) {
+  for (const extra of [{ status: "rejected" }, { action: "retire" as const }, { scope: { orchestratorId: "another" } }, { replaces: [original.id, "missing"] }]) {
     await screen.rerender(<LearningKnowledgeCard {...props} item={original} knowledge={[original, { ...update, ...extra }]} manage={jest.fn(async () => null)} />);
     expect(screen.queryByLabelText(`更新案1件を見る: ${original.content}`)).toBeNull();
   }
