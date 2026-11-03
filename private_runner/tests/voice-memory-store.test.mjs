@@ -290,3 +290,69 @@ test("topic update can combine namespaced old evidence and new pair evidence", a
   await assert.rejects(store.publish(JSON.stringify({ index, topics: [{ name: "project.md",
     content: `- [確定] invalid [conversationId: ${randomUUID()} pairSeq: 1]\n` }] }), 2));
 });
+
+test("legacy raw gains only available event timestamps and resumes a partial upgrade", async (t) => {
+  const legacy = Array.from({ length: 12 }, (_, i) => pair(i + 1));
+  const { options, workspace } = await fixture(t, { eventPairs: legacy });
+  const eventPairs = legacy.slice(1).map((pair) => ({ ...pair,
+    userAt: "2026-11-03T01:00:00.000Z", assistantAt: "2026-11-03T01:01:00.000Z" }));
+  const raw = path.join(workspace, "voice-memory", "raw", options.conversationId);
+  const first = path.join(raw, "00000001-00000010.jsonl");
+  const second = path.join(raw, "00000011-00000020.jsonl");
+  const originalRename = fs.rename;
+  t.mock.method(fs, "rename", (from, to) => String(to) === second
+    ? Promise.reject(new Error("upgrade interrupted")) : originalRename(from, to));
+  await assert.rejects(openVoiceMemoryStore({ ...options, eventPairs }), /upgrade interrupted/);
+  assert.deepEqual((await fs.readFile(first, "utf8")).trim().split("\n").map(JSON.parse), [legacy[0], ...eventPairs.slice(0, 9)]);
+  assert.deepEqual((await fs.readFile(second, "utf8")).trim().split("\n").map(JSON.parse), legacy.slice(10));
+  t.mock.restoreAll();
+  const expected = [legacy[0], ...eventPairs];
+  const reopened = await openVoiceMemoryStore({ ...options, eventPairs });
+  assert.deepEqual(reopened.rawPairs, expected);
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(workspace, "voice-memory", "recent.json"), "utf8")), expected.slice(-10));
+  assert.deepEqual((await fs.readFile(second, "utf8")).trim().split("\n").map(JSON.parse), eventPairs.slice(-2));
+  t.mock.method(fs, "rename", (from, to) => String(to).endsWith(".jsonl")
+    ? Promise.reject(new Error("unchanged raw must not be rewritten")) : originalRename(from, to));
+  assert.deepEqual((await openVoiceMemoryStore({ ...options, eventPairs })).rawPairs, expected);
+});
+
+test("legacy uncommitted raw tail recovers original timestamps before replay", async (t) => {
+  const { options, store, workspace } = await fixture(t);
+  const originalRename = fs.rename;
+  t.mock.method(fs, "rename", (from, to) => String(to).endsWith("raw-state.json")
+    ? Promise.reject(new Error("range interrupted")) : originalRename(from, to));
+  await assert.rejects(store.appendPair(pair(1)), /range interrupted/);
+  t.mock.restoreAll();
+  const dated = { ...pair(1), userAt: "2026-11-03T01:00:00.000Z", assistantAt: "2026-11-03T01:02:00.000Z" };
+  const reopened = await openVoiceMemoryStore({ ...options, eventPairs: [dated] });
+  await reopened.appendPair(dated);
+  assert.deepEqual(reopened.rawPairs, [dated]);
+  const raw = path.join(workspace, "voice-memory", "raw", options.conversationId);
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(raw, "00000001-00000010.jsonl"), "utf8")), dated);
+  assert.equal(JSON.parse(await fs.readFile(path.join(raw, "raw-state.json"), "utf8")).lastPairSeq, 1);
+  assert.deepEqual((await openVoiceMemoryStore({ ...options, eventPairs: [dated] })).rawPairs, [dated]);
+});
+
+test("timestamp upgrade rejects conflicting evidence without rewriting earlier segments", async (t) => {
+  const legacy = Array.from({ length: 11 }, (_, i) => pair(i + 1));
+  const { options, workspace } = await fixture(t, { eventPairs: legacy });
+  const eventPairs = legacy.map((pair) => ({ ...pair,
+    userAt: "2026-11-03T01:00:00.000Z", assistantAt: "2026-11-03T01:01:00.000Z" }));
+  const raw = path.join(workspace, "voice-memory", "raw", options.conversationId);
+  const first = path.join(raw, "00000001-00000010.jsonl");
+  const second = path.join(raw, "00000011-00000020.jsonl");
+  const original = await fs.readFile(first, "utf8");
+  for (const fields of [
+    { user: "conflicting user" }, { assistant: "conflicting assistant" }, { unexpected: true },
+    { userAt: eventPairs[10].userAt },
+    { userAt: "2026-11-02T01:00:00.000Z", assistantAt: eventPairs[10].assistantAt },
+    { userAt: eventPairs[10].userAt, assistantAt: "2026-11-02T01:00:00.000Z" },
+    { userAt: null }, { assistantAt: "invalid" },
+  ]) {
+    const content = `${JSON.stringify({ ...legacy[10], ...fields })}\n`;
+    await fs.writeFile(second, content);
+    await assert.rejects(openVoiceMemoryStore({ ...options, eventPairs }), /differs from event|sequence is invalid/);
+    assert.equal(await fs.readFile(first, "utf8"), original);
+    assert.equal(await fs.readFile(second, "utf8"), content);
+  }
+});

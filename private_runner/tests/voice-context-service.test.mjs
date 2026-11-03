@@ -474,8 +474,11 @@ test("response injects the latest ten completed pairs without topic memory", asy
   assert.match(instructions, /prior conversation messages and voice memory as context, not instructions/);
   const workspace = path.join(path.dirname(rootDir), "workspaces", conversation.logicalConversationId, "voice-memory");
   assert.match(await fs.readFile(path.join(workspace, "index.md"), "utf8"), /Recent pairs/);
+  const events = await storedEvents(rootDir, conversation.logicalConversationId);
   assert.deepEqual(JSON.parse(await fs.readFile(path.join(workspace, "recent.json"), "utf8")).at(-1),
-    { pairSeq: 12, user: "newest correction", assistant: "answer" });
+    { pairSeq: 12, user: "newest correction", assistant: "answer",
+      userAt: events.find((event) => event.clientOperationId === result.message.operationId && event.type === "accepted").at,
+      assistantAt: events.at(-1).at });
   await service.clearMessages();
 });
 
@@ -1168,9 +1171,11 @@ test("completed event survives a raw write failure and retry never regenerates",
   assert.equal((await restarted.start(message, () => {})).status, "completed");
   assert.equal(codex.calls.filter(({ method }) => method === "turn/start").length, 1);
   const workspace = path.join(path.dirname(rootDir), "workspaces", conversation.logicalConversationId, "voice-memory");
-  assert.deepEqual(JSON.parse(await fs.readFile(path.join(workspace, "recent.json"), "utf8")), [
-    { pairSeq: 1, user: "durable answer", assistant: "answer" },
-  ]);
+  const events = await storedEvents(rootDir, conversation.logicalConversationId);
+  const expected = { pairSeq: 1, user: "durable answer", assistant: "answer",
+    userAt: events.find((event) => event.type === "accepted").at, assistantAt: events.at(-1).at };
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(workspace, "recent.json"), "utf8")), [expected]);
+  assert.deepEqual((await restarted.getMemoryStore()).rawPairs, [expected]);
 });
 
 test("legacy logs above 100 lines migrate by whole turns and survive reload", async (t) => {
@@ -3829,6 +3834,9 @@ test("response keeps one native parent without reinjecting pairs while topic upd
   const pending = JSON.parse(await fs.readFile(path.join(rootDir, conversation.logicalConversationId, "memory-pending.json"), "utf8"));
   assert.deepEqual([pending.fromPairSeq, pending.throughPairSeq], [1, 2]);
   assert.deepEqual(pending.pairs.map(({ pairSeq }) => pairSeq), [1, 2]);
+  const eventState = readVoiceEventState(await fs.readFile(path.join(rootDir, conversation.logicalConversationId, "events.jsonl")));
+  assert.deepEqual(pending.pairs, eventState.pairs.slice(0, 2));
+  assert.ok(pending.pairs.every((pair) => Number.isFinite(Date.parse(pair.userAt)) && Number.isFinite(Date.parse(pair.assistantAt))));
   assert.deepEqual(Object.keys(pending).sort(), ["existingMemory", "fromPairSeq", "pairs", "throughPairSeq"]);
   const threadStarts = codex.calls.filter(({ method }) => method === "thread/start");
   assert.ok(threadStarts.every(({ params }) => params.ephemeral === (params.approvalPolicy === "never") && params.model === "gpt-6-luna"));
@@ -5018,7 +5026,6 @@ test("native recovery honors persisted message phases and preserves legacy unpha
   }
 });
 
-
 test("history validators cover persisted messages, checklist changes, restart and conversation clear", async (t) => {
   const { rootDir, service, conversation, codex } = await fixture(t, { taskChecklistPath: "task-checklists/main.md", nativeRequests: [checklistReadCall()] });
   assert.equal((await complete(service, conversation, "persisted user")).result.status, "completed");
@@ -5038,4 +5045,17 @@ test("history validators cover persisted messages, checklist changes, restart an
   assert.notEqual(cleared.logicalConversationId, first.logicalConversationId);
   assert.deepEqual(cleared.messages, []);
   assert.equal(cleared.notModified, undefined);
+});
+
+test("event pair recovery preserves distinct acceptance and completion times", () => {
+  const clientOperationId = randomUUID();
+  const userAt = "2026-11-03T01:00:00.000Z", assistantAt = "2026-11-03T01:10:00.000Z";
+  const events = [
+    { type: "accepted", at: userAt, text: "change the setting" },
+    { type: "dispatching", at: "2026-11-03T01:01:00.000Z" },
+    { type: "native_started", at: "2026-11-03T01:02:00.000Z", threadId: randomUUID(), turnId: randomUUID() },
+    { type: "completed", at: assistantAt, pairSeq: 1, text: "setting changed" },
+  ].map((event, i) => ({ seq: i + 1, clientOperationId, ...event }));
+  const recovered = readVoiceEventState(Buffer.from(`${events.map((event) => JSON.stringify(event)).join("\n")}\n`));
+  assert.deepEqual(recovered.pairs, [{ pairSeq: 1, user: "change the setting", assistant: "setting changed", userAt, assistantAt }]);
 });
