@@ -227,7 +227,7 @@ test("bulk adoption is atomic, conditional and scoped; withdrawal changes digest
   assert.deepEqual(removed.excludedPairSeqs, item.evidence.map(({ pairSeq }) => pairSeq));
 });
 
-test("confirmed chat edits preserve identity, evidence and publication while retiring old context", async (t) => {
+test("direct edits preserve identity, evidence and publication while retiring old context", async (t) => {
   const f = await fixture(t); let [item] = await seed(f);
   await f.service.decide({ items: [ref(item)], action: "adopt" }); item = (await f.service.status()).candidates[0];
   await f.service.decide({ items: [ref(item)], action: "publish" }); item = (await f.service.status()).candidates[0];
@@ -236,14 +236,7 @@ test("confirmed chat edits preserve identity, evidence and publication while ret
   assert.equal(read.items[0].evidence, undefined); assert.equal(read.items[0].scope, undefined);
   assert.deepEqual(Object.keys((await f.service.readItems({ orchestratorId: "main" })).items[0]).sort(), ["content", "id", "kind", "version"]);
   const changes = { content: "  Faster reports  ", skill: { steps: "Read a small current batch and report promptly" }, matchTerms: [" report ", "report"] };
-  const result = await f.service.editItem({ orchestratorId: "main", ...ref(item), changes }, async (preview) => {
-    assert.equal((await f.service.status()).candidates[0].version, old.version, "confirmation never holds the store lock or changes the item");
-    assert.deepEqual(preview, { id: old.id, name: old.content, version: old.version, newVersion: old.version + 1,
-      changes: [{ field: "content", before: old.content, after: "Faster reports" }, { field: "matchTerms", before: [], after: ["report"] },
-        { field: "skill.steps", before: old.skill.steps, after: "Read a small current batch and report promptly" }] });
-    changes.content = "Mutation after preview"; preview.changes[0].after = "Mutation of preview";
-    return true;
-  });
+  const result = await f.service.editItem({ orchestratorId: "main", ...ref(item), changes });
   assert.equal(result.changed, true); assert.equal(result.item.version, old.version + 1);
   assert.equal(result.item.content, "Faster reports"); assert.equal(result.item.conditions, old.conditions);
   assert.deepEqual(result.item.skill.exceptions, old.skill.exceptions);
@@ -264,7 +257,7 @@ test("confirmed chat edits preserve identity, evidence and publication while ret
   assert.equal(f.calls.length, analysisCalls, "direct edits do not invoke the learning model");
 });
 
-test("invalid, unconfirmed and cancelled edits never change stored learning", async (t) => {
+test("invalid, stale, foreign and cancelled edits never change stored learning", async (t) => {
   const f = await fixture(t); let [item] = await seed(f);
   await f.service.decide({ items: [ref(item)], action: "adopt" }); item = (await f.service.status()).candidates[0];
   const args = { orchestratorId: "main", ...ref(item), changes: { content: "New content" } };
@@ -272,43 +265,29 @@ test("invalid, unconfirmed and cancelled edits never change stored learning", as
   for (const changes of [{}, { content: item.content }, { scope: { shared: true } }, { confirmed: true },
     { content: "あ".repeat(1000) }, { conditions: "" }, { targetConstraints: Array(9).fill("x") },
     { skill: { steps: "" } }, { skill: { extra: "not a field" } }]) {
-    await assert.rejects(f.service.editItem({ ...args, changes }, () => assert.fail("invalid edits must not request confirmation")), { code: "learning_request_invalid" });
+    await assert.rejects(f.service.editItem({ ...args, changes }), { code: "learning_request_invalid" });
   }
-  for (const confirm of [async () => false, async () => undefined])
-    await assert.rejects(f.service.editItem(args, confirm), { code: "learning_edit_declined" });
-  await assert.rejects(f.service.editItem(args, async () => { throw new Error("channel closed"); }), /channel closed/);
-  await assert.rejects(f.service.editItem(args), { code: "learning_request_invalid" });
-  const controller = new AbortController();
-  await assert.rejects(f.service.editItem({ ...args, signal: controller.signal }, async () => { controller.abort(); return true; }), { code: "learning_conflict" });
-  await assert.rejects(f.service.editItem({ ...args, version: item.version + 1 }, () => assert.fail("stale edits must not ask")), { code: "learning_conflict" });
-  await assert.rejects(f.service.editItem({ ...args, orchestratorId: randomUUID() }, () => assert.fail("foreign edits must not ask")), { code: "learning_conflict" });
+  const controller = new AbortController(); controller.abort();
+  await assert.rejects(f.service.editItem({ ...args, signal: controller.signal }), { code: "learning_conflict" });
+  await assert.rejects(f.service.editItem({ ...args, version: item.version + 1 }), { code: "learning_conflict" });
+  await assert.rejects(f.service.editItem({ ...args, orchestratorId: randomUUID() }), { code: "learning_conflict" });
   assert.equal(await fs.readFile(file, "utf8"), before);
   assert.deepEqual((await f.service.readItems({ orchestratorId: randomUUID() })).items, []);
 });
 
-test("chat offers return the actual normalized preview without saving", async (t) => {
+test("concurrent edits to the same version cannot overwrite each other", async (t) => {
   const f = await fixture(t); let [item] = await seed(f);
   await f.service.decide({ items: [ref(item)], action: "adopt" }); item = (await f.service.status()).candidates[0];
-  const file = path.join(f.workspace, "orchestrator-learning/state.json"); const before = await fs.readFile(file, "utf8");
-  const result = await f.service.editItem({ orchestratorId: "main", ...ref(item), changes: { content: "  Proposed correction  " } }, async () => "offer");
-  assert.equal(result.changed, false); assert.equal(result.confirmationRequired, true); assert.equal(result.item.version, item.version);
-  assert.deepEqual(result.preview.changes, [{ field: "content", before: item.content, after: "Proposed correction" }]);
-  assert.equal(await fs.readFile(file, "utf8"), before);
-});
-
-test("edits recheck the version after confirmation and cannot overwrite a concurrent edit", async (t) => {
-  const f = await fixture(t); let [item] = await seed(f);
-  await f.service.decide({ items: [ref(item)], action: "adopt" }); item = (await f.service.status()).candidates[0];
-  const first = f.service.editItem({ orchestratorId: "main", ...ref(item), changes: { content: "Stale edit" } }, async () => {
-    await f.service.editItem({ orchestratorId: "main", ...ref(item), changes: { content: "Current edit" } }, async () => true);
-    return true;
-  });
-  await assert.rejects(first, { code: "learning_conflict" });
+  const results = await Promise.allSettled([
+    f.service.editItem({ orchestratorId: "main", ...ref(item), changes: { content: "Current edit" } }),
+    f.service.editItem({ orchestratorId: "main", ...ref(item), changes: { content: "Stale edit" } }),
+  ]);
+  assert.equal(results[0].status, "fulfilled"); assert.equal(results[1].reason.code, "learning_conflict");
   const current = (await f.service.status()).candidates[0];
   assert.equal(current.content, "Current edit"); assert.equal(current.version, item.version + 1);
   assert.equal(current.published, undefined, "editing must not publish an unpublished procedure");
   await f.service.decide({ items: [ref(current)], action: "retire" });
-  await assert.rejects(f.service.editItem({ orchestratorId: "main", ...ref((await f.service.status()).candidates[0]), changes: { content: "Revive" } }, async () => true), { code: "learning_conflict" });
+  await assert.rejects(f.service.editItem({ orchestratorId: "main", ...ref((await f.service.status()).candidates[0]), changes: { content: "Revive" } }), { code: "learning_conflict" });
 });
 
 test("an older replacement candidate cannot overwrite a directly edited source version", async (t) => {
@@ -323,20 +302,20 @@ test("an older replacement candidate cannot overwrite a directly edited source v
   await f.service.requestChange({ items: [ref(item)], instruction: "Improve this procedure" }); await f.service.runDue();
   const replacement = (await f.service.status()).candidates.find(({ status }) => status === "candidate");
   assert.ok(replacement);
-  await f.service.editItem({ orchestratorId: "main", ...ref(item), changes: { content: "Current exact edit" } }, async () => true);
+  await f.service.editItem({ orchestratorId: "main", ...ref(item), changes: { content: "Current exact edit" } });
   await assert.rejects(f.service.decide({ items: [ref(replacement)], action: "adopt" }), { code: "learning_conflict" });
   assert.equal((await f.service.status()).candidates.find(({ status }) => status === "active").content, "Current exact edit");
 });
 
-test("published edits stop before confirmation when either retained artifact was modified", async (t) => {
+test("published edits reject changes when either retained artifact was modified", async (t) => {
   const f = await fixture(t); let [item] = await seed(f);
   await f.service.decide({ items: [ref(item)], action: "adopt" }); item = (await f.service.status()).candidates[0];
   await f.service.decide({ items: [ref(item)], action: "publish" }); item = (await f.service.status()).candidates[0];
-  await f.service.editItem({ orchestratorId: "main", ...ref(item), changes: { content: "First edit" } }, async () => true);
+  await f.service.editItem({ orchestratorId: "main", ...ref(item), changes: { content: "First edit" } });
   item = (await f.service.status()).candidates[0];
   const file = path.join(f.workspace, "orchestrator-learning", "skills", item.id, `${item.previousPublished.version}.md`);
   await fs.writeFile(file, "manually changed");
-  await assert.rejects(f.service.editItem({ orchestratorId: "main", ...ref(item), changes: { content: "Second edit" } }, () => assert.fail("unsafe publication must not ask")), { code: "learning_skill_modified" });
+  await assert.rejects(f.service.editItem({ orchestratorId: "main", ...ref(item), changes: { content: "Second edit" } }), { code: "learning_skill_modified" });
   assert.equal((await f.service.status()).candidates[0].version, item.version);
   assert.equal(await fs.readFile(file, "utf8"), "manually changed");
 });
@@ -352,7 +331,7 @@ for (const readAfterEdit of [false, true]) {
     const snapshot = await f.service.readItems({ orchestratorId: "main", id: item.id });
     const record = () => f.service.recordRead({ operationId, callId: "management", skill: { selection: snapshot, management: true } });
     if (!readAfterEdit) { await record(); await f.service.observe([f.pair(2, { clientOperationId: operationId })]); }
-    await f.service.editItem({ orchestratorId: "main", ...ref(item), changes: { content: "Corrected workflow" } }, async () => true);
+    await f.service.editItem({ orchestratorId: "main", ...ref(item), changes: { content: "Corrected workflow" } });
     if (readAfterEdit) { await record(); await f.service.observe([f.pair(2, { clientOperationId: operationId })]); }
     const context = await f.service.retrieve({ orchestratorId: "main", input: "Continue" });
     assert.ok(context.excludedPairSeqs.includes(2), "the assistant's old-content pair must not be replayed");
@@ -370,7 +349,7 @@ test("capacity failures leave no new published artifact and another edit can be 
   await f.service.close(); f.args.limits.stateBytes = Buffer.byteLength(before) + 200;
   const service = await f.open();
   for (const content of ["First edit", "Second edit"]) {
-    await assert.rejects(service.editItem({ orchestratorId: "main", ...ref(item), changes: { content } }, async () => true), { code: "learning_capacity" });
+    await assert.rejects(service.editItem({ orchestratorId: "main", ...ref(item), changes: { content } }), { code: "learning_capacity" });
     assert.deepEqual(await fs.readdir(path.join(f.workspace, "orchestrator-learning/skills", item.id)), [`${item.version}.md`]);
     assert.equal(await fs.readFile(file, "utf8"), before);
   }
@@ -386,11 +365,11 @@ test("a failed state rename rolls back the new artifact without blocking a diffe
     if (target === file) throw Object.assign(new Error("State rename failed"), { code: "EIO" });
     return rename(source, target);
   });
-  await assert.rejects(f.service.editItem({ orchestratorId: "main", ...ref(item), changes: { content: "First edit" } }, async () => true), { code: "EIO" });
+  await assert.rejects(f.service.editItem({ orchestratorId: "main", ...ref(item), changes: { content: "First edit" } }), { code: "EIO" });
   mocked.mock.restore();
   assert.equal(await fs.readFile(file, "utf8"), before);
   assert.deepEqual(await fs.readdir(path.join(f.workspace, "orchestrator-learning/skills", item.id)), [`${item.version}.md`]);
-  const result = await f.service.editItem({ orchestratorId: "main", ...ref(item), changes: { content: "Second edit" } }, async () => true);
+  const result = await f.service.editItem({ orchestratorId: "main", ...ref(item), changes: { content: "Second edit" } });
   assert.equal(result.item.content, "Second edit");
 });
 
@@ -405,7 +384,7 @@ test("a directory sync failure after rename preserves the saved version and its 
     return file === directory && args[0] === "r" ? { close: () => handle.close(),
       sync: async () => { throw Object.assign(new Error("Directory sync failed"), { code: "EIO" }); } } : handle;
   });
-  await assert.rejects(f.service.editItem({ orchestratorId: "main", ...ref(item), changes: { content: "Saved edit" } }, async () => true), { code: "EIO" });
+  await assert.rejects(f.service.editItem({ orchestratorId: "main", ...ref(item), changes: { content: "Saved edit" } }), { code: "EIO" });
   mocked.mock.restore();
   const saved = (await f.service.status()).candidates[0];
   assert.equal(saved.content, "Saved edit"); assert.equal(saved.version, item.version + 1);
@@ -429,10 +408,10 @@ for (const failedOperation of ["writeFile", "sync"]) {
           if (failedOperation === "writeFile") throw Object.assign(new Error("Artifact write failed"), { code: "EIO" });
         }, sync: async () => { throw Object.assign(new Error("Artifact sync failed"), { code: "EIO" }); } };
     });
-    await assert.rejects(f.service.editItem({ orchestratorId: "main", ...ref(item), changes: { content: "First edit" } }, async () => true), { code: "EIO" });
+    await assert.rejects(f.service.editItem({ orchestratorId: "main", ...ref(item), changes: { content: "First edit" } }), { code: "EIO" });
     mocked.mock.restore();
     assert.deepEqual(await fs.readdir(folder), [`${item.version}.md`]);
-    const result = await f.service.editItem({ orchestratorId: "main", ...ref(item), changes: { content: "Second edit" } }, async () => true);
+    const result = await f.service.editItem({ orchestratorId: "main", ...ref(item), changes: { content: "Second edit" } });
     assert.equal(result.item.content, "Second edit");
   });
 }

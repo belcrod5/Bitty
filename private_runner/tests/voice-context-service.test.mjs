@@ -4717,7 +4717,7 @@ test("existing learning parents receive editing tools once outstanding child wor
   const { rootDir, service, conversation, codex } = await fixture(t, { learningContext });
   await complete(service, conversation, "first");
   const file = path.join(rootDir, "active.json"); const active = JSON.parse(await fs.readFile(file, "utf8"));
-  active.nativeLearningToolsVersion = 1;
+  active.nativeLearningToolsVersion = 3;
   await fs.writeFile(file, JSON.stringify(active));
   const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient, learningContext, hasOutstandingActivity: () => busy });
   busy = true;
@@ -4727,7 +4727,7 @@ test("existing learning parents receive editing tools once outstanding child wor
   busy = false;
   assert.equal((await complete(restarted, conversation, "Edit learning")).result.sessionSwitched, true);
   const saved = JSON.parse(await fs.readFile(file, "utf8"));
-  assert.equal(saved.nativeLearningToolsVersion, 3); assert.equal(saved.nativeLearningEnabled, undefined);
+  assert.equal(saved.nativeLearningToolsVersion, 4); assert.equal(saved.nativeLearningEnabled, undefined);
   const installed = codex.calls.filter(({ method, params }) => method === "thread/start" && !params.ephemeral).at(-1).params.dynamicTools;
   assert.deepEqual(installed.find(({ name }) => name === "orchestrator_learning").tools.slice(-2).map(({ name }) => name), ["read_items", "update_item"]);
   const current = createVoiceContextService({ rootDir, createClient: codex.createClient, learningContext });
@@ -4745,10 +4745,10 @@ test("editing tool migration version survives a lost native turn start response"
   await fs.writeFile(file, JSON.stringify(active));
   const legacy = createVoiceContextService({ rootDir, createClient: codex.createClient, learningContext });
   assert.equal((await complete(legacy, conversation, "Edit learning")).result.status, "unknown");
-  assert.equal(JSON.parse(await fs.readFile(file, "utf8")).pendingDispatch.learningToolsVersion, 3);
+  assert.equal(JSON.parse(await fs.readFile(file, "utf8")).pendingDispatch.learningToolsVersion, 4);
   const recovered = createVoiceContextService({ rootDir, createClient: codex.createClient, learningContext });
   await recovered.open();
-  assert.equal(JSON.parse(await fs.readFile(file, "utf8")).nativeLearningToolsVersion, 3);
+  assert.equal(JSON.parse(await fs.readFile(file, "utf8")).nativeLearningToolsVersion, 4);
   assert.equal((await complete(recovered, conversation, "Continue")).result.sessionSwitched, undefined);
   assert.equal(codex.calls.filter(({ method, params }) => method === "thread/start" && !params.ephemeral).length, 2);
 });
@@ -4807,43 +4807,22 @@ test("successful skill reads are recorded after slow delivery, and forged batch 
   assert.equal(codex.calls.find(({ method, request }) => method === "native/result" && request.params.callId === "bad-proposal").result.success, false);
 });
 
-for (const answer of ["はい", "はい、変更してください", "OKです", "いいえ", "「はい」", "はい、ただし変更はしないで"]) {
-  test(`learning edits require the next direct chat permission (${answer})`, async (t) => {
-    const id = randomUUID(); let writes = 0;
-    const snapshot = { id, version: 2, kind: "preference", content: "Brief reports", conditions: "Reports" };
-    const calls = [
-      { tool: "read_items", arguments: { id }, callId: "read" },
-      { tool: "update_item", arguments: { id, version: 2, changes: { content: "Prompt reports" } }, callId: "edit" },
-    ].map((request) => ({ ...request, method: "item/tool/call", namespace: "orchestrator_learning", threadId: "root", turnId: "root" }));
-    const { service, conversation, codex, rootDir } = await fixture(t, { nativeRequests: calls,
-      learningContext: { retrieve: async () => ({ contextRevision: 1, selectedDigest: "none", items: [], instruction: "", excludedPairSeqs: [] }),
-        delivered: async () => {}, recordRead: async () => {}, tool: async ({ tool, confirm }) => {
-          if (tool === "read_items") return { contextRevision: 1, items: [snapshot] };
-          const preview = { id, name: snapshot.content, version: 2, newVersion: 3,
-            changes: [{ field: "content", before: snapshot.content, after: "Prompt reports" }] };
-          const decision = await confirm(preview);
-          if (decision === "offer") return { changed: false, confirmationRequired: true, preview, contextRevision: 1, item: snapshot };
-          assert.equal(decision, true); writes++;
-          return { changed: true, contextRevision: 2, item: { ...snapshot, content: "Prompt reports", version: 3 } };
-        } } });
-    const deltas = [];
-    const hooks = { onText: (text) => deltas.push(text), onUserInput: async () => assert.fail("learning permission belongs in ordinary chat") };
-    const first = await complete(service, conversation, "Edit my adopted learning", randomUUID(), async () => "decline", hooks);
-    assert.equal(first.result.status, "completed"); assert.equal(writes, 0);
-    assert.match(first.result.text, /Brief reports → Prompt reports/);
-    assert.match(first.result.text, /この内容で修正してよいですか？$/);
-    assert.equal(deltas.join(""), first.result.text, "stream and durable final text must contain the same question");
-    const offer = JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8")).learningEditOffer;
-    assert.equal(offer.previews[0].id, id);
-    const second = await complete(service, conversation, answer, randomUUID(), async () => "decline", hooks);
-    const accepted = ["はい", "はい、変更してください", "OKです"].includes(answer);
-    assert.equal(second.result.status, "completed"); assert.equal(writes, accepted ? 1 : 0);
-    const result = JSON.parse(codex.calls.filter(({ method, request }) => method === "native/result" && request.params.callId === "edit").at(-1).result.contentItems[0].text);
-    assert.equal(result.changed, accepted);
-    const exposed = JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8")).learningSnapshot;
-    assert.deepEqual(exposed.items, [{ id, version: 2 }, ...(writes ? [{ id, version: 3 }] : [])]);
+test("direct learning update results remain tracked without an approval callback", async (t) => {
+  const id = randomUUID(); const proofs = [];
+  const request = { method: "item/tool/call", namespace: "orchestrator_learning", threadId: "root", turnId: "root",
+    tool: "update_item", callId: "update", arguments: { id, version: 2, changes: { content: "Approved update" } } };
+  const { rootDir, service, conversation, codex } = await fixture(t, { nativeRequests: [request],
+    learningContext: { retrieve: async () => ({ contextRevision: 1, selectedDigest: "none", items: [], instruction: "", excludedPairSeqs: [] }),
+      delivered: async () => {}, recordRead: async (proof) => proofs.push(proof),
+      tool: async () => ({ changed: true, contextRevision: 2, item: { id, version: 3, content: "Approved update" } }) } });
+  await complete(service, conversation, "Apply the changes we discussed", randomUUID(), async () => "decline", {
+    onUserInput: async () => assert.fail("learning updates must not open a popup"),
   });
-}
+  const result = codex.calls.find(({ method }) => method === "native/result").result;
+  assert.equal(JSON.parse(result.contentItems[0].text).item.version, 3);
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8")).learningSnapshot.items, [{ id, version: 3 }]);
+  assert.equal(proofs[0].skill.management, true); assert.equal(proofs[0].skill.selection.items[0].version, 3);
+});
 
 test("learning management output cannot prove task targets", async (t) => {
   const id = randomUUID(); const tools = [];
@@ -4862,80 +4841,6 @@ test("learning management output cannot prove task targets", async (t) => {
   assert.deepEqual(tools.map(({ tool }) => tool), ["read_items", "read_items"]);
   assert.equal(codex.calls.find(({ method, request }) => method === "native/result" && request.params.callId === "forged-target").result.success, false);
 });
-
-test("a duplicate learning update call cannot register the proposal twice", async (t) => {
-  const id = randomUUID(); let updates = 0;
-  const request = { method: "item/tool/call", namespace: "orchestrator_learning", threadId: "root", turnId: "root",
-    tool: "update_item", callId: "same-update", arguments: { id, version: 2, changes: { content: "New" } } };
-  const { service, conversation, codex } = await fixture(t, { nativeRequests: [request, request],
-    learningContext: { retrieve: async () => ({ contextRevision: 1, selectedDigest: "none", items: [], instruction: "", excludedPairSeqs: [] }),
-      delivered: async () => {}, recordRead: async () => {}, tool: async ({ confirm }) => {
-        updates++;
-        const preview = { id, name: "Brief", version: 2, newVersion: 3, changes: [{ field: "content", before: "Brief", after: "New" }] };
-        assert.equal(await confirm(preview), "offer");
-        return { changed: false, confirmationRequired: true, preview, contextRevision: 1, item: { id, version: 2, content: "Brief" } };
-      } } });
-  await complete(service, conversation, "Update learning", randomUUID(), async () => "decline", {
-    onUserInput: async () => assert.fail("learning must not open a popup"),
-  });
-  assert.equal(updates, 1);
-  assert.deepEqual(codex.calls.filter(({ method }) => method === "native/result").map(({ result }) => result.success), [true, false]);
-});
-
-test("learning permission expires after an intervening reply and conversation clearing", async (t) => {
-  const id = randomUUID(); let writes = 0;
-  const request = { method: "item/tool/call", namespace: "orchestrator_learning", threadId: "root", turnId: "root",
-    tool: "update_item", callId: "offer", arguments: { id, version: 2, changes: { content: "New" } } };
-  const nativeRequests = [request];
-  const { rootDir, service, conversation } = await fixture(t, { nativeRequests,
-    learningContext: { retrieve: async () => ({ contextRevision: 1, selectedDigest: "none", items: [], instruction: "", excludedPairSeqs: [] }),
-      delivered: async () => {}, recordRead: async () => {}, tool: async ({ confirm }) => {
-        const preview = { id, name: "Brief", version: 2, newVersion: 3, changes: [{ field: "content", before: "Brief", after: "New" }] };
-        if (await confirm(preview) === true) writes++;
-        return { changed: false, confirmationRequired: true, preview, contextRevision: 1, item: { id, version: 2, content: "Brief" } };
-      } } });
-  await complete(service, conversation, "Propose an edit");
-  nativeRequests.length = 0;
-  await complete(service, conversation, "Unrelated question");
-  nativeRequests.push(request);
-  await complete(service, conversation, "はい");
-  assert.equal(writes, 0, "old permission cannot skip an intervening user reply");
-  await service.clearMessages();
-  assert.equal(JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8")).learningEditOffer, undefined);
-  const cleared = await service.open();
-  await complete(service, cleared, "はい");
-  assert.equal(writes, 0, "another logical conversation cannot accept the old offer");
-});
-
-for (const failure of ["failed", "interrupted"]) {
-  test(`a ${failure} proposal turn cannot authorize a later yes`, async (t) => {
-    const id = randomUUID(); let offered = false; let release; let writes = 0; let first = true;
-    const request = { method: "item/tool/call", namespace: "orchestrator_learning", threadId: "root", turnId: "root",
-      tool: "update_item", callId: "offer", arguments: { id, version: 2, changes: { content: "New" } },
-      beforeCompleted: async () => {
-        if (failure === "interrupted" && first) { first = false; await new Promise((resolve) => { release = resolve; }); }
-      } };
-    const { rootDir, service, conversation } = await fixture(t, { nativeRequests: [request], finishOnInterrupt: true,
-      ...(failure === "failed" ? { regularTurnStatus: "failed" } : {}),
-      learningContext: { retrieve: async () => ({ contextRevision: 1, selectedDigest: "none", items: [], instruction: "", excludedPairSeqs: [] }),
-        delivered: async () => {}, recordRead: async () => {}, tool: async ({ confirm }) => {
-          const preview = { id, name: "Brief", version: 2, newVersion: 3, changes: [{ field: "content", before: "Brief", after: "New" }] };
-          if (await confirm(preview) === true) writes++;
-          offered = true;
-          return { changed: false, confirmationRequired: true, preview, contextRevision: 1, item: { id, version: 2, content: "Brief" } };
-        } } });
-    const operationId = randomUUID(); const pending = complete(service, conversation, "Propose an edit", operationId);
-    if (failure === "interrupted") {
-      await waitFor(() => offered && release);
-      await service.interrupt(conversation.logicalConversationId, operationId);
-      release();
-    }
-    assert.equal((await pending).result.status, failure);
-    assert.equal(JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8")).learningEditOffer, undefined);
-    await complete(service, conversation, "はい");
-    assert.equal(writes, 0);
-  });
-}
 
 test("target-specific context preserves the parent until its exposure is invalidated", async (t) => {
   const item = { id: randomUUID(), version: 2, content: "Repository-specific report style" };
