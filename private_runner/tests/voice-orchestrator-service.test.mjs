@@ -1487,3 +1487,44 @@ test("conditional orchestrator metadata stays valid across counts, clears and re
   assert.notEqual(deleted.etag, selected.etag);
   assert.deepEqual(deleted.orchestrators.map(({ id }) => id), ["main"]);
 });
+
+test("copied inactive IDs route to own retained records without adopting or repeatedly replacing the native parent", async (t) => {
+  const learningCalls = [];
+  const { rootDir, service, codex } = await fixture(t, { learningCalls });
+  const main = await service.open("main"); const child = await service.create("Other chat");
+  const file = path.join(rootDir, "workspace", "orchestrator-learning/state.json");
+  const state = JSON.parse(await fs.readFile(file, "utf8"));
+  const items = ["candidate", "rejected", "retired"].map((status) => ({ id: randomUUID(), version: 1,
+    status, kind: "preference", content: `Synthetic ${status} item`, conditions: "Only reports", reason: "Synthetic request",
+    scope: { orchestratorId: "main", shared: true }, evidence: [{ pairSeq: 1, orchestratorId: "main" }],
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }));
+  state.candidates.push(...items); await fs.writeFile(file, JSON.stringify(state));
+  const restarted = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
+  learningCalls.push(items.map(({ id }) => ({ tool: "read_items", arguments: { id } })));
+  const read = await turn(restarted, "main", main.logicalConversationId, "Inspect these copied learning IDs");
+  assert.equal((await read.finished).status, "completed");
+  const results = codex.calls.filter(({ method }) => method === "learning.result").slice(-3);
+  assert.ok(results.every(({ result }) => result.success));
+  assert.deepEqual(results.map(({ result }) => JSON.parse(result.contentItems[0].text).items[0].status), items.map(({ status }) => status));
+  const saved = (await restarted.learningStatus()).candidates;
+  assert.deepEqual(saved.map(({ id, version, status, content }) => ({ id, version, status, content })), items.map(({ id, version, status, content }) => ({ id, version, status, content })));
+  const active = JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8"));
+  assert.deepEqual(active.learningSnapshot.items, items.map(({ id, version, status }) => ({ id, version, status })));
+  const delivery = (await restarted.learningDelivery({ orchestratorId: "main", operationId: read.operationId })).delivery;
+  assert.deepEqual(delivery.items, []); assert.deepEqual(delivery.inheritedItems, []);
+  assert.deepEqual(delivery.contextReads.map((entry) => entry.items[0].status), items.map(({ status }) => status));
+  assert.ok(delivery.contextReads.every((entry) => entry.management === true));
+  const continued = await turn(restarted, "main", main.logicalConversationId, "Continue inspecting");
+  assert.equal((await continued.finished).sessionSwitched, undefined);
+  const nextDelivery = (await restarted.learningDelivery({ orchestratorId: "main", operationId: continued.operationId })).delivery;
+  assert.deepEqual(nextDelivery.items, []); assert.deepEqual(nextDelivery.inheritedItems, []);
+  const other = await restarted.open(child.id);
+  learningCalls.push([{ tool: "read_items", arguments: { id: items[0].id } }]);
+  await (await turn(restarted, child.id, other.logicalConversationId, "Inspect a foreign copied ID")).finished;
+  assert.equal(codex.calls.filter(({ method }) => method === "learning.result").at(-1).result.success, false);
+  await restarted.manageLearning("forget", { items: [{ id: items[0].id, version: items[0].version }] });
+  const afterForget = await turn(restarted, "main", main.logicalConversationId, "Continue after forgetting");
+  assert.equal((await afterForget.finished).sessionSwitched, true);
+  assert.equal((await restarted.learningDelivery({ orchestratorId: "main", operationId: read.operationId })).delivery, null);
+  assert.equal((await restarted.learningDelivery({ orchestratorId: "main", operationId: continued.operationId })).delivery, null);
+});

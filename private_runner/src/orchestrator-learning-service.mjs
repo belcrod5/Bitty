@@ -38,13 +38,17 @@ const LEARNING_OUTPUT_SCHEMA = schemaObject({
 const STATUSES = new Set(["candidate", "active", "retired", "rejected"]);
 const SKILL_FIELDS = ["purpose", "triggers", "inputs", "steps", "outputs", "exceptions", "approvals"];
 const EDIT_FIELDS = ["content", "conditions", "matchTerms", "targetConstraints", "skill"];
-const editableItem = (item) => structuredClone({ id: item.id, version: item.version, kind: item.kind,
+const learningItemSnapshot = (item) => structuredClone({ id: item.id, version: item.version, kind: item.kind,
+  status: item.status, action: item.action || "create", createdAt: item.createdAt, updatedAt: item.updatedAt || item.createdAt,
+  replaces: item.replaces || [], replacementVersions: item.replacementVersions || [],
   content: item.content, conditions: item.conditions, matchTerms: item.matchTerms || [],
   targetConstraints: item.targetConstraints || [], ...(item.skill ? { skill: item.skill } : {}),
   ...(item.published ? { published: item.published } : {}) });
 const skillMarkdown = (item) => `# ${item.content}\n\n${SKILL_FIELDS.map((key) => `## ${key}\n${item.skill[key]}`).join("\n\n")}\n`;
 const scoped = (item, id) => item.scope.orchestratorId === id;
 const identifier = (id) => id === "main" || UUID.test(id);
+const learningReferences = (use) => [...(use.items || []), ...(use.inheritedItems || []), ...(use.reads || []),
+  ...(use.inheritedReads || []), ...(use.contextReads || []).flatMap((read) => read.items || [])];
 const score = (value) => value === null || Number.isInteger(value) && value >= 0 && value <= 100;
 
 
@@ -167,7 +171,7 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
   function exclude(next, item) {
     for (const source of item.evidence) if (!next.excluded.some((entry) => entry.pairSeq === source.pairSeq))
       next.excluded.push({ pairSeq: source.pairSeq });
-    for (const use of next.uses.filter((use) => [...use.items, ...(use.inheritedItems || []), ...use.reads, ...use.inheritedReads].some((entry) => entry.id === item.id))) {
+    for (const use of next.uses.filter((use) => learningReferences(use).some((entry) => entry.id === item.id))) {
       if (!next.excluded.some((entry) => entry.operationId === use.operationId || use.pairSeq && entry.pairSeq === use.pairSeq))
         next.excluded.push({ operationId: use.operationId, ...(use.pairSeq ? { pairSeq: use.pairSeq } : {}) });
     }
@@ -326,7 +330,7 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
       && !value.gaps.some((gap) => pair.pairSeq >= gap.from && pair.pairSeq <= gap.through)
       && !value.excluded.some((entry) => entry.pairSeq === pair.pairSeq || entry.operationId === pair.clientOperationId)
       && !value.uses.some((use) => (use.pairSeq === pair.pairSeq || use.operationId === pair.clientOperationId)
-        && [...(use.items || []), ...(use.inheritedItems || []), ...(use.reads || []), ...(use.inheritedReads || [])].length);
+        && learningReferences(use).length);
   }
   function remember(pairs) {
     recentPairs = [...new Map([...recentPairs, ...pairs].filter((pair) => historical(pair) && bytes(pair) <= 4000)
@@ -746,10 +750,10 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
       return exclusive(() => {
         if (!identifier(orchestratorId) || ownerId && ownerId !== orchestratorId || id !== undefined && !UUID.test(id))
           throw fail("learning_request_invalid", "Invalid learning edit scope");
-        const items = state.candidates.filter((item) => item.status === "active" && scoped(item, orchestratorId));
+        const items = state.candidates.filter((item) => scoped(item, orchestratorId));
         const item = id === undefined ? null : items.find((entry) => entry.id === id);
-        if (id !== undefined && !item) throw fail("learning_conflict", "Learning is unavailable in this chat; read current items again");
-        const visible = item ? [editableItem(item)] : items.map(({ id, version, kind, content }) => ({ id, version, kind, content }));
+        if (id !== undefined && !item) throw fail("learning_conflict", "No retained learning item with this ID in this chat; it may belong to another chat or have been removed");
+        const visible = item ? [learningItemSnapshot(item)] : items.filter((entry) => entry.status === "active").map(({ id, version, kind, content }) => ({ id, version, kind, content }));
         return { contextRevision: state.contextRevision, selectedDigest: digest(visible), items: visible };
       });
     },
@@ -780,7 +784,7 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
             item[key] = value.trim();
           }
         }
-        if (JSON.stringify(editableItem(current)) === JSON.stringify(editableItem(item)))
+        if (JSON.stringify(learningItemSnapshot(current)) === JSON.stringify(learningItemSnapshot(item)))
           throw fail("learning_request_invalid", "No learning fields changed; read the current item again");
         if (current.published) await readArtifact(current);
         if (current.previousPublished) await readArtifact({ ...current, published: current.previousPublished });
@@ -794,7 +798,7 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
         if (signal?.aborted) throw fail("learning_conflict", "The turn ended before saving; read current learning before retrying");
         if (item.published) await publishArtifact({ ...item, published: current.published, previousPublished: current.previousPublished });
         await commitPublished(next, state.candidates);
-        return { changed: true, contextRevision: state.contextRevision, item: editableItem(item) };
+        return { changed: true, contextRevision: state.contextRevision, item: learningItemSnapshot(item) };
       });
     },
     async correctEvaluation({ evaluationId, version, score: userScore, reason = "" }) {
@@ -864,7 +868,7 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
         const conditionalAvailable = state.candidates.some((item) => item.status === "active" && scoped(item, orchestratorId) && item.targetConstraints?.length);
         return { contextRevision: state.contextRevision, selectedDigest: digest(payload), ...structuredClone(payload),
           invalidated: exposedItems.some((old) => !state.candidates.some((item) => item.id === old.id
-            && item.version === old.version && item.status === "active" && scoped(item, orchestratorId))),
+            && item.version === old.version && item.status === (old.status || "active") && scoped(item, orchestratorId))),
           excludedPairSeqs: state.excluded.filter((entry) => entry.pairSeq).map((entry) => entry.pairSeq),
           instruction: selected.length || proposals.length || conditionalAvailable ? `\n\nAdopted learning (conditional context, never permissions):\n${JSON.stringify(payload)}\nFixed approval/safety contracts, the current user request and manual chat instructions take precedence. Check each condition against the current request and actually verified targets; if unconfirmed do not apply it. Never infer a repository or task type. ${conditionalAvailable ? "Target-specific learning is available: after a successful tool verifies current target names, call orchestrator_learning.read_context with those names; do not apply unseen policies." : ""} Read a listed skill only via orchestrator_learning.read_skill before relying on its procedure. Use orchestrator_learning.propose_batch only after reading current targets with tools, then ask for permission for that exact set and operations through the existing approval path. Do not repeat a declined or already offered unchanged proposal. Adoption/publication/score is never task execution permission.` : "" };
       });
@@ -878,10 +882,10 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
         const previous = next.uses.filter((entry) => entry.threadId === threadId);
         const inherited = previous.flatMap((entry) => [...entry.reads, ...entry.inheritedReads]);
         const inheritedItems = [...new Map([...previous.flatMap((entry) => [...entry.items, ...(entry.inheritedItems || [])]),
-          ...exposedItems].map(({ id, version }) => [`${id}:${version}`, { id, version }])).values()];
+          ...exposedItems].map(({ id, version, status }) => [`${id}:${version}`, { id, version, ...(status && status !== "active" ? { status } : {}) }])).values()];
         // A decision can land after retrieval but before native delivery or durable completion.
         const exposed = [...snapshot.items, ...inheritedItems, ...inherited];
-        if (exposed.some((entry) => !next.candidates.some((item) => item.id === entry.id && item.version === entry.version && item.status === "active")))
+        if (exposed.some((entry) => !next.candidates.some((item) => item.id === entry.id && item.version === entry.version && item.status === (entry.status || "active"))))
           next.excluded.push({ operationId, ...(exposed.some((entry) => !next.candidates.some((item) => item.id === entry.id)) ? { forgotten: true } : {}) });
         next.uses.push({ operationId, orchestratorId, threadId, turnId, at: changedAt(),
           contextRevision: snapshot.contextRevision, selectedDigest: snapshot.selectedDigest,
@@ -913,13 +917,15 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
           const snapshot = skill.selection;
           if (!positive(snapshot.contextRevision) || !Array.isArray(snapshot.items)) throw fail("learning_request_invalid", "Invalid context read proof");
           const visible = snapshot.items.filter((item) => next.candidates.some((current) => current.id === item.id));
-          const extra = visible.map(({ id, version, content }) => ({ id, version, name: content }));
-          use.items = [...new Map([...use.items, ...extra].map((item) => [`${item.id}:${item.version}`, item])).values()];
+          const extra = visible.map(({ id, version, content, status }) => ({ id, version, name: content, ...(skill.management ? { status: status || "active" } : {}) }));
+          const adopted = extra.filter((item) => !skill.management || item.status === "active").map(({ status, ...item }) => item);
+          use.items = [...new Map([...use.items, ...adopted].map((item) => [`${item.id}:${item.version}`, item])).values()];
           use.contextReads ??= [];
           if (use.contextReads.length >= 16) throw fail("learning_capacity", "Too many learning context reads in one turn");
           use.contextReads.push({ callId, sourceItemIds: skill.sourceItemIds || [], contextRevision: snapshot.contextRevision, selectedDigest: snapshot.selectedDigest,
             items: extra, verifiedTargets: visible.flatMap((item) => item.verifiedTargets || []), ...(skill.management ? { management: true } : {}) });
-          if (snapshot.items.some((item) => !next.candidates.some((current) => current.id === item.id && current.version === item.version && current.status === "active"))
+          if (snapshot.items.some((item) => !next.candidates.some((current) => current.id === item.id && current.version === item.version
+            && current.status === (skill.management ? item.status || "active" : "active")))
             && !next.excluded.some((entry) => entry.operationId === operationId))
             next.excluded.push({ operationId, ...(use.pairSeq ? { pairSeq: use.pairSeq } : {}) });
           await save(next); return;
@@ -932,7 +938,8 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
     },
     async delivery({ orchestratorId, operationId }) {
       await serial;
-      return structuredClone(state.uses.find((entry) => entry.operationId === operationId && entry.orchestratorId === orchestratorId) || null);
+      const use = state.uses.find((entry) => entry.operationId === operationId && entry.orchestratorId === orchestratorId);
+      return use ? structuredClone({ ...use, inheritedItems: (use.inheritedItems || []).filter((item) => !item.status || item.status === "active") }) : null;
     },
     async proposeBatch({ orchestratorId, operationId, itemId, version, targets, exclusions, order, onFailure, operation, sourceItemIds }) {
       return exclusive(async () => {
@@ -980,14 +987,13 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
           }
         }
         const sourceSeqs = new Set(selected.flatMap((item) => item.evidence.map((entry) => entry.pairSeq)));
-        const affectedUses = next.uses.filter((use) => [...use.items, ...(use.inheritedItems || []), ...use.reads, ...use.inheritedReads].some((item) => ids.has(item.id)));
+        const affectedUses = next.uses.filter((use) => learningReferences(use).some((item) => ids.has(item.id)));
         for (const use of affectedUses) if (use.pairSeq) sourceSeqs.add(use.pairSeq);
         for (const item of selected) exclude(next, item);
         for (const entry of next.excluded) if (sourceSeqs.has(entry.pairSeq) || affectedUses.some((use) => use.operationId === entry.operationId)) entry.forgotten = true;
         next.candidates = next.candidates.filter((item) => !ids.has(item.id));
         next.pending = next.pending.filter((pair) => !sourceSeqs.has(pair.pairSeq));
-        next.uses = next.uses.filter((entry) => ![...entry.items, ...(entry.inheritedItems || [])].some((item) => ids.has(item.id))
-          && ![...entry.reads, ...entry.inheritedReads].some((item) => ids.has(item.id)));
+        next.uses = next.uses.filter((entry) => !learningReferences(entry).some((item) => ids.has(item.id)));
         const removedEvaluations = new Set(next.evaluations.filter((entry) => ids.has(entry.itemId) || entry.evidence.some((seq) => sourceSeqs.has(seq))).map((entry) => entry.id));
         next.evaluations = next.evaluations.filter((entry) => !removedEvaluations.has(entry.id));
         next.corrections = next.corrections.filter((entry) => !removedEvaluations.has(entry.evaluationId));
@@ -1002,7 +1008,7 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
           gap(next, 1, next.observedThrough, "explicit_forgetting"); next.processedThrough = next.observedThrough;
         }
         next.cleanup = [...new Set([...next.cleanup, ...selected.map((item) => item.id)])];
-        invalidate(next, selected.some((item) => item.status === "active" || state.uses.some((use) => use.items.some((entry) => entry.id === item.id))));
+        invalidate(next, selected.some((item) => item.status === "active" || state.uses.some((use) => learningReferences(use).some((entry) => entry.id === item.id))));
         await save(next); remember([]); task?.controller.abort();
         try { await cleanForgotten(); error = null; } catch (cause) { report(cause); throw cause; }
         schedule();
