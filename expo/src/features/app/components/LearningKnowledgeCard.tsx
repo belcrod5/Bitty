@@ -2,6 +2,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useState } from "react";
 import { Alert, Pressable, StyleSheet, Switch, Text, View } from "react-native";
 import { useVisualTheme } from "../theme/VisualThemeContext";
+import { setStringAsync } from "../clipboard";
 import { humanLearningDate, knowledgeState, type LearningChange } from "./learningDashboardData";
 import { LearningDetailsModal } from "./LearningDetailsModal";
 import { LearningChangeHistory } from "./LearningChangeHistory";
@@ -32,6 +33,26 @@ export function canApplyLearningProposal(item: LearningKnowledge, knowledge: Lea
   if (!item.replaces?.length) return item.action !== "retire";
   const sources = learningProposalSources(item, knowledge);
   return sources.length > 0 && sources.every((source) => item.replacementVersions?.some((entry) => entry.id === source.id && entry.version === source.version));
+}
+
+function LearningItemReference({ id, label, version }: { id: string; label: string; version?: number }) {
+  const { theme: { colors, tones } } = useVisualTheme();
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const copy = async () => {
+    try { setCopyState(await setStringAsync(id) ? "copied" : "failed"); }
+    catch { setCopyState("failed"); }
+  };
+  return <View style={styles.reference}>
+    <View style={styles.referenceRow}>
+      <Text style={[styles.comparisonLabel, { color: colors.textSecondary }]}>{label}</Text>
+      {Number.isSafeInteger(version) && version! > 0 ? <Text style={[styles.versionBadge, { color: colors.textSecondary, borderColor: colors.borderSubtle }]}>v{version}</Text> : null}
+      <Pressable accessibilityRole="button" accessibilityLabel={`${label}をコピー: ${id}`} onPress={() => void copy()} style={styles.copyButton}>
+        <Ionicons name={copyState === "copied" ? "checkmark-outline" : "copy-outline"} size={14} color={colors.accent} />
+        <Text accessibilityLiveRegion="polite" style={[styles.caption, { color: colors.accent }]}>{copyState === "copied" ? "コピー済み" : "コピー"}</Text>
+      </Pressable>
+    </View>
+    {copyState === "failed" ? <Text accessibilityRole="alert" style={[styles.caption, { color: tones.danger.foreground }]}>コピーできませんでした</Text> : null}
+  </View>;
 }
 
 function LearningUpdateReview({ updates, initialProposal, historyMode, knowledge, changes, chatName, orchestratorId, busy, manage, onClose }: {
@@ -81,12 +102,23 @@ function LearningUpdateReview({ updates, initialProposal, historyMode, knowledge
         onPress={() => void choose("reject")} style={styles.secondaryAction}><Text style={[styles.actionText, { color: colors.textSecondary }]}>見送る</Text></Pressable>
       {error ? <Text accessibilityRole="alert" style={[styles.caption, { color: tones.danger.foreground }]}>{error}</Text> : null}
       <LearningDisclosure title="詳細">
+        <LearningItemReference key={proposal.id} id={proposal.id} label="提案ID" version={proposal.version} />
         {!ready ? <Text style={[styles.caption, { color: colors.textMuted }]}>現在の内容には適用できない提案です。</Text> : null}
         <Text style={[styles.caption, { color: colors.textMuted }]}>使う範囲：{proposal.scope.shared ? "全チャット" : proposal.scope.orchestratorId === orchestratorId ? `${chatName}限定` : "別のチャット限定"}</Text>
-        {sources.map((source, index) => <Text key={proposal.replaces![index]} style={[styles.caption, { color: colors.textMuted }]}>
-          {source ? `${knowledgeState(source.status)}：第${source.version}版 · 更新：${humanLearningDate(source.updatedAt || source.createdAt || "")} · ${source.scope.shared ? "全チャット" : source.scope.orchestratorId === orchestratorId ? `${chatName}限定` : "別のチャット限定"}` : "現在の内容：未確認"} · 提案の対象：{proposal.replacementVersions?.find((entry) => entry.id === proposal.replaces![index])?.version || "版不明"}
-        </Text>)}
-        {fields.filter((field) => proposal.skill || sources.some((source) => source?.skill) || !Object.values(SKILL_LABELS).includes(field.label)).map((field) => <View key={field.label} style={styles.original}>
+        {sources.map((source, index) => {
+          const id = proposal.replaces![index];
+          const targetVersion = proposal.replacementVersions?.find((entry) => entry.id === id)?.version;
+          return <View key={id} style={styles.reference}>
+            {sources.length > 1 && source ? <Text numberOfLines={1} style={[styles.caption, { color: colors.textSecondary }]}>{source.content}</Text> : null}
+            <LearningItemReference id={id} label={source ? `${knowledgeState(source.status)}の学習ID` : "対象の学習ID"} version={source?.version} />
+            <View style={styles.metadata}>
+              <Text style={[styles.caption, { color: colors.textMuted }]}>提案の対象</Text>
+              <Text style={[styles.versionBadge, { color: colors.textMuted, borderColor: colors.borderSubtle }]}>{Number.isSafeInteger(targetVersion) && targetVersion! > 0 ? `v${targetVersion}` : "版不明"}</Text>
+            </View>
+            <Text style={[styles.caption, { color: colors.textMuted }]}>{source ? `更新：${humanLearningDate(source.updatedAt || source.createdAt || "")} · ${source.scope.shared ? "全チャット" : source.scope.orchestratorId === orchestratorId ? `${chatName}限定` : "別のチャット限定"}` : "現在の内容：未確認"}</Text>
+          </View>;
+        })}
+        {fields.filter((field) => proposal.skill || sources.some((source) => source?.skill) || !Object.values(SKILL_LABELS).includes(field.label)).map((field) => <View key={field.label} style={[styles.detailField, { borderColor: colors.borderSubtle }]}>
           <Text style={[styles.comparisonLabel, { color: colors.textMuted }]}>{field.label}</Text>
           {field.before.some((value) => value !== field.after) ? <Text style={[styles.caption, { color: colors.textSecondary }]}>{`${field.before.join("\n＋\n")}\n↓\n${field.after}`}</Text>
             : <Text style={[styles.caption, { color: colors.textSecondary }]}>{field.after}</Text>}
@@ -197,9 +229,10 @@ export function LearningKnowledgeCard({ item, knowledge, changes = [], chatName,
       <Ionicons name="time-outline" size={18} color={colors.textMuted} /><Text style={[styles.actionText, { color: colors.textSecondary }]}>履歴</Text>
     </Pressable> : null}
     {expanded ? <View style={[styles.details, { borderColor: colors.borderSubtle }]}>
+      <LearningItemReference key={item.id} id={item.id} label={item.status === "candidate" ? "提案ID" : "学習ID"} version={item.version} />
       <Text style={[styles.title, { color: colors.textPrimary }]}>{item.content}</Text>
       {item.conditions ? <Text style={[styles.caption, { color: colors.textSecondary }]}>適用条件：{item.conditions}</Text> : null}
-      <Text style={[styles.caption, { color: colors.textSecondary }]}>{KIND_LABELS[item.kind] || item.kind} · 元のチャット：{chatName} · {item.scope.shared ? "全チャット" : `${chatName}限定`} · 第{item.version}版</Text>
+      <Text style={[styles.caption, { color: colors.textSecondary }]}>{KIND_LABELS[item.kind] || item.kind} · 元のチャット：{chatName} · {item.scope.shared ? "全チャット" : `${chatName}限定`}</Text>
       {item.replaces?.length ? <Text style={[styles.caption, { color: colors.textSecondary }]}>{item.action === "retire" ? "停止" : "更新"}対象：{item.replaces.length}件の既存方針</Text> : null}
       {item.matchTerms?.length ? <Text style={[styles.caption, { color: colors.textSecondary }]}>関連する言葉：{item.matchTerms.join("、")}</Text> : null}
       {item.targetConstraints?.length ? <Text style={[styles.caption, { color: colors.textSecondary }]}>ツールで確認する対象：{item.targetConstraints.join("、")}</Text> : null}
@@ -230,7 +263,7 @@ const styles = StyleSheet.create({
   status: { fontSize: 11, fontWeight: "600", paddingHorizontal: 7, paddingVertical: 3, borderRadius: 5 },
   updateEntry: { flexDirection: "row", alignItems: "center", minHeight: 48, gap: 8, borderTopWidth: StyleSheet.hairlineWidth, marginTop: 2, paddingTop: 6 },
   updateLabel: { fontSize: 13, fontWeight: "600" }, historyEntry: { borderLeftWidth: 2, paddingLeft: 12, paddingVertical: 8, gap: 5 },
-  comparisonPanel: { borderWidth: 1, borderRadius: 14, padding: 16, gap: 12 }, original: { gap: 5 }, comparisonArrow: { alignItems: "center" },
+  comparisonPanel: { borderWidth: 1, borderRadius: 14, padding: 16, gap: 12 }, detailField: { borderTopWidth: StyleSheet.hairlineWidth, paddingTop: 10, gap: 5 }, comparisonArrow: { alignItems: "center" },
   primaryAction: { minHeight: 48, borderRadius: 12, alignItems: "center", justifyContent: "center", flexDirection: "row", gap: 7 },
   secondaryAction: { minHeight: 44, alignItems: "center", justifyContent: "center" },
   comparisonLabel: { fontSize: 11, fontWeight: "600" },
@@ -238,5 +271,8 @@ const styles = StyleSheet.create({
   switchRow: { width: "100%", flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12, paddingVertical: 5 },
   actions: { flexDirection: "row", flexWrap: "wrap", columnGap: 18 },
   action: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 5 }, actionText: { fontSize: 13, fontWeight: "500" },
+  reference: { gap: 6 }, referenceRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 },
+  versionBadge: { borderWidth: 1, borderRadius: 5, paddingHorizontal: 7, paddingVertical: 3, fontSize: 11, fontWeight: "600" },
+  copyButton: { minHeight: 32, paddingHorizontal: 6, flexDirection: "row", alignItems: "center", gap: 4 },
   details: { borderTopWidth: StyleSheet.hairlineWidth, paddingTop: 12, gap: 8 },
 });

@@ -1,9 +1,12 @@
 jest.mock("../keyboardController", () => ({ KeyboardAwareScrollView: require("react-native").ScrollView, KeyboardAvoidingView: require("react-native").KeyboardAvoidingView }));
 jest.mock("@expo/vector-icons", () => ({ Ionicons: () => null }));
+jest.mock("../clipboard", () => ({ setStringAsync: jest.fn() }));
 import { Alert } from "react-native";
-import { act, fireEvent, render } from "@testing-library/react-native";
+import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
 import { canApplyLearningProposal, LearningKnowledgeCard, type LearningKnowledge } from "./LearningKnowledgeCard";
 import { humanLearningDate } from "./learningDashboardData";
+import { setStringAsync } from "../clipboard";
+beforeEach(() => { jest.mocked(setStringAsync).mockReset().mockResolvedValue(true); });
 const item = (extra: Partial<LearningKnowledge> = {}): LearningKnowledge => ({ id: "knowledge-1", version: 3, status: "candidate", kind: "preference", content: "報告を短くする", conditions: "作業完了の報告", reason: "簡潔さを希望", scope: { orchestratorId: "main" }, evidence: [{ pairSeq: 1 }], ...extra });
 const props = { knowledge: [] as LearningKnowledge[], chatName: "メイン", selecting: false, selected: false, busy: false, onSelect: jest.fn() };
 test.each(["candidate", "active"])("%s switch changes eligibility with exact version, without running an answer", async (status) => {
@@ -252,5 +255,72 @@ test("related proposal, adoption and edit history remains folded and chronologic
   expect(screen.getByText("過去に見送った案")).toBeTruthy(); expect(screen.queryByText("無関係の内容")).toBeNull();
   const dates = screen.getAllByText(/ · あなた$/).map((entry) => entry.props.children.join(""));
   expect(dates).toEqual([changes[2], changes[1], changes[0]].map((entry) => `${humanLearningDate(entry.at)} · あなた`));
+  expect(manage).not.toHaveBeenCalled(); await screen.unmount();
+});
+
+test.each(["active", "candidate"])("%s details copy the exact own record ID without changing learning", async (status) => {
+  const value = item({ id: "11111111-1111-4111-8111-111111111111", status });
+  const manage = jest.fn(async () => null);
+  const screen = await render(<LearningKnowledgeCard {...props} item={value} manage={manage} />);
+  expect(screen.queryByLabelText(/IDをコピー:/)).toBeNull(); expect(setStringAsync).not.toHaveBeenCalled();
+  await fireEvent.press(screen.getByLabelText(`詳細・管理: ${value.content}`));
+  await fireEvent.press(screen.getByLabelText(`${status === "candidate" ? "提案ID" : "学習ID"}をコピー: ${value.id}`));
+  expect(setStringAsync).toHaveBeenCalledWith(value.id);
+  await waitFor(() => expect(screen.getByText("コピー済み")).toBeTruthy());
+  expect(manage).not.toHaveBeenCalled(); await screen.unmount();
+});
+
+test("merged comparison details copy each source ID and proposal ID separately", async () => {
+  const originals = [
+    item({ id: "11111111-1111-4111-8111-111111111111", status: "active", content: "方針A", version: 3 }),
+    item({ id: "22222222-2222-4222-8222-222222222222", status: "active", content: "方針B", version: 4 }),
+  ];
+  const proposal = item({ id: "33333333-3333-4333-8333-333333333333", content: "統合案", version: 1,
+    replaces: originals.map((value) => value.id), replacementVersions: originals.map(({ id, version }) => ({ id, version })) });
+  const manage = jest.fn(async () => null);
+  const screen = await render(<LearningKnowledgeCard {...props} item={originals[0]} knowledge={[...originals, proposal]} manage={manage} />);
+  await fireEvent.press(screen.getByLabelText(`更新案1件を見る: ${originals[0].content}`));
+  expect(screen.queryByLabelText(/IDをコピー:/)).toBeNull();
+  await fireEvent.press(screen.getByLabelText("詳細"));
+  for (const source of originals) {
+    expect(screen.getAllByText(source.content).some((entry) => entry.props.numberOfLines === 1)).toBe(true);
+    await fireEvent.press(screen.getByLabelText(`使用中の学習IDをコピー: ${source.id}`));
+  }
+  await fireEvent.press(screen.getByLabelText(`提案IDをコピー: ${proposal.id}`));
+  expect(jest.mocked(setStringAsync).mock.calls.map(([id]) => id)).toEqual([...originals.map((source) => source.id), proposal.id]);
+  expect(manage).not.toHaveBeenCalled(); await screen.unmount();
+});
+
+test.each(["changed", "missing"])("%s source keeps its known ID copyable without inventing a current version", async (state) => {
+  const source = item({ id: "11111111-1111-4111-8111-111111111111", status: "active", version: 3 });
+  const proposal = item({ id: "44444444-4444-4444-8444-444444444444", content: "旧版への案", version: 1,
+    replaces: [source.id], replacementVersions: [{ id: source.id, version: 2 }] });
+  const manage = jest.fn(async () => null);
+  const screen = await render(<LearningKnowledgeCard {...props} item={proposal} knowledge={state === "missing" ? [proposal] : [source, proposal]} manage={manage} />);
+  await fireEvent.press(screen.getByLabelText(`過去の提案を見る: ${proposal.content}`));
+  await fireEvent.press(screen.getByLabelText("詳細"));
+  expect(screen.getByText("v1")).toBeTruthy(); expect(screen.getByText("v2")).toBeTruthy();
+  if (state === "changed") expect(screen.getByText("v3")).toBeTruthy();
+  else expect(screen.queryByText("v3")).toBeNull();
+  expect(screen.queryByText("v0")).toBeNull();
+  await fireEvent.press(screen.getByLabelText(`${state === "missing" ? "対象の学習ID" : "使用中の学習ID"}をコピー: ${source.id}`));
+  expect(setStringAsync).toHaveBeenCalledWith(source.id);
+  expect(manage).not.toHaveBeenCalled(); await screen.unmount();
+});
+
+test.each(["false", "rejected"])("copy %s reports failure and a successful retry clears it without learning mutations", async (failure) => {
+  const copy = jest.mocked(setStringAsync);
+  if (failure === "false") copy.mockResolvedValueOnce(false);
+  else copy.mockRejectedValueOnce(new Error("clipboard unavailable"));
+  const value = item({ status: "active" }); const manage = jest.fn(async () => null);
+  const screen = await render(<LearningKnowledgeCard {...props} item={value} manage={manage} />);
+  await fireEvent.press(screen.getByLabelText(`詳細・管理: ${value.content}`));
+  const button = screen.getByLabelText(`学習IDをコピー: ${value.id}`);
+  await fireEvent.press(button);
+  await waitFor(() => expect(screen.getByRole("alert").props.children).toBe("コピーできませんでした"));
+  expect(screen.queryByText("コピー済み")).toBeNull();
+  await fireEvent.press(button);
+  await waitFor(() => expect(screen.getByText("コピー済み")).toBeTruthy());
+  expect(screen.queryByRole("alert")).toBeNull(); expect(copy).toHaveBeenNthCalledWith(2, value.id);
   expect(manage).not.toHaveBeenCalled(); await screen.unmount();
 });
