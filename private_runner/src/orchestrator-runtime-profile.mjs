@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-export const ORCHESTRATOR_CAPABILITY_INSTRUCTION = "Current isolated runtime: public web search and page retrieval are available through the built-in Web tool during interactive responses. The shell is limited to the owned workspace without network access or permission escalation. Shared installed skills, credentials, external environment files, MCP servers, apps, plugins and logged-in browser/computer control are unavailable here. When voice_subagent tools are exposed, route authorized work requiring an external workspace, installed tools, credentials or network through an approved Runner session instead; do not attempt that work in the isolated shell. Use only tools actually exposed in this turn. A failed or unavailable lookup is not a retrieved result; distinguish supplied statements from independently checked evidence.";
+export const ORCHESTRATOR_CAPABILITY_INSTRUCTION = "Current isolated runtime: public web search and page retrieval are available through the built-in Web tool during interactive responses. Shell commands and network access are available during interactive responses, including in native subagents that inherit this profile. Filesystem access stays limited to the owned workspace without permission escalation; knowledge isolation does not disable command execution or networking. Shared installed skills, credentials, external environment files, MCP servers, apps, plugins and logged-in browser/computer control are unavailable here. When voice_subagent tools are exposed, route authorized work requiring an external workspace, shared installed tools or credentials through an approved Runner session instead; do not attempt that work in the isolated shell. Use only tools actually exposed in this turn. A failed or unavailable lookup is not a retrieved result; distinguish supplied statements from independently checked evidence.";
 
 const unavailable = () => Object.assign(new Error("This Codex runtime cannot isolate orchestrator knowledge and tools"), {
   code: "capability_unsupported", voiceReason: "orchestrator_isolation_unavailable",
@@ -11,6 +11,7 @@ const record = (value) => Boolean(value && typeof value === "object" && !Array.i
 const within = (file, directory) => file === directory || file.startsWith(`${directory}${path.sep}`);
 
 // This profile belongs to one thread configuration, never the shared Codex home.
+// Native subagents inherit it: isolate owned knowledge, not interactive shell/network capabilities.
 export async function prepareOrchestratorRuntime(client, { workspaceDirectory, cwd, readOnly = false }) {
   try {
     const workspace = await fs.realpath(workspaceDirectory);
@@ -33,7 +34,7 @@ export async function prepareOrchestratorRuntime(client, { workspaceDirectory, c
     }
     const permissions = `bitty_orchestrator_${randomUUID().replaceAll("-", "")}`;
     const profile = { filesystem: { ":minimal": "read", ":workspace_roots": readOnly ? "read" : "write" },
-      network: { enabled: false } };
+      network: { enabled: !readOnly } };
     return { permissions, runtimeWorkspaceRoots: [workspace], config: {
       permissions: { [permissions]: profile }, default_permissions: permissions,
       project_doc_max_bytes: 0,
@@ -60,7 +61,7 @@ export function assertOrchestratorRuntime(started, runtime) {
     || !Array.isArray(roots) || roots.length !== 1 || roots[0] !== runtime.runtimeWorkspaceRoots[0]
     || !Array.isArray(started.instructionSources) || started.instructionSources.length
     || started.sandbox?.type !== (readOnly ? "readOnly" : "workspaceWrite")
-    || started.sandbox.networkAccess !== false
+    || started.sandbox.networkAccess !== runtime.config.permissions[runtime.permissions].network.enabled
     || started.sandbox.type === "workspaceWrite" && (started.sandbox.excludeSlashTmp !== true
       || started.sandbox.excludeTmpdirEnvVar !== true || started.sandbox.writableRoots?.length)) {
     throw unavailable();

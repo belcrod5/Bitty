@@ -27,14 +27,18 @@ async function initialize(client) {
 }
 
 // Uses only a localhost fake provider and disposable homes. No real credentials or model requests.
-test("real App Servers isolate prompt, file access and durable sessions across owners and restart", { skip: !enabled, timeout: 30_000 }, async (t) => {
+test("real App Servers retain native shell and network access while isolating owners across restart", { skip: !enabled, timeout: 30_000 }, async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "orchestrator-server-test-"));
   const requests = [], shellProbes = new Map(), probeOutputs = new Map(), approvals = [];
   const issuedProbes = new Set();
+  let nativePhase = 0, networkRequests = 0;
   let manager;
   let taskPid;
   let taskRunning = false;
   const mock = createServer(async (request, response) => {
+    if (request.method === "GET" && request.url === "/network-probe") {
+      networkRequests++; response.end("NATIVE_NETWORK_OK"); return;
+    }
     if (request.method !== "POST" || request.url !== "/v1/responses") {
       response.writeHead(404); response.end(); return;
     }
@@ -42,14 +46,26 @@ test("real App Servers isolate prompt, file access and durable sessions across o
     const input = JSON.parse(Buffer.concat(chunks).toString("utf8"));
     requests.push(input);
     const latestUser = input.input.filter((item) => item.role === "user").at(-1)?.content?.[0]?.text;
-    const probe = shellProbes.get(latestUser);
-    const issueProbe = probe && !issuedProbes.has(latestUser);
-    if (issueProbe) issuedProbes.add(latestUser);
-    else if (probe) probeOutputs.set(latestUser, JSON.stringify(input.input.filter((item) => item.type?.endsWith("_output"))));
-    const item = issueProbe ? { id: `fc_${requests.length}`, type: "custom_tool_call", namespace: "functions",
-      name: "exec", call_id: `call_${requests.length}`, status: "completed",
-      input: `text(await tools.exec_command(${JSON.stringify(probe)}));` } : { id: `msg_${requests.length}`, type: "message", role: "assistant", status: "completed",
-      content: [{ type: "output_text", text: "OWNED_MOCK_REPLY" }] };
+    const probeKey = input.input.some((item) => item.type === "agent_message" && item.recipient === "/root/network_probe") ? "NATIVE_NETWORK_CHILD" : latestUser;
+    const probe = shellProbes.get(probeKey);
+    const issueProbe = probe && !issuedProbes.has(probeKey);
+    if (issueProbe) issuedProbes.add(probeKey);
+    else if (probe) probeOutputs.set(probeKey, JSON.stringify(input.input.filter((item) => item.type?.endsWith("_output"))));
+    let item;
+    if (latestUser === "NATIVE_NETWORK_PARENT" && nativePhase < 2) {
+      const name = nativePhase === 0 ? "spawn_agent" : "wait_agent";
+      const args = nativePhase === 0 ? { task_name: "network_probe", fork_turns: "none", message: "NATIVE_NETWORK_CHILD" } : { timeout_ms: 10000 };
+      nativePhase++;
+      item = { id: `fc_${requests.length}`, type: "function_call", namespace: "collaboration",
+        name, arguments: JSON.stringify(args), call_id: `call_${requests.length}`, status: "completed" };
+    } else if (issueProbe) {
+      item = { id: `fc_${requests.length}`, type: "custom_tool_call", namespace: "functions",
+        name: "exec", call_id: `call_${requests.length}`, status: "completed",
+        input: `text(await tools.exec_command(${JSON.stringify(probe)}));` };
+    } else {
+      item = { id: `msg_${requests.length}`, type: "message", role: "assistant", status: "completed",
+        content: [{ type: "output_text", text: "OWNED_MOCK_REPLY" }] };
+    }
     const result = { id: `resp_${requests.length}`, object: "response", created_at: Math.floor(Date.now() / 1000),
       model: "gpt-6-sol", status: "completed", output: [item], usage: { input_tokens: 10, output_tokens: 3, total_tokens: 13 } };
     response.writeHead(200, { "content-type": "text/event-stream" });
@@ -161,6 +177,7 @@ test("real App Servers isolate prompt, file access and durable sessions across o
   const inside = path.join(aWorkspace, "inside-marker"), outside = path.join(bWorkspace, "outside-marker");
   await fs.writeFile(inside, "INSIDE_ALLOWED"); await fs.writeFile(outside, "OUTSIDE_SECRET");
   shellProbes.set("SHELL_PROBE_LOCAL", { cmd: "/bin/cat inside-marker", workdir: aWorkspace });
+  shellProbes.set("SHELL_PROBE_NETWORK", { cmd: `/usr/bin/curl -fsS http://127.0.0.1:${mock.address().port}/network-probe`, workdir: aWorkspace });
   shellProbes.set("SHELL_PROBE_EXTERNAL", { cmd: `/bin/cat ${outside}`, workdir: aWorkspace,
     sandbox_permissions: "require_escalated", justification: "Read a marker outside the owned workspace" });
   for (const input of shellProbes.keys()) {
@@ -170,8 +187,29 @@ test("real App Servers isolate prompt, file access and durable sessions across o
   }
   assert.equal(approvals.length, 0, "isolated shell escalation must fail without requesting user approval");
   assert.match(probeOutputs.get("SHELL_PROBE_LOCAL") || "", /INSIDE_ALLOWED/);
+  assert.match(probeOutputs.get("SHELL_PROBE_NETWORK") || "", /NATIVE_NETWORK_OK/);
   assert.match(probeOutputs.get("SHELL_PROBE_EXTERNAL") || "", /(?:never|escalat|reject|not allowed)/i);
   assert.doesNotMatch(probeOutputs.get("SHELL_PROBE_EXTERNAL") || "", /OUTSIDE_SECRET/);
+  shellProbes.set("NATIVE_NETWORK_CHILD", { cmd: `/bin/cat inside-marker
+/usr/bin/curl -fsS http://127.0.0.1:${mock.address().port}/network-probe
+/bin/cat ${outside}`, workdir: aWorkspace });
+  const childCompletion = a.waitForTurnCompletion();
+  const spawnTurn = await a.request("turn/start", { threadId, input: [{ type: "text", text: "NATIVE_NETWORK_PARENT" }], approvalPolicy: "never" }, 10_000);
+  childCompletion.expect({ threadId, turnId: spawnTurn.turn.id }); await childCompletion.promise;
+  assert.equal(nativePhase, 2, "the real native child was spawned and awaited");
+  assert.ok(requests.flatMap(({ input }) => input).some((item) => item.type === "function_call_output"
+    && item.output.includes('"timed_out":false')), "wait_agent received the child's completion");
+  const parentHistory = await a.request("thread/read", { threadId, includeTurns: true }, 10_000);
+  const childId = parentHistory.thread.turns.find((item) => item.id === spawnTurn.turn.id).items
+    .find((item) => item.type === "subAgentActivity" && item.agentPath === "/root/network_probe")?.agentThreadId;
+  assert.ok(childId, "the spawn produced a real native child thread");
+  const childHistory = await a.request("thread/read", { threadId: childId, includeTurns: true }, 10_000);
+  assert.equal(childHistory.thread.turns.at(-1).status, "completed");
+  assert.match(probeOutputs.get("NATIVE_NETWORK_CHILD") || "", /INSIDE_ALLOWED/);
+  assert.match(probeOutputs.get("NATIVE_NETWORK_CHILD") || "", /NATIVE_NETWORK_OK/);
+  assert.doesNotMatch(probeOutputs.get("NATIVE_NETWORK_CHILD") || "", /OUTSIDE_SECRET/);
+  assert.match(probeOutputs.get("NATIVE_NETWORK_CHILD") || "", /(?:Operation not permitted|Permission denied)/i);
+  assert.equal(networkRequests, 2, "parent and native child each made a real shell HTTP request");
   const allowed = await a.request("command/exec", { command: ["/bin/cat", inside], cwd: aWorkspace, permissionProfile: "owned" }, 10_000);
   assert.equal(allowed.exitCode, 0); assert.equal(allowed.stdout, "INSIDE_ALLOWED");
   const denied = await a.request("command/exec", { command: ["/bin/cat", outside], cwd: aWorkspace, permissionProfile: "owned" }, 10_000);
@@ -205,6 +243,12 @@ test("real App Servers isolate prompt, file access and durable sessions across o
     approvalPolicy: "never", developerInstructions: "OWNER_A_ONLY", model: "gpt-6-sol" }, 10_000);
   assertOrchestratorRuntime(resumed, nextRuntime);
   assert.equal(resumed.thread.id, threadId);
+  shellProbes.set("SHELL_PROBE_NETWORK_AFTER_RESTART", { cmd: `/usr/bin/curl -fsS http://127.0.0.1:${mock.address().port}/network-probe`, workdir: aWorkspace });
+  const afterRestart = restarted.waitForTurnCompletion();
+  const afterRestartTurn = await restarted.request("turn/start", { threadId, input: [{ type: "text", text: "SHELL_PROBE_NETWORK_AFTER_RESTART" }] }, 10_000);
+  afterRestart.expect({ threadId, turnId: afterRestartTurn.turn.id }); await afterRestart.promise;
+  assert.match(probeOutputs.get("SHELL_PROBE_NETWORK_AFTER_RESTART") || "", /NATIVE_NETWORK_OK/);
+  assert.equal(networkRequests, 3);
   restarted.close(); b.close();
 });
 

@@ -27,7 +27,7 @@ function fakeAppServer({ holdResponses = false, holdSummaries = false, holdOverv
       runtimeWorkspaceRoots: params.runtimeWorkspaceRoots,
       sandbox: params.config.permissions[params.permissions].filesystem[":workspace_roots"] === "read"
         ? { type: "readOnly", networkAccess: false }
-        : { type: "workspaceWrite", networkAccess: false, writableRoots: [],
+        : { type: "workspaceWrite", networkAccess: params.config.permissions[params.permissions].network.enabled, writableRoots: [],
           excludeTmpdirEnvVar: true, excludeSlashTmp: true },
       } : {}) };
     };
@@ -1096,9 +1096,9 @@ test("handoff prioritizes the addressed unread participant, stays silent, then r
   assert.ok(interactive.some(({params}) => !params.developerInstructions.includes("consultation.handoff")));
   assert.ok(interactive.every(({params}) => params.config.web_search === "live"), "ordinary and consultation use the same public Web capability");
   assert.ok(helpers.length > 0 && helpers.every(({params}) => params.config.web_search === "disabled"));
-  assert.ok(runtimeParents.every(({params}) => params.config.permissions[params.permissions].network.enabled === false
+  assert.ok(runtimeParents.every(({params}) => params.config.permissions[params.permissions].network.enabled === (params.config.permissions[params.permissions].filesystem[":workspace_roots"] === "write")
     && params.config.features.browser_use === false && params.config.features.computer_use === false
-    && params.config.apps._default.enabled === false), "public Web does not enable private browser or shell network");
+    && params.config.apps._default.enabled === false), "interactive network does not enable private browser or helper network");
   assert.ok(parents.slice(before, through).some(({params}) => params.dynamicTools?.some((tool) => tool.name === "consultation" && tool.tools.some((item) => item.name === "handoff"))));
 });
 

@@ -31,16 +31,16 @@ async function fixture(t) {
 const response = (runtime, readOnly = false) => ({ approvalPolicy: "never", activePermissionProfile: { id: runtime.permissions },
   runtimeWorkspaceRoots: runtime.runtimeWorkspaceRoots, instructionSources: [], sandbox: readOnly
     ? { type: "readOnly", networkAccess: false }
-    : { type: "workspaceWrite", networkAccess: false, excludeSlashTmp: true, excludeTmpdirEnvVar: true, writableRoots: [] } });
+    : { type: "workspaceWrite", networkAccess: true, excludeSlashTmp: true, excludeTmpdirEnvVar: true, writableRoots: [] } });
 
-test("interactive profiles allow public Web while retaining owned workspace and disabling inherited knowledge and private tools", async (t) => {
+test("interactive parents and native subagents retain shell and network access while isolating owned knowledge", async (t) => {
   const f = await fixture(t);
   const runtime = await prepareOrchestratorRuntime(f.client, { workspaceDirectory: f.workspace, cwd: f.workspace });
   const canonical = await fs.realpath(f.workspace);
   assert.deepEqual(runtime.runtimeWorkspaceRoots, [canonical]);
   assert.equal(runtime.config.default_permissions, runtime.permissions);
   assert.deepEqual(runtime.config.permissions[runtime.permissions], {
-    filesystem: { ":minimal": "read", ":workspace_roots": "write" }, network: { enabled: false },
+    filesystem: { ":minimal": "read", ":workspace_roots": "write" }, network: { enabled: true },
   });
   assert.equal(runtime.config.skills.config.some((skill) => skill.path === f.ownSkill), false);
   for (const outside of [f.otherSkill, f.linked]) assert.deepEqual(runtime.config.skills.config.find((skill) => skill.path === outside), { path: outside, enabled: false });
@@ -68,6 +68,8 @@ test("summary and learning profiles retain restricted reads without a writable w
   assert.equal(runtime.config.permissions[runtime.permissions].filesystem[":workspace_roots"], "read");
   assert.equal(runtime.config.default_permissions, runtime.permissions);
   assert.equal(runtime.config.web_search, "disabled", "internal read-only helpers do not gain Web access");
+  assert.equal(runtime.config.permissions[runtime.permissions].network.enabled, false);
+  assert.throws(() => assertOrchestratorRuntime({ ...response(runtime, true), sandbox: { type: "readOnly", networkAccess: true } }, runtime), { code: "capability_unsupported" });
   assert.doesNotThrow(() => assertOrchestratorRuntime(response(runtime, true), runtime));
 });
 
@@ -92,7 +94,7 @@ test("startup and resume cannot silently use inherited instructions, roots or le
     { activePermissionProfile: null }, { activePermissionProfile: { id: "other" } },
     { runtimeWorkspaceRoots: [f.sibling] }, { runtimeWorkspaceRoots: [...runtime.runtimeWorkspaceRoots, f.sibling] },
     { instructionSources: ["/global/AGENTS.md"] }, { sandbox: { type: "dangerFullAccess" } },
-    { sandbox: { ...response(runtime).sandbox, networkAccess: true } },
+    { sandbox: { ...response(runtime).sandbox, networkAccess: false } },
     { sandbox: { ...response(runtime).sandbox, excludeSlashTmp: false } },
     { sandbox: { ...response(runtime).sandbox, writableRoots: [f.sibling] } },
   ]) assert.throws(() => assertOrchestratorRuntime({ ...response(runtime), ...patch }, runtime), { code: "capability_unsupported" });

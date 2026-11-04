@@ -27,7 +27,7 @@ function fakeCodex({ hold = false, failSummary = false, failTurn = false,
       activePermissionProfile: { id: params.permissions }, runtimeWorkspaceRoots: params.runtimeWorkspaceRoots,
       instructionSources: [], sandbox: params.config.permissions[params.permissions].filesystem[":workspace_roots"] === "read"
         ? { type: "readOnly", networkAccess: false }
-        : { type: "workspaceWrite", networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: true, writableRoots: [] },
+        : { type: "workspaceWrite", networkAccess: params.config.permissions[params.permissions].network.enabled, excludeTmpdirEnvVar: true, excludeSlashTmp: true, writableRoots: [] },
     } : {}) });
     return {
       openPromise: Promise.resolve(), notify() {}, close() { resolveCompletion(); },
@@ -1353,14 +1353,14 @@ test("environment work uses owned Runner delegation while individual and consult
   assert.equal(starts.length, 1);
   for (const { params } of codex.calls.filter((call) => call.method === "thread/start")) {
     assert.equal(params.approvalPolicy, "never");
-    assert.equal(params.config.permissions[params.permissions].network.enabled, false);
+    assert.equal(params.config.permissions[params.permissions].network.enabled, params.config.permissions[params.permissions].filesystem[":workspace_roots"] === "write");
     assert.deepEqual(params.config.shell_environment_policy, { inherit: "none" });
   }
   for (const { method, params } of codex.calls.filter(({ method }) => ["thread/resume", "turn/start"].includes(method))) {
     assert.equal(params.approvalPolicy, "never", method);
   }
   const instruction = codex.calls.find(({ method, params }) => method === "thread/resume" && params.developerInstructions.includes("outside the shell sandbox")).params.developerInstructions;
-  assert.match(instruction, /external workspace, installed CLI or skill, credentials, or network access/);
+  assert.match(instruction, /external workspace, shared installed CLI or skill, or credentials/);
   for (const release of gates.splice(0)) release();
   await waitFor(async () => !await service.isBusy("main"));
 });
@@ -1440,6 +1440,44 @@ for (const scoped of [false, true]) test(`offline Runner patch repairs previousl
   assert.equal(JSON.parse(await fs.readFile(activeFile, "utf8")).pendingSwitch, undefined);
 });
 
+
+test("runtime capability changes refresh existing parents only after native work settles", async (t) => {
+  const { rootDir, service, codex } = await fixture(t);
+  const opened = await service.open("main");
+  assert.equal((await (await turn(service, "main", opened.logicalConversationId, "Keep this history")).finished).status, "completed");
+  await service.close();
+  const file = path.join(rootDir, "active.json");
+  const before = JSON.parse(await fs.readFile(file, "utf8"));
+  assert.match(before.nativeRuntimeInstructionHash, /^[a-f0-9]{64}$/);
+  const parent = codex.threads.get(before.nativeThreadId), childId = randomUUID();
+  const childItem = { type: "collabAgentToolCall", status: "completed", receiverThreadIds: [childId],
+    agentsStates: { [childId]: { status: "running" } } };
+  parent.turns.at(-1).items.push(childItem);
+  codex.threads.set(childId, { id: childId, status: { type: "active" }, turns: [] });
+  delete before.nativeRuntimeInstructionHash;
+  await fs.writeFile(file, JSON.stringify(before));
+  const upgraded = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
+  t.after(() => upgraded.close());
+  await upgraded.open("main");
+  const blocked = await (await turn(upgraded, "main", opened.logicalConversationId, "Continue during native work")).finished;
+  assert.equal(blocked.status, "preflight_failed");
+  const waiting = JSON.parse(await fs.readFile(file, "utf8"));
+  assert.equal(waiting.nativeThreadId, before.nativeThreadId);
+  assert.equal(waiting.nativeRuntimeInstructionHash, undefined);
+  codex.threads.get(childId).status = { type: "idle" };
+  childItem.agentsStates[childId].status = "completed";
+  assert.equal((await (await turn(upgraded, "main", opened.logicalConversationId, "Continue after native work")).finished).status, "completed");
+  const after = JSON.parse(await fs.readFile(file, "utf8"));
+  assert.notEqual(after.nativeThreadId, before.nativeThreadId);
+  assert.equal(after.logicalConversationId, before.logicalConversationId);
+  assert.match(after.nativeRuntimeInstructionHash, /^[a-f0-9]{64}$/);
+  assert.ok(codex.calls.some(({ method, params }) => method === "thread/inject_items" && params.threadId === after.nativeThreadId
+    && JSON.stringify(params.items).includes("Keep this history")));
+  const count = codex.calls.filter(({ method, params }) => method === "thread/start" && !params.ephemeral).length;
+  assert.equal((await (await turn(upgraded, "main", opened.logicalConversationId, "Continue again")).finished).status, "completed");
+  assert.equal(codex.calls.filter(({ method, params }) => method === "thread/start" && !params.ephemeral).length, count);
+  assert.equal(JSON.parse(await fs.readFile(file, "utf8")).nativeThreadId, after.nativeThreadId);
+});
 
 test("isolated owners reject a runtime that retains shell escalation before dispatch", async (t) => {
   const { service, codex } = await fixture(t, { reportedApprovalPolicy: "on-request" });

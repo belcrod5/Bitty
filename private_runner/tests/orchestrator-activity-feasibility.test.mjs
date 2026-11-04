@@ -133,7 +133,7 @@ async function nativeFixture(t, requests, parents, childToolThreadId) {
       activePermissionProfile: { id: params.permissions }, runtimeWorkspaceRoots: params.runtimeWorkspaceRoots,
       instructionSources: [], sandbox: params.config.permissions[params.permissions].filesystem[":workspace_roots"] === "read"
         ? { type: "readOnly", networkAccess: false }
-        : { type: "workspaceWrite", networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: true, writableRoots: [] },
+        : { type: "workspaceWrite", networkAccess: params.config.permissions[params.permissions].network.enabled, excludeTmpdirEnvVar: true, excludeSlashTmp: true, writableRoots: [] },
     } : {}) });
     return {
       openPromise: Promise.resolve(),
