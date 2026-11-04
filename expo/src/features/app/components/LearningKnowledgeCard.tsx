@@ -18,12 +18,11 @@ const SKILL_LABELS = { purpose: "目的", triggers: "発動条件", inputs: "入
 export const learningSkillText = (skill?: Record<string, string>) => skill ? Object.entries(SKILL_LABELS).map(([key, label]) => `${label}: ${skill[key] || "未設定"}`).join("\n") : "なし";
 type Manage = (op: string, payload: Record<string, unknown>, reportError?: boolean) => Promise<string | null>;
 
-// A proposal belongs under its current cards only while every replacement still matches.
-export function currentLearningUpdateSources(item: LearningKnowledge, knowledge: LearningKnowledge[]): LearningKnowledge[] {
+// A source version can change without removing the proposal's relationship to it.
+export function learningUpdateSources(item: LearningKnowledge, knowledge: LearningKnowledge[]): LearningKnowledge[] {
   if (item.status !== "candidate" || item.action === "retire" || !item.replaces?.length) return [];
   const sources = item.replaces.map((id) => knowledge.find((entry) => entry.id === id));
-  return sources.every((source): source is LearningKnowledge => source?.status === "active" && source.scope.orchestratorId === item.scope.orchestratorId && source.scope.shared === item.scope.shared
-    && Boolean(item.replacementVersions?.some((entry) => entry.id === source.id && entry.version === source.version))) ? sources : [];
+  return sources.every((source): source is LearningKnowledge => source?.status === "active" && source.scope.orchestratorId === item.scope.orchestratorId && source.scope.shared === item.scope.shared) ? sources : [];
 }
 
 function LearningUpdateReview({ updates, knowledge, chatName, orchestratorId, busy, manage, onClose }: {
@@ -36,7 +35,8 @@ function LearningUpdateReview({ updates, knowledge, chatName, orchestratorId, bu
   const proposal = updates[currentPage];
   const sources = proposal?.replaces?.map((id) => knowledge.find((entry) => entry.id === id)) || [];
   const changedSkillFields = Object.entries(SKILL_LABELS).filter(([key]) => sources.some((source) => source?.skill?.[key] !== proposal?.skill?.[key]));
-  const ready = proposal && currentLearningUpdateSources(proposal, knowledge).length > 0;
+  const ready = proposal && learningUpdateSources(proposal, knowledge).length > 0
+    && sources.every((source) => source && proposal.replacementVersions?.some((entry) => entry.id === source.id && entry.version === source.version));
   const choose = async (action: "adopt" | "reject") => {
     if (!proposal || busy || action === "adopt" && !ready) return;
     setError("");
@@ -59,16 +59,20 @@ function LearningUpdateReview({ updates, knowledge, chatName, orchestratorId, bu
       <View style={[styles.comparisonPanel, { backgroundColor: colors.surfaceMuted, borderColor: colors.borderSubtle }]}>
         <View style={styles.comparisonHeading}><Ionicons name="checkmark-circle-outline" size={17} color={colors.textSecondary} />
           <Text style={[styles.comparisonLabel, { color: colors.textSecondary }]}>{ready ? sources.length > 1 ? `現在の内容 · ${sources.length}件` : "現在の内容" : "更新元の内容"}</Text></View>
-        {sources.map((source, index) => <View key={proposal.replaces![index]} style={styles.original}>
+        {sources.map((source, index) => {
+          const expectedVersion = proposal.replacementVersions?.find((entry) => entry.id === proposal.replaces![index])?.version;
+          return <View key={proposal.replaces![index]} style={styles.original}>
           {source ? <>
             <Text style={[styles.title, { color: colors.textSecondary }]}>{source.content}</Text>
+            {source.version !== expectedVersion ? <Text style={[styles.caption, { color: tones.warning.foreground }]}>現在：第{source.version}版 · この案の元：{expectedVersion ? `第${expectedVersion}版` : "版不明"}</Text> : null}
             <Text style={[styles.caption, { color: colors.textMuted }]}>使う範囲：{source.scope.orchestratorId === orchestratorId ? `${chatName}限定` : "別のチャット限定"}</Text>
             <Text style={[styles.caption, { color: colors.textMuted }]}>適用：{source.conditions || "条件なし"}</Text>
             {JSON.stringify(source.matchTerms || []) !== JSON.stringify(proposal.matchTerms || []) ? <Text style={[styles.caption, { color: colors.textMuted }]}>関連する言葉：{source.matchTerms?.join("、") || "指定なし"}</Text> : null}
             {JSON.stringify(source.targetConstraints || []) !== JSON.stringify(proposal.targetConstraints || []) ? <Text style={[styles.caption, { color: colors.textMuted }]}>確認対象：{source.targetConstraints?.join("、") || "指定なし"}</Text> : null}
             {changedSkillFields.length ? <Text style={[styles.caption, { color: colors.textSecondary }]}>{changedSkillFields.map(([key, label]) => `${label}: ${source.skill?.[key] || "なし"}`).join("\n")}</Text> : null}
           </> : <Text style={[styles.caption, { color: tones.warning.foreground }]}>更新元を確認できません</Text>}
-        </View>)}
+        </View>;
+        })}
       </View>
       <View style={styles.comparisonArrow}><Ionicons name="arrow-down" size={23} color={colors.accent} /></View>
       <View style={[styles.comparisonPanel, { backgroundColor: tones.info.background, borderColor: colors.accent }]}>
@@ -103,7 +107,7 @@ export function LearningKnowledgeCard({ item, knowledge, chatName, selecting, se
   const [reviewing, setReviewing] = useState(false);
   const references = { items: [{ id: item.id, version: item.version }] };
   const isUpdate = item.status === "candidate" && item.action !== "retire" && Boolean(item.replaces?.length);
-  const updates = item.status === "active" ? knowledge.filter((entry) => currentLearningUpdateSources(entry, knowledge).some((source) => source.id === item.id)) : [];
+  const updates = item.status === "active" ? knowledge.filter((entry) => learningUpdateSources(entry, knowledge).some((source) => source.id === item.id)) : [];
   const adoptLabel = item.action === "retire" ? "停止案を適用" : "更新内容を見る";
   const switchable = item.action !== "retire" && (item.status === "active" || item.status === "retired" || item.status === "candidate" && !item.replaces?.length);
   const restore = () => Alert.alert("この方針を再開", "置き換え先の方針が使用中なら停止し、この方針を再開します。", [

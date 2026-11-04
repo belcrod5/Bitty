@@ -3,7 +3,7 @@ import { Alert, StyleSheet, Text, TextInput, TouchableOpacity, View } from "reac
 import { useAppStyles } from "../styles";
 import { isReasoningEffort, type ReasoningEffort } from "../utils/settingsParsers";
 import { type LearningEvaluation } from "./LearningEvaluationCard";
-import { currentLearningUpdateSources, LearningKnowledgeCard, type LearningKnowledge } from "./LearningKnowledgeCard";
+import { learningUpdateSources, LearningKnowledgeCard, type LearningKnowledge } from "./LearningKnowledgeCard";
 import { LearningEvaluationOverview } from "./LearningEvaluationOverview";
 import { LearningUsageOverview } from "./LearningUsageOverview";
 import { LearningChangeHistory } from "./LearningChangeHistory";
@@ -179,7 +179,7 @@ export function OrchestratorLearningPanel({ request: sendRequest, orchestrator }
       <Text style={styles.settingsActionText}>{label}</Text>
     </TouchableOpacity>);
   const filteredKnowledge = (status?.candidates || []).filter((item) => {
-    if (knowledgeFilter === "all") return selecting || !currentLearningUpdateSources(item, status?.candidates || []).length;
+    if (knowledgeFilter === "all") return selecting || !learningUpdateSources(item, status?.candidates || []).length;
     if (knowledgeFilter === "inactive") return item.status === "retired" || item.status === "rejected";
     return item.status === knowledgeFilter;
   });
