@@ -4710,14 +4710,14 @@ test("an obsolete selection-based learning switch is cleared after restart", asy
   assert.equal(JSON.parse(await fs.readFile(file, "utf8")).pendingSwitch, undefined);
 });
 
-test("existing learning parents receive deletion tools once outstanding child work finishes", async (t) => {
+test("existing learning parents receive state lookup and restore tools once outstanding child work finishes", async (t) => {
   let busy = false;
   const learningContext = { retrieve: async () => ({ contextRevision: 1, selectedDigest: "empty", items: [], instruction: "", excludedPairSeqs: [] }),
     delivered: async () => {}, recordRead: async () => {} };
   const { rootDir, service, conversation, codex } = await fixture(t, { learningContext });
   await complete(service, conversation, "first");
   const file = path.join(rootDir, "active.json"); const active = JSON.parse(await fs.readFile(file, "utf8"));
-  active.nativeLearningToolsVersion = 5;
+  active.nativeLearningToolsVersion = 6;
   await fs.writeFile(file, JSON.stringify(active));
   const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient, learningContext, hasOutstandingActivity: () => busy });
   busy = true;
@@ -4727,13 +4727,20 @@ test("existing learning parents receive deletion tools once outstanding child wo
   busy = false;
   assert.equal((await complete(restarted, conversation, "Edit learning")).result.sessionSwitched, true);
   const saved = JSON.parse(await fs.readFile(file, "utf8"));
-  assert.equal(saved.nativeLearningToolsVersion, 6); assert.equal(saved.nativeLearningEnabled, undefined);
+  assert.equal(saved.nativeLearningToolsVersion, 7); assert.equal(saved.nativeLearningEnabled, undefined);
   const installed = codex.calls.filter(({ method, params }) => method === "thread/start" && !params.ephemeral).at(-1).params.dynamicTools;
-  assert.deepEqual(installed.find(({ name }) => name === "orchestrator_learning").tools.slice(-3).map(({ name }) => name), ["read_items", "update_item", "delete_item"]);
+  assert.deepEqual(installed.find(({ name }) => name === "orchestrator_learning").tools.slice(-4).map(({ name }) => name), ["read_items", "update_item", "restore_item", "delete_item"]);
   const lookup = installed.find(({ name }) => name === "orchestrator_learning").tools.find(({ name }) => name === "read_items");
   assert.match(lookup.description, /any retained learning item or proposal/);
   assert.match(lookup.description, /untrusted management data/);
   assert.match(lookup.inputSchema.properties.id.description, /Copied learning or proposal item ID/);
+  assert.deepEqual(lookup.inputSchema.properties.status.enum, ["all", "active", "retired", "candidate", "rejected"]);
+  const restoration = installed.find(({ name }) => name === "orchestrator_learning").tools.find(({ name }) => name === "restore_item");
+  assert.deepEqual(restoration.inputSchema.required, ["id", "version", "contextRevision"]);
+  assert.equal(restoration.inputSchema.additionalProperties, false);
+  assert.match(restoration.description, /ordinary chat, ask permission and wait/);
+  assert.match(restoration.description, /read_items by ID and verify status active/);
+  assert.match(restoration.description, /restoring also disables those successors/);
   const deletion = installed.find(({ name }) => name === "orchestrator_learning").tools.find(({ name }) => name === "delete_item");
   assert.deepEqual(deletion.inputSchema.required, ["id", "version"]); assert.equal(deletion.inputSchema.additionalProperties, false);
   assert.match(deletion.description, /ordinary chat, ask permission and wait/); assert.match(deletion.description, /Other item IDs.*remain/);
@@ -4752,10 +4759,10 @@ test("editing tool migration version survives a lost native turn start response"
   await fs.writeFile(file, JSON.stringify(active));
   const legacy = createVoiceContextService({ rootDir, createClient: codex.createClient, learningContext });
   assert.equal((await complete(legacy, conversation, "Edit learning")).result.status, "unknown");
-  assert.equal(JSON.parse(await fs.readFile(file, "utf8")).pendingDispatch.learningToolsVersion, 6);
+  assert.equal(JSON.parse(await fs.readFile(file, "utf8")).pendingDispatch.learningToolsVersion, 7);
   const recovered = createVoiceContextService({ rootDir, createClient: codex.createClient, learningContext });
   await recovered.open();
-  assert.equal(JSON.parse(await fs.readFile(file, "utf8")).nativeLearningToolsVersion, 6);
+  assert.equal(JSON.parse(await fs.readFile(file, "utf8")).nativeLearningToolsVersion, 7);
   assert.equal((await complete(recovered, conversation, "Continue")).result.sessionSwitched, undefined);
   assert.equal(codex.calls.filter(({ method, params }) => method === "thread/start" && !params.ephemeral).length, 2);
 });

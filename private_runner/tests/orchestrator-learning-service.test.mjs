@@ -1440,3 +1440,100 @@ test("one-ID deletion revokes inspection replies and inherited exposure without 
   const saved = JSON.parse(await fs.readFile(path.join(f.workspace, "orchestrator-learning/state.json"), "utf8"));
   assert.ok(!saved.excluded.some((entry) => entry.pairSeq === 1 && entry.forgotten));
 });
+
+test("status lists include inactive learning, filter every state and preserve the adopted default", async (t) => {
+  const f = await fixture(t);
+  const seeded = await seed(f, [candidate(1, { content: "Active" }), candidate(1, { content: "Retired" }),
+    candidate(1, { content: "Rejected" }), candidate(1, { content: "Pending" })]);
+  await f.service.decide({ items: seeded.slice(0, 2).map(ref), action: "adopt" });
+  await f.service.decide({ items: [ref((await f.service.status()).candidates[1])], action: "retire" });
+  await f.service.decide({ items: [ref(seeded[2])], action: "reject" });
+  const file = path.join(f.workspace, "orchestrator-learning/state.json"); const before = await fs.readFile(file, "utf8");
+  const all = await f.service.readItems({ orchestratorId: "main", status: "all" });
+  assert.deepEqual(all.items.map(({ status }) => status), ["active", "retired", "rejected", "candidate"]);
+  for (const item of all.items) {
+    assert.ok(item.id); assert.ok(item.content); assert.ok(item.version);
+    const filtered = await f.service.readItems({ orchestratorId: "main", status: item.status });
+    assert.deepEqual(filtered.items, [item]); assert.equal(filtered.contextRevision, all.contextRevision);
+  }
+  assert.deepEqual((await f.service.readItems({ orchestratorId: "main" })).items,
+    all.items.filter(({ status }) => status === "active").map(({ id, version, kind, content }) => ({ id, version, kind, content })));
+  assert.deepEqual((await f.service.readItems({ orchestratorId: randomUUID(), status: "all" })).items, []);
+  for (const status of [null, [], "disabled", 1])
+    await assert.rejects(f.service.readItems({ orchestratorId: "main", status }), { code: "learning_request_invalid" });
+  await assert.rejects(f.service.readItems({ orchestratorId: "main", id: seeded[0].id, status: "all" }), { code: "learning_request_invalid" });
+  assert.equal(await fs.readFile(file, "utf8"), before);
+});
+
+test("owned restore retains content and history, republishes its skill and survives ordinary reads and turns", async (t) => {
+  const f = await fixture(t); let [item] = await seed(f);
+  await f.service.decide({ items: [ref(item)], action: "adopt" }); item = (await f.service.status()).candidates[0];
+  await f.service.decide({ items: [ref(item)], action: "publish" }); item = (await f.service.status()).candidates[0];
+  await f.service.decide({ items: [ref(item)], action: "retire" });
+  const before = await f.service.status(); item = before.candidates[0];
+  const read = await f.service.readItems({ orchestratorId: "main", status: "all" });
+  const snapshot = await f.service.retrieve({ orchestratorId: "main", input: "May I enable this item?" });
+  const operationId = randomUUID();
+  await f.service.delivered({ orchestratorId: "main", operationId, threadId: "parent", turnId: "confirmation", snapshot });
+  await f.service.recordRead({ operationId, callId: "list", skill: { selection: read, management: true } });
+  await f.service.observe([f.pair(2, { clientOperationId: operationId })]);
+  await f.service.readItems({ orchestratorId: "main", id: item.id });
+  assert.equal((await f.service.status()).contextRevision, read.contextRevision);
+  const result = await f.service.decide({ items: [ref(item)], action: "restore" }, { orchestratorId: "main", contextRevision: read.contextRevision });
+  assert.equal(result.changed, true); assert.equal(result.contextRevision, read.contextRevision + 1);
+  const saved = (await f.service.status()).candidates[0];
+  assert.equal(saved.status, "active"); assert.equal(saved.version, item.version + 1);
+  for (const key of ["id", "content", "kind", "conditions", "scope", "skill", "evidence", "createdAt"])
+    assert.deepEqual(saved[key], item[key]);
+  assert.deepEqual((await f.service.status()).changes.slice(0, before.changes.length), before.changes);
+  assert.equal((await f.service.status()).changes.at(-1).action, "restore");
+  assert.deepEqual((await f.service.status()).changes.at(-1).after.published, saved.published);
+  assert.deepEqual(result.items, (await f.service.readItems({ orchestratorId: "main", id: item.id })).items);
+  assert.equal((await f.service.readSkill({ orchestratorId: "main", id: saved.id, ...saved.published })).version, saved.version);
+});
+
+test("owned restore rejects stale affected successors and other owners before changing anything", async (t) => {
+  const f = await fixture(t); let [item] = await seed(f);
+  await f.service.decide({ items: [ref(item)], action: "adopt" }); item = (await f.service.status()).candidates[0];
+  f.args.analyze = async () => ({ text: JSON.stringify({ candidates: [candidate(2, { content: "New workflow", replaces: [item.id] })] }) });
+  await f.service.close(); f.service = await f.open();
+  await f.service.observe([f.pair(2)]); await f.service.runDue();
+  const successor = (await f.service.status()).candidates.find(({ status }) => status === "candidate");
+  await f.service.decide({ items: [ref(successor)], action: "adopt" });
+  item = (await f.service.status()).candidates.find(({ id }) => id === item.id);
+  const read = await f.service.readItems({ orchestratorId: "main", status: "all" });
+  const active = read.items.find(({ id }) => id === successor.id);
+  await f.service.editItem({ orchestratorId: "main", ...ref(active), changes: { content: "Changed successor" } });
+  const file = path.join(f.workspace, "orchestrator-learning/state.json"); const before = await fs.readFile(file, "utf8");
+  await assert.rejects(f.service.decide({ items: [ref(item)], action: "restore" }, { orchestratorId: "main", contextRevision: read.contextRevision }), { code: "learning_conflict" });
+  const current = await f.service.readItems({ orchestratorId: "main", status: "all" });
+  await assert.rejects(f.service.decide({ items: [ref(item)], action: "restore" }, { orchestratorId: randomUUID(), contextRevision: current.contextRevision }), { code: "learning_conflict" });
+  await assert.rejects(f.service.decide({ items: [{ id: item.id, version: item.version - 1 }], action: "restore" }, { orchestratorId: "main", contextRevision: current.contextRevision }), { code: "learning_conflict" });
+  const controller = new AbortController(); controller.abort();
+  await assert.rejects(f.service.decide({ items: [ref(item)], action: "restore" }, { orchestratorId: "main", contextRevision: current.contextRevision, signal: controller.signal }), { code: "learning_conflict" });
+  assert.equal(await fs.readFile(file, "utf8"), before);
+  await f.service.decide({ items: [ref(item)], action: "restore" }, { orchestratorId: "main", contextRevision: current.contextRevision });
+  const after = await f.service.status();
+  assert.equal(after.candidates.find(({ id }) => id === item.id).status, "active");
+  assert.equal(after.candidates.find(({ id }) => id === successor.id).status, "retired");
+  assert.equal(after.changes.at(-2).action, "rollback_replaced");
+});
+
+test("restore cancellation during a skill read leaves the saved state and artifacts unchanged", async (t) => {
+  const f = await fixture(t); let [item] = await seed(f);
+  await f.service.decide({ items: [ref(item)], action: "adopt" }); item = (await f.service.status()).candidates[0];
+  await f.service.decide({ items: [ref(item)], action: "publish" }); item = (await f.service.status()).candidates[0];
+  await f.service.decide({ items: [ref(item)], action: "retire" }); item = (await f.service.status()).candidates[0];
+  const directory = path.join(f.workspace, "orchestrator-learning");
+  const file = path.join(directory, "state.json"); const before = await fs.readFile(file, "utf8");
+  const folder = path.join(directory, "skills", item.id); const artifacts = await fs.readdir(folder);
+  const controller = new AbortController(); const open = fs.open;
+  const mocked = t.mock.method(fs, "open", async (file, ...args) => {
+    const handle = await open(file, ...args);
+    if (String(file).startsWith(folder) && args[0] !== "wx") controller.abort();
+    return handle;
+  });
+  await assert.rejects(f.service.decide({ items: [ref(item)], action: "restore" }, { orchestratorId: "main", contextRevision: (await f.service.readItems({ orchestratorId: "main", status: "all" })).contextRevision, signal: controller.signal }), { code: "learning_conflict" });
+  mocked.mock.restore();
+  assert.equal(await fs.readFile(file, "utf8"), before); assert.deepEqual(await fs.readdir(folder), artifacts);
+});
