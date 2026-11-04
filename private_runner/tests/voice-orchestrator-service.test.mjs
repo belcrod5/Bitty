@@ -1564,3 +1564,56 @@ test("chat delete tool accepts only one current owned ID and preserves source an
   assert.equal(deletion.deleted, true); assert.equal(deletion.id, draft.id); assert.equal(deletion.version, draft.version);
   assert.deepEqual((await restarted.learningStatus()).candidates, [source, sibling]);
 });
+
+test("chat tools list inactive states and restore only a current owned retired item with a matching context revision", async (t) => {
+  const learningCalls = [];
+  const { rootDir, service, codex } = await fixture(t, { learningCalls });
+  const main = await service.open("main"); const child = await service.create("Other chat");
+  const file = path.join(rootDir, "workspace", "orchestrator-learning/state.json");
+  const state = JSON.parse(await fs.readFile(file, "utf8"));
+  const items = ["retired", "active", "candidate", "rejected"].map((status) => ({ id: randomUUID(), version: 2, status,
+    kind: "preference", content: `Retained ${status} learning`, conditions: "Only reports", reason: "Synthetic request",
+    scope: { orchestratorId: "main" }, evidence: [{ pairSeq: 1, orchestratorId: "main" }],
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }));
+  state.candidates.push(...items); await fs.writeFile(file, JSON.stringify(state));
+  const restarted = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
+  const args = { id: items[0].id, version: items[0].version, contextRevision: state.contextRevision };
+  learningCalls.push([
+    { tool: "read_items", arguments: { status: "all" } },
+    { tool: "read_items", arguments: { status: "retired" } },
+    { tool: "restore_item", arguments: { ...args, contextRevision: state.contextRevision - 1 } },
+    { tool: "restore_item", arguments: { ...args, version: 1 } },
+    { tool: "restore_item", arguments: { ...args, orchestratorId: child.id } },
+    { tool: "restore_item", arguments: { id: args.id, version: args.version } },
+    { tool: "read_items", arguments: { status: "disabled" } },
+    { tool: "read_items", arguments: { id: args.id, status: "all" } },
+  ]);
+  const inspected = await turn(restarted, "main", main.logicalConversationId, "Inspect the disabled learning before asking permission");
+  assert.equal((await inspected.finished).status, "completed");
+  const results = codex.calls.filter(({ method }) => method === "learning.result").slice(-8).map(({ result }) => result);
+  assert.deepEqual(JSON.parse(results[0].contentItems[0].text).items.map(({ id, version, content, status }) => ({ id, version, content, status })),
+    items.map(({ id, version, content, status }) => ({ id, version, content, status })));
+  assert.deepEqual(JSON.parse(results[1].contentItems[0].text).items.map(({ id }) => id), [args.id]);
+  assert.ok(results.slice(2).every(({ success }) => success === false));
+  assert.deepEqual((await restarted.learningStatus()).candidates, items);
+  const delivered = (await restarted.learningDelivery({ orchestratorId: "main", operationId: inspected.operationId })).delivery;
+  assert.ok(delivered.items.every(({ id }) => id === items[1].id), "inactive list rows must not count as adopted learning");
+  assert.deepEqual(delivered.contextReads[1].items.map(({ status }) => status), ["retired"]);
+  const other = await restarted.open(child.id);
+  learningCalls.push([{ tool: "restore_item", arguments: args }]);
+  await (await turn(restarted, child.id, other.logicalConversationId, "Try a different chat's ID")).finished;
+  assert.equal(codex.calls.filter(({ method }) => method === "learning.result").at(-1).result.success, false);
+  learningCalls.push([{ tool: "restore_item", arguments: args }, { tool: "read_items", arguments: { id: args.id } }]);
+  const approved = await turn(restarted, "main", main.logicalConversationId, "Yes, re-enable that item", randomUUID(), undefined,
+    { onUserInput: async () => assert.fail("learning restoration must not open a popup") });
+  assert.equal((await approved.finished).status, "completed");
+  const restored = codex.calls.filter(({ method }) => method === "learning.result").slice(-2).map(({ result }) => result);
+  assert.ok(restored.every(({ success }) => success));
+  const saved = JSON.parse(restored[1].contentItems[0].text).items[0];
+  assert.equal(saved.status, "active"); assert.equal(saved.version, 3); assert.equal(saved.content, items[0].content);
+  assert.equal(JSON.parse(restored[0].contentItems[0].text).items[0].status, "active");
+  const status = await restarted.learningStatus();
+  assert.deepEqual(status.candidates.slice(1), items.slice(1)); assert.equal(status.changes.at(-1).action, "restore");
+  const active = JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8"));
+  assert.ok(active.learningSnapshot.items.some(({ id, version, status }) => id === args.id && version === 3 && status === undefined));
+});

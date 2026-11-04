@@ -66,10 +66,13 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
         return { selection: await learning.retrieve({ orchestratorId, input, targets: args.targets }), sourceItemIds: args.sourceItemIds };
       if (tool === "read_skill" && Object.keys(args).sort().join() === "hash,id,version") return learning.readSkill({ ...args, orchestratorId });
       if (tool === "propose_batch") return learning.proposeBatch({ ...args, orchestratorId, operationId });
-      if (tool === "read_items" && Object.keys(args).every((key) => key === "id"))
+      if (tool === "read_items" && Object.keys(args).every((key) => ["id", "status"].includes(key)))
         return learning.readItems({ ...args, orchestratorId });
       if (tool === "update_item" && Object.keys(args).sort().join() === "changes,id,version")
         return learning.editItem({ ...args, orchestratorId, signal });
+      if (tool === "restore_item" && Object.keys(args).sort().join() === "contextRevision,id,version")
+        return learning.decide({ items: [{ id: args.id, version: args.version }], action: "restore" },
+          { orchestratorId, contextRevision: args.contextRevision, signal });
       if (tool === "delete_item" && Object.keys(args).sort().join() === "id,version")
         return learning.forget({ items: [args] }, { orchestratorId, signal, includeRelated: false });
       throw failure("Unknown learning tool", "learning_request_invalid");

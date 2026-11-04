@@ -682,22 +682,29 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
         requests: structuredClone(state.requests), autoPublish: false,
         usage: await ledger.status(), outputLimitEnforced: false };
     },
-    async decide({ items, action, reason = "" }) {
+    async decide({ items, action, reason = "" }, { orchestratorId, contextRevision, signal } = {}) {
       return exclusive(async () => {
         if (!Array.isArray(items) || !items.length || items.length > 50 || new Set(items.map((item) => item.id)).size !== items.length
           || !["adopt", "reject", "retire", "publish", "restore"].includes(action) || typeof reason !== "string" || bytes(reason) > 1000)
           throw fail("learning_request_invalid", "Invalid learning decision");
+        if (orchestratorId !== undefined && (!identifier(orchestratorId) || ownerId && ownerId !== orchestratorId)
+          || contextRevision !== undefined && (!Number.isSafeInteger(contextRevision) || contextRevision < 0))
+          throw fail("learning_request_invalid", "Invalid learning decision scope or revision");
+        if (closed || signal?.aborted || contextRevision !== undefined && contextRevision !== state.contextRevision)
+          throw fail("learning_conflict", "Learning changed or the turn ended; read it again before confirming");
         const previousArtifacts = structuredClone(state.candidates);
         const next = structuredClone(state);
         for (const reference of items) {
           const item = next.candidates.find((entry) => entry.id === reference.id && entry.version === reference.version);
-          if (!item) throw fail("learning_conflict", "Learning version changed; reload before deciding");
+          if (!item || orchestratorId !== undefined && !scoped(item, orchestratorId))
+            throw fail("learning_conflict", "Learning version or owner changed; reload before deciding");
           const before = structuredClone(item);
           if (action === "adopt" && item.status !== "candidate" || action === "reject" && item.status !== "candidate"
             || ["retire", "publish"].includes(action) && item.status !== "active"
             || action === "restore" && item.status !== "retired") throw fail("learning_conflict", "Decision does not match item state");
           if (item.published) await readArtifact(item);
           if (item.previousPublished) await readArtifact({ ...item, published: item.previousPublished });
+          if (signal?.aborted) throw fail("learning_conflict", "The turn ended before saving; read current learning before retrying");
           if (action === "adopt") {
             item.status = item.action === "retire" ? "retired" : "active";
             for (const id of item.replaces || []) {
@@ -712,7 +719,7 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
           }
           if (action === "reject" || action === "retire") { item.status = action === "reject" ? "rejected" : "retired"; exclude(next, item); }
           if (action === "restore") {
-            for (const successor of next.candidates.filter((entry) => entry.status === "active" && entry.replaces?.includes(item.id))) {
+            for (const successor of next.candidates.filter((entry) => entry.status === "active" && entry.replaces?.includes(item.id) && entry.scope.orchestratorId === item.scope.orchestratorId)) {
               const predecessor = structuredClone(successor); exclude(next, successor); successor.status = "retired";
               successor.version += 1; successor.updatedAt = changedAt(); history(next, "rollback_replaced", predecessor, successor, reason);
             }
@@ -731,6 +738,8 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
         }
         if (next.candidates.filter((item) => item.status === "active").length > 50) throw fail("learning_capacity", "Active item capacity reached");
         invalidate(next, action !== "reject"); trim(next); await commitPublished(next, previousArtifacts);
+        return { changed: true, contextRevision: state.contextRevision,
+          items: state.candidates.filter((item) => items.some(({ id }) => item.id === id)).map(learningItemSnapshot) };
       });
     },
     async requestChange({ items, instruction }) {
@@ -746,14 +755,17 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
         invalidate(next); trim(next); await save(next); task?.controller.abort(); schedule();
       });
     },
-    async readItems({ orchestratorId, id }) {
+    async readItems({ orchestratorId, id, status }) {
       return exclusive(() => {
-        if (!identifier(orchestratorId) || ownerId && ownerId !== orchestratorId || id !== undefined && !UUID.test(id))
-          throw fail("learning_request_invalid", "Invalid learning edit scope");
+        if (!identifier(orchestratorId) || ownerId && ownerId !== orchestratorId || id !== undefined && !UUID.test(id)
+          || status !== undefined && (id !== undefined || status !== "all" && !STATUSES.has(status)))
+          throw fail("learning_request_invalid", "Specify this chat and either an item ID or a valid status filter");
         const items = state.candidates.filter((item) => scoped(item, orchestratorId));
         const item = id === undefined ? null : items.find((entry) => entry.id === id);
         if (id !== undefined && !item) throw fail("learning_conflict", "No retained learning item with this ID in this chat; it may belong to another chat or have been removed");
-        const visible = item ? [learningItemSnapshot(item)] : items.filter((entry) => entry.status === "active").map(({ id, version, kind, content }) => ({ id, version, kind, content }));
+        const visible = item ? [learningItemSnapshot(item)] : status !== undefined
+          ? items.filter((entry) => status === "all" || entry.status === status).map(learningItemSnapshot)
+          : items.filter((entry) => entry.status === "active").map(({ id, version, kind, content }) => ({ id, version, kind, content }));
         return { contextRevision: state.contextRevision, selectedDigest: digest(visible), items: visible };
       });
     },
