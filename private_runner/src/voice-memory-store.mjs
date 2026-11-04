@@ -175,6 +175,7 @@ export async function openVoiceMemoryStore({ workspace, conversationId, previous
       || rawRange.firstPairSeq > rawRange.lastPairSeq) throw new Error("Voice raw range is invalid");
     const names = (await fs.readdir(rawDirectory)).filter((name) => name !== "raw-state.json" && name !== ".DS_Store").sort();
     const loaded = [];
+    const changedSegments = new Set();
     for (const name of names) {
       if (!/^\d{8}-\d{8}\.jsonl$/.test(name)) throw new Error("Voice raw segment filename is invalid");
       const file = path.join(rawDirectory, name);
@@ -184,11 +185,21 @@ export async function openVoiceMemoryStore({ workspace, conversationId, previous
       const rows = content.trim().split("\n");
       if (rows.length > SEGMENT_PAIRS || !rows[0]) throw new Error("Voice raw segment length is invalid");
       for (const row of rows) {
-        const pair = JSON.parse(row);
+        let pair = JSON.parse(row);
         if (!Number.isSafeInteger(pair?.pairSeq) || pair.pairSeq < 1 || segmentName(pair.pairSeq) !== name
           || typeof pair.user !== "string" || typeof pair.assistant !== "string"
+          || ["userAt", "assistantAt"].some((key) => Object.hasOwn(pair, key)
+            && (typeof pair[key] !== "string" || !Number.isFinite(Date.parse(pair[key]))))
           || (loaded.length && pair.pairSeq !== loaded.at(-1).pairSeq + 1)) {
           throw new Error("Voice raw pair sequence is invalid");
+        }
+        const source = currentConversationId === conversationId && eventPairs.find((eventPair) => eventPair.pairSeq === pair.pairSeq);
+        if (source && JSON.stringify(source) !== JSON.stringify(pair)) {
+          const { userAt, assistantAt, ...legacy } = source;
+          if (Object.hasOwn(pair, "userAt") || Object.hasOwn(pair, "assistantAt")
+            || JSON.stringify(legacy) !== JSON.stringify(pair)) throw new Error("Voice raw pair differs from event");
+          pair = source;
+          changedSegments.add(name);
         }
         loaded.push(pair);
       }
@@ -198,13 +209,15 @@ export async function openVoiceMemoryStore({ workspace, conversationId, previous
       || loaded.at(-1).pairSeq < rawRange.lastPairSeq)) {
       throw new Error("Voice raw required range is missing");
     }
-    if (loaded.length && loaded.at(-1).pairSeq > rawRange.lastPairSeq) {
-      const extra = loaded.filter((pair) => pair.pairSeq > rawRange.lastPairSeq);
-      if (extra.some((pair) => !eventPairs.some((eventPair) => JSON.stringify(eventPair) === JSON.stringify(pair)))) {
-        throw new Error("Voice raw uncommitted tail is invalid");
-      }
-      await writeRawRange(loaded[0].pairSeq, loaded.at(-1).pairSeq);
+    const extra = loaded.filter((pair) => pair.pairSeq > rawRange.lastPairSeq);
+    if (extra.some((pair) => !eventPairs.some((eventPair) => JSON.stringify(eventPair) === JSON.stringify(pair)))) {
+      throw new Error("Voice raw uncommitted tail is invalid");
     }
+    for (const name of changedSegments) {
+      const segment = loaded.filter((pair) => segmentName(pair.pairSeq) === name);
+      await atomicWrite(path.join(rawDirectory, name), `${segment.map((pair) => JSON.stringify(pair)).join("\n")}\n`);
+    }
+    if (extra.length) await writeRawRange(loaded[0].pairSeq, loaded.at(-1).pairSeq);
     rawPairs = loaded;
   }
 
