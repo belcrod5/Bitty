@@ -14,7 +14,7 @@ import { prepareOrchestratorIsolation } from "../scripts/prepare-orchestrator-is
 import { patchOrchestratorRunnerTools } from "../scripts/patch-orchestrator-runner-tools.mjs";
 
 function fakeCodex({ hold = false, failSummary = false, failTurn = false,
-  checklistWrites = [], archiveReads = [], managedCalls = [], reportedApprovalPolicy, failModelList = () => false } = {}) {
+  checklistWrites = [], archiveReads = [], managedCalls = [], learningCalls = [], reportedApprovalPolicy, failModelList = () => false } = {}) {
   const calls = [];
   const releases = [];
   const threads = new Map();
@@ -99,6 +99,17 @@ function fakeCodex({ hold = false, failSummary = false, failTurn = false,
                 calls.push({ method: "managed.result", tool: action.tool, result: JSON.parse(result.contentItems[0].text) });
               }
             }
+            if (!summary && !threads.get(params.threadId)?.checklistRead && learningCalls.length) {
+              for (const action of learningCalls.shift()) {
+                const callId = randomUUID();
+                const result = await serverHandler({ id: callId, method: "item/tool/call", params: {
+                  threadId: params.threadId, turnId, callId, namespace: "orchestrator_learning", tool: action.tool, arguments: action.arguments || {},
+                } });
+                calls.push({ method: "learning.result", tool: action.tool, result });
+                listener("item/completed", { threadId: params.threadId, turnId,
+                  item: { id: callId, type: "dynamicToolCall", status: "completed", success: result.success, contentItems: result.contentItems } });
+              }
+            }
             turn.status = "completed";
             listener("item/completed", { threadId: params.threadId, turnId,
               item: { type: "agentMessage", text: `reply:${params.input[0].text}` } });
@@ -147,7 +158,7 @@ async function patchRunnerTools(rootDir, apply = true) {
   return patchOrchestratorRunnerTools({ rootDir, runnerPort: port, codexPort: port, apply });
 }
 
-async function turn(service, orchestratorId, conversationId, text, operationId = randomUUID(), conversationKey) {
+async function turn(service, orchestratorId, conversationId, text, operationId = randomUUID(), conversationKey, hooks) {
   let resolve;
   const finished = new Promise((done) => { resolve = done; });
   const message = { operationId, payload: { ...(orchestratorId ? { orchestratorId } : {}),
@@ -155,7 +166,7 @@ async function turn(service, orchestratorId, conversationId, text, operationId =
     ...(conversationKey ? { conversationKey } : {}),
     input: { blocks: [{ type: "text", text }] } },
   };
-  let accepted = await service.start(message, resolve, async () => "decline");
+  let accepted = await service.start(message, resolve, async () => "decline", hooks);
   if (accepted.status === "confirmation_required") {
     await service.respondToResetConfirmation(orchestratorId || "main", {
       logicalConversationId: conversationId,
@@ -163,7 +174,7 @@ async function turn(service, orchestratorId, conversationId, text, operationId =
       ...accepted.resetConfirmation,
       decision: accepted.resetConfirmation.required ? "reset" : "continue",
     });
-    accepted = await service.start(message, resolve, async () => "decline");
+    accepted = await service.start(message, resolve, async () => "decline", hooks);
   }
   return { accepted, finished, operationId };
 }
@@ -1131,6 +1142,68 @@ test("each chat exposes only its own unread learning and rejects sibling item ma
     && call.params.developerInstructions?.startsWith("Analyze supplied")).length, 0);
 });
 
+test("learning read and update tools are independent and enforce current owned versions", async (t) => {
+  const learningCalls = [];
+  const { rootDir, service, codex } = await fixture(t, { learningCalls });
+  const main = await service.open("main"); const child = await service.create("Other chat");
+  const file = path.join(rootDir, "workspace", "orchestrator-learning/state.json");
+  const state = JSON.parse(await fs.readFile(file, "utf8"));
+  const items = ["Brief reports", "Review workflow"].map((content) => ({ id: randomUUID(), version: 2,
+    status: "active", kind: "preference", content, conditions: "This chat only", reason: "Explicit preference",
+    scope: { orchestratorId: "main", shared: true }, evidence: [{ pairSeq: 1, orchestratorId: "main" }], createdAt: new Date().toISOString() }));
+  state.candidates.push(...items); await fs.writeFile(file, JSON.stringify(state));
+  const restarted = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
+  const hooks = { onUserInput: async () => assert.fail("learning changes must not open a popup") };
+  learningCalls.push([{ tool: "read_items", arguments: {} }]);
+  await (await turn(restarted, "main", main.logicalConversationId, "Inspect current learning", randomUUID(), undefined, hooks)).finished;
+  assert.deepEqual((await restarted.learningStatus()).candidates.map(({ version }) => version), [2, 2]);
+  const edits = items.map(({ id, version }, index) => ({ tool: "update_item", arguments: { id, version, changes: { content: `Approved item ${index + 1}` } } }));
+  learningCalls.push(edits);
+  await (await turn(restarted, "main", main.logicalConversationId, "Apply the two changes we discussed", randomUUID(), undefined, hooks)).finished;
+  assert.ok(codex.calls.filter(({ method }) => method === "learning.result").slice(-2).every(({ result }) => result.success));
+  assert.deepEqual((await restarted.learningStatus()).candidates.map(({ version, content }) => ({ version, content })),
+    [{ version: 3, content: "Approved item 1" }, { version: 3, content: "Approved item 2" }]);
+  learningCalls.push(edits);
+  await (await turn(restarted, "main", main.logicalConversationId, "Retry the stale versions", randomUUID(), undefined, hooks)).finished;
+  assert.ok(codex.calls.filter(({ method }) => method === "learning.result").slice(-2).every(({ result }) => result.success === false));
+  const other = await restarted.open(child.id);
+  learningCalls.push([{ tool: "read_items", arguments: { id: items[0].id } }, { ...edits[0], arguments: { ...edits[0].arguments, version: 3 } }]);
+  await (await turn(restarted, child.id, other.logicalConversationId, "Try a sibling item", randomUUID(), undefined, hooks)).finished;
+  assert.ok(codex.calls.filter(({ method }) => method === "learning.result").slice(-2).every(({ result }) => result.success === false));
+  assert.equal((await restarted.learningStatus()).candidates[0].version, 3);
+});
+
+test("direct update results are tracked so later retirement invalidates the parent and old reply", async (t) => {
+  const learningCalls = [];
+  const { rootDir, service, codex } = await fixture(t, { learningCalls });
+  const main = await service.open("main");
+  await (await turn(service, "main", main.logicalConversationId, "Original preference evidence")).finished;
+  const file = path.join(rootDir, "workspace", "orchestrator-learning/state.json");
+  const state = JSON.parse(await fs.readFile(file, "utf8")); const id = randomUUID();
+  state.candidates.push({ id, version: 2, status: "active", kind: "procedure", content: "Conditional workflow",
+    conditions: "Only project-a", targetConstraints: ["project-a"], reason: "Explicit preference", scope: { orchestratorId: "main" },
+    evidence: [{ pairSeq: 1, orchestratorId: "main" }], createdAt: new Date().toISOString(),
+    skill: { purpose: "Review", triggers: "Review request", inputs: "Current files", steps: "Read current files", outputs: "Findings",
+      exceptions: "Only requested files", approvals: "Current approval path" } });
+  await fs.writeFile(file, JSON.stringify(state));
+  const restarted = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
+  learningCalls.push([{ tool: "update_item", arguments: { id, version: 2, changes: { skill: { steps: "Read a small current batch" } } } }]);
+  const response = await turn(restarted, "main", main.logicalConversationId, "Apply the agreed workflow change");
+  assert.equal((await response.finished).status, "completed");
+  const result = codex.calls.filter(({ method }) => method === "learning.result").at(-1).result;
+  assert.equal(result.success, true); assert.equal(JSON.parse(result.contentItems[0].text).item.version, 3);
+  const active = JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8"));
+  assert.ok(active.learningSnapshot.items.some((item) => item.id === id && item.version === 3));
+  const delivery = (await restarted.learningDelivery({ orchestratorId: "main", operationId: response.operationId })).delivery;
+  assert.equal(delivery.contextReads[0].management, true); assert.deepEqual(delivery.contextReads[0].verifiedTargets, []);
+  assert.ok(delivery.items.some((item) => item.id === id && item.version === 3)); assert.equal(delivery.pairSeq, 2);
+  assert.ok(!JSON.parse(await fs.readFile(file, "utf8")).excluded.some((entry) => entry.pairSeq === 2));
+  await restarted.manageLearning("decide", { items: [{ id, version: 3 }], action: "retire" });
+  const afterRetirement = JSON.parse(await fs.readFile(file, "utf8"));
+  assert.ok(afterRetirement.excluded.some((entry) => entry.operationId === response.operationId && entry.pairSeq === 2));
+  assert.equal((await (await turn(restarted, "main", main.logicalConversationId, "Continue after retirement")).finished).sessionSwitched, true);
+});
+
 test("runtime refuses old stores without migration side effects, and offline preparation refuses unfinished work", async (t) => {
   const { rootDir, codex, service } = await fixture(t);
   const legacy = createVoiceContextService({ rootDir, createClient: codex.createClient });
@@ -1413,4 +1486,134 @@ test("conditional orchestrator metadata stays valid across counts, clears and re
   const deleted = await service.remove(child.id);
   assert.notEqual(deleted.etag, selected.etag);
   assert.deepEqual(deleted.orchestrators.map(({ id }) => id), ["main"]);
+});
+
+test("copied inactive IDs route to own retained records without adopting or repeatedly replacing the native parent", async (t) => {
+  const learningCalls = [];
+  const { rootDir, service, codex } = await fixture(t, { learningCalls });
+  const main = await service.open("main"); const child = await service.create("Other chat");
+  const file = path.join(rootDir, "workspace", "orchestrator-learning/state.json");
+  const state = JSON.parse(await fs.readFile(file, "utf8"));
+  const items = ["candidate", "rejected", "retired"].map((status) => ({ id: randomUUID(), version: 1,
+    status, kind: "preference", content: `Synthetic ${status} item`, conditions: "Only reports", reason: "Synthetic request",
+    scope: { orchestratorId: "main", shared: true }, evidence: [{ pairSeq: 1, orchestratorId: "main" }],
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }));
+  state.candidates.push(...items); await fs.writeFile(file, JSON.stringify(state));
+  const restarted = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
+  learningCalls.push(items.map(({ id }) => ({ tool: "read_items", arguments: { id } })));
+  const read = await turn(restarted, "main", main.logicalConversationId, "Inspect these copied learning IDs");
+  assert.equal((await read.finished).status, "completed");
+  const results = codex.calls.filter(({ method }) => method === "learning.result").slice(-3);
+  assert.ok(results.every(({ result }) => result.success));
+  assert.deepEqual(results.map(({ result }) => JSON.parse(result.contentItems[0].text).items[0].status), items.map(({ status }) => status));
+  const saved = (await restarted.learningStatus()).candidates;
+  assert.deepEqual(saved.map(({ id, version, status, content }) => ({ id, version, status, content })), items.map(({ id, version, status, content }) => ({ id, version, status, content })));
+  const active = JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8"));
+  assert.deepEqual(active.learningSnapshot.items, items.map(({ id, version, status }) => ({ id, version, status })));
+  const delivery = (await restarted.learningDelivery({ orchestratorId: "main", operationId: read.operationId })).delivery;
+  assert.deepEqual(delivery.items, []); assert.deepEqual(delivery.inheritedItems, []);
+  assert.deepEqual(delivery.contextReads.map((entry) => entry.items[0].status), items.map(({ status }) => status));
+  assert.ok(delivery.contextReads.every((entry) => entry.management === true));
+  const continued = await turn(restarted, "main", main.logicalConversationId, "Continue inspecting");
+  assert.equal((await continued.finished).sessionSwitched, undefined);
+  const nextDelivery = (await restarted.learningDelivery({ orchestratorId: "main", operationId: continued.operationId })).delivery;
+  assert.deepEqual(nextDelivery.items, []); assert.deepEqual(nextDelivery.inheritedItems, []);
+  const other = await restarted.open(child.id);
+  learningCalls.push([{ tool: "read_items", arguments: { id: items[0].id } }]);
+  await (await turn(restarted, child.id, other.logicalConversationId, "Inspect a foreign copied ID")).finished;
+  assert.equal(codex.calls.filter(({ method }) => method === "learning.result").at(-1).result.success, false);
+  await restarted.manageLearning("forget", { items: [{ id: items[0].id, version: items[0].version }] });
+  const afterForget = await turn(restarted, "main", main.logicalConversationId, "Continue after forgetting");
+  assert.equal((await afterForget.finished).sessionSwitched, true);
+  assert.equal((await restarted.learningDelivery({ orchestratorId: "main", operationId: read.operationId })).delivery, null);
+  assert.equal((await restarted.learningDelivery({ orchestratorId: "main", operationId: continued.operationId })).delivery, null);
+});
+
+test("chat delete tool accepts only one current owned ID and preserves source and sibling records", async (t) => {
+  const learningCalls = [];
+  const { rootDir, service, codex } = await fixture(t, { learningCalls });
+  const main = await service.open("main"); const child = await service.create("Other chat");
+  const file = path.join(rootDir, "workspace", "orchestrator-learning/state.json");
+  const state = JSON.parse(await fs.readFile(file, "utf8"));
+  const source = { id: randomUUID(), version: 3, status: "active", kind: "preference", content: "Retained source", conditions: "Only reports",
+    reason: "Synthetic request", scope: { orchestratorId: "main" }, evidence: [{ pairSeq: 1, orchestratorId: "main" }],
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+  const draft = { ...source, id: randomUUID(), version: 1, status: "candidate", content: "Delete this draft", replaces: [source.id], replacementVersions: [{ id: source.id, version: 2 }] };
+  const sibling = { ...draft, id: randomUUID(), content: "Retained sibling" };
+  state.candidates.push(source, draft, sibling); await fs.writeFile(file, JSON.stringify(state));
+  const restarted = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
+  const args = { id: draft.id, version: draft.version };
+  learningCalls.push([
+    { tool: "delete_item", arguments: { ...args, version: 2 } },
+    ...[{ all: true }, { orchestratorId: child.id }, { includeRelated: true }, { confirmed: true }].map((extra) => ({ tool: "delete_item", arguments: { ...args, ...extra } })),
+  ]);
+  await (await turn(restarted, "main", main.logicalConversationId, "Check invalid deletion arguments")).finished;
+  assert.ok(codex.calls.filter(({ method }) => method === "learning.result").slice(-5).every(({ result }) => result.success === false));
+  assert.deepEqual((await restarted.learningStatus()).candidates, [source, draft, sibling]);
+  const other = await restarted.open(child.id);
+  learningCalls.push([{ tool: "delete_item", arguments: args }]);
+  await (await turn(restarted, child.id, other.logicalConversationId, "Try a foreign ID")).finished;
+  assert.equal(codex.calls.filter(({ method }) => method === "learning.result").at(-1).result.success, false);
+  learningCalls.push([{ tool: "read_items", arguments: { id: draft.id } }, { tool: "delete_item", arguments: args }, { tool: "read_items", arguments: { id: draft.id } }]);
+  const approved = await turn(restarted, "main", main.logicalConversationId, "Yes, delete only that draft", randomUUID(), undefined,
+    { onUserInput: async () => assert.fail("learning deletion must not open a popup") });
+  assert.equal((await approved.finished).status, "completed");
+  const results = codex.calls.filter(({ method }) => method === "learning.result").slice(-3);
+  assert.equal(results[0].result.success, true); assert.equal(results[1].result.success, true); assert.equal(results[2].result.success, false);
+  const deletion = JSON.parse(results[1].result.contentItems[0].text);
+  assert.equal(deletion.deleted, true); assert.equal(deletion.id, draft.id); assert.equal(deletion.version, draft.version);
+  assert.deepEqual((await restarted.learningStatus()).candidates, [source, sibling]);
+});
+
+test("chat tools list inactive states and restore only a current owned retired item with a matching context revision", async (t) => {
+  const learningCalls = [];
+  const { rootDir, service, codex } = await fixture(t, { learningCalls });
+  const main = await service.open("main"); const child = await service.create("Other chat");
+  const file = path.join(rootDir, "workspace", "orchestrator-learning/state.json");
+  const state = JSON.parse(await fs.readFile(file, "utf8"));
+  const items = ["retired", "active", "candidate", "rejected"].map((status) => ({ id: randomUUID(), version: 2, status,
+    kind: "preference", content: `Retained ${status} learning`, conditions: "Only reports", reason: "Synthetic request",
+    scope: { orchestratorId: "main" }, evidence: [{ pairSeq: 1, orchestratorId: "main" }],
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }));
+  state.candidates.push(...items); await fs.writeFile(file, JSON.stringify(state));
+  const restarted = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
+  const args = { id: items[0].id, version: items[0].version, contextRevision: state.contextRevision };
+  learningCalls.push([
+    { tool: "read_items", arguments: { status: "all" } },
+    { tool: "read_items", arguments: { status: "retired" } },
+    { tool: "restore_item", arguments: { ...args, contextRevision: state.contextRevision - 1 } },
+    { tool: "restore_item", arguments: { ...args, version: 1 } },
+    { tool: "restore_item", arguments: { ...args, orchestratorId: child.id } },
+    { tool: "restore_item", arguments: { id: args.id, version: args.version } },
+    { tool: "read_items", arguments: { status: "disabled" } },
+    { tool: "read_items", arguments: { id: args.id, status: "all" } },
+  ]);
+  const inspected = await turn(restarted, "main", main.logicalConversationId, "Inspect the disabled learning before asking permission");
+  assert.equal((await inspected.finished).status, "completed");
+  const results = codex.calls.filter(({ method }) => method === "learning.result").slice(-8).map(({ result }) => result);
+  assert.deepEqual(JSON.parse(results[0].contentItems[0].text).items.map(({ id, version, content, status }) => ({ id, version, content, status })),
+    items.map(({ id, version, content, status }) => ({ id, version, content, status })));
+  assert.deepEqual(JSON.parse(results[1].contentItems[0].text).items.map(({ id }) => id), [args.id]);
+  assert.ok(results.slice(2).every(({ success }) => success === false));
+  assert.deepEqual((await restarted.learningStatus()).candidates, items);
+  const delivered = (await restarted.learningDelivery({ orchestratorId: "main", operationId: inspected.operationId })).delivery;
+  assert.ok(delivered.items.every(({ id }) => id === items[1].id), "inactive list rows must not count as adopted learning");
+  assert.deepEqual(delivered.contextReads[1].items.map(({ status }) => status), ["retired"]);
+  const other = await restarted.open(child.id);
+  learningCalls.push([{ tool: "restore_item", arguments: args }]);
+  await (await turn(restarted, child.id, other.logicalConversationId, "Try a different chat's ID")).finished;
+  assert.equal(codex.calls.filter(({ method }) => method === "learning.result").at(-1).result.success, false);
+  learningCalls.push([{ tool: "restore_item", arguments: args }, { tool: "read_items", arguments: { id: args.id } }]);
+  const approved = await turn(restarted, "main", main.logicalConversationId, "Yes, re-enable that item", randomUUID(), undefined,
+    { onUserInput: async () => assert.fail("learning restoration must not open a popup") });
+  assert.equal((await approved.finished).status, "completed");
+  const restored = codex.calls.filter(({ method }) => method === "learning.result").slice(-2).map(({ result }) => result);
+  assert.ok(restored.every(({ success }) => success));
+  const saved = JSON.parse(restored[1].contentItems[0].text).items[0];
+  assert.equal(saved.status, "active"); assert.equal(saved.version, 3); assert.equal(saved.content, items[0].content);
+  assert.equal(JSON.parse(restored[0].contentItems[0].text).items[0].status, "active");
+  const status = await restarted.learningStatus();
+  assert.deepEqual(status.candidates.slice(1), items.slice(1)); assert.equal(status.changes.at(-1).action, "restore");
+  const active = JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8"));
+  assert.ok(active.learningSnapshot.items.some(({ id, version, status }) => id === args.id && version === 3 && status === undefined));
 });

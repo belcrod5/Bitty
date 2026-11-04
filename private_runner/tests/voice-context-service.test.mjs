@@ -4718,6 +4718,63 @@ test("an obsolete selection-based learning switch is cleared after restart", asy
   assert.equal(JSON.parse(await fs.readFile(file, "utf8")).pendingSwitch, undefined);
 });
 
+test("existing learning parents receive state lookup and restore tools once outstanding child work finishes", async (t) => {
+  let busy = false;
+  const learningContext = { retrieve: async () => ({ contextRevision: 1, selectedDigest: "empty", items: [], instruction: "", excludedPairSeqs: [] }),
+    delivered: async () => {}, recordRead: async () => {} };
+  const { rootDir, service, conversation, codex } = await fixture(t, { learningContext });
+  await complete(service, conversation, "first");
+  const file = path.join(rootDir, "active.json"); const active = JSON.parse(await fs.readFile(file, "utf8"));
+  active.nativeLearningToolsVersion = 6;
+  await fs.writeFile(file, JSON.stringify(active));
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient, learningContext, hasOutstandingActivity: () => busy });
+  busy = true;
+  const blocked = await complete(restarted, conversation, "Edit learning");
+  assert.equal(blocked.result.code, "session_busy");
+  assert.equal(codex.calls.filter(({ method, params }) => method === "thread/start" && !params.ephemeral).length, 1);
+  busy = false;
+  assert.equal((await complete(restarted, conversation, "Edit learning")).result.sessionSwitched, true);
+  const saved = JSON.parse(await fs.readFile(file, "utf8"));
+  assert.equal(saved.nativeLearningToolsVersion, 7); assert.equal(saved.nativeLearningEnabled, undefined);
+  const installed = codex.calls.filter(({ method, params }) => method === "thread/start" && !params.ephemeral).at(-1).params.dynamicTools;
+  assert.deepEqual(installed.find(({ name }) => name === "orchestrator_learning").tools.slice(-4).map(({ name }) => name), ["read_items", "update_item", "restore_item", "delete_item"]);
+  const lookup = installed.find(({ name }) => name === "orchestrator_learning").tools.find(({ name }) => name === "read_items");
+  assert.match(lookup.description, /any retained learning item or proposal/);
+  assert.match(lookup.description, /untrusted management data/);
+  assert.match(lookup.inputSchema.properties.id.description, /Copied learning or proposal item ID/);
+  assert.deepEqual(lookup.inputSchema.properties.status.enum, ["all", "active", "retired", "candidate", "rejected"]);
+  const restoration = installed.find(({ name }) => name === "orchestrator_learning").tools.find(({ name }) => name === "restore_item");
+  assert.deepEqual(restoration.inputSchema.required, ["id", "version", "contextRevision"]);
+  assert.equal(restoration.inputSchema.additionalProperties, false);
+  assert.match(restoration.description, /ordinary chat, ask permission and wait/);
+  assert.match(restoration.description, /read_items by ID and verify status active/);
+  assert.match(restoration.description, /restoring also disables those successors/);
+  const deletion = installed.find(({ name }) => name === "orchestrator_learning").tools.find(({ name }) => name === "delete_item");
+  assert.deepEqual(deletion.inputSchema.required, ["id", "version"]); assert.equal(deletion.inputSchema.additionalProperties, false);
+  assert.match(deletion.description, /ordinary chat, ask permission and wait/); assert.match(deletion.description, /Other item IDs.*remain/);
+  const current = createVoiceContextService({ rootDir, createClient: codex.createClient, learningContext });
+  assert.equal((await complete(current, conversation, "Continue")).result.sessionSwitched, undefined);
+  assert.equal(codex.calls.filter(({ method, params }) => method === "thread/start" && !params.ephemeral).length, 2);
+});
+
+test("editing tool migration version survives a lost native turn start response", async (t) => {
+  const learningContext = { retrieve: async () => ({ contextRevision: 1, selectedDigest: "empty", items: [], instruction: "", excludedPairSeqs: [] }),
+    delivered: async () => {}, recordRead: async () => {} };
+  const { rootDir, service, conversation, codex } = await fixture(t, { learningContext, loseTurnStartResponseAt: 2 });
+  await complete(service, conversation, "first");
+  const file = path.join(rootDir, "active.json"); const active = JSON.parse(await fs.readFile(file, "utf8"));
+  delete active.nativeLearningToolsVersion; active.nativeLearningEnabled = true;
+  await fs.writeFile(file, JSON.stringify(active));
+  const legacy = createVoiceContextService({ rootDir, createClient: codex.createClient, learningContext });
+  assert.equal((await complete(legacy, conversation, "Edit learning")).result.status, "unknown");
+  assert.equal(JSON.parse(await fs.readFile(file, "utf8")).pendingDispatch.learningToolsVersion, 7);
+  const recovered = createVoiceContextService({ rootDir, createClient: codex.createClient, learningContext });
+  await recovered.open();
+  assert.equal(JSON.parse(await fs.readFile(file, "utf8")).nativeLearningToolsVersion, 7);
+  assert.equal((await complete(recovered, conversation, "Continue")).result.sessionSwitched, undefined);
+  assert.equal(codex.calls.filter(({ method, params }) => method === "thread/start" && !params.ephemeral).length, 2);
+});
+
 for (const failure of ["thread/resume", "turn/start response"]) {
   test(`learning exposure survives a lost ${failure} and remains revocable after restart`, async (t) => {
     const item = { id: randomUUID(), version: 1 };
@@ -4770,6 +4827,41 @@ test("successful skill reads are recorded after slow delivery, and forged batch 
   assert.equal((await complete(service, conversation, "Read adopted workflow")).result.status, "completed");
   assert.equal(toolCalls.length, 1); assert.equal(proofs[0].callId, "skill-read"); assert.equal(proofs.at(-1).complete, true);
   assert.equal(codex.calls.find(({ method, request }) => method === "native/result" && request.params.callId === "bad-proposal").result.success, false);
+});
+
+test("direct learning update results remain tracked without an approval callback", async (t) => {
+  const id = randomUUID(); const proofs = [];
+  const request = { method: "item/tool/call", namespace: "orchestrator_learning", threadId: "root", turnId: "root",
+    tool: "update_item", callId: "update", arguments: { id, version: 2, changes: { content: "Approved update" } } };
+  const { rootDir, service, conversation, codex } = await fixture(t, { nativeRequests: [request],
+    learningContext: { retrieve: async () => ({ contextRevision: 1, selectedDigest: "none", items: [], instruction: "", excludedPairSeqs: [] }),
+      delivered: async () => {}, recordRead: async (proof) => proofs.push(proof),
+      tool: async () => ({ changed: true, contextRevision: 2, item: { id, version: 3, content: "Approved update" } }) } });
+  await complete(service, conversation, "Apply the changes we discussed", randomUUID(), async () => "decline", {
+    onUserInput: async () => assert.fail("learning updates must not open a popup"),
+  });
+  const result = codex.calls.find(({ method }) => method === "native/result").result;
+  assert.equal(JSON.parse(result.contentItems[0].text).item.version, 3);
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8")).learningSnapshot.items, [{ id, version: 3 }]);
+  assert.equal(proofs[0].skill.management, true); assert.equal(proofs[0].skill.selection.items[0].version, 3);
+});
+
+test("learning management output cannot prove task targets", async (t) => {
+  const id = randomUUID(); const tools = [];
+  const requests = [
+    { tool: "read_items", callId: "list", arguments: {}, completedItem: { id: "list", type: "dynamicToolCall", status: "completed", success: true,
+      contentItems: [{ type: "inputText", text: "repo-claim" }] } },
+    { tool: "read_context", callId: "forged-target", arguments: { targets: ["repo-claim"] } },
+    { tool: "read_items", callId: "read", arguments: { id } },
+  ].map((request) => ({ ...request, method: "item/tool/call", namespace: "orchestrator_learning", threadId: "root", turnId: "root" }));
+  const { service, conversation, codex } = await fixture(t, { nativeRequests: requests,
+    learningContext: { retrieve: async () => ({ contextRevision: 1, selectedDigest: "none", items: [], instruction: "", excludedPairSeqs: [] }),
+      delivered: async () => {}, recordRead: async () => {}, tool: async (request) => {
+        tools.push(request); return { contextRevision: 1, items: [{ id, version: 2, kind: "preference", content: "Brief", conditions: "Reports" }] };
+      } } });
+  await complete(service, conversation, "Update learning");
+  assert.deepEqual(tools.map(({ tool }) => tool), ["read_items", "read_items"]);
+  assert.equal(codex.calls.find(({ method, request }) => method === "native/result" && request.params.callId === "forged-target").result.success, false);
 });
 
 test("target-specific context preserves the parent until its exposure is invalidated", async (t) => {
