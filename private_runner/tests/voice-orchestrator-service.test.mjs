@@ -1528,3 +1528,39 @@ test("copied inactive IDs route to own retained records without adopting or repe
   assert.equal((await restarted.learningDelivery({ orchestratorId: "main", operationId: read.operationId })).delivery, null);
   assert.equal((await restarted.learningDelivery({ orchestratorId: "main", operationId: continued.operationId })).delivery, null);
 });
+
+test("chat delete tool accepts only one current owned ID and preserves source and sibling records", async (t) => {
+  const learningCalls = [];
+  const { rootDir, service, codex } = await fixture(t, { learningCalls });
+  const main = await service.open("main"); const child = await service.create("Other chat");
+  const file = path.join(rootDir, "workspace", "orchestrator-learning/state.json");
+  const state = JSON.parse(await fs.readFile(file, "utf8"));
+  const source = { id: randomUUID(), version: 3, status: "active", kind: "preference", content: "Retained source", conditions: "Only reports",
+    reason: "Synthetic request", scope: { orchestratorId: "main" }, evidence: [{ pairSeq: 1, orchestratorId: "main" }],
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+  const draft = { ...source, id: randomUUID(), version: 1, status: "candidate", content: "Delete this draft", replaces: [source.id], replacementVersions: [{ id: source.id, version: 2 }] };
+  const sibling = { ...draft, id: randomUUID(), content: "Retained sibling" };
+  state.candidates.push(source, draft, sibling); await fs.writeFile(file, JSON.stringify(state));
+  const restarted = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
+  const args = { id: draft.id, version: draft.version };
+  learningCalls.push([
+    { tool: "delete_item", arguments: { ...args, version: 2 } },
+    ...[{ all: true }, { orchestratorId: child.id }, { includeRelated: true }, { confirmed: true }].map((extra) => ({ tool: "delete_item", arguments: { ...args, ...extra } })),
+  ]);
+  await (await turn(restarted, "main", main.logicalConversationId, "Check invalid deletion arguments")).finished;
+  assert.ok(codex.calls.filter(({ method }) => method === "learning.result").slice(-5).every(({ result }) => result.success === false));
+  assert.deepEqual((await restarted.learningStatus()).candidates, [source, draft, sibling]);
+  const other = await restarted.open(child.id);
+  learningCalls.push([{ tool: "delete_item", arguments: args }]);
+  await (await turn(restarted, child.id, other.logicalConversationId, "Try a foreign ID")).finished;
+  assert.equal(codex.calls.filter(({ method }) => method === "learning.result").at(-1).result.success, false);
+  learningCalls.push([{ tool: "read_items", arguments: { id: draft.id } }, { tool: "delete_item", arguments: args }, { tool: "read_items", arguments: { id: draft.id } }]);
+  const approved = await turn(restarted, "main", main.logicalConversationId, "Yes, delete only that draft", randomUUID(), undefined,
+    { onUserInput: async () => assert.fail("learning deletion must not open a popup") });
+  assert.equal((await approved.finished).status, "completed");
+  const results = codex.calls.filter(({ method }) => method === "learning.result").slice(-3);
+  assert.equal(results[0].result.success, true); assert.equal(results[1].result.success, true); assert.equal(results[2].result.success, false);
+  const deletion = JSON.parse(results[1].result.contentItems[0].text);
+  assert.equal(deletion.deleted, true); assert.equal(deletion.id, draft.id); assert.equal(deletion.version, draft.version);
+  assert.deepEqual((await restarted.learningStatus()).candidates, [source, sibling]);
+});
