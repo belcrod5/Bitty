@@ -3,7 +3,7 @@ import { Alert, StyleSheet, Text, TextInput, TouchableOpacity, View } from "reac
 import { useAppStyles } from "../styles";
 import { isReasoningEffort, type ReasoningEffort } from "../utils/settingsParsers";
 import { type LearningEvaluation } from "./LearningEvaluationCard";
-import { learningUpdateSources, LearningKnowledgeCard, type LearningKnowledge } from "./LearningKnowledgeCard";
+import { canApplyLearningProposal, learningProposalSources, LearningKnowledgeCard, type LearningKnowledge } from "./LearningKnowledgeCard";
 import { LearningEvaluationOverview } from "./LearningEvaluationOverview";
 import { LearningUsageOverview } from "./LearningUsageOverview";
 import { LearningChangeHistory } from "./LearningChangeHistory";
@@ -172,6 +172,7 @@ export function OrchestratorLearningPanel({ request: sendRequest, orchestrator }
   const selectedItems = (status?.candidates || []).filter((item) => selected.includes(item.id));
   const references = selectedItems.map(({ id, version }) => ({ id, version }));
   const canDecide = references.length > 0 && references.length <= 50 && selectedItems.every((item) => item.status === "candidate");
+  const canAdopt = canDecide && selectedItems.every((item) => canApplyLearningProposal(item, status?.candidates || []));
   const canChange = references.length > 0 && references.length <= 5;
   const button = (label: string, op: string, payload: Record<string, unknown>, disabled = false) => (
     <TouchableOpacity key={label} accessibilityRole="button" accessibilityLabel={label} disabled={busy || disabled}
@@ -179,8 +180,10 @@ export function OrchestratorLearningPanel({ request: sendRequest, orchestrator }
       <Text style={styles.settingsActionText}>{label}</Text>
     </TouchableOpacity>);
   const filteredKnowledge = (status?.candidates || []).filter((item) => {
-    if (knowledgeFilter === "all") return selecting || !learningUpdateSources(item, status?.candidates || []).length;
-    if (knowledgeFilter === "inactive") return item.status === "retired" || item.status === "rejected";
+    const past = item.status === "candidate" && !canApplyLearningProposal(item, status?.candidates || []);
+    if (knowledgeFilter === "inactive") return past || item.status === "retired" || item.status === "rejected";
+    if (past || item.status === "retired" || item.status === "rejected") return false;
+    if (knowledgeFilter === "all") return selecting || item.action === "retire" || !learningProposalSources(item, status?.candidates || []).length;
     return item.status === knowledgeFilter;
   });
   const knowledgeCurrentPage = Math.min(knowledgePage, Math.max(0, Math.ceil(filteredKnowledge.length / 5) - 1));
@@ -210,7 +213,7 @@ export function OrchestratorLearningPanel({ request: sendRequest, orchestrator }
         <Text accessibilityRole="header" style={[dashboard.sectionTitle, { color: colors.textPrimary }]}>学んだこと <Text style={[dashboard.count, { color: colors.textMuted }]}>{status.candidates.length}</Text></Text>
         <Text style={[dashboard.caption, { color: colors.textSecondary }]}>応答の好み {status.candidates.filter((item) => item.kind === "preference" && !item.skill).length} · 作業の手順 {status.candidates.filter((item) => item.kind === "procedure" && !item.skill).length} · 一括作業の方針 {status.candidates.filter((item) => item.kind === "batch_proposal" && !item.skill).length} · 専用スキル {status.candidates.filter((item) => Boolean(item.published)).length}</Text>
         {status.candidates.some((item) => item.skill && !item.published) ? <Text style={[dashboard.caption, { color: colors.textMuted }]}>専用スキル案 {status.candidates.filter((item) => item.skill && !item.published).length}件は保存前です。</Text> : null}
-        <View style={dashboard.filters}>{[["all", "すべて"], ["candidate", "確認待ち"], ["active", "使用中"], ["inactive", "停止・見送り"]].map(([value, label]) =>
+        <View style={dashboard.filters}>{[["all", "すべて"], ["candidate", "確認待ち"], ["active", "使用中"], ["inactive", "履歴"]].map(([value, label]) =>
           <TouchableOpacity key={value} accessibilityRole="tab" accessibilityLabel={`学習: ${label}`} accessibilityState={{ selected: knowledgeFilter === value }}
             onPress={() => { setKnowledgeFilter(value); setKnowledgePage(0); }} style={[dashboard.filter, { backgroundColor: knowledgeFilter === value ? tones.info.background : colors.surfaceMuted }]}>
             <Text style={[dashboard.filterText, { color: knowledgeFilter === value ? tones.info.foreground : colors.textMuted }]}>{label}</Text>
@@ -227,7 +230,7 @@ export function OrchestratorLearningPanel({ request: sendRequest, orchestrator }
           <Text style={styles.settingsRowLabel}>{references.length}件を選択</Text>
           <Text style={styles.settingsFooterText}>チェックは一括操作の対象選びです。使用状態は変わりません。</Text>
           <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
-            {button("選んだ候補を採用", "decide", { items: references, action: "adopt" }, !canDecide)}
+            {button("選んだ候補を採用", "decide", { items: references, action: "adopt" }, !canAdopt)}
             {button("選んだ候補を見送る", "decide", { items: references, action: "reject" }, !canDecide)}
             <TouchableOpacity accessibilityRole="button" accessibilityLabel="選んだ学習の修正案を依頼" disabled={busy || !canChange}
               onPress={() => setRequestingChange((value) => !value)} style={[styles.settingsBackButton, { opacity: busy || !canChange ? 0.5 : 1 }]}>
@@ -256,7 +259,7 @@ export function OrchestratorLearningPanel({ request: sendRequest, orchestrator }
             chatName={orchestrator.name}
             selecting={selecting} selected={selected.includes(item.id)} busy={busy} manage={manage}
             onSelect={() => setSelected((current) => current.includes(item.id) ? current.filter((id) => id !== item.id) : [...current, item.id])} />
-        ))}</View> : <Text style={styles.settingsFooterText}>{status.candidates.length ? "この状態の学習はありません。" : "学習はまだありません。"}</Text>}
+        ))}</View> : <Text style={styles.settingsFooterText}>{knowledgeFilter === "candidate" ? "新しい提案はありません。" : status.candidates.length ? "この状態の学習はありません。" : "学習はまだありません。"}</Text>}
         <LearningPager page={knowledgeCurrentPage} total={filteredKnowledge.length} onPage={setKnowledgePage} label="学習" />
       </View>
       <View style={[dashboard.section, { borderColor: colors.borderSubtle }]}><LearningUsageOverview request={request} usage={status.usage} refreshKey={usageRefresh} outputLimitEnforced={status.outputLimitEnforced} /></View>

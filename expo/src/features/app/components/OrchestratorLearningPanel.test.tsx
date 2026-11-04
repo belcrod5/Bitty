@@ -499,7 +499,7 @@ test("updates are grouped in their current card before pagination, with candidat
   await waitFor(() => screen.getByLabelText(`更新案1件を見る: ${original.content}`));
   expect(screen.queryByText(update.content)).toBeNull(); expect(screen.queryByLabelText("学習の次のページ")).toBeNull();
   await fireEvent.press(screen.getByLabelText(`更新案1件を見る: ${original.content}`));
-  expect(screen.getByText(update.content)).toBeTruthy(); expect(screen.getByText("現在の内容")).toBeTruthy();
+  expect(screen.getByText(update.content)).toBeTruthy(); expect(screen.getByText(original.content)).toBeTruthy();
   await fireEvent.press(screen.getByLabelText("学習の更新を閉じる"));
   await fireEvent.press(screen.getByLabelText("学習: 確認待ち"));
   expect(screen.getByText(update.content)).toBeTruthy(); expect(screen.queryByText(original.content)).toBeNull();
@@ -511,21 +511,47 @@ test("updates are grouped in their current card before pagination, with candidat
   expect(request.mock.calls.some(([op]) => op === "voice.learning.decide")).toBe(false); await screen.unmount();
 });
 
-test("stale updates stay linked from the current card without becoming applicable", async () => {
+test("stale-only updates are retained in history, not in normal confirmation or bulk adoption", async () => {
   const status = initialStatus(); const original = { ...status.candidates[0], id: "original", status: "active", version: 4 };
   const update = { ...status.candidates[0], id: "update", content: "古い更新案", replaces: [original.id], replacementVersions: [{ id: original.id, version: 3 }] };
   status.candidates = [original, update];
-  const screen = await render(<OrchestratorLearningPanel request={mockApi(status)} orchestrator={orchestrators[0]} />);
-  await waitFor(() => screen.getByLabelText(`更新案1件を見る: ${original.content}`));
-  expect(screen.queryByText(update.content)).toBeNull();
-  await fireEvent.press(screen.getByLabelText(`更新案1件を見る: ${original.content}`));
-  expect(screen.getByText(update.content)).toBeTruthy();
-  expect(screen.getByText("以前の内容への提案")).toBeTruthy();
-  await fireEvent.press(screen.getByLabelText("版の詳細"));
-  expect(screen.getByText("使用中：第4版 · 提案の対象：第3版")).toBeTruthy();
-  expect(screen.getByLabelText(`この案に更新: ${update.content}`)).toBeDisabled();
-  await fireEvent.press(screen.getByLabelText("学習の更新を閉じる"));
+  const request = mockApi(status);
+  const screen = await render(<OrchestratorLearningPanel request={request} orchestrator={orchestrators[0]} />);
+  await waitFor(() => screen.getByLabelText(`提案の履歴を見る: ${original.content}`));
+  expect(screen.queryByLabelText(`更新案1件を見る: ${original.content}`)).toBeNull(); expect(screen.queryByText(update.content)).toBeNull();
   await fireEvent.press(screen.getByLabelText("学習: 確認待ち"));
+  expect(screen.getByText("新しい提案はありません。")).toBeTruthy(); expect(screen.queryByText(update.content)).toBeNull();
+  await fireEvent.press(screen.getByLabelText("学習: 履歴"));
   expect(screen.getByText(update.content)).toBeTruthy();
-  await screen.unmount();
+  await fireEvent.press(screen.getByLabelText(`過去の提案を見る: ${update.content}`));
+  expect(screen.queryByLabelText(`この案に更新: ${update.content}`)).toBeNull();
+  expect(screen.getByLabelText(`この案を見送る: ${update.content}`)).toBeEnabled();
+  await fireEvent.press(screen.getByLabelText("学習の更新を閉じる"));
+  await fireEvent.press(screen.getByLabelText("まとめて操作"));
+  expect(screen.queryByLabelText(`一括操作の対象に選択: ${update.content}`)).toBeNull();
+  await fireEvent.press(screen.getByLabelText("学習: 履歴"));
+  await fireEvent.press(screen.getByLabelText(`一括操作の対象に選択: ${update.content}`));
+  expect(screen.getByLabelText("選んだ候補を採用")).toBeDisabled(); expect(screen.getByLabelText("選んだ候補を見送る")).toBeEnabled();
+  expect(request.mock.calls.some(([op]) => op === "voice.learning.decide" || op === "voice.learning.forget")).toBe(false);
+  expect(status.candidates).toEqual([original, update]); await screen.unmount();
+});
+
+test("normal candidate list and grouped updates omit stale update and stop proposals", async () => {
+  const status = initialStatus(); const original = { ...status.candidates[0], id: "original", status: "active", version: 4, content: "使用中の方針" };
+  const stale = { ...status.candidates[0], id: "stale", content: "旧版への更新", createdAt: "2026-11-03T12:00:00Z", replaces: [original.id], replacementVersions: [{ id: original.id, version: 3 }] };
+  const applicable = { ...stale, id: "applicable", content: "現行版への更新", createdAt: "2026-11-03T11:00:00Z", replacementVersions: [{ id: original.id, version: 4 }] };
+  const stop = { ...stale, id: "stop", action: "retire" as const, content: "旧版への停止案" };
+  status.candidates = [original, stale, applicable, stop];
+  const request = mockApi(status); const screen = await render(<OrchestratorLearningPanel request={request} orchestrator={orchestrators[0]} />);
+  await waitFor(() => screen.getByLabelText(`更新案1件を見る: ${original.content}`));
+  expect(screen.queryByText(stale.content)).toBeNull(); expect(screen.queryByText(stop.content)).toBeNull();
+  await fireEvent.press(screen.getByLabelText(`更新案1件を見る: ${original.content}`));
+  expect(screen.getByText(applicable.content)).toBeTruthy(); expect(screen.queryByText(stale.content)).toBeNull(); expect(screen.queryByText(stop.content)).toBeNull();
+  expect(screen.getByLabelText(`この案に更新: ${applicable.content}`)).toBeEnabled();
+  await fireEvent.press(screen.getByLabelText("学習の更新を閉じる")); await fireEvent.press(screen.getByLabelText("学習: 確認待ち"));
+  expect(screen.getByText(applicable.content)).toBeTruthy(); expect(screen.queryByText(stale.content)).toBeNull(); expect(screen.queryByText(stop.content)).toBeNull();
+  await fireEvent.press(screen.getByLabelText("学習: 履歴"));
+  expect(screen.getByText(stale.content)).toBeTruthy(); expect(screen.getByText(stop.content)).toBeTruthy(); expect(screen.queryByText(applicable.content)).toBeNull();
+  expect(screen.queryByLabelText(`停止案を適用: ${stop.content}`)).toBeNull();
+  expect(request.mock.calls.some(([op]) => op === "voice.learning.decide")).toBe(false); await screen.unmount();
 });
