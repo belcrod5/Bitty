@@ -581,7 +581,7 @@ test("forgetting an ancestor removes the entire successor chain, including activ
     await f.service.decide({ items: [ref(item)], action: "adopt" });
   }
   item = (await f.service.status()).candidates.find((entry) => entry.id === ancestor);
-  await f.service.forget({ items: [ref(item)] });
+  await f.service.forget({ items: [ref(item)], includeRelated: false }); // UI payloads cannot select the internal chat-only mode.
   const status = await f.service.status(); assert.equal(status.candidates.length, 0); assert.equal(status.changes.length, 0);
   assert.equal((await f.service.retrieve({ orchestratorId: "main", input: "Version" })).items.length, 0);
 });
@@ -1311,3 +1311,132 @@ for (const management of [false, true]) {
     assert.ok((await f.service.retrieve({ orchestratorId: "main", input: "Next" })).excludedPairSeqs.includes(2));
   });
 }
+
+for (const status of ["active", "candidate", "rejected", "retired"]) {
+  test(`chat deletion removes one ${status} item and preserves another ID sharing its evidence`, async (t) => {
+    const f = await fixture(t, { orchestratorId: "main" });
+    let [target, sibling] = await seed(f, [candidate(1, { content: "Target policy" }), candidate(1, { content: "Retained policy" })]);
+    await f.service.decide({ items: [ref(sibling)], action: "adopt" });
+    if (["active", "retired"].includes(status)) await f.service.decide({ items: [ref(target)], action: "adopt" });
+    target = (await f.service.status()).candidates.find((item) => item.id === target.id);
+    if (["rejected", "retired"].includes(status)) await f.service.decide({ items: [ref(target)], action: status === "rejected" ? "reject" : "retire" });
+    const before = (await f.service.status()).candidates; target = before.find((item) => item.id === target.id); sibling = before.find((item) => item.id === sibling.id);
+    const result = await f.service.forget({ items: [ref(target)] }, { orchestratorId: "main", includeRelated: false });
+    assert.deepEqual(result, { deleted: true, ...ref(target), contextRevision: (await f.service.status()).contextRevision });
+    await assert.rejects(f.service.readItems({ orchestratorId: "main", id: target.id }), { code: "learning_conflict" });
+    const after = await f.service.status(); assert.deepEqual(after.candidates, [sibling]);
+    assert.ok(!after.changes.some((entry) => entry.itemId === target.id));
+    const saved = JSON.parse(await fs.readFile(path.join(f.workspace, "orchestrator-learning/state.json"), "utf8"));
+    assert.ok(!saved.excluded.some((entry) => entry.pairSeq === 1 && entry.forgotten));
+    assert.ok((await f.service.retrieve({ orchestratorId: "main", input: "Retained policy" })).items.some((item) => item.id === sibling.id));
+  });
+}
+
+test("deleting one proposal preserves its retired source, active sibling and the source's ability to restore", async (t) => {
+  const f = await fixture(t); let [source] = await seed(f, [candidate(1, { content: "Original workflow" })]);
+  await f.service.decide({ items: [ref(source)], action: "adopt" }); source = (await f.service.status()).candidates[0];
+  await f.service.requestChange({ items: [ref(source)], instruction: "Offer alternatives" });
+  await f.service.close();
+  f.args.analyze = async ({ input }) => ({ text: JSON.stringify({
+    candidates: ["Draft to delete", "Retained successor"].map((content) => candidate(1, { content, replaces: [source.id] })),
+    corrections: JSON.parse(input).feedback.map(({ id }) => ({ id, reason: "Requested alternatives", candidateIndex: 0 })),
+  }) });
+  f.service = await f.open(); await f.service.runDue();
+  const [draft, successor] = (await f.service.status()).candidates.filter((item) => item.status === "candidate");
+  await f.service.decide({ items: [ref(successor)], action: "adopt" });
+  const retained = (await f.service.status()).candidates.filter((item) => item.id !== draft.id);
+  await f.service.forget({ items: [ref(draft)] }, { orchestratorId: "main", includeRelated: false });
+  assert.deepEqual((await f.service.status()).candidates, retained);
+  const retiredSource = retained.find((item) => item.id === source.id);
+  assert.equal(retiredSource.status, "retired");
+  await f.service.decide({ items: [ref(retiredSource)], action: "restore" });
+  assert.ok((await f.service.retrieve({ orchestratorId: "main", input: "Original workflow" })).items.some((item) => item.id === source.id));
+});
+
+test("chat deletion of a source leaves its proposal retained but impossible to apply", async (t) => {
+  const f = await fixture(t, { analyze: async ({ input }) => {
+    const feedback = JSON.parse(input).feedback || [];
+    return { text: JSON.stringify({ candidates: [candidate(1, feedback.length ? { content: "Retained draft", replaces: feedback[0].items.map(({ id }) => id) } : {})],
+      corrections: feedback.map(({ id }) => ({ id, reason: "Requested replacement", candidateIndex: 0 })) }) };
+  } });
+  await configure(f.service); await f.service.observe([f.pair(1)]); await f.service.runDue();
+  let source = (await f.service.status()).candidates[0];
+  await f.service.decide({ items: [ref(source)], action: "adopt" }); source = (await f.service.status()).candidates[0];
+  await f.service.requestChange({ items: [ref(source)], instruction: "Improve workflow" }); await f.service.runDue();
+  const draft = (await f.service.status()).candidates.find((item) => item.status === "candidate");
+  await f.service.forget({ items: [ref(source)] }, { orchestratorId: "main", includeRelated: false });
+  assert.deepEqual((await f.service.status()).candidates, [draft]);
+  assert.equal((await f.service.readItems({ orchestratorId: "main", id: draft.id })).items[0].replaces[0], source.id);
+  await assert.rejects(f.service.decide({ items: [ref(draft)], action: "adopt" }), { code: "learning_conflict" });
+});
+
+test("scoped deletion validates owner, current version and cancellation before writing", async (t) => {
+  const f = await fixture(t, { orchestratorId: "main" }); const [item] = await seed(f);
+  const file = path.join(f.workspace, "orchestrator-learning/state.json"); const before = await fs.readFile(file, "utf8");
+  const options = { orchestratorId: "main", includeRelated: false };
+  const controller = new AbortController(); controller.abort();
+  for (const [request, extra, code] of [
+    [{ items: [ref(item)] }, { orchestratorId: randomUUID() }, "learning_request_invalid"],
+    [{ items: [{ id: item.id, version: item.version + 1 }] }, {}, "learning_conflict"],
+    [{ items: [{ id: randomUUID(), version: 1 }] }, {}, "learning_conflict"],
+    [{ items: [ref(item)] }, { signal: controller.signal }, "learning_conflict"],
+    [{ items: [{ id: item.id, version: 0 }] }, {}, "learning_request_invalid"],
+    [{ items: [ref(item)], all: true }, {}, "learning_request_invalid"],
+    [{ items: [ref(item), ref(item)] }, {}, "learning_request_invalid"],
+  ]) await assert.rejects(f.service.forget(request, { ...options, ...extra }), { code });
+  assert.equal(await fs.readFile(file, "utf8"), before);
+  const results = await Promise.allSettled([f.service.forget({ items: [ref(item)] }, options), f.service.forget({ items: [ref(item)] }, options)]);
+  assert.equal(results[0].status, "fulfilled"); assert.equal(results[1].reason.code, "learning_conflict");
+});
+
+test("one-item deletion removes published versions but leaves another published item's artifacts untouched", async (t) => {
+  const f = await fixture(t); const items = await seed(f, [candidate(1, { content: "Target" }), candidate(1, { content: "Retained" })]);
+  await f.service.decide({ items: items.map(ref), action: "adopt" });
+  for (let index = 0; index < 2; index++) await f.service.decide({ items: (await f.service.status()).candidates.map(ref), action: "publish" });
+  const [target, retained] = (await f.service.status()).candidates;
+  const retainedFolder = path.join(f.workspace, "orchestrator-learning/skills", retained.id);
+  const retainedFiles = await fs.readdir(retainedFolder);
+  await f.service.forget({ items: [ref(target)] }, { orchestratorId: "main", includeRelated: false });
+  await assert.rejects(fs.stat(path.join(f.workspace, "orchestrator-learning/skills", target.id)), { code: "ENOENT" });
+  assert.deepEqual(await fs.readdir(retainedFolder), retainedFiles);
+  assert.match((await f.service.readSkill({ orchestratorId: "main", id: retained.id, ...retained.published })).markdown, /Retained/);
+});
+
+test("post-save deletion cleanup failures report removal and recover only in the owner store", async (t) => {
+  const f = await fixture(t, { orchestratorId: "main" }); let [item] = await seed(f);
+  await f.service.decide({ items: [ref(item)], action: "adopt" }); item = (await f.service.status()).candidates[0];
+  await f.service.decide({ items: [ref(item)], action: "publish" }); item = (await f.service.status()).candidates[0];
+  const folder = path.join(f.workspace, "orchestrator-learning/skills", item.id); const note = path.join(folder, "unmanaged.txt");
+  await fs.writeFile(note, "must remain");
+  const options = { orchestratorId: "main", includeRelated: false };
+  await assert.rejects(f.service.forget({ items: [ref(item)] }, options), (error) => error.code === "learning_skill_modified" && /was removed.*cleanup is incomplete/.test(error.message));
+  await assert.rejects(f.service.readItems({ orchestratorId: "main", id: item.id }), { code: "learning_conflict" });
+  assert.equal(await fs.readFile(note, "utf8"), "must remain");
+  await f.service.close(); f.service = await f.open();
+  await assert.rejects(f.service.forget({ items: [ref(item)] }, { ...options, orchestratorId: randomUUID() }), { code: "learning_request_invalid" });
+  await fs.unlink(note);
+  assert.equal((await f.service.forget({ items: [ref(item)] }, options)).deleted, true);
+  await assert.rejects(fs.stat(folder), { code: "ENOENT" });
+  await assert.rejects(f.service.forget({ items: [ref(item)] }, options), { code: "learning_conflict" });
+});
+
+test("one-ID deletion revokes inspection replies and inherited exposure without forgetting shared retained evidence", async (t) => {
+  const f = await fixture(t); const [target, retained] = await seed(f, [candidate(1, { content: "Target draft" }), candidate(1, { content: "Retained draft" })]);
+  const operationId = randomUUID(); const second = randomUUID();
+  const snapshot = await f.service.retrieve({ orchestratorId: "main", input: "Inspect" });
+  await f.service.delivered({ orchestratorId: "main", operationId, threadId: "parent", turnId: "first", snapshot });
+  const read = await f.service.readItems({ orchestratorId: "main", id: target.id });
+  await f.service.recordRead({ operationId, callId: "lookup", skill: { selection: read, management: true } });
+  await f.service.observe([f.pair(2, { clientOperationId: operationId })]);
+  const exposedItems = [{ ...ref(target), status: "candidate" }];
+  await f.service.delivered({ orchestratorId: "main", operationId: second, threadId: "parent", turnId: "second", snapshot, exposedItems });
+  await f.service.observe([f.pair(3, { clientOperationId: second })]);
+  await f.service.forget({ items: [ref(target)] }, { orchestratorId: "main", includeRelated: false });
+  const after = await f.service.retrieve({ orchestratorId: "main", input: "Continue", exposedItems });
+  assert.equal(after.invalidated, true); assert.ok(after.excludedPairSeqs.includes(2)); assert.ok(after.excludedPairSeqs.includes(3));
+  assert.equal(await f.service.delivery({ orchestratorId: "main", operationId }), null);
+  assert.equal(await f.service.delivery({ orchestratorId: "main", operationId: second }), null);
+  assert.equal((await f.service.readItems({ orchestratorId: "main", id: retained.id })).items[0].status, "candidate");
+  const saved = JSON.parse(await fs.readFile(path.join(f.workspace, "orchestrator-learning/state.json"), "utf8"));
+  assert.ok(!saved.excluded.some((entry) => entry.pairSeq === 1 && entry.forgotten));
+});

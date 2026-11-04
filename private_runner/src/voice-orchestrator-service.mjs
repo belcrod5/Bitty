@@ -70,6 +70,8 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
         return learning.readItems({ ...args, orchestratorId });
       if (tool === "update_item" && Object.keys(args).sort().join() === "changes,id,version")
         return learning.editItem({ ...args, orchestratorId, signal });
+      if (tool === "delete_item" && Object.keys(args).sort().join() === "id,version")
+        return learning.forget({ items: [args] }, { orchestratorId, signal, includeRelated: false });
       throw failure("Unknown learning tool", "learning_request_invalid");
     },
   });

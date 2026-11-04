@@ -969,16 +969,22 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
         await save(next);
       });
     },
-    async forget({ items, all = false }) {
+    async forget({ items, all = false }, { orchestratorId, signal, includeRelated = true } = {}) {
       return exclusive(async () => {
+        if (!includeRelated && (all || !Array.isArray(items) || items.length !== 1 || !UUID.test(items[0]?.id)
+          || !positive(items[0]?.version) || !identifier(orchestratorId) || ownerId && ownerId !== orchestratorId))
+          throw fail("learning_request_invalid", "Specify one owned learning ID and its current version");
+        if (!includeRelated && (closed || signal?.aborted)) throw fail("learning_conflict", "The turn ended before deletion; read the item again");
         if (!all && (!Array.isArray(items) || !items.length || items.length > 50)) throw fail("learning_request_invalid", "Select learning to forget");
         const next = structuredClone(state);
-        const selected = all ? next.candidates : items.map((reference) => next.candidates.find((item) => item.id === reference.id && item.version === reference.version)
-          || (next.cleanup.includes(reference.id) ? { id: reference.id, evidence: [] } : null));
+        const selected = all ? next.candidates : items.map((reference) => next.candidates.find((item) => item.id === reference.id && item.version === reference.version
+          && (includeRelated || scoped(item, orchestratorId)))
+          || (next.cleanup.includes(reference.id) && (includeRelated || ownerId === orchestratorId && !next.candidates.some((item) => item.id === reference.id))
+            ? { id: reference.id, evidence: [] } : null));
         if (selected.some((item) => !item)) throw fail("learning_conflict", "Learning version changed");
         const ids = new Set(selected.map((item) => item.id));
-        // Follow every successor, including drafts and published descendants, before erasing content.
-        for (let added = true; added;) {
+        // UI forgetting follows the connected graph; chat deletion keeps every other item.
+        for (let added = includeRelated; added;) {
           added = false;
           const predecessorIds = new Set(selected.flatMap((item) => item.replaces || []));
           for (const item of next.candidates) if (!ids.has(item.id)
@@ -986,11 +992,13 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
             ids.add(item.id); selected.push(item); added = true;
           }
         }
-        const sourceSeqs = new Set(selected.flatMap((item) => item.evidence.map((entry) => entry.pairSeq)));
+        const retainedSourceSeqs = new Set(includeRelated ? [] : next.candidates.filter((item) => !ids.has(item.id)).flatMap((item) => item.evidence.map((entry) => entry.pairSeq)));
+        const sourceSeqs = new Set(selected.flatMap((item) => item.evidence.map((entry) => entry.pairSeq)).filter((seq) => !retainedSourceSeqs.has(seq)));
         const affectedUses = next.uses.filter((use) => learningReferences(use).some((item) => ids.has(item.id)));
-        for (const use of affectedUses) if (use.pairSeq) sourceSeqs.add(use.pairSeq);
-        for (const item of selected) exclude(next, item);
-        for (const entry of next.excluded) if (sourceSeqs.has(entry.pairSeq) || affectedUses.some((use) => use.operationId === entry.operationId)) entry.forgotten = true;
+        for (const use of affectedUses) if (use.pairSeq && !retainedSourceSeqs.has(use.pairSeq)) sourceSeqs.add(use.pairSeq);
+        for (const item of selected) exclude(next, { ...item, evidence: item.evidence.filter((source) => !retainedSourceSeqs.has(source.pairSeq)) });
+        for (const entry of next.excluded) if (!retainedSourceSeqs.has(entry.pairSeq)
+          && (sourceSeqs.has(entry.pairSeq) || affectedUses.some((use) => use.operationId === entry.operationId))) entry.forgotten = true;
         next.candidates = next.candidates.filter((item) => !ids.has(item.id));
         next.pending = next.pending.filter((pair) => !sourceSeqs.has(pair.pairSeq));
         next.uses = next.uses.filter((entry) => !learningReferences(entry).some((item) => ids.has(item.id)));
@@ -1000,8 +1008,6 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
         next.requests = next.requests.filter((entry) => !entry.items.some((item) => ids.has(item.id)));
         next.changes = next.changes.filter((entry) => !ids.has(entry.itemId));
         next.proposals = next.proposals.filter((entry) => !ids.has(entry.itemId));
-        // Remove dependent replacement drafts/history too, so an older snapshot cannot reintroduce forgotten content.
-
         if (all) {
           next.pending = []; next.candidates = []; next.uses = []; next.evaluations = []; next.corrections = [];
           next.requests = []; next.changes = []; next.proposals = [];
@@ -1009,9 +1015,16 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
         }
         next.cleanup = [...new Set([...next.cleanup, ...selected.map((item) => item.id)])];
         invalidate(next, selected.some((item) => item.status === "active" || state.uses.some((use) => learningReferences(use).some((entry) => entry.id === item.id))));
+        if (!includeRelated && signal?.aborted) throw fail("learning_conflict", "The turn ended before deletion; read the item again");
         await save(next); remember([]); task?.controller.abort();
-        try { await cleanForgotten(); error = null; } catch (cause) { report(cause); throw cause; }
+        try { await cleanForgotten(); error = null; }
+        catch (cause) {
+          report(cause);
+          if (!includeRelated) throw fail(cause.code || "learning_cleanup_pending", `Item ${items[0].id} was removed from saved learning, but artifact cleanup is incomplete. Verify the saved state before retrying. ${cause.message}`);
+          throw cause;
+        }
         schedule();
+        if (!includeRelated) return { deleted: true, id: items[0].id, version: items[0].version, contextRevision: state.contextRevision };
       });
     },
     async retry({ batchId, settingsRevision }) {
