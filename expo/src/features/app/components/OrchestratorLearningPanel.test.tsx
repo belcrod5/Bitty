@@ -511,6 +511,55 @@ test("updates are grouped in their current card before pagination, with candidat
   expect(request.mock.calls.some(([op]) => op === "voice.learning.decide")).toBe(false); await screen.unmount();
 });
 
+test("all keeps disabled knowledge visible and restores it after confirmation with the current version", async () => {
+  const status = initialStatus();
+  status.candidates = [{ ...status.candidates[0], status: "active", version: 3 }];
+  const api = mockApi(status);
+  const request = jest.fn(async (op: string, payload?: Record<string, unknown>) => {
+    if (op !== "voice.learning.decide") return api(op, payload);
+    status.candidates = status.candidates.map((item) => ({ ...item,
+      status: payload?.action === "retire" ? "retired" : "active", version: item.version + 1 }));
+    return { ...status };
+  });
+  const alert = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+  const screen = await render(<OrchestratorLearningPanel request={request} orchestrator={orchestrators[0]} />);
+  const label = "関連する回答で使う: 報告を短くする";
+  await waitFor(() => expect(screen.getByLabelText(label).props.value).toBe(true));
+  await fireEvent(screen.getByLabelText(label), "valueChange", false);
+  await waitFor(() => expect(screen.getByLabelText(label).props.value).toBe(false));
+  expect(screen.getByText("停止中")).toBeTruthy();
+  expect(request).toHaveBeenCalledWith("voice.learning.decide", {
+    orchestratorId: "main", items: [{ id: "candidate-1", version: 3 }], action: "retire",
+  });
+  await fireEvent(screen.getByLabelText(label), "valueChange", true);
+  expect(request.mock.calls.filter(([op]) => op === "voice.learning.decide")).toHaveLength(1);
+  await act(async () => { alert.mock.calls[0][2]?.find((entry) => entry.text === "再開する")?.onPress?.(); });
+  await waitFor(() => expect(screen.getByLabelText(label).props.value).toBe(true));
+  expect(screen.queryByText("停止中")).toBeNull();
+  expect(request).toHaveBeenCalledWith("voice.learning.decide", {
+    orchestratorId: "main", items: [{ id: "candidate-1", version: 4 }], action: "restore",
+  });
+  await screen.unmount();
+});
+
+test("all includes retained disabled knowledge while rejected and stale proposals stay in history", async () => {
+  const status = initialStatus();
+  const retired = { ...status.candidates[0], id: "retired", status: "retired", content: "停止した方針" };
+  const rejected = { ...status.candidates[0], id: "rejected", status: "rejected", content: "見送った提案" };
+  const stale = { ...status.candidates[0], id: "stale", content: "停止前の内容への提案", replaces: [retired.id],
+    replacementVersions: [{ id: retired.id, version: retired.version }] };
+  status.candidates = [retired, rejected, stale];
+  const screen = await render(<OrchestratorLearningPanel request={mockApi(status)} orchestrator={orchestrators[0]} />);
+  await waitFor(() => screen.getByText(retired.content));
+  expect(screen.getByLabelText(`関連する回答で使う: ${retired.content}`).props.value).toBe(false);
+  expect(screen.queryByText(rejected.content)).toBeNull(); expect(screen.queryByText(stale.content)).toBeNull();
+  await fireEvent.press(screen.getByLabelText("学習: 使用中"));
+  expect(screen.queryByText(retired.content)).toBeNull();
+  await fireEvent.press(screen.getByLabelText("学習: 履歴"));
+  expect(screen.getByText(retired.content)).toBeTruthy(); expect(screen.getByText(rejected.content)).toBeTruthy(); expect(screen.getByText(stale.content)).toBeTruthy();
+  await screen.unmount();
+});
+
 test("stale-only updates are retained in history, not in normal confirmation or bulk adoption", async () => {
   const status = initialStatus(); const original = { ...status.candidates[0], id: "original", status: "active", version: 4 };
   const update = { ...status.candidates[0], id: "update", content: "古い更新案", replaces: [original.id], replacementVersions: [{ id: original.id, version: 3 }] };

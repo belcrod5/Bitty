@@ -182,7 +182,7 @@ export function OrchestratorLearningPanel({ request: sendRequest, orchestrator }
   const filteredKnowledge = (status?.candidates || []).filter((item) => {
     const past = item.status === "candidate" && !canApplyLearningProposal(item, status?.candidates || []);
     if (knowledgeFilter === "inactive") return past || item.status === "retired" || item.status === "rejected";
-    if (past || item.status === "retired" || item.status === "rejected") return false;
+    if (past || item.status === "rejected") return false;
     if (knowledgeFilter === "all") return selecting || item.action === "retire" || !learningProposalSources(item, status?.candidates || []).length;
     return item.status === knowledgeFilter;
   });
