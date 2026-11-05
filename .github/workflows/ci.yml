@@ -35,6 +35,9 @@ jobs:
         working-directory: private_runner
         run: npm ci
 
+      - name: Test orchestrator runtime permissions
+        run: node --test private_runner/tests/codex-app-server-client.test.mjs private_runner/tests/voice-orchestrator-service.test.mjs
+
       - name: Check shell scripts
         run: |
           bash -n scripts/worktree/bootstrap-local.sh

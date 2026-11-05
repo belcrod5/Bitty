@@ -4,7 +4,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createOrchestratorRuntime } from "../src/orchestrator-runtime.mjs";
+import { createLegacyOrchestratorRuntime } from "../src/orchestrator-runtime.mjs";
 
 const OTHER = "12345678-1234-4234-8234-123456789abc";
 
@@ -18,7 +18,7 @@ async function fixture(t) {
   let auth = { accessToken: "test-token-a", accountId: "account-a" };
   let rejectLogin = false;
   let authWait;
-  const manager = createOrchestratorRuntime({ rootDir: root,
+  const manager = createLegacyOrchestratorRuntime({ rootDir: root,
     childEnv: { PATH: "/bin", HOME: "/shared-home", CODEX_HOME: "/shared-codex", OPENAI_API_KEY: "never-inherit", CUSTOM: "never-inherit" },
     resolveAuth: async (options) => { calls.push({ method: "resolveAuth", options }); if (authWait) await authWait; return auth; },
     spawnImpl(bin, args, options) {

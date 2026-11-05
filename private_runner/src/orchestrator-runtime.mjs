@@ -10,9 +10,10 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const unavailable = () => Object.assign(new Error("The isolated orchestrator runtime is unavailable"), { code: "orchestrator_runtime_unavailable" });
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Each specialist owns its Codex configuration, sessions, native agents and skill discovery.
-// Authentication stays in the Runner and is injected into process memory, never copied to disk.
-export function createOrchestratorRuntime({ rootDir, resolveAuth, codexBin = "codex", spawnImpl = spawn,
+// Compatibility for persisted native threads created before shared-runtime execution.
+// Used only for recovery and outstanding-work checks, never for new model turns.
+// Authentication stays in process memory and is never copied to disk.
+export function createLegacyOrchestratorRuntime({ rootDir, resolveAuth, codexBin = "codex", spawnImpl = spawn,
   createClient = createCodexAppServerClient, childEnv = process.env } = {}) {
   const root = path.resolve(rootDir);
   const processes = new Map();

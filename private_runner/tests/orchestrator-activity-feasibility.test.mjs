@@ -129,12 +129,7 @@ async function nativeFixture(t, requests, parents, childToolThreadId) {
     let handler = () => undefined;
     let finish;
     let checklistRead = false;
-    const started = (thread, params) => ({ thread, approvalPolicy: params.approvalPolicy, ...(params.permissions ? {
-      activePermissionProfile: { id: params.permissions }, runtimeWorkspaceRoots: params.runtimeWorkspaceRoots,
-      instructionSources: [], sandbox: params.config.permissions[params.permissions].filesystem[":workspace_roots"] === "read"
-        ? { type: "readOnly", networkAccess: false }
-        : { type: "workspaceWrite", networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: true, writableRoots: [] },
-    } : {}) });
+    const started = (thread, params) => ({ thread, approvalPolicy: params.approvalPolicy });
     return {
       openPromise: Promise.resolve(),
       notify() {},

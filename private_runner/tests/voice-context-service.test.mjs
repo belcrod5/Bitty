@@ -77,7 +77,7 @@ function fakeCodex({ reply = "answer", summaryReply, topicReplies = [], overview
           ], nextCursor: null };
         }
         if (method === "thread/start") {
-          isSummaryThread = params.approvalPolicy === "never";
+          isSummaryThread = params.ephemeral === true && !params.developerInstructions?.includes("専用の一時読込ターン");
           isOverviewThread = isSummaryThread && params.developerInstructions?.startsWith("Summarize the entire supplied task checklist");
           if (!isSummaryThread && ++responseThreadStartCount === failResponseThreadStartAt) {
             throw Object.assign(new Error("response thread start failed"), { code: "app_server_failed" });
@@ -3375,7 +3375,8 @@ test("saved custom instructions keep the fixed checklist read and maintenance ru
   assert.ok(threads.every(({ params }) => params.developerInstructions.includes("task_checklist.confirm_completion_clear")));
   assert.ok(threads.some(({ params }) => params.developerInstructions.includes("task_checklist.read_task_checklist")));
   assert.ok(threads.every(({ params }) => params.developerInstructions.includes("task_checklist.write_task_checklist")));
-  assert.ok(threads.some(({ params }) => params.developerInstructions.includes("新しい親セッションでは")));
+  assert.ok(codex.calls.some(({ method, params }) => method === "thread/start" && params.ephemeral
+    && params.developerInstructions.includes("専用の一時読込ターン")));
   assert.ok(threads.some(({ params }) => !params.developerInstructions.includes("新しい親セッションでは")));
   assert.ok(threads.filter(({ method }) => method === "thread/start").every(({ params }) => params.dynamicTools?.some((tool) => tool.name === "task_checklist")));
   assert.ok(threads.filter(({ method }) => method === "thread/start").every(({ params }) => params.dynamicTools?.find((tool) => tool.name === "task_checklist")
@@ -3402,7 +3403,8 @@ test("legacy main parent starts a fresh thread before the user's first checklist
   assert.ok(preflightStart);
   const preflightId = [...codex.nativeThreads.keys()].find((id) => id !== oldThreadId);
   assert.ok(preflightId);
-  assert.ok(threads.some(({ method, params }) => method === "thread/resume" && params.threadId === preflightId));
+  assert.equal(threads.some(({ method, params }) => method === "thread/resume" && params.threadId === preflightId), false);
+  assert.ok(codex.calls.some(({ method, params }) => method === "thread/inject_items" && JSON.stringify(params.items).includes("Task checklist read before this response")));
   assert.equal(threads.some(({ method, params }) => method === "thread/resume" && params.threadId === oldThreadId), false);
 });
 
@@ -3430,7 +3432,7 @@ test("a legacy completion-tools parent switches to the renewable offer schema be
   const calls = codex.calls.slice(callsBeforeMigration);
   assert.equal(calls.some(({ method, params }) => method === "thread/resume"
     && params.threadId === old.nativeThreadId), false);
-  const tools = calls.find(({ method, params }) => method === "thread/start"
+  const tools = calls.find(({ method, params }) => method === "thread/start" && !params.ephemeral
     && params.dynamicTools?.some((tool) => tool.name === "task_checklist")).params.dynamicTools;
   assert.deepEqual(tools.find((tool) => tool.name === "task_checklist").tools
     .find((tool) => tool.name === "offer_completion_clear").inputSchema.properties.userRequested,
@@ -3546,7 +3548,7 @@ test("checklist preflight declines a command before the user turn", async (t) =>
   assert.equal(codex.calls.filter(({ method }) => method === "turn/start").length, 1);
 });
 
-test("checklist preflight starts an agent-capable parent but stops unsafe delegation", async (t) => {
+test("checklist preflight disables agents and stops unsafe delegation", async (t) => {
   let delegated = 0;
   const managedSessions = {
     refresh: async () => ({ records: [] }), contextOf: () => "",
@@ -3564,10 +3566,9 @@ test("checklist preflight starts an agent-capable parent but stops unsafe delega
   assert.equal(delegated, 0);
   assert.equal(codex.calls.find(({ method }) => method === "native/result").result.success, false);
   assert.equal(codex.calls.filter(({ method }) => method === "turn/interrupt").length, 1);
-  const parent = codex.calls.find(({ method, params }) => method === "thread/start"
-    && params.approvalPolicy === "on-request");
-  assert.equal(parent.params.config.agents.enabled, true);
-  assert.equal(parent.params.config.mcp_servers, undefined);
+  const parent = codex.calls.find(({ method, params }) => method === "thread/start" && params.ephemeral);
+  assert.equal(parent.params.config.agents.enabled, false);
+  assert.equal(parent.params.config.features.shell_tool, false);
 });
 
 test("native delegation started during checklist read interrupts preflight", async (t) => {
@@ -3634,8 +3635,8 @@ test("restart never recovers an unverified checklist parent reply as completed",
   const recovered = await complete(restarted, conversation, "retry after restart");
   assert.equal(recovered.result.status, "completed");
   assert.equal(JSON.parse(await fs.readFile(activeFile, "utf8")).checklistReadPending, false);
-  assert.ok(codex.calls.some(({ method, params }) => method === "thread/resume"
-    && params.developerInstructions.includes("新しい親セッションでは")));
+  assert.ok(codex.calls.some(({ method, params }) => method === "thread/start" && params.ephemeral
+    && params.developerInstructions.includes("専用の一時読込ターン")));
 });
 
 test("restart clears an accepted checklist dispatch intent before the user turn", async (t) => {
@@ -3919,7 +3920,7 @@ test("voice calendar reads are visible on new and resumed parents and return dev
   assert.ok(toolCalls.every(({ signal }) => !signal.aborted));
   const threads = codex.calls.filter(({ method, params }) => ["thread/start", "thread/resume"].includes(method)
     && params.approvalPolicy === "on-request");
-  assert.equal(threads.filter(({ method }) => method === "thread/resume").length, 2);
+  assert.equal(threads.filter(({ method }) => method === "thread/resume").length, 1);
   assert.ok(threads.filter(({ method }) => method === "thread/resume").every(({ params }) => !Object.hasOwn(params, "dynamicTools")));
   for (const { params } of threads.filter(({ method }) => method === "thread/start")) {
     const calendar = params.dynamicTools.find(({ name }) => name === "calendar");
@@ -4075,7 +4076,9 @@ test("summary disables configured MCP and accepts only disabled inventory", asyn
   const threadStart = calls.findIndex(({ method }) => method === "thread/start");
   assert.ok(configRead >= 0 && configRead < threadStart);
   assert.deepEqual(calls[threadStart].params.config.mcp_servers, { example: { enabled: false } });
-  assert.deepEqual(calls[threadStart].params.config.features, { apps: false, plugins: false });
+  assert.equal(calls[threadStart].params.config.features.shell_tool, false);
+  assert.equal(calls[threadStart].params.config.features.multi_agent, false);
+  assert.equal(Object.values(calls[threadStart].params.config.features).every((enabled) => enabled === false), true);
 });
 
 test("repeated topic updates include existing topics and update only changed topics", async (t) => {
