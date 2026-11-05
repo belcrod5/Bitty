@@ -46,7 +46,7 @@ import {
   getCodexTurnEventIdentity,
 } from "./codex-turn-execution.mjs";
 import { createCodexAppServerClient } from "./codex-app-server-client.mjs";
-import { createOrchestratorRuntime } from "./orchestrator-runtime.mjs";
+import { createLegacyOrchestratorRuntime } from "./orchestrator-runtime.mjs";
 import { conditionalOrchestratorList, createVoiceOrchestratorService } from "./voice-orchestrator-service.mjs";
 import { createVoiceConsultationService, consultationRoomSummary } from "./voice-consultation-service.mjs";
 import { createCodexSessionChildrenObserver } from "./codex-session-children.mjs";
@@ -5024,19 +5024,9 @@ function createCodexRpcClient({
   upstreamToken = CODEX_WS_PROXY_UPSTREAM_TOKEN,
   authRefreshHandler,
   bypassAuthGate = false,
-  orchestratorId,
-  workspaceDirectory,
 } = {}) {
   const authLease = bypassAuthGate ? null : codexAuthService.acquireLease();
   const usageAccount = bypassAuthGate ? null : captureCodexUsageAccount();
-  if (orchestratorId) {
-    return orchestratorRuntime.createClient({ orchestratorId, workspaceDirectory, signal,
-      onClose: () => authLease?.(), turnCompletionTimeoutMs: NEAR_UNLIMITED_TIMEOUT_MS,
-    }).then((client) => {
-      if (usageAccount) client.addNotificationListener((method, params) => observeCodexUsageNotification(usageAccount, method, params));
-      return client;
-    }).catch((error) => { authLease?.(); throw error; });
-  }
   try {
     const client = createCodexAppServerClient({
       signal,
@@ -5054,7 +5044,9 @@ function createCodexRpcClient({
   }
 }
 
-const orchestratorRuntime = createOrchestratorRuntime({
+// Compatibility only: old native threads remain in their original Codex homes
+// until recovery and the safe parent switch complete. New turns use the normal client.
+const legacyOrchestratorRuntime = createLegacyOrchestratorRuntime({
   rootDir: path.join(WORKSPACE_ROOT, "private_runner/logs/voice_context/v1"),
   codexBin: CODEX_BIN, resolveAuth: resolveCodexResponseAuth,
 });
@@ -5070,7 +5062,8 @@ function broadcastVoiceChecklistChanged({ orchestratorId, logicalConversationId 
 const voiceContextService = createVoiceOrchestratorService({
   rootDir: path.join(WORKSPACE_ROOT, "private_runner/logs/voice_context/v1"),
   createClient: (options) => createCodexRpcClient(options),
-  disposeRuntime: (id) => orchestratorRuntime.dispose(id),
+  createLegacyClient: (options) => legacyOrchestratorRuntime.createClient(options),
+  disposeRuntime: (id) => legacyOrchestratorRuntime.dispose(id),
   getAgentService: () => agentService,
   subjectId: () => agentOwnerSubjectId,
   activity: orchestratorActivity,
@@ -10441,7 +10434,7 @@ if (!RUNNER_SKIP_SERVER_START) {
     localHttpsServer?.close();
     codexScheduleService.stop();
     codexAuthService.markUnready();
-    void orchestratorRuntime.shutdown()
+    void legacyOrchestratorRuntime.shutdown()
       .then(() => codexAuthService.shutdown())
       .catch(() => {})
       .finally(() => releaseCodexAuthOwnerLock())

@@ -44,7 +44,7 @@ function validateIcon(icon) {
   return icon;
 }
 
-export function createVoiceOrchestratorService({ rootDir, createClient, getAgentService, subjectId,
+export function createVoiceOrchestratorService({ rootDir, createClient, createLegacyClient, getAgentService, subjectId,
   onCompleted, onChecklistChanged, onLearningUnreadChanged, disposeRuntime, activity, defaultTtsProvider = "aivisspeech" }) {
   const root = path.resolve(rootDir);
   const registryFile = path.join(root, "orchestrators.json");
@@ -252,7 +252,7 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
     const ordinary = key ? await loadedContext(id) : null;
     const sharedOwner = ordinary ? await ordinary.sharedResources() : undefined;
     const directory = key ? path.join(ownerDirectory(id), "scopes", key) : ownerDirectory(id);
-    const service = createVoiceContextService({ rootDir: directory, createClient, orchestratorId: id, sharedOwner,
+    const service = createVoiceContextService({ rootDir: directory, createClient, createLegacyClient, orchestratorId: id, sharedOwner,
       ...(!key ? { getAdditionalEventPairs: async () => (await evidence(id, true))
         .flatMap((source) => source.pairs.filter((pair) => pair.pairSeq > (source.active.memoryFloorPairSeq || 0))),
       } : {}),

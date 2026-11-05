@@ -23,12 +23,7 @@ function fakeCodex({ hold = false, failSummary = false, failTurn = false,
     let resolveCompletion = () => {};
     let summary = false;
     let serverHandler = () => {};
-    const started = (thread, params) => ({ thread, approvalPolicy: reportedApprovalPolicy || params.approvalPolicy, ...(params.permissions ? {
-      activePermissionProfile: { id: params.permissions }, runtimeWorkspaceRoots: params.runtimeWorkspaceRoots,
-      instructionSources: [], sandbox: params.config.permissions[params.permissions].filesystem[":workspace_roots"] === "read"
-        ? { type: "readOnly", networkAccess: false }
-        : { type: "workspaceWrite", networkAccess: params.config.permissions[params.permissions].network.enabled, excludeTmpdirEnvVar: true, excludeSlashTmp: true, writableRoots: [] },
-    } : {}) });
+    const started = (thread, params) => ({ thread, approvalPolicy: reportedApprovalPolicy || params.approvalPolicy });
     return {
       openPromise: Promise.resolve(), notify() {}, close() { resolveCompletion(); },
       addNotificationListener(next) { listener = next; return () => { listener = () => {}; }; },
@@ -45,7 +40,7 @@ function fakeCodex({ hold = false, failSummary = false, failTurn = false,
         if (method === "skills/list") return { data: [{ cwd: params.cwds[0], skills: [], errors: [] }] };
         if (method === "mcpServerStatus/list") return { data: [], nextCursor: null };
         if (method === "thread/start") {
-          summary = params.ephemeral === true;
+          summary = params.ephemeral === true && !params.developerInstructions?.includes("専用の一時読込ターン");
           const thread = { id: randomUUID(), ephemeral: params.ephemeral, turns: [],
             dynamicTools: params.dynamicTools, checklistRead: params.developerInstructions?.includes("新しい親セッションでは") };
           threads.set(thread.id, thread);
@@ -303,7 +298,7 @@ test("orchestrator names share the settings parent lifecycle across rename and r
   await checkTurns(reloaded, "restarted", false);
   assert.equal((await restarted.getSettings(child.id)).systemInstruction, customInstruction);
   const helperRequests = codex.calls.filter(({ method, params }) =>
-    method === "thread/start" && params.ephemeral === true);
+    method === "thread/start" && params.ephemeral === true && !params.developerInstructions?.includes("専用の一時読込ターン"));
   assert.ok(helperRequests.length);
   assert.ok(helperRequests.every(({ params }) => !params.developerInstructions.includes("Current orchestrator chat metadata")));
   assert.ok(codex.calls.filter(({ method, params }) => method === "turn/start" && codex.threads.get(params.threadId)?.ephemeral === true)
@@ -317,7 +312,7 @@ test("renamed orchestrator metadata counts toward the visible input byte budget"
   const first = await turn(service, child.id, conversationId, "hello");
   assert.equal((await first.finished).status, "completed");
   const instructions = codex.calls.find(({ method, params }) =>
-    method === "thread/resume" && params.ephemeral !== true).params.developerInstructions;
+    method === "thread/start" && params.ephemeral !== true).params.developerInstructions;
   await service.update(child.id, { name: "名".repeat(80), icon: "" });
   const callCount = codex.calls.length;
   const operationId = randomUUID();
@@ -442,10 +437,10 @@ test("offline preparation assigns old memory to main and keeps new specialists e
   assert.equal((await b.finished).status, "completed");
 
   const injections = codex.calls.filter(({ method }) => method === "thread/inject_items");
-  assert.equal(injections.length, 0, "legacy transcripts remain visible without entering the new model context");
-  const turns = codex.calls.filter(({ method }) => method === "turn/start");
+  assert.ok(injections.every(({ params }) => !JSON.stringify(params.items).includes("old main")), "legacy transcripts remain visible without entering the new model context");
+  const turns = codex.calls.filter(({ method, params }) => method === "turn/start" && params.approvalPolicy === "on-request");
   assert.notEqual(turns[0].params.threadId, turns[2].params.threadId);
-  assert.equal(turns[1].params.threadId, turns[2].params.threadId);
+  assert.notEqual(turns[1].params.threadId, turns[2].params.threadId);
   assert.notEqual(turns[0].params.threadId, turns[1].params.threadId);
   const workspaces = codex.calls.filter(({ method, params }) => method === "thread/start"
     && params.ephemeral !== true).map(({ params }) => params.cwd);
@@ -458,7 +453,7 @@ test("offline preparation assigns old memory to main and keeps new specialists e
   assert.equal(childThread.params.developerInstructions.includes("task-checklists/main.md"), false);
   assert.ok(childThread.params.developerInstructions.includes(`task-checklists/${created.id}.md`));
   assert.equal(childThread.params.dynamicTools?.some((tool) => tool.name === "task_checklist"), true);
-  assert.ok(codex.calls.some(({ method, params }) => method === "thread/resume"
+  assert.ok(codex.calls.some(({ method, params }) => method === "thread/start" && !params.ephemeral
     && params.developerInstructions.includes("task-checklists/main.md")));
   const recent = JSON.parse(await fs.readFile(path.join(rootDir, "workspace", "voice-memory", "recent.json"), "utf8"));
   assert.deepEqual(recent.map(({ user }) => user), ["old main", "main again"]);
@@ -484,7 +479,9 @@ test("main custom instructions retain fixed checklist guidance on start and resu
   const started = codex.calls.find(({ method, params }) => method === "thread/start" && params.ephemeral !== true);
   const resumed = codex.calls.find(({ method, params }) => method === "thread/resume" && params.ephemeral !== true);
   assert.match(started.params.developerInstructions, /Custom main rule\./);
-  assert.match(started.params.developerInstructions, /新しい親セッションでは/);
+  assert.equal(started.params.developerInstructions.includes("新しい親セッションでは"), false);
+  assert.ok(codex.calls.some(({ method, params }) => method === "thread/start" && params.ephemeral
+    && params.developerInstructions.includes("専用の一時読込ターン")));
   assert.match(started.params.developerInstructions, /task-checklists\/main\.md/);
   assert.match(resumed.params.developerInstructions, /Custom main rule\./);
   assert.match(resumed.params.developerInstructions, /task-checklists\/main\.md/);
@@ -734,7 +731,7 @@ test("voice schedules use the named orchestrator history and settings after rena
   assert.equal(call.params.model, "another-model");
   assert.equal(call.params.effort, "high");
   const threadStart = codex.calls.find((entry) => entry.method === "thread/start" && entry.params.model === "another-model");
-  assert.equal(threadStart.params.approvalPolicy, "never");
+  assert.equal(threadStart.params.approvalPolicy, threadStart.params.ephemeral ? "never" : "on-request");
   const previousCall = codex.calls.find((entry) => entry.method === "turn/start" && entry.params.input[0].text === "previous request");
   assert.notEqual(call.params.threadId, previousCall.params.threadId);
   const renamedStart = codex.calls.find((entry) => entry.method === "thread/start" && entry.params.model === "another-model"
@@ -826,7 +823,7 @@ test("voice activity binds the registered root before the native turn starts and
   const root = order.find(([event]) => event === "root");
   assert.equal(root[1], "main");
   assert.ok(root[2]);
-  assert.equal(codex.calls.filter((call) => call.method === "turn/start" && codex.threads.get(call.params.threadId)?.ephemeral === false).length, 2);
+  assert.equal(codex.calls.filter((call) => call.method === "turn/start" && codex.threads.get(call.params.threadId)?.ephemeral === false).length, 1);
   assert.deepEqual(order.map(([event]) => event), ["root", "released"]);
 });
 
@@ -920,7 +917,9 @@ test("existing non-main parents switch and read their own checklist before resum
     && params.ephemeral !== true);
   assert.ok(started);
   assert.ok(started.params.developerInstructions.includes(`task-checklists/${child.id}.md`));
-  assert.match(started.params.developerInstructions, /新しい親セッションでは/);
+  assert.equal(started.params.developerInstructions.includes("新しい親セッションでは"), false);
+  assert.ok(codex.calls.some(({ method, params }) => method === "thread/start" && params.ephemeral
+    && params.developerInstructions.includes("専用の一時読込ターン")));
   assert.equal(started.params.dynamicTools.some((tool) => tool.name === "task_checklist"), true);
   const active = JSON.parse(await fs.readFile(path.join(rootDir, "orchestrators", child.id, "active.json"), "utf8"));
   assert.notEqual(active.nativeThreadId, oldActive.nativeThreadId);
@@ -1227,7 +1226,7 @@ test("runtime refuses old stores without migration side effects, and offline pre
   assert.equal((await service.getSettings("main")).isolationVersion, 1);
 });
 
-test("new specialists use canonical defaults and expose no inherited external or Runner tools", async (t) => {
+test("new specialists use normal execution permissions and independent canonical defaults", async (t) => {
   const { rootDir, service, codex } = await fixture(t);
   await service.open("main");
   await service.update("main", { name: "main expert", icon: "", systemInstruction: "Main-only expertise", model: "another-model", effort: "high" });
@@ -1244,15 +1243,27 @@ test("new specialists use canonical defaults and expose no inherited external or
   await service.start({ operationId, payload: { orchestratorId: child.id, backendId: "codex",
     logicalConversationId: conversation.logicalConversationId, clientOperationId: operationId,
     input: { blocks: [{ type: "text", text: "Own task" }] } } }, finish, async () => "decline", {
-    onCalendarToolCall: async () => { throw new Error("External tool must not be exposed"); },
+    onCalendarToolCall: async () => ({ success: true, contentItems: [] }),
   });
   assert.equal((await finished).status, "completed");
   const threads = codex.calls.filter((call) => call.method === "thread/start");
   for (const { params } of threads) {
-    assert.equal(params.dynamicTools?.some((tool) => ["voice_subagent", "iphone_calendar"].includes(tool.name)), false);
-    const readOnly = params.config.permissions[params.permissions].filesystem[":workspace_roots"] === "read";
-    assert.equal(params.config.web_search, readOnly ? "disabled" : "live");
-    assert.deepEqual(params.runtimeWorkspaceRoots, [await fs.realpath(path.join(rootDir, "orchestrators", child.id, "workspace"))]);
+    assert.equal(params.permissions, undefined);
+    assert.equal(params.runtimeWorkspaceRoots, undefined);
+    if (!params.ephemeral) {
+      assert.equal(params.approvalPolicy, "on-request");
+      assert.equal(params.sandbox, undefined, "interactive sandbox inherits normal Codex config");
+      assert.equal(params.config.features, undefined);
+      assert.equal(params.config.shell_environment_policy, undefined);
+      assert.equal(params.config.skills, undefined);
+      assert.equal(params.config.mcp_servers, undefined);
+      assert.equal(params.developerInstructions.includes("Do not read shared skills or credentials"), false);
+    } else {
+      assert.equal(params.approvalPolicy, "never");
+      assert.equal(params.sandbox, "read-only");
+      assert.equal(params.config.features.shell_tool, false);
+      assert.equal(params.config.agents.enabled, false);
+    }
   }
 });
 
@@ -1286,11 +1297,11 @@ test("offline preparation retains all old To Do files and mixed memory in main o
   assert.equal((await (await turn(service, "main", opened.logicalConversationId, "New own request")).finished).status, "completed");
   const ownPairs = JSON.parse(await fs.readFile(path.join(ownedWorkspace, "voice-memory", "recent.json"), "utf8"));
   assert.deepEqual(ownPairs.map((pair) => pair.user), ["Old own conversation", "Other chat secret", "New own request"]);
-  assert.equal(codex.calls.some((call) => call.method === "thread/inject_items"), false);
+  assert.equal(codex.calls.some((call) => call.method === "thread/inject_items" && JSON.stringify(call.params.items).includes("Other chat secret")), false);
 });
 
 
-test("environment work uses owned Runner delegation while individual and consultation shell policies stay isolated", async (t) => {
+test("Runner delegation remains owned while individual and consultation execution uses normal permissions", async (t) => {
   const starts = [], admissions = [], gates = [], actionGates = new Map(), decisions = [];
   const agent = createAgentService({ backends: [{
     backendId: "test", getStatus: async () => {
@@ -1352,15 +1363,13 @@ test("environment work uses owned Runner delegation while individual and consult
   assert.match(results.at(-1).result.error, /does not belong/);
   assert.equal(starts.length, 1);
   for (const { params } of codex.calls.filter((call) => call.method === "thread/start")) {
-    assert.equal(params.approvalPolicy, "never");
-    assert.equal(params.config.permissions[params.permissions].network.enabled, params.config.permissions[params.permissions].filesystem[":workspace_roots"] === "write");
-    assert.deepEqual(params.config.shell_environment_policy, { inherit: "none" });
+    assert.equal(params.approvalPolicy, params.ephemeral ? "never" : "on-request");
+    assert.equal(params.config.shell_environment_policy, undefined);
+    assert.equal(params.permissions, undefined);
   }
-  for (const { method, params } of codex.calls.filter(({ method }) => ["thread/resume", "turn/start"].includes(method))) {
-    assert.equal(params.approvalPolicy, "never", method);
-  }
-  const instruction = codex.calls.find(({ method, params }) => method === "thread/resume" && params.developerInstructions.includes("outside the shell sandbox")).params.developerInstructions;
-  assert.match(instruction, /external workspace, shared installed CLI or skill, or credentials/);
+  const instruction = codex.calls.find(({ method }) => method === "thread/resume").params.developerInstructions;
+  assert.match(instruction, /Use the normal Codex execution environment/);
+  assert.equal(instruction.includes("request shell escalation here"), false);
   for (const release of gates.splice(0)) release();
   await waitFor(async () => !await service.isBusy("main"));
 });
@@ -1441,7 +1450,7 @@ for (const scoped of [false, true]) test(`offline Runner patch repairs previousl
 });
 
 
-test("runtime capability changes refresh existing parents only after native work settles", async (t) => {
+for (const legacy of [true, false]) test(`runtime capability changes refresh ${legacy ? "legacy" : "shared"} parents only after native work settles`, async (t) => {
   const { rootDir, service, codex } = await fixture(t);
   const opened = await service.open("main");
   assert.equal((await (await turn(service, "main", opened.logicalConversationId, "Keep this history")).finished).status, "completed");
@@ -1455,8 +1464,12 @@ test("runtime capability changes refresh existing parents only after native work
   parent.turns.at(-1).items.push(childItem);
   codex.threads.set(childId, { id: childId, status: { type: "active" }, turns: [] });
   delete before.nativeRuntimeInstructionHash;
+  if (legacy) delete before.nativeRuntime;
   await fs.writeFile(file, JSON.stringify(before));
-  const upgraded = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
+  const shared = legacy ? fakeCodex() : codex;
+  let legacyReads = 0;
+  const upgraded = createVoiceOrchestratorService({ rootDir, createClient: shared.createClient,
+    createLegacyClient: () => { legacyReads++; return codex.createClient(); } });
   t.after(() => upgraded.close());
   await upgraded.open("main");
   const blocked = await (await turn(upgraded, "main", opened.logicalConversationId, "Continue during native work")).finished;
@@ -1471,21 +1484,77 @@ test("runtime capability changes refresh existing parents only after native work
   assert.notEqual(after.nativeThreadId, before.nativeThreadId);
   assert.equal(after.logicalConversationId, before.logicalConversationId);
   assert.match(after.nativeRuntimeInstructionHash, /^[a-f0-9]{64}$/);
-  assert.ok(codex.calls.some(({ method, params }) => method === "thread/inject_items" && params.threadId === after.nativeThreadId
+  assert.equal(after.nativeRuntime, "shared");
+  assert.equal(legacyReads > 0, legacy);
+  assert.equal(shared.calls.some(({ method, params }) => method === "thread/resume" && params.threadId === before.nativeThreadId), false);
+  assert.ok(shared.calls.some(({ method, params }) => method === "thread/inject_items" && params.threadId === after.nativeThreadId
     && JSON.stringify(params.items).includes("Keep this history")));
-  const count = codex.calls.filter(({ method, params }) => method === "thread/start" && !params.ephemeral).length;
+  const count = shared.calls.filter(({ method, params }) => method === "thread/start" && !params.ephemeral).length;
   assert.equal((await (await turn(upgraded, "main", opened.logicalConversationId, "Continue again")).finished).status, "completed");
-  assert.equal(codex.calls.filter(({ method, params }) => method === "thread/start" && !params.ephemeral).length, count);
+  assert.equal(shared.calls.filter(({ method, params }) => method === "thread/start" && !params.ephemeral).length, count);
   assert.equal(JSON.parse(await fs.readFile(file, "utf8")).nativeThreadId, after.nativeThreadId);
 });
 
-test("isolated owners reject a runtime that retains shell escalation before dispatch", async (t) => {
-  const { service, codex } = await fixture(t, { reportedApprovalPolicy: "on-request" });
+test("recovery reads a shared dispatch candidate even while its active parent is legacy", async (t) => {
+  const { rootDir, service, codex } = await fixture(t);
   const opened = await service.open("main");
-  const result = await (await turn(service, "main", opened.logicalConversationId, "Use an installed CLI")).finished;
-  assert.equal(result.status, "preflight_failed");
-  assert.equal(result.code, "capability_unsupported");
-  assert.equal(codex.calls.some(({ method }) => method === "turn/start"), false);
+  await (await turn(service, "main", opened.logicalConversationId, "Previous history")).finished;
+  await service.close();
+  const file = path.join(rootDir, "active.json"), active = JSON.parse(await fs.readFile(file, "utf8"));
+  const legacyThreadId = active.nativeThreadId, threadId = randomUUID(), turnId = randomUUID(), operationId = randomUUID();
+  const shared = fakeCodex();
+  shared.threads.set(threadId, { id: threadId, ephemeral: false, turns: [{ id: turnId, status: "completed", items: [
+    { type: "userMessage", text: "Crash task" }, { type: "agentMessage", text: "Recovered shared answer" },
+  ] }] });
+  const eventsFile = path.join(rootDir, opened.logicalConversationId, "events.jsonl");
+  const events = (await fs.readFile(eventsFile, "utf8")).trim().split("\n").map(JSON.parse);
+  let seq = events.at(-1).seq;
+  for (const event of [{ type: "accepted", text: "Crash task" }, { type: "dispatching" }])
+    events.push({ ...event, seq: ++seq, at: new Date().toISOString(), clientOperationId: operationId });
+  await fs.writeFile(eventsFile, `${events.map(JSON.stringify).join("\n")}\n`);
+  const turnSeq = active.turnSeq + 1;
+  active.pendingSwitch = { parentGeneration: active.parentGeneration, turnSeq, reason: "tools" };
+  active.pendingDispatch = { clientOperationId: operationId, threadId, turnId, parentGeneration: active.parentGeneration,
+    turnSeq, newParent: true, switchTurnSeq: turnSeq, nativeRuntime: "shared", runtimeInstructionHash: active.nativeRuntimeInstructionHash };
+  delete active.nativeRuntime;
+  await fs.writeFile(file, JSON.stringify(active));
+  const recovered = createVoiceOrchestratorService({ rootDir, createClient: shared.createClient, createLegacyClient: codex.createClient });
+  t.after(() => recovered.close());
+  const recoveredState = await recovered.open("main");
+  const saved = JSON.parse(await fs.readFile(file, "utf8"));
+  assert.equal(saved.nativeThreadId, threadId);
+  assert.equal(saved.nativeRuntime, "shared");
+  assert.equal(saved.pendingDispatch, undefined);
+  assert.ok(shared.calls.some(({ method, params }) => method === "thread/read" && params.threadId === threadId));
+  assert.equal(shared.calls.some(({ method, params }) => method === "thread/resume" && params.threadId === legacyThreadId), false);
+  assert.equal(recoveredState.status, "failed", "an uncommitted checklist proof remains conservative across recovery");
+  assert.equal(recoveredState.code, "checklist_read_required");
+  assert.equal(codex.calls.some(({ method, params }) => method === "thread/read" && params.threadId === threadId), false);
+});
+
+test("orchestrators replace only the exact legacy default confirmation instruction", async (t) => {
+  const { rootDir, service, codex } = await fixture(t);
+  await service.open("main"); await service.close();
+  const file = path.join(rootDir, "active.json"), active = JSON.parse(await fs.readFile(file, "utf8"));
+  const legacy = "You are in a spoken conversation. Reply naturally and concisely in the user's language. Recent pairs supersede older topic facts. 何かを実行するときは、必ずユーザに確認してから実行してください";
+  await fs.writeFile(file, JSON.stringify({ ...active, systemInstruction: legacy }));
+  const updated = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
+  t.after(() => updated.close());
+  assert.equal((await updated.getSettings("main")).systemInstruction.includes("必ずユーザに確認"), false);
+  const custom = `${legacy} Custom user rule.`;
+  await updated.update("main", { name: "メイン", icon: "", systemInstruction: custom });
+  assert.equal((await updated.getSettings("main")).systemInstruction, custom);
+});
+
+test("orchestrators use normal approval policy without a private runtime profile", async (t) => {
+  const { service, codex } = await fixture(t);
+  const opened = await service.open("main");
+  assert.equal((await (await turn(service, "main", opened.logicalConversationId, "Use an installed CLI")).finished).status, "completed");
+  const interactive = codex.calls.filter(({ method, params }) => method === "turn/start" && params.input[0].text === "Use an installed CLI");
+  assert.equal(interactive.length, 1);
+  assert.equal(interactive[0].params.approvalPolicy, "on-request");
+  assert.equal(interactive[0].params.sandboxPolicy, undefined);
+  assert.equal(interactive[0].params.permissions, undefined);
 });
 
 

@@ -93,7 +93,7 @@ test("routes auth refresh to its dedicated handler exactly once", async () => {
     return { unexpected: true };
   });
 
-  client.ws.receive({ id: 43, method: "account/chatgptAuthTokens/refresh", params: {} });
+  client.ws.receive({ id: 43, method: "account/chatgptAuthTokens/refresh", params: { threadId: "unrelated" } });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(ordinaryCalls, 0);
   assert.deepEqual(client.ws.sent[0], {
@@ -168,4 +168,50 @@ test("calls onClose once when the remote socket closes", async () => {
   client.ws.emit("close", 1006, Buffer.from("remote"));
   client.ws.emit("close", 1006, Buffer.from("duplicate"));
   assert.equal(calls, 1);
+});
+
+test("shared transport answers only owned roots and verified native descendants", async () => {
+  const parents = new Map([["child", "root"], ["grandchild", "child"], ["other-child", "other-root"],
+    ["other-root", null], ["cycle-a", "cycle-b"], ["cycle-b", "cycle-a"]]);
+  class RoutingSocket extends FakeWebSocket {
+    send(raw) {
+      super.send(raw);
+      const message = JSON.parse(raw);
+      if (message.method === "thread/start") queueMicrotask(() => this.receive({ id: message.id, result: { thread: { id: "root" } } }));
+      if (message.method === "thread/read") queueMicrotask(() => this.receive(parents.has(message.params.threadId)
+        ? { id: message.id, result: { thread: { id: message.params.threadId, parentThreadId: parents.get(message.params.threadId) } } }
+        : { id: message.id, error: { message: "unavailable" } }));
+    }
+  }
+  const client = createCodexAppServerClient({ upstreamUrl: "ws://shared.test", WebSocketImpl: RoutingSocket });
+  client.ws.open(); await client.openPromise;
+  await client.request("thread/start", {});
+  // An observer read must not become ownership of another chat.
+  await client.request("thread/read", { threadId: "other-root", includeTurns: false });
+  const received = [];
+  client.addServerRequestHandler((request) => { received.push(request.params.threadId); return { decision: "accept" }; });
+  for (const [index, threadId] of ["root", "grandchild", "other-root", "other-child", "cycle-a", "missing"].entries()) {
+    client.ws.receive({ id: 100 + index, method: "item/commandExecution/requestApproval", params: { threadId } });
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.deepEqual(received, ["root", "grandchild"]);
+  const answers = client.ws.sent.filter((message) => message.id >= 100);
+  assert.deepEqual(answers.map((message) => message.id), [100, 101], "unrelated or unverified requests receive neither denial nor RPC error");
+  client.close();
+});
+
+test("a resume completed during ancestry lookup still owns its approval request", async () => {
+  const client = createCodexAppServerClient({ upstreamUrl: "ws://shared.test", WebSocketImpl: FakeWebSocket });
+  client.ws.open(); await client.openPromise;
+  const resume = client.request("thread/resume", { threadId: "resumed" });
+  const received = [];
+  client.addServerRequestHandler((request) => { received.push(request.id); return { decision: "accept" }; });
+  client.ws.receive({ id: 100, method: "item/commandExecution/requestApproval", params: { threadId: "resumed" } });
+  assert.equal(client.ws.sent.at(-1).method, "thread/read");
+  client.ws.receive({ id: 1, result: { thread: { id: "resumed" } } });
+  client.ws.receive({ id: 2, result: { thread: { id: "resumed", parentThreadId: null } } });
+  await resume; await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(received, [100]);
+  assert.deepEqual(client.ws.sent.at(-1), { id: 100, result: { decision: "accept" } });
+  client.close();
 });

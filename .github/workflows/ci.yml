@@ -36,7 +36,7 @@ jobs:
         run: npm ci
 
       - name: Test orchestrator runtime permissions
-        run: node --test private_runner/tests/orchestrator-runtime-profile.test.mjs
+        run: node --test private_runner/tests/codex-app-server-client.test.mjs private_runner/tests/voice-orchestrator-service.test.mjs
 
       - name: Check shell scripts
         run: |

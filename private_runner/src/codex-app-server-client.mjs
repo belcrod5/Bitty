@@ -18,6 +18,7 @@ export function createCodexAppServerClient({
   const completionWaiters = new Set();
   const notificationListeners = new Set();
   const serverRequestHandlers = new Set();
+  const ownedThreads = new Set();
   let nextId = 1;
   let closed = false;
   let detachAbortListener = () => {};
@@ -78,6 +79,25 @@ export function createCodexAppServerClient({
         ws.send(JSON.stringify({ id: message.id, ...payload }));
       };
       const handle = async () => {
+        // Shared App Servers broadcast requests to subscribed connections. Reading a
+        // thread is observation, not ownership; only its client or native ancestry
+        // may answer. Unrelated clients must not decline it or send an RPC error.
+        const threadId = message.params?.threadId;
+        if (message.method !== "account/chatgptAuthTokens/refresh" && typeof threadId === "string" && !ownedThreads.has(threadId)) {
+          const descendants = new Set();
+          let current = threadId;
+          while (!ownedThreads.has(current)) {
+            if (descendants.has(current)) return;
+            descendants.add(current);
+            let read;
+            try { read = await request("thread/read", { threadId: current, includeTurns: false }); }
+            catch { if (ownedThreads.has(current)) break; return; }
+            if (ownedThreads.has(current)) break;
+            if (read?.thread?.id !== current || typeof read.thread.parentThreadId !== "string" || !read.thread.parentThreadId) return;
+            current = read.thread.parentThreadId;
+          }
+          for (const descendant of descendants) ownedThreads.add(descendant);
+        }
         const handlers = message.method === "account/chatgptAuthTokens/refresh"
           ? (typeof authRefreshHandler === "function" ? [authRefreshHandler] : [])
           : [...serverRequestHandlers];
@@ -115,6 +135,8 @@ export function createCodexAppServerClient({
     if (message.error) {
       entry.reject(new Error(String(message.error?.message || message.error || "Codex RPC failed")));
     } else {
+      if (["thread/start", "thread/resume", "thread/fork"].includes(entry.method)
+        && typeof message.result?.thread?.id === "string") ownedThreads.add(message.result.thread.id);
       entry.resolve(message.result);
     }
   });
@@ -134,7 +156,7 @@ export function createCodexAppServerClient({
           reject(new Error(`Codex RPC timeout: ${method}`));
         }, Math.floor(Number(timeoutMs)))
         : null;
-      pending.set(id, { resolve, reject, timeout });
+      pending.set(id, { method, resolve, reject, timeout });
       try {
         send({ id, method, params });
       } catch (error) {

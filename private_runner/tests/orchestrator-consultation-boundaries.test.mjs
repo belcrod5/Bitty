@@ -19,17 +19,9 @@ function fakeAppServer({ holdResponses = false, holdSummaries = false, holdOverv
     let listener = () => {}, handler = () => {}, finishWait = () => {};
     const replyThread = (thread, params) => {
       thread.overview = params.developerInstructions?.startsWith("Summarize the entire supplied task checklist");
-      thread.readOnly = params.permissions
-        ? params.config.permissions[params.permissions].filesystem[":workspace_roots"] === "read"
-        : params.sandbox === "read-only";
-      return { thread, approvalPolicy: params.approvalPolicy, ...(params.permissions ? {
-      activePermissionProfile: { id: params.permissions }, instructionSources: [],
-      runtimeWorkspaceRoots: params.runtimeWorkspaceRoots,
-      sandbox: params.config.permissions[params.permissions].filesystem[":workspace_roots"] === "read"
-        ? { type: "readOnly", networkAccess: false }
-        : { type: "workspaceWrite", networkAccess: params.config.permissions[params.permissions].network.enabled, writableRoots: [],
-          excludeTmpdirEnvVar: true, excludeSlashTmp: true },
-      } : {}) };
+      thread.readOnly = params.sandbox === "read-only";
+      thread.preflight = params.developerInstructions?.includes("専用の一時読込ターン");
+      return { thread, approvalPolicy: params.approvalPolicy };
     };
     return {
       openPromise: Promise.resolve(), notify() {}, close() { finishWait(); },
@@ -77,7 +69,7 @@ function fakeAppServer({ holdResponses = false, holdSummaries = false, holdOverv
             throw new Error("fake turn/start response was lost");
           }
           const finish = async () => {
-            if (thread.readOnly && !thread.ephemeral) {
+            if (thread.preflight) {
               const id = randomUUID();
               listener("item/started", { threadId: thread.id, turnId: turn.id,
                 item: { id, type: "dynamicToolCall", status: "inProgress" } });
@@ -106,7 +98,7 @@ function fakeAppServer({ holdResponses = false, holdSummaries = false, holdOverv
             const text = thread.ephemeral
               ? thread.overview ? "- [ ] Owner shared overview" : recent ? JSON.stringify({ decision: "continue", reason: "fake same topic" })
                 : summary ? JSON.stringify({ index: "# Topics\n", topics: [] }) : ephemeralReply || "{}"
-              : thread.readOnly ? "checklist read" : replyFor ? replyFor({ params, ownerId: options?.orchestratorId }) : `fake reply:${params.input[0].text}`;
+              : thread.readOnly ? "checklist read" : replyFor ? replyFor({ params, ownerId: params.cwd.match(/orchestrators\/([^/]+)\/workspace/)?.[1] || "main" }) : `fake reply:${params.input[0].text}`;
             turn.items.push({ type: "agentMessage", text });
             turn.status = "completed";
             thread.status = { type: "idle" };
@@ -225,7 +217,8 @@ test("separate roots separate state, native threads, workspace, settings and rea
   assert.notEqual((await ordinary.getSettings()).systemInstruction, (await room.getSettings()).systemInstruction);
   assert.deepEqual((await ordinary.getMemoryStore()).rawPairs.map((pair) => pair.user), ["normal"]);
   assert.deepEqual((await room.getMemoryStore()).rawPairs.map((pair) => pair.user), ["room"]);
-  assert.ok(rpc.clientOptions.some((value) => value?.workspaceDirectory === path.join(directory, "room", "workspace")));
+  const roomWorkspace = await fs.realpath(path.join(directory, "room", "workspace"));
+  assert.ok(rpc.calls.some(({ method, params }) => method === "thread/start" && params.cwd === roomWorkspace));
 });
 
 test("two factories on one root have local busy/settings state, not a shared owner authority", { timeout: 20000 }, async (t) => {
@@ -311,11 +304,11 @@ test("production scopes reuse owner resources, isolate normal history, persist p
   assert.equal((await first.terminal).conversationKey, key);
   await ownerTurn(service, "main", "room-2", key, { additionalInstructions: "CONSULTATION_SECOND" });
   const parents = regularParents(rpc.calls);
-  assert.ok(parents.every(({ params }) => params.approvalPolicy === "never"));
+  assert.ok(parents.every(({ params }) => params.approvalPolicy === "on-request"));
   const firstInstruction = parents.find(({ params }) => params.developerInstructions.includes("CONSULTATION_FIRST"));
   const secondInstruction = parents.find(({ params }) => params.developerInstructions.includes("CONSULTATION_SECOND"));
   assert.ok(firstInstruction); assert.ok(secondInstruction);
-  assert.equal(firstInstruction.method, "thread/resume", "existing checklist preflight owns the initial parent");
+  assert.equal(firstInstruction.method, "thread/start", "ephemeral checklist preflight does not own the interactive parent");
   assert.doesNotMatch(secondInstruction.params.developerInstructions, /CONSULTATION_FIRST/);
   assert.ok(parents.filter(({ params }) => params.developerInstructions.includes("新しい親セッションでは"))
     .every(({ params }) => !params.developerInstructions.includes("CONSULTATION_")));
@@ -1089,16 +1082,14 @@ test("handoff prioritizes the addressed unread participant, stays silent, then r
   assert.ok(normal.length >= 2);
   assert.ok(normal.every(({params}) => !params.dynamicTools?.some((tool) => tool.name === "consultation")));
   assert.ok(normal.every(({params}) => !params.developerInstructions.includes("latestUserMessage") && !params.developerInstructions.includes("consultation.handoff")));
-  const runtimeParents = rpc.calls.filter(({method,params}) => ["thread/start", "thread/resume"].includes(method) && params.permissions);
-  const interactive = runtimeParents.filter(({params}) => params.config.permissions[params.permissions].filesystem[":workspace_roots"] === "write");
-  const helpers = runtimeParents.filter(({params}) => params.config.permissions[params.permissions].filesystem[":workspace_roots"] === "read");
+  const runtimeParents = rpc.calls.filter(({method}) => ["thread/start", "thread/resume"].includes(method));
+  const interactive = runtimeParents.filter(({params}) => !params.ephemeral && params.approvalPolicy === "on-request");
+  const helpers = runtimeParents.filter(({params}) => params.ephemeral);
   assert.ok(interactive.some(({params}) => params.developerInstructions.includes("consultation.handoff")));
   assert.ok(interactive.some(({params}) => !params.developerInstructions.includes("consultation.handoff")));
-  assert.ok(interactive.every(({params}) => params.config.web_search === "live"), "ordinary and consultation use the same public Web capability");
-  assert.ok(helpers.length > 0 && helpers.every(({params}) => params.config.web_search === "disabled"));
-  assert.ok(runtimeParents.every(({params}) => params.config.permissions[params.permissions].network.enabled === (params.config.permissions[params.permissions].filesystem[":workspace_roots"] === "write")
-    && params.config.features.browser_use === false && params.config.features.computer_use === false
-    && params.config.apps._default.enabled === false), "interactive network does not enable private browser or helper network");
+  assert.ok(interactive.every(({params}) => !params.permissions && !params.sandbox && !params.config.features && !params.config.mcp_servers),
+    "ordinary orchestration and consultations inherit normal Codex capabilities");
+  assert.ok(helpers.length > 0 && helpers.every(({params}) => params.config.web_search === "disabled" && params.config.features.shell_tool === false));
   assert.ok(parents.slice(before, through).some(({params}) => params.dynamicTools?.some((tool) => tool.name === "consultation" && tool.tools.some((item) => item.name === "handoff"))));
 });
 
