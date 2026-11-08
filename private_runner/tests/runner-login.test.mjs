@@ -15,6 +15,7 @@ import { installRunnerWebSocketUpgradeHandler } from "../src/runner-websocket-up
 import { createRunnerLoginMailer } from "../src/runner-login-mail.mjs";
 import { createApnsClient } from "../src/apns-client.mjs";
 import { startRunnerControlListener } from "../src/runner-control-listener.mjs";
+import { createLlmAcpSessionStore } from "../src/llm-acp-session-store.mjs";
 
 const codeFor = (secret, timestamp) => new OTPAuth.TOTP({ secret: OTPAuth.Secret.fromBase32(secret), digits: 6, period: 30 }).generate({ timestamp });
 const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
@@ -47,7 +48,7 @@ async function fixture(t, options = {}) {
   return { root, directory, messages, binding, start, setup, login, get service() { return service; }, get time() { return time; }, key,
     setTime(value) { time = value; },
     advance(ms) { time += ms; }, failMail(value) { deliveryFailure = value; },
-    async restart() { await service.close(); service = createRunnerLoginService(params); await service.initialize(); },
+    async restart(overrides = {}) { await service.close(); Object.assign(params, overrides); service = createRunnerLoginService(params); await service.initialize(); },
   };
 }
 
@@ -161,11 +162,47 @@ test("recovery changes generation, rejects concurrent pending recovery and inval
   await assert.rejects(f.service.completeLogin({ ...pendingLogin, totpCode: codeFor(owner.secret, f.time) }));
 });
 
-test("setup refuses mismatched existing ACL owner without replacing identity", async (t) => {
-  const f = await fixture(t, { inspectOwners: async () => ["runner:another-owner"] });
+test("setup preserves the current owner and leaves historical workspace grants isolated and untouched", async (t) => {
+  const current = "runner:" + createHash("sha256").update("old-private-token").digest("hex");
+  const other = "runner:" + createHash("sha256").update("historical-token").digest("hex");
+  // The removed runtime-wide scan used to reject this unrelated historical grant.
+  const f = await fixture(t, { inspectOwners: async () => [current, other] });
+  const file = path.join(f.root, "acp_sessions.json");
+  const grants = [current, other].map((subjectId, index) => ({ subjectId, canonicalRoot: path.join(f.root, `project-${index}`),
+    identity: `project-${index}`, approvedAt: new Date(f.time).toISOString(), revokedAt: "" }));
+  await fs.writeFile(file, JSON.stringify({ version: 5, sessions: {}, agentWorkspaces: grants }));
+  const before = await fs.readFile(file, "utf8");
+  const store = createLlmAcpSessionStore({ acpSessionStorePath: file, workspaceRoot: f.root,
+    normalizeSessionUpdatedAt: (value) => value || "", normalizeSessionRootRelativePath: (value) => value,
+    normalizeLlmExecutionSessionId: (value) => value });
+  const owner = await f.setup(), session = await f.login(owner.secret), context = await f.service.authenticate(session.token);
+  assert.equal(context.ownerSubjectId, current);
+  assert.deepEqual((await store.listAgentWorkspaces(context.ownerSubjectId)).map((entry) => entry.canonicalRoot), [grants[0].canonicalRoot]);
+  assert.deepEqual((await store.listAgentWorkspaces(other)).map((entry) => entry.canonicalRoot), [grants[1].canonicalRoot]);
+  assert.equal(await fs.readFile(file, "utf8"), before);
+});
+
+test("first setup refuses a changed local identity before mail and rejects an older pending ceremony", async (t) => {
+  const f = await fixture(t), current = f.service.ownerSubjectId;
   const challenge = await f.start("setup"), prepared = await f.service.prepareSetup(challenge);
+  await f.restart({ legacyToken: "replacement-token" });
+  const sent = f.messages.length;
+  await assert.rejects(f.start("setup"), { code: "owner_migration_required" });
+  assert.equal(f.messages.length, sent);
+  await assert.rejects(f.service.prepareSetup(challenge), { code: "owner_migration_required" });
   await assert.rejects(f.service.completeSetup({ setupId: prepared.setupId, clientBinding: f.binding, totpCode: codeFor(prepared.secret, f.time) }), { code: "owner_migration_required" });
   assert.equal(f.service.registered, false);
+  assert.equal(f.service.ownerSubjectId, current);
+});
+
+test("reset keeps an established owner across local credential rotation and allows re-registration", async (t) => {
+  const f = await fixture(t), current = f.service.ownerSubjectId;
+  await f.setup();
+  await f.restart({ legacyToken: "replacement-token" });
+  await f.service.resetOwner();
+  await f.setup();
+  assert.equal(f.service.registered, true);
+  assert.equal(f.service.ownerSubjectId, current);
 });
 
 test("corrupt storage, wrong permissions and simultaneous writer fail closed", async (t) => {

@@ -1537,19 +1537,6 @@ const runnerLoginService = createRunnerLoginService({
   directory: path.resolve(process.env.RUNNER_LOGIN_DIRECTORY || "private_runner/logs/runner-login"),
   legacyToken: RUNNER_TOKEN,
   sendMail: createRunnerLoginMailer(),
-  inspectOwners: async () => {
-    const files = [ACP_SESSION_STORE_PATH];
-    const subjects = new Set();
-    const visit = (value) => {
-      if (!value || typeof value !== "object") return;
-      for (const [key, item] of Object.entries(value)) {
-        if ((key === "ownerSubjectId" || key === "subjectId") && typeof item === "string" && item.startsWith("runner:")) subjects.add(item);
-        else if (item && typeof item === "object") visit(item);
-      }
-    };
-    for (const file of files) { try { visit(JSON.parse(await fs.readFile(file, "utf8"))); } catch (error) { if (error.code !== "ENOENT") throw error; } }
-    return [...subjects];
-  },
 });
 if (!RUNNER_SKIP_SERVER_START) await runnerLoginService.initialize();
 const runnerLoginHttp = createRunnerLoginHttp({ service: runnerLoginService, location: createRunnerLoginLocation() });

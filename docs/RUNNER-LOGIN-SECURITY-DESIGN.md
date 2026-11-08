@@ -133,7 +133,7 @@ owner subjectは端末tokenから計算しない。初回移行時に現在の `
 
 HTTP、WS、ローカルCLI、background処理は同じowner subjectへ解決し、既存のworkspace admission、操作owner、idempotency、会話参照を維持する。session IDをowner IDへ流用したり、全ownerのデータを一括で許可したりしない。
 
-既存保存データに複数の過去token由来subjectがある場合は自動統合しない。対象storeを棚卸しし、現在のownerとの対応が一致しない場合は切替を停止して個別に移行方針を決める。
+初回登録前は、永続owner IDが現在のローカル制御token由来のIDと一致することを確認する。不一致ならメール送信前に停止し、個別に移行方針を決める。既存保存データに複数の過去token由来subjectがあっても、自動統合・書換えはしない。別subjectのworkspace承認等はそのsubjectに残り、現在のownerへ許可しない。登録済みownerはローカル制御tokenの更新やreset後も固定する。
 
 ## 7. 新端末メール
 

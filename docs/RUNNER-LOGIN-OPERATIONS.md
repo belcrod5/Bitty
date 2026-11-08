@@ -34,7 +34,9 @@ master keyはmacOS Keychainのservice `bitty-runner-login-master-key` に保存�
 
 setupはローカルsocketと既存local credentialを使い、TOTP master keyのKeychain作成もこの操作で行う。未登録状態でも公開HTTPからownerを取得することはできない。登録失敗時は接続QRへ進まず停止し、既存登録を自動resetしない。
 
-過去の保存済みowner subjectが現在のownerと一致しなければ `owner_migration_required` で止まる。旧token由来subjectを一括で新ownerへ付け替えない。対象storeと権限の対応を確認してから個別の移行を判断する。
+初回登録前の永続owner IDが現在のローカル制御token由来IDと一致しなければ、メール送信前に `owner_migration_required` で止まる。別の過去ownerのworkspace承認等が保存されていても、それだけで登録は止めない。他ownerのデータや権限は変更・統合せず、現在のownerには許可しない。登録済みownerはローカル制御tokenの更新やreset後も固定する。
+
+ローカルCLIはRunnerが保存したtokenファイルを優先する。`.env` の古い `RUNNER_TOKEN` は既存ファイルを上書きしない。ファイルが存在しない直接起動構成だけ環境変数を使い、不正な権限・空ファイル等では停止する。
 
 接続QRにはAccess資格情報、接続先、LANの信頼情報だけを含め、Runner共有tokenも既存sessionも含めない。既存端末も対応アプリでQRを読み直す。資格情報保存をoriginに結び付けた新schemaへ切り替えるため、旧field保存への自動fallbackはしない。その後メールコード＋TOTPでログインする。
 

@@ -54,12 +54,14 @@ try {
   } else {
     if (!["setup", "reset"].includes(action)) throw new Error("Unknown action");
     const tokenPath = process.env.RUNNER_TOKEN_FILE || path.join(logs, "runner-token");
-    let token = process.env.RUNNER_TOKEN;
-    if (!token) {
-      const file = path.resolve(repository, tokenPath);
-      const stat = await fs.lstat(file);
+    const file = path.resolve(repository, tokenPath);
+    const stat = await fs.lstat(file).catch((error) => { if (error.code === "ENOENT") return null; throw error; });
+    let token;
+    if (stat) {
       if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid() || (stat.mode & 0o777) !== 0o600) throw new Error("Unsafe local credential file");
       token = (await fs.readFile(file, "utf8")).trim();
+    } else {
+      token = process.env.RUNNER_TOKEN;
     }
     if (!token) throw new Error("Local credential is missing");
     const request = async (route, input) => {

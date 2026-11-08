@@ -15,7 +15,7 @@ const same = (a, b) => {
 function error(code, status = 400) { return Object.assign(new Error(code), { code, status }); }
 
 export function createRunnerLoginService({ directory, legacyToken = "", sendMail, now = Date.now,
-  keyProvider = runnerLoginKey, store = createRunnerLoginStore(directory, { now }), inspectOwners = async () => [] } = {}) {
+  keyProvider = runnerLoginKey, store = createRunnerLoginStore(directory, { now }) } = {}) {
   let key = null, ready = false, closing = false, unavailable = false, flushPromise = null;
   const sockets = new Map();
   const touching = new Map();
@@ -23,6 +23,9 @@ export function createRunnerLoginService({ directory, legacyToken = "", sendMail
   const initial = () => ({ version: 1, ownerSubjectId: legacyToken ? `runner:${hash(legacyToken)}` : `owner:${randomUUID()}`,
     owner: null, generation: 0, sessions: [], challenges: [], outbox: [], budget: { windowAt: now(), attempts: 0, sends: 0, sentAt: 0 } });
   const initialState = initial();
+  const requireSetupOwner = (state) => {
+    if (state.generation === 0 && legacyToken && state.ownerSubjectId !== initialState.ownerSubjectId) throw error("owner_migration_required", 409);
+  };
   const encrypt = (value) => {
     const iv = randomBytes(12); const cipher = createCipheriv("aes-256-gcm", key, iv);
     const data = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
@@ -124,6 +127,7 @@ export function createRunnerLoginService({ directory, legacyToken = "", sendMail
     return hash(input.clientBinding);
   };
   const start = async (input, purpose, context) => {
+    if (purpose === "setup") requireSetupOwner(store.state);
     await needKey(purpose === "setup");
     const clientBinding = binding(input), id = randomUUID(), code = String(randomInt(100000000)).padStart(8, "0");
     let destination;
@@ -201,6 +205,7 @@ export function createRunnerLoginService({ directory, legacyToken = "", sendMail
     startRecovery: (input) => start(input, "recovery"),
     startSetup: (input) => start(input, "setup"),
     async prepareSetup(input) {
+      requireSetupOwner(store.state);
       await needKey(true);
       return change((state) => {
         if (state.owner) throw error("owner_already_registered", 409);
@@ -212,10 +217,9 @@ export function createRunnerLoginService({ directory, legacyToken = "", sendMail
       });
     },
     async completeSetup(input) {
-      const owners = await inspectOwners();
       return change((state) => {
         if (state.owner) throw error("owner_already_registered", 409);
-        if (owners.some((owner) => owner !== state.ownerSubjectId)) throw error("owner_migration_required", 409);
+        requireSetupOwner(state);
         rate(state);
         const pending = state.challenges.find((item) => item.id === input.setupId && item.purpose === "setup-confirm");
         if (!pending || pending.expiresAt <= now() || pending.attempts >= 5 || pending.generation !== state.generation || !same(pending.binding, hash(input.clientBinding))) throw error("invalid_authentication");
