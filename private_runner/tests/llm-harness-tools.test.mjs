@@ -1,3 +1,4 @@
+import { mockRunnerLogin } from "./helpers/runner-login-fixture.mjs";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
@@ -50,6 +51,7 @@ test.before(async () => {
   process.env.CLI_SESSION_INDEX_PATH = path.join(sessionStoreRoot, "cli_sessions_index.json");
   const mod = await import("../src/server-runtime.mjs");
   hooks = mod.__TESTING__;
+  mockRunnerLogin(hooks);
   assert.ok(hooks, "__TESTING__ export must exist");
 });
 

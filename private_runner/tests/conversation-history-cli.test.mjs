@@ -13,7 +13,7 @@ const execFile = promisify(execFileCallback);
 const CLI = path.resolve("private_runner/bin/bitty-history");
 
 test("conversation history CLI emits a bounded Markdown deep link without changing the API domain", async (t) => {
-  const temp = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-history-cli-"));
+  const temp = await fs.mkdtemp(path.join(process.platform === "darwin" ? "/tmp" : os.tmpdir(), "bitty-history-cli-"));
   const realTemp = await fs.realpath(temp);
   t.after(() => fs.rm(temp, { recursive: true, force: true }));
   const tokenFile = path.join(temp, "token");
@@ -42,10 +42,9 @@ test("conversation history CLI emits a bounded Markdown deep link without changi
       scanned: { sessions: 1, items: 10, pages: 1 },
     }));
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const socketPath = path.join(await fs.realpath(temp), "runner.sock");
+  await new Promise((resolve) => server.listen(socketPath, resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  const address = server.address();
-  assert.ok(address && typeof address === "object");
   const { stdout } = await execFile(CLI, [
     "search", "matching words", "--limit", "1", "--cwd", realTemp,
     "--order", "newest", "--since", "2026-08-22T00:00:00.000Z",
@@ -54,7 +53,7 @@ test("conversation history CLI emits a bounded Markdown deep link without changi
     env: {
       ...process.env,
       BITTY_RUNNER_TOKEN_FILE: tokenFile,
-      BITTY_RUNNER_URL: `http://127.0.0.1:${address.port}`,
+      RUNNER_CONTROL_SOCKET: socketPath,
       CODEX_THREAD_ID: "child-thread",
     },
   });
@@ -78,7 +77,7 @@ test("conversation history CLI emits a bounded Markdown deep link without changi
 });
 
 test("conversation history CLI pages omitted approved workspaces without hiding partial coverage", async (t) => {
-  const temp = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-history-workspaces-"));
+  const temp = await fs.mkdtemp(path.join(process.platform === "darwin" ? "/tmp" : os.tmpdir(), "bitty-history-workspaces-"));
   t.after(() => fs.rm(temp, { recursive: true, force: true }));
   const tokenFile = path.join(temp, "token");
   await fs.writeFile(tokenFile, "test-token\n", { mode: 0o600 });
@@ -91,14 +90,13 @@ test("conversation history CLI pages omitted approved workspaces without hiding 
       ? { workspaces }
       : { results: [], scanned: { sessions: 0, items: 0, pages: 0 } }));
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const socketPath = path.join(await fs.realpath(temp), "runner.sock");
+  await new Promise((resolve) => server.listen(socketPath, resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  const address = server.address();
-  assert.ok(address && typeof address === "object");
   const environment = {
     ...process.env,
     BITTY_RUNNER_TOKEN_FILE: tokenFile,
-    BITTY_RUNNER_URL: `http://127.0.0.1:${address.port}`,
+    RUNNER_CONTROL_SOCKET: socketPath,
   };
   const first = await execFile(CLI, ["search", "needle"], {
     env: {
@@ -132,7 +130,7 @@ test("conversation history CLI pages omitted approved workspaces without hiding 
 });
 
 test("conversation history CLI honors the documented runner token file relative to the repository", async (t) => {
-  const temp = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-history-runner-token-"));
+  const temp = await fs.mkdtemp(path.join(process.platform === "darwin" ? "/tmp" : os.tmpdir(), "bitty-history-runner-token-"));
   t.after(() => fs.rm(temp, { recursive: true, force: true }));
   const tokenFile = path.join(temp, "token");
   await fs.writeFile(tokenFile, "documented-token\n", { mode: 0o600 });
@@ -142,24 +140,23 @@ test("conversation history CLI honors the documented runner token file relative 
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({ results: [], scanned: {} }));
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const socketPath = path.join(await fs.realpath(temp), "runner.sock");
+  await new Promise((resolve) => server.listen(socketPath, resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  const address = server.address();
-  assert.ok(address && typeof address === "object");
   await execFile(CLI, ["search", "needle", "--cwd", temp], {
     cwd: temp,
     env: {
       ...process.env,
       BITTY_RUNNER_TOKEN_FILE: "",
       RUNNER_TOKEN_FILE: path.relative(path.resolve("."), tokenFile),
-      BITTY_RUNNER_URL: `http://127.0.0.1:${address.port}`,
+      RUNNER_CONTROL_SOCKET: socketPath,
     },
   });
   assert.equal(authorization, "Bearer documented-token");
 });
 
 test("conversation history CLI reads the latest page without a cursor and preserves focused reads", async (t) => {
-  const temp = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-history-read-"));
+  const temp = await fs.mkdtemp(path.join(process.platform === "darwin" ? "/tmp" : os.tmpdir(), "bitty-history-read-"));
   t.after(() => fs.rm(temp, { recursive: true, force: true }));
   const tokenFile = path.join(temp, "token");
   await fs.writeFile(tokenFile, "test-token\n", { mode: 0o600 });
@@ -169,14 +166,13 @@ test("conversation history CLI reads the latest page without a cursor and preser
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({ items: [], scanned: {} }));
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const socketPath = path.join(await fs.realpath(temp), "runner.sock");
+  await new Promise((resolve) => server.listen(socketPath, resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  const address = server.address();
-  assert.ok(address && typeof address === "object");
   const environment = {
     ...process.env,
     BITTY_RUNNER_TOKEN_FILE: tokenFile,
-    BITTY_RUNNER_URL: `http://127.0.0.1:${address.port}`,
+    RUNNER_CONTROL_SOCKET: socketPath,
   };
 
   await execFile(CLI, ["read", "codex", "session-1"], { env: environment });

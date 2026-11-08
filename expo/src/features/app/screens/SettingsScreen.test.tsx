@@ -10,6 +10,9 @@ import { VisualThemeProvider } from "../theme/VisualThemeContext";
 
 jest.mock("../components/CodexAccountSettings", () => ({ CodexAccountSettings: () => null }));
 jest.mock("../components/GoogleCloudSettings", () => ({ GoogleCloudSettings: () => null }));
+jest.mock("../components/RunnerLoginSettings", () => ({
+  RunnerLoginSettings: () => { const { Text } = require("react-native"); return <Text>本人ログインと端末</Text>; },
+}));
 
 jest.mock("@expo/vector-icons", () => ({ Ionicons: () => null }));
 const mockSetStringAsync = jest.fn(async (_text: string) => true);
@@ -135,7 +138,8 @@ test("renders real settings and wires their actions securely", async () => {
   expect(screen.queryByText("Runnerへの接続先とCodexの実行設定")).toBeNull();
   expect(screen.getByText(/認証トークン.*保存済み承認ルールは移行に含まれません/)).toBeTruthy();
   expect(screen.queryByLabelText("Codexトークン")).toBeNull();
-  expect(screen.getByDisplayValue("runner-secret").props.secureTextEntry).toBe(true);
+  expect(screen.queryByLabelText("Runnerトークン")).toBeNull();
+  expect(screen.getByText("本人ログインと端末")).toBeTruthy();
 
   expect(screen.queryByLabelText("Runner URL")).toBeNull();
   await fireEvent.changeText(screen.getByLabelText("ローカルURL"), "http://next.local:8788");
@@ -159,60 +163,6 @@ test("opens the dedicated Cloudflare Tunnel monitor from Settings", async () => 
   await fireEvent.press(screen.getByLabelText("Cloudflare Tunnelを開く"));
 
   expect(mockOpenCloudflareTunnelMonitorScreen).toHaveBeenCalledTimes(1);
-});
-
-test("keeps runner token edits as a draft until Save and Connect succeeds", async () => {
-  const screen = await render(<SettingsScreen />);
-
-  await fireEvent.changeText(screen.getByLabelText("Runnerトークン"), " next-token ");
-  expect(mockSaveRunnerToken).not.toHaveBeenCalled();
-
-  await fireEvent.press(screen.getByLabelText("Runnerトークンを保存して接続"));
-
-  expect(mockSaveRunnerToken).toHaveBeenCalledWith(" next-token ");
-  await waitFor(() => {
-    expect(screen.getByText("保存を確認し、接続に反映しました。")).toBeTruthy();
-  });
-});
-
-test("shows the typed token's length and fingerprint so input can be verified while masked", async () => {
-  const screen = await render(<SettingsScreen />);
-
-  await fireEvent.changeText(screen.getByLabelText("Runnerトークン"), " runner-token \n");
-
-  await waitFor(() => {
-    // FNV-1a("runner-token") = 07b20b97 (tokenFingerprint.test.tsの共有ベクター)
-    expect(screen.getByText(/入力中: 12文字・指紋 07b20b97/)).toBeTruthy();
-  });
-  expect(mockSaveRunnerToken).not.toHaveBeenCalled();
-});
-
-test("shows a readback mismatch without reporting a successful connection update", async () => {
-  mockSaveRunnerToken.mockRejectedValueOnce(
-    new Error("secure_credentials_readback_mismatch: runnerToken")
-  );
-  const screen = await render(<SettingsScreen />);
-
-  await fireEvent.changeText(screen.getByLabelText("Runnerトークン"), "next-token");
-  await fireEvent.press(screen.getByLabelText("Runnerトークンを保存して接続"));
-
-  await waitFor(() => {
-    expect(screen.getByText("保存後の読み戻し結果が一致しません。接続トークンは変更していません。")).toBeTruthy();
-  });
-  expect(screen.queryByText("保存を確認し、接続に反映しました。")).toBeNull();
-});
-
-test("shows a keychain rejection without reporting a successful connection update", async () => {
-  mockSaveRunnerToken.mockRejectedValueOnce(new Error("User denied keychain access"));
-  const screen = await render(<SettingsScreen />);
-
-  await fireEvent.changeText(screen.getByLabelText("Runnerトークン"), "next-token");
-  await fireEvent.press(screen.getByLabelText("Runnerトークンを保存して接続"));
-
-  await waitFor(() => {
-    expect(screen.getByText(/キーチェーンへの保存に失敗しました.*User denied keychain access/)).toBeTruthy();
-  });
-  expect(screen.queryByText("保存を確認し、接続に反映しました。")).toBeNull();
 });
 
 test("shows the build stamp and copies it to the clipboard", async () => {

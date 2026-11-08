@@ -31,9 +31,16 @@ jobs:
         working-directory: expo
         run: npx tsc --noEmit
 
+      - name: Test Runner login UI and credential boundaries
+        working-directory: expo
+        run: npx jest --runInBand --silent src/features/app/components/RunnerLoginSettings.test.tsx src/features/app/hooks/useRunnerSessionLifecycle.test.tsx src/features/app/screens/RunnerLoginScreen.test.tsx src/features/app/utils/runnerLogin.test.ts src/features/app/utils/secureRunnerCredentials.test.ts src/features/app/utils/cloudflareAccessFetch.test.ts src/features/app/ttsAudio.test.ts
+
       - name: Install private runner dependencies
         working-directory: private_runner
         run: npm ci
+
+      - name: Test Runner authentication and local control
+        run: node --test private_runner/tests/runner-login.test.mjs private_runner/tests/runner-login-location.test.mjs private_runner/tests/runner-local-https.test.mjs private_runner/tests/runner-control-cli.test.mjs private_runner/tests/runner-websocket-upgrade.test.mjs
 
       - name: Test orchestrator runtime permissions
         run: node --test private_runner/tests/codex-app-server-client.test.mjs private_runner/tests/voice-orchestrator-service.test.mjs

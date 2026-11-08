@@ -1,8 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
 import qrcode from "qrcode-terminal";
 
-import { tokenFingerprint } from "./token-fingerprint.mjs";
 import { loadLocalRunnerTls, resolveLocalRunnerTlsConfig } from "./local-runner-tls.mjs";
 
 function readKeychain(service) {
@@ -17,17 +15,6 @@ function readKeychain(service) {
 
 function readEnvOrKeychain(envName, serviceName) {
   return String(process.env[envName] || "").trim() || readKeychain(serviceName);
-}
-
-function readToken() {
-  const tokenFile = String(process.env.RUNNER_TOKEN_FILE || "").trim();
-  if (tokenFile) {
-    try {
-      const fileToken = String(readFileSync(tokenFile, "utf8") || "").trim();
-      if (fileToken) return fileToken;
-    } catch {}
-  }
-  return String(process.env.RUNNER_TOKEN || "").trim();
 }
 
 function normalizeHttpUrl(raw) {
@@ -48,7 +35,6 @@ function normalizeHttpUrl(raw) {
 const runnerUrl = normalizeHttpUrl(
   process.env.RUNNER_PUBLIC_URL || process.env.CLOUDFLARE_RUNNER_PUBLIC_URL
 );
-const runnerToken = readToken();
 const cloudflareAccessClientId = readEnvOrKeychain(
   "CLOUDFLARE_ACCESS_CLIENT_ID",
   process.env.CLOUDFLARE_ACCESS_CLIENT_ID_KEYCHAIN_SERVICE || "bitty-cloudflare-access-client-id"
@@ -60,10 +46,6 @@ const cloudflareAccessClientSecret = readEnvOrKeychain(
 
 if (!runnerUrl) {
   console.error("[pairing-qr] RUNNER_PUBLIC_URL must be an HTTPS origin to print the Expo pairing QR");
-  process.exit(0);
-}
-if (!runnerToken) {
-  console.error("[pairing-qr] RUNNER_TOKEN is required to print the Expo pairing QR");
   process.exit(0);
 }
 if (!cloudflareAccessClientId || !cloudflareAccessClientSecret) {
@@ -87,11 +69,11 @@ const localRunnerUrl = localTlsConfig?.url || "";
 
 const payload = {
   type: "bitty.runner.pairing",
-  version: 1,
+  version: 2,
+  schemaVersion: 2,
   runnerUrl,
   localRunnerUrl,
   localRunnerCertificate,
-  runnerToken,
   cloudflareAccessClientId,
   cloudflareAccessClientSecret,
   issuedAt: new Date().toISOString(),
@@ -100,7 +82,6 @@ const payload = {
 console.error("[pairing-qr] Scan this QR from the Expo Cloudflare Tunnel screen.");
 console.error(`[pairing-qr] runnerUrl=${runnerUrl}`);
 console.error(`[pairing-qr] localRunnerUrl=${localRunnerUrl}`);
-console.error(`[pairing-qr] accessClientId=${cloudflareAccessClientId.slice(0, 8)}...`);
 console.error("[pairing-qr] Treat the QR as a secret. Do not screenshot or share it.");
 qrcode.generate(JSON.stringify(payload), { small: true });
-console.error(`[pairing-qr] RUNNER_TOKEN_ID=${tokenFingerprint(runnerToken)}`);
+console.error("[pairing-qr] Connection settings only. Sign in with email and Authenticator after scanning.");

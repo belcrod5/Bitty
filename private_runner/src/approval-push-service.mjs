@@ -1,3 +1,4 @@
+import { requireRunnerAuthentication } from "./runner-login-http.mjs";
 import { randomUUID } from "node:crypto";
 
 import { AGENT_TERMINAL_EVENT_TYPES } from "./agent/agent-protocol.mjs";
@@ -29,14 +30,12 @@ function rawApprovalBody(method, paramsRaw) {
 
 export function createApprovalPushService({
   enabled,
-  runnerToken,
   apnsClient,
   deviceStore,
   getAgentSessionBinding,
   respondToAgentAction,
   getRawRelay,
   forwardRawData,
-  parseAuthToken,
   readJsonBody,
   json,
   writeJsonRequestError,
@@ -81,7 +80,7 @@ export function createApprovalPushService({
     await Promise.all(devices.map(async (device) => {
       if (!isPending()) return;
       try {
-        const result = await apnsClient.sendToDevice(device.apnsToken, payload, { env: device.env });
+        const result = await apnsClient.sendToDevice(device.apnsToken, payload, { authSessionId: device.authSessionId, env: device.env });
         if (result?.status === 410) {
           await deviceStore.removeDevice(device.deviceId);
         } else if (!result?.ok) {
@@ -214,14 +213,7 @@ export function createApprovalPushService({
     if (req.method !== "POST" || !pathname.startsWith("/push/approvals/") || !pathname.endsWith("/respond")) {
       return false;
     }
-    if (!runnerToken) {
-      json(res, 500, { error: "runner_token_missing", message: "RUNNER_TOKEN is required" });
-      return true;
-    }
-    if (parseAuthToken(req) !== runnerToken) {
-      json(res, 401, { error: "unauthorized" });
-      return true;
-    }
+    if (!requireRunnerAuthentication(req, res, json)) return true;
     if (!enabled) {
       json(res, 200, { ok: true, enabled: false });
       return true;

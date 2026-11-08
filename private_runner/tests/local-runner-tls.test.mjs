@@ -132,7 +132,7 @@ test("paired CA authenticates HTTPS and all WebSocket routes; impostor certifica
   const wsServers = [0, 1, 2].map(() => new WebSocketServer({ noServer: true }));
   for (const ws of wsServers) ws.on("connection", (socket) => socket.send("secure"));
   installRunnerWebSocketUpgradeHandler({
-    server, runnerToken: "test-token", runnerWsPath: "/runner-ws", runnerWsServer: wsServers[0],
+    server, authenticate: async (req) => { assert.equal(req.headers.authorization, "Bearer test-token"); return { sessionId: "fixture" }; }, runnerWsPath: "/runner-ws", runnerWsServer: wsServers[0],
     streamTtsWsServer: wsServers[1], streamSttWsServer: wsServers[2], appendDebug: () => {},
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -186,6 +186,9 @@ test("real QR generator pairs HTTPS URL with public CA DER only and persists tru
   const first = run();
   const second = run();
   assert.equal(first.localRunnerUrl, config.url);
+  assert.equal(first.schemaVersion, 2);
+  assert.equal("runnerToken" in first, false);
+  assert.equal(JSON.stringify(first).includes("fake-test-token"), false);
   assert.equal(first.localRunnerCertificate, second.localRunnerCertificate);
   assert.equal(new X509Certificate(Buffer.from(first.localRunnerCertificate, "base64")).ca, true);
   assert.equal("key" in first, false);

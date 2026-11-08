@@ -1,3 +1,4 @@
+import { mockRunnerLogin } from "./helpers/runner-login-fixture.mjs";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
@@ -10,6 +11,7 @@ process.env.RUNNER_TOKEN = "PRIVATE_AUTH_CANARY";
 process.env.PUSH_DEVICE_STORE_PATH = path.join(tempDir, "push.json");
 process.env.CLIENT_STATE_STORE_PATH = path.join(tempDir, "client-state.json");
 const { __TESTING__: runtime } = await import("../src/server-runtime.mjs");
+mockRunnerLogin(runtime);
 const { server, voiceContextService, codexAuthRuntime, codexAuthService, codexUsageService } = runtime;
 const privateText = "PRIVATE_CONTENT_CANARY";
 const metadata = async () => ({ selectedId: "main", orchestrators: [{ id: "main", name: privateText, icon: "" }] });
@@ -41,7 +43,7 @@ test("snapshot endpoint logs only bounded correlation/status/count/duration for 
     const unauthorized = await fetch(url, { headers: { "x-bitty-widget-refresh-id": privateText } });
     assert.equal(unauthorized.status, 401);
     await unauthorized.text();
-    assert.match(lines[1], / id=none status=401 count=-1 duration_ms=\d+$/u);
+    assert.equal(lines.length, 1, "unauthenticated requests do not enter the business diagnostic handler");
 
     voiceContextService.list = async () => { throw new Error(privateText); };
     const unavailable = await fetch(url, { headers: {
@@ -49,8 +51,8 @@ test("snapshot endpoint logs only bounded correlation/status/count/duration for 
     } });
     assert.equal(unavailable.status, 503);
     await unavailable.text();
-    assert.match(lines[2], / id=none status=503 count=-1 duration_ms=\d+$/u);
-    assert.equal(lines.length, 3);
+    assert.match(lines[1], / id=none status=503 count=-1 duration_ms=\d+$/u);
+    assert.equal(lines.length, 2);
     assert(!lines.join("\n").includes("PRIVATE"), "must never log payloads, credentials, account IDs or arbitrary headers/errors");
   } finally {
     console.log = originalLog;

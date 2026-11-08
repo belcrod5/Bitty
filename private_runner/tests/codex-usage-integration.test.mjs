@@ -1,3 +1,4 @@
+import { mockRunnerLogin } from "./helpers/runner-login-fixture.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { promises as fs } from "node:fs";
@@ -10,6 +11,7 @@ process.env.CODEX_AUTH_STORE_DIR = root;
 process.env.RUNNER_SKIP_SERVER_START = "1";
 process.env.RUNNER_TOKEN = "test-token";
 const { __TESTING__: runtime } = await import("../src/server-runtime.mjs");
+mockRunnerLogin(runtime);
 const { codexUsageService: usage, codexAuthRuntime: auth, codexAuthService, server } = runtime;
 const wsServer = new WebSocketServer({ port: 0, host: "127.0.0.1" });
 await new Promise((resolve) => wsServer.once("listening", resolve));

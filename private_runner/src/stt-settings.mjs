@@ -1,3 +1,4 @@
+import { requireRunnerAuthentication } from "./runner-login-http.mjs";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -79,17 +80,10 @@ function validCorrection(value) {
     && typeof value.effort === "string" && /^[a-z]{2,10}$/.test(value.effort);
 }
 
-export function createSttSettingsHttpHandler({ service, listModels, runnerToken, parseAuthToken, readJsonBody, json }) {
+export function createSttSettingsHttpHandler({ service, listModels, readJsonBody, json }) {
   return async (req, res, pathname) => {
     if (pathname !== "/stt/settings") return false;
-    if (!runnerToken) {
-      json(res, 500, { error: "runner_token_missing", message: "RUNNER_TOKEN is required" });
-      return true;
-    }
-    if (parseAuthToken(req) !== runnerToken) {
-      json(res, 401, { error: "unauthorized" });
-      return true;
-    }
+    if (!requireRunnerAuthentication(req, res, json)) return true;
     try {
       if (req.method === "GET") {
         json(res, 200, { provider: await service.get(), correction: await service.getCorrection() });

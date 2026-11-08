@@ -1,3 +1,4 @@
+import { requireRunnerAuthentication } from "./runner-login-http.mjs";
 import {
   CODEX_SCHEDULE_DEFINITIONS_MAX_BYTES,
   CODEX_SCHEDULE_UUID_PATTERN,
@@ -15,8 +16,6 @@ function message(error) {
 
 export function createCodexScheduleHttpHandler({
   service,
-  runnerToken,
-  parseAuthToken,
   readJsonBody,
   json,
 }) {
@@ -29,14 +28,7 @@ export function createCodexScheduleHttpHandler({
     const member = !summary && rawMemberId !== null && rawMemberId !== "" && !rawMemberId.includes("/");
     if (!collection && !member && !summary) return false;
 
-    if (!runnerToken) {
-      json(res, 500, { error: "runner_token_missing", message: "RUNNER_TOKEN is required" });
-      return true;
-    }
-    if (parseAuthToken(req) !== runnerToken) {
-      json(res, 401, { error: "unauthorized" });
-      return true;
-    }
+    if (!requireRunnerAuthentication(req, res, json)) return true;
 
     if ((summary && req.method !== "GET") || (collection && !["GET", "PUT", "POST"].includes(req.method)) ||
       (member && !["PATCH", "DELETE"].includes(req.method))) {

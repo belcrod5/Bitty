@@ -59,6 +59,8 @@ export function createApnsClient(config = {}, deps = {}) {
   const readKeyFile = deps.readKeyFile || ((filePath) => readFileSync(filePath, "utf8"));
   const http2Connect = deps.http2Connect || ((authority) => http2.connect(authority));
   const now = deps.now || (() => Date.now());
+  const canDeliver = deps.canDeliver || (() => true);
+  const isSessionActive = deps.isSessionActive || (() => true);
 
   const enabled = Boolean(keyPath && keyId && teamId);
 
@@ -86,6 +88,7 @@ export function createApnsClient(config = {}, deps = {}) {
   async function sendToDevice(deviceToken, payload, opts = {}) {
     if (!enabled) throw new Error("apns_client_disabled");
     const token = String(deviceToken || "").trim();
+    if (!await canDeliver(token, opts.authSessionId) || !isSessionActive(opts.authSessionId)) return { ok: false, status: 403, reason: "AuthenticationRevoked" };
     if (!token) throw new Error("apns_device_token_required");
     const host = resolveApnsHost(opts.env || defaultEnv);
     const authorization = `bearer ${getAuthorizationToken()}`;

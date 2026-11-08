@@ -1,6 +1,6 @@
 import * as LocalAuthentication from "expo-local-authentication";
 import * as Notifications from "expo-notifications";
-import { loadSecureRunnerCredentials } from "./secureRunnerCredentials";
+import { loadSecureRunnerCredentials, runnerCredentialScope } from "./secureRunnerCredentials";
 import { buildCloudflareAccessHeaders, normalizeCloudflareAccessCredentials } from "./cloudflareAccess";
 import { readPersistedSettings, readPersistedSettingsField } from "./persistedSettingsFile";
 import { configureLocalRunnerTls, isLocalRunnerTlsReady } from "./localRunnerTls";
@@ -103,10 +103,8 @@ async function respondInBackground({
   approved: boolean;
 }): Promise<void> {
   try {
-    const [settings, credentials] = await Promise.all([
-      readPersistedSettings(),
-      loadSecureRunnerCredentials(),
-    ]);
+    const settings = await readPersistedSettings();
+    const credentials = await loadSecureRunnerCredentials(settings ? runnerCredentialScope(settings) : null);
     const cloudflareRunnerUrl = persistedCloudflareRunnerUrl(settings || {});
     const runnerUrl = await readRunnerUrlFromDisk(settings || {});
     const ok = await respondToPushApproval({

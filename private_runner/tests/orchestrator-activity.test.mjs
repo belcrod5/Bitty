@@ -1,3 +1,4 @@
+import { RUNNER_AUTHENTICATION } from "../src/runner-login-http.mjs";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import http from "node:http";
@@ -188,7 +189,7 @@ test("HTTP transport observes only authenticated requests and survives display f
   assert.equal(bad.statusCode, 401);
   assert.equal(seen.length, 0);
   const good = response();
-  await handler({ method: "GET", headers: { authorization: "Bearer bearer" } }, good, url, url.pathname);
+  await handler({ method: "GET", [RUNNER_AUTHENTICATION]: { sessionId: "test-session" }, headers: { authorization: "Bearer bearer" } }, good, url, url.pathname);
   assert.equal(good.statusCode, 200);
   assert.equal(seen.length, 1);
 });
@@ -209,6 +210,7 @@ test("an actual aborted HTTP request settles its activity without changing the h
     activity,
   });
   const server = http.createServer((req, res) => {
+    req[RUNNER_AUTHENTICATION] = { sessionId: "test-session" };
     res.once("close", closed);
     void handler(req, res, new URL(req.url, "http://localhost"), req.url);
   });

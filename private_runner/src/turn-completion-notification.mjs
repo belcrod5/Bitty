@@ -58,7 +58,7 @@ export function createTurnCompletionNotifier({
   async function sendNotifications(deliveries) {
     const sentResults = await Promise.all(deliveries.map(async ({ device, payload }) => {
       try {
-        const result = await apnsClient.sendToDevice(device.apnsToken, payload, { env: device.env });
+        const result = await apnsClient.sendToDevice(device.apnsToken, payload, { authSessionId: device.authSessionId, env: device.env });
         if (result?.status === 410) {
           await pushDeviceStore.removeDevice(device.deviceId);
         } else if (!result?.ok) {

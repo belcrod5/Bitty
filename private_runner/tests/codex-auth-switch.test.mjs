@@ -1,3 +1,4 @@
+import { mockRunnerLogin } from "./helpers/runner-login-fixture.mjs";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { promises as fs } from "node:fs";
@@ -13,6 +14,7 @@ process.env.RUNNER_SKIP_SERVER_START = "1";
 process.env.RUNNER_TOKEN = "test-runner-token";
 
 const { __TESTING__ } = await import("../src/server-runtime.mjs");
+mockRunnerLogin(__TESTING__);
 const { server, RUNNER_TOKEN, codexAuthService, codexAuthRuntime } = __TESTING__;
 
 function authRelay() {

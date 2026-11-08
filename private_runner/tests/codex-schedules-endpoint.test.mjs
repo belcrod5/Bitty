@@ -1,3 +1,4 @@
+import { RUNNER_AUTHENTICATION } from "../src/runner-login-http.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -37,17 +38,17 @@ const ID = "11111111-1111-4111-8111-111111111111";
 
 test("GET and PUT use bearer auth and return the flat revision snapshot", async () => {
   const get = harness();
-  assert.equal(await get.handler({ method: "GET", auth: "secret" }, {}, "/other"), false);
+  assert.equal(await get.handler({ method: "GET", [RUNNER_AUTHENTICATION]: { sessionId: "test-session", ownerSubjectId: "test-owner" }, auth: "secret" }, {}, "/other"), false);
   assert.equal(await get.handler({ method: "GET", auth: "bad" }, {}, "/codex-schedules"), true);
-  assert.deepEqual(get.responses.pop(), { status: 401, payload: { error: "unauthorized" } });
-  await get.handler({ method: "GET", auth: "secret" }, {}, "/codex-schedules");
+  assert.deepEqual(get.responses.pop(), { status: 401, payload: { error: "authentication_required" } });
+  await get.handler({ method: "GET", [RUNNER_AUTHENTICATION]: { sessionId: "test-session", ownerSubjectId: "test-owner" }, auth: "secret" }, {}, "/codex-schedules");
   assert.deepEqual(get.responses.pop(), {
     status: 200,
     payload: { ok: true, revision: 2, schedules: [] },
   });
 
   const put = harness({ body: { baseRevision: 2, schedules: [] } });
-  await put.handler({ method: "PUT", auth: "secret" }, {}, "/codex-schedules");
+  await put.handler({ method: "PUT", [RUNNER_AUTHENTICATION]: { sessionId: "test-session", ownerSubjectId: "test-owner" }, auth: "secret" }, {}, "/codex-schedules");
   assert.equal(put.requestedMaxBytes(), CODEX_SCHEDULE_DEFINITIONS_MAX_BYTES);
   assert.deepEqual(put.responses.pop(), {
     status: 200,
@@ -57,7 +58,7 @@ test("GET and PUT use bearer auth and return the flat revision snapshot", async 
 
 test("endpoint maps invalid input, revision conflicts, and unavailable stores", async () => {
   const invalid = harness({ body: new Error("request body is too large") });
-  await invalid.handler({ method: "PUT", auth: "secret" }, {}, "/codex-schedules");
+  await invalid.handler({ method: "PUT", [RUNNER_AUTHENTICATION]: { sessionId: "test-session", ownerSubjectId: "test-owner" }, auth: "secret" }, {}, "/codex-schedules");
   assert.deepEqual(invalid.responses.pop(), {
     status: 400,
     payload: { error: "invalid_codex_schedules", message: "request body is too large" },
@@ -68,7 +69,7 @@ test("endpoint maps invalid input, revision conflicts, and unavailable stores", 
       replaceSchedules: async () => { throw new CodexScheduleRevisionConflictError(9); },
     },
   });
-  await conflict.handler({ method: "PUT", auth: "secret" }, {}, "/codex-schedules");
+  await conflict.handler({ method: "PUT", [RUNNER_AUTHENTICATION]: { sessionId: "test-session", ownerSubjectId: "test-owner" }, auth: "secret" }, {}, "/codex-schedules");
   assert.deepEqual(conflict.responses.pop(), {
     status: 409,
     payload: { error: "revision_conflict", revision: 9 },
@@ -79,7 +80,7 @@ test("endpoint maps invalid input, revision conflicts, and unavailable stores", 
       snapshot: async () => { throw new CodexScheduleStoreUnavailableError("store is corrupt"); },
     },
   });
-  await unavailable.handler({ method: "GET", auth: "secret" }, {}, "/codex-schedules");
+  await unavailable.handler({ method: "GET", [RUNNER_AUTHENTICATION]: { sessionId: "test-session", ownerSubjectId: "test-owner" }, auth: "secret" }, {}, "/codex-schedules");
   assert.deepEqual(unavailable.responses.pop(), {
     status: 503,
     payload: { error: "codex_schedule_store_unavailable", message: "store is corrupt" },
@@ -105,19 +106,19 @@ test("POST, PATCH, and DELETE map item operations without editing schedules in t
   const post = harness({ service, body: { baseRevision: 2, schedule: {} } });
   await post.handler({
     method: "POST",
-    auth: "secret",
+    [RUNNER_AUTHENTICATION]: { sessionId: "test-session", ownerSubjectId: "test-owner" }, auth: "secret",
     headers: { "idempotency-key": ID },
   }, {}, "/codex-schedules");
   assert.equal(post.responses[0].status, 201);
   assert.equal(post.requestedMaxBytes(), CODEX_SCHEDULE_DEFINITIONS_MAX_BYTES);
 
   const patch = harness({ service, body: { baseRevision: 3, patch: { enabled: false } } });
-  await patch.handler({ method: "PATCH", auth: "secret" }, {}, `/codex-schedules/${ID}`);
+  await patch.handler({ method: "PATCH", [RUNNER_AUTHENTICATION]: { sessionId: "test-session", ownerSubjectId: "test-owner" }, auth: "secret" }, {}, `/codex-schedules/${ID}`);
   assert.equal(patch.responses[0].status, 200);
   assert.equal(patch.responses[0].payload.updated, false);
 
   const deletion = harness({ service, body: { baseRevision: 3 } });
-  await deletion.handler({ method: "DELETE", auth: "secret" }, {}, `/codex-schedules/${ID}`);
+  await deletion.handler({ method: "DELETE", [RUNNER_AUTHENTICATION]: { sessionId: "test-session", ownerSubjectId: "test-owner" }, auth: "secret" }, {}, `/codex-schedules/${ID}`);
   assert.equal(deletion.responses[0].status, 200);
   assert.equal(deletion.requestedMaxBytes(), 16 * 1024);
   assert.deepEqual(calls, [
@@ -129,20 +130,20 @@ test("POST, PATCH, and DELETE map item operations without editing schedules in t
 
 test("route matching authenticates before method and member ID validation", async () => {
   const trailing = harness();
-  assert.equal(await trailing.handler({ method: "PATCH", auth: "secret" }, {}, "/codex-schedules/"), false);
-  assert.equal(await trailing.handler({ method: "PATCH", auth: "secret" }, {}, `/codex-schedules/${ID}/more`), false);
+  assert.equal(await trailing.handler({ method: "PATCH", [RUNNER_AUTHENTICATION]: { sessionId: "test-session", ownerSubjectId: "test-owner" }, auth: "secret" }, {}, "/codex-schedules/"), false);
+  assert.equal(await trailing.handler({ method: "PATCH", [RUNNER_AUTHENTICATION]: { sessionId: "test-session", ownerSubjectId: "test-owner" }, auth: "secret" }, {}, `/codex-schedules/${ID}/more`), false);
 
   const unauthorized = harness();
   await unauthorized.handler({ method: "PATCH", auth: "bad" }, {}, "/codex-schedules/%ZZ");
   assert.equal(unauthorized.responses[0].status, 401);
 
   const unsupported = harness();
-  await unsupported.handler({ method: "GET", auth: "secret" }, {}, "/codex-schedules/%ZZ");
+  await unsupported.handler({ method: "GET", [RUNNER_AUTHENTICATION]: { sessionId: "test-session", ownerSubjectId: "test-owner" }, auth: "secret" }, {}, "/codex-schedules/%ZZ");
   assert.equal(unsupported.responses[0].status, 405);
 
   for (const raw of ["%ZZ", "%2F", "not-a-uuid"]) {
     const invalid = harness();
-    await invalid.handler({ method: "PATCH", auth: "secret" }, {}, `/codex-schedules/${raw}`);
+    await invalid.handler({ method: "PATCH", [RUNNER_AUTHENTICATION]: { sessionId: "test-session", ownerSubjectId: "test-owner" }, auth: "secret" }, {}, `/codex-schedules/${raw}`);
     assert.deepEqual(invalid.responses[0], {
       status: 400,
       payload: { error: "invalid_codex_schedule_id" },
@@ -152,13 +153,13 @@ test("route matching authenticates before method and member ID validation", asyn
 
 test("item errors and POST idempotency headers map to the fixed contract", async () => {
   const missing = harness();
-  await missing.handler({ method: "POST", auth: "secret", headers: {} }, {}, "/codex-schedules");
+  await missing.handler({ method: "POST", [RUNNER_AUTHENTICATION]: { sessionId: "test-session", ownerSubjectId: "test-owner" }, auth: "secret", headers: {} }, {}, "/codex-schedules");
   assert.equal(missing.responses[0].payload.error, "idempotency_key_required");
 
   const invalid = harness();
   await invalid.handler({
     method: "POST",
-    auth: "secret",
+    [RUNNER_AUTHENTICATION]: { sessionId: "test-session", ownerSubjectId: "test-owner" }, auth: "secret",
     headers: { "idempotency-key": "bad" },
   }, {}, "/codex-schedules");
   assert.equal(invalid.responses[0].payload.error, "invalid_idempotency_key");
@@ -170,7 +171,7 @@ test("item errors and POST idempotency headers map to the fixed contract", async
   });
   await conflict.handler({
     method: "POST",
-    auth: "secret",
+    [RUNNER_AUTHENTICATION]: { sessionId: "test-session", ownerSubjectId: "test-owner" }, auth: "secret",
     headers: { "idempotency-key": ID },
   }, {}, "/codex-schedules");
   assert.deepEqual(conflict.responses[0], {
@@ -181,20 +182,20 @@ test("item errors and POST idempotency headers map to the fixed contract", async
   const notFound = harness({
     service: { patchSchedule: async () => { throw new CodexScheduleNotFoundError(); } },
   });
-  await notFound.handler({ method: "PATCH", auth: "secret" }, {}, `/codex-schedules/${ID}`);
+  await notFound.handler({ method: "PATCH", [RUNNER_AUTHENTICATION]: { sessionId: "test-session", ownerSubjectId: "test-owner" }, auth: "secret" }, {}, `/codex-schedules/${ID}`);
   assert.deepEqual(notFound.responses[0], {
     status: 404,
     payload: { error: "codex_schedule_not_found" },
   });
 });
 
-test("missing runner token and unsupported methods do not enter the service", async () => {
+test("missing authentication context and unsupported methods do not enter the service", async () => {
   const missing = harness({ token: "" });
   await missing.handler({ method: "GET" }, {}, "/codex-schedules");
-  assert.equal(missing.responses[0].status, 500);
+  assert.equal(missing.responses[0].status, 401);
 
   const method = harness();
-  await method.handler({ method: "DELETE", auth: "secret" }, {}, "/codex-schedules");
+  await method.handler({ method: "DELETE", [RUNNER_AUTHENTICATION]: { sessionId: "test-session", ownerSubjectId: "test-owner" }, auth: "secret" }, {}, "/codex-schedules");
   assert.deepEqual(method.responses[0], {
     status: 405,
     payload: { error: "method_not_allowed" },
@@ -205,7 +206,7 @@ test("missing runner token and unsupported methods do not enter the service", as
 test("summary endpoint uses the domain read model without loading full schedule snapshots", async () => {
   const summary = { scheduledThreads: [{ threadId: "existing", nextOccurrenceAt: "2026-10-24T00:00:00Z" }] };
   const h = harness({ service: { summary: async () => summary, snapshot: () => { throw new Error("must not load prompts"); } } });
-  await h.handler({ method: "GET", auth: "secret" }, {}, "/codex-schedules/summary");
+  await h.handler({ method: "GET", [RUNNER_AUTHENTICATION]: { sessionId: "test-session", ownerSubjectId: "test-owner" }, auth: "secret" }, {}, "/codex-schedules/summary");
   assert.deepEqual(h.responses.pop(), { status: 200, payload: { ok: true, ...summary } });
   await h.handler({ method: "GET", auth: "bad" }, {}, "/codex-schedules/summary");
   assert.equal(h.responses.pop().status, 401);

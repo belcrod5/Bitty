@@ -165,7 +165,7 @@ function mergeEventHistory(current: RunnerConnectionEvent[], incoming: RunnerCon
 function cloudflareAccessRecoveryHint(status: number, message: string) {
   const rawMessage = String(message || "").trim().toLowerCase();
   if (status === 401 && rawMessage === "unauthorized") {
-    return "RUNNER_TOKENが現在起動中のprivate runnerと一致していません。Runner起動後にPairing QRを再表示し、読み直してください。";
+    return "設定画面で本人ログインをやり直してください。接続設定QRだけではログインは完了しません。";
   }
   const text = `${status} ${message}`.toLowerCase();
   if (status !== 401 && status !== 403 && !text.includes("cloudflare access")) return "";
@@ -444,7 +444,7 @@ export function CloudflareTunnelMonitorScreen() {
                   const pairing = await applyCloudflareRunnerPairing(rawText);
                   setLastPairingLocalRunnerUrl(pairing.localRunnerUrl || "");
                   setPairingStatus(
-                    `Pairing QRを保存しました。localRunnerUrl: ${pairing.localRunnerUrl || "-"}`
+                    "接続設定を保存しました。設定画面から本人ログインしてください。"
                   );
                 } catch (error) {
                   setPairingStatus(error instanceof Error ? error.message : String(error));

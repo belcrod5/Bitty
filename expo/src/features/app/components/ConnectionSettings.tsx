@@ -1,12 +1,11 @@
 import { Ionicons } from "@expo/vector-icons";
-import { useEffect, useState } from "react";
-import { ActivityIndicator, Platform, Pressable, Switch, Text, TextInput, View } from "react-native";
-import { tokenFingerprint, tokenLength } from "../../ws/tokenFingerprint";
+import { Platform, Pressable, Switch, Text, TextInput, View } from "react-native";
 import { useAppSettings } from "../contexts/AppSettingsContext";
 import { effortOptionsForModel } from "../modelOptions";
 import { useAppStyles } from "../styles";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { SettingsSelect } from "./SettingsSelect";
+import { RunnerLoginSettings } from "./RunnerLoginSettings";
 
 const APPROVAL_OPTIONS = [
   { value: "on-request", label: "必要時に確認" },
@@ -30,7 +29,6 @@ export function ConnectionSettings() {
     localRunnerUrl,
     llmBackend,
     modelRef,
-    runnerToken,
     codexApprovalPolicy,
     selectedModelLabel,
     reasoningEffort,
@@ -41,50 +39,12 @@ export function ConnectionSettings() {
     thinkOptions,
     changeCloudflareRunnerUrl,
     changeLocalRunnerUrl,
-    saveRunnerToken,
     selectCodexApprovalPolicy,
     selectModel,
     selectThinkOption,
     faceIdRequiredForApproval,
     toggleFaceIdRequiredForApproval,
   } = useAppSettings();
-  const [runnerTokenDraft, setRunnerTokenDraft] = useState(runnerToken);
-  // ユーザーが編集を始めた後は、遅延ロード(起動時に読めなかったKeychainの回復等)で
-  // runnerToken stateが変わっても入力中のdraftを上書きしない。保存成功で解除する。
-  const [runnerTokenDraftDirty, setRunnerTokenDraftDirty] = useState(false);
-  const [runnerTokenSaving, setRunnerTokenSaving] = useState(false);
-  const [runnerTokenStatus, setRunnerTokenStatus] = useState<{
-    kind: "success" | "error";
-    message: string;
-  } | null>(null);
-
-  useEffect(() => {
-    if (runnerTokenDraftDirty) return;
-    setRunnerTokenDraft(runnerToken);
-  }, [runnerToken, runnerTokenDraftDirty]);
-
-  const commitRunnerToken = async () => {
-    setRunnerTokenSaving(true);
-    setRunnerTokenStatus(null);
-    try {
-      await saveRunnerToken(runnerTokenDraft);
-      setRunnerTokenDraftDirty(false);
-      setRunnerTokenStatus({ kind: "success", message: "保存を確認し、接続に反映しました。" });
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      const message = detail.includes("secure_credentials_readback_mismatch")
-        ? "保存後の読み戻し結果が一致しません。接続トークンは変更していません。"
-        : detail.includes("secure_credentials_rollback_failed")
-          ? "保存に失敗し、以前のキーチェーン値も復元できませんでした。アプリを再起動せず、再度保存してください。"
-          : detail === "runner_token_required"
-            ? "Runnerトークンを入力してください。"
-            : `キーチェーンへの保存に失敗しました。接続トークンは変更していません。${detail ? ` (${detail})` : ""}`;
-      setRunnerTokenStatus({ kind: "error", message });
-    } finally {
-      setRunnerTokenSaving(false);
-    }
-  };
-
   const selectableModels = modelOptions
     .filter((option) => option.selectable !== false)
     .map((option) => ({ value: option.selectionKey, label: option.label }));
@@ -110,6 +70,7 @@ export function ConnectionSettings() {
         <Text style={styles.settingsSectionTitle}>接続</Text>
       </View>
 
+      <Text style={styles.hint}>接続先を変更するとログイン情報を消去します。Cloudflare経由では接続設定QRを読み直してください。</Text>
       <View style={styles.settingsGroup}>
         <View style={[styles.settingsInputRow, styles.settingsRowDivider]}>
           <Ionicons name="server-outline" size={22} color={theme.colors.controlTextPrimary} />
@@ -145,60 +106,10 @@ export function ConnectionSettings() {
           </View>
         </View>
 
-        <View style={styles.settingsInputRow}>
-          <Ionicons name="shield-checkmark-outline" size={22} color={theme.colors.controlTextPrimary} />
-          <View style={styles.settingsInputContent}>
-            <Text style={styles.settingsRowLabel}>Runnerトークン</Text>
-            <TextInput
-              style={styles.settingsInlineInput}
-              value={runnerTokenDraft}
-              onChangeText={(value) => {
-                setRunnerTokenDraft(value);
-                setRunnerTokenDraftDirty(true);
-                setRunnerTokenStatus(null);
-              }}
-              accessibilityLabel="Runnerトークン"
-              placeholder="Runner token"
-              autoCapitalize="none"
-              autoCorrect={false}
-              secureTextEntry
-              editable={!runnerTokenSaving}
-            />
-            <Text style={styles.hint}>
-              {runnerTokenDraft.trim()
-                ? `入力中: ${tokenLength(runnerTokenDraft)}文字・指紋 ${tokenFingerprint(runnerTokenDraft)}`
-                : "入力中: なし"}
-              {`  /  保存済み: ${runnerToken.trim() ? `指紋 ${tokenFingerprint(runnerToken)}` : "なし"}`}
-            </Text>
-            <View style={styles.settingsButtonRow}>
-              <Pressable
-                style={[
-                  styles.settingsPrimaryButton,
-                  (!runnerTokenDraft.trim() || runnerTokenSaving) && styles.buttonDisabled,
-                ]}
-                onPress={() => void commitRunnerToken()}
-                disabled={!runnerTokenDraft.trim() || runnerTokenSaving}
-                accessibilityRole="button"
-                accessibilityLabel="Runnerトークンを保存して接続"
-              >
-                {runnerTokenSaving ? <ActivityIndicator size="small" color={theme.colors.textOnAccent} /> : null}
-                <Text style={styles.settingsPrimaryButtonText}>
-                  {runnerTokenSaving ? "保存中" : "保存して接続"}
-                </Text>
-              </Pressable>
-            </View>
-            {runnerTokenStatus ? (
-              <Text
-                style={runnerTokenStatus.kind === "error" ? styles.settingsErrorText : styles.settingsSuccessText}
-                accessibilityRole="alert"
-              >
-                {runnerTokenStatus.message}
-              </Text>
-            ) : null}
-          </View>
-        </View>
       </View>
     </View>
+
+    <RunnerLoginSettings />
 
     <View style={styles.settingsSection}>
       <View style={styles.settingsSectionHeader}>

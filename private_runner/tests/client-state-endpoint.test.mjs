@@ -1,3 +1,4 @@
+import { mockRunnerLogin } from "./helpers/runner-login-fixture.mjs";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
@@ -11,6 +12,7 @@ process.env.RUNNER_TOKEN = "test-runner-token";
 process.env.CLIENT_STATE_STORE_PATH = path.join(tempDir, "client-state.json");
 
 const { __TESTING__ } = await import("../src/server-runtime.mjs");
+mockRunnerLogin(__TESTING__);
 const { createClientStateStore } = await import("../src/client-state-store.mjs");
 const { server } = __TESTING__;
 test.after(async () => fs.rm(tempDir, { recursive: true, force: true }));
@@ -168,7 +170,7 @@ test("client-state validators survive restart and detect restored content even a
     }
   }
   const initial = await read(server);
-  const restarted = await import("../src/server-runtime.mjs?client-state-restart");
+  const restarted = await import("../src/server-runtime.mjs?client-state-restart"); mockRunnerLogin(restarted.__TESTING__);
   const unchanged = await read(restarted.__TESTING__.server, initial.etag);
   assert.equal(unchanged.status, 304);
   assert.equal(unchanged.etag, initial.etag);
@@ -176,7 +178,7 @@ test("client-state validators survive restart and detect restored content even a
   const originalRevision = restored.revision;
   restored.composerHistory = ["Restored backup with the same revision"];
   await fs.writeFile(process.env.CLIENT_STATE_STORE_PATH, JSON.stringify(restored));
-  const restoredRuntime = await import("../src/server-runtime.mjs?client-state-restored");
+  const restoredRuntime = await import("../src/server-runtime.mjs?client-state-restored"); mockRunnerLogin(restoredRuntime.__TESTING__);
   const updated = await read(restoredRuntime.__TESTING__.server, initial.etag);
   assert.equal(updated.status, 200);
   assert.notEqual(updated.etag, initial.etag);
@@ -192,7 +194,7 @@ test("an unavailable authoritative store returns an error instead of a cache hit
   let unavailable;
   try {
     process.env.CLIENT_STATE_STORE_PATH = unavailableStorePath;
-    unavailable = await import("../src/server-runtime.mjs?client-state-unavailable");
+    unavailable = await import("../src/server-runtime.mjs?client-state-unavailable"); mockRunnerLogin(unavailable.__TESTING__);
   } finally {
     process.env.CLIENT_STATE_STORE_PATH = originalStorePath;
   }
@@ -269,7 +271,7 @@ test("same-revision restored content cannot receive a patch for a different snap
   await fs.writeFile(file, JSON.stringify(restored));
   const originalPath = process.env.CLIENT_STATE_STORE_PATH;
   let runtime;
-  try { process.env.CLIENT_STATE_STORE_PATH = file; runtime = await import("../src/server-runtime.mjs?client-state-patch-restored"); }
+  try { process.env.CLIENT_STATE_STORE_PATH = file; runtime = await import("../src/server-runtime.mjs?client-state-patch-restored"); mockRunnerLogin(runtime.__TESTING__); }
   finally { process.env.CLIENT_STATE_STORE_PATH = originalPath; }
   const runtimeServer = runtime.__TESTING__.server;
   await new Promise((resolve) => runtimeServer.listen(0, "127.0.0.1", resolve));
@@ -293,7 +295,7 @@ test("synthetic large client-state draft saves return only their canonical chang
   await fs.writeFile(file, JSON.stringify(state));
   const originalPath = process.env.CLIENT_STATE_STORE_PATH;
   let runtime;
-  try { process.env.CLIENT_STATE_STORE_PATH = file; runtime = await import("../src/server-runtime.mjs?client-state-large-patch"); }
+  try { process.env.CLIENT_STATE_STORE_PATH = file; runtime = await import("../src/server-runtime.mjs?client-state-large-patch"); mockRunnerLogin(runtime.__TESTING__); }
   finally { process.env.CLIENT_STATE_STORE_PATH = originalPath; }
   const runtimeServer = runtime.__TESTING__.server;
   await new Promise((resolve) => runtimeServer.listen(0, "127.0.0.1", resolve));

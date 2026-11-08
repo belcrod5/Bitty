@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { execFile as callback } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
+import http from 'node:http';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import test from 'node:test';
@@ -31,7 +32,7 @@ for (const target of ['codex', 'claude']) test(`${target} dry-run writes nothing
   const applied = await f.run('--apply'); assert.equal(applied.code, 0);
   const state = JSON.parse(await fs.readFile(path.join(f.root, marker), 'utf8'));
   assert.equal(state.name, name); assert.equal(state.version, JSON.parse(dry.stdout).version);
-  assert.ok(state.files['references/app-control.md']); assert.ok(state.files['scripts/bitty-session.mjs']);
+  assert.ok(state.files['references/app-control.md']); assert.ok(state.files['scripts/bitty-session.mjs']); assert.ok(state.files['scripts/runner-control.mjs']);
   assert.equal((await fs.readFile(path.join(f.root, 'SKILL.md'), 'utf8')), await fs.readFile(path.join(repoRoot, 'skills/bitty-session-orchestrator/SKILL.md'), 'utf8'));
   assert.equal(JSON.parse((await f.run('--apply')).stdout).unchanged, true);
 });
@@ -112,4 +113,29 @@ test('managed upgrade detects and preserves a local __proto__ file', async t => 
   assert.match(result.stderr, /local changes/);
   assert.equal(await fs.readFile(path.join(f.root, '__proto__'), 'utf8'), 'local file must survive');
   assert.equal(await fs.readFile(path.join(f.root, 'SKILL.md'), 'utf8'), 'old shipped version');
+});
+
+
+test('installed CLI keeps its control transport and works outside the repository without TCP', async t => {
+  const f = await fixture(t);
+  assert.equal((await f.run('--apply')).code, 0);
+  const dir = await fs.mkdtemp(path.join(process.platform === 'darwin' ? '/tmp' : os.tmpdir(), 'installed-ctl-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const socketPath = path.join(await fs.realpath(dir), 'runner.sock');
+  const tokenFile = path.join(dir, 'token');
+  await fs.writeFile(tokenFile, 'installed-test-token', { mode: 0o600 });
+  let requests = 0;
+  const server = http.createServer((request, response) => {
+    requests++;
+    assert.equal(request.headers.authorization, 'Bearer installed-test-token');
+    response.end(JSON.stringify({ context: 'ctx-test', status: 'ready', epoch: 'epoch', expectedGeneration: 1 }));
+  });
+  await new Promise(resolve => server.listen(socketPath, resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const result = await execFile(process.execPath, [path.join(f.root, 'scripts/bitty-session.mjs'), 'control', 'status', '--context', 'ctx-test'], {
+    cwd: dir, env: { ...process.env, BITTY_REPO_ROOT: '', BITTY_RUNNER_TOKEN_FILE: tokenFile, RUNNER_CONTROL_SOCKET: socketPath,
+      BITTY_RUNNER_URL: 'https://must-not-use.example' },
+  });
+  assert.equal(JSON.parse(result.stdout).status, 'ready');
+  assert.equal(requests, 1);
 });

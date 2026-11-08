@@ -1,5 +1,5 @@
 import { recordRunnerConnectionRejected } from "./runner-connection-events.mjs";
-import { tokenFingerprint } from "./token-fingerprint.mjs";
+
 
 function parseRequestUrl(req) {
   try {
@@ -7,11 +7,6 @@ function parseRequestUrl(req) {
   } catch {
     return new URL("http://runner.local/");
   }
-}
-
-function bearerToken(req) {
-  const [kind, token] = String(req?.headers?.authorization || "").split(" ");
-  return kind === "Bearer" && token ? token : "";
 }
 
 function routeFor(pathname, runnerWsPath) {
@@ -31,7 +26,8 @@ function rejectUpgrade({ req, socket, appendDebug, route, endpoint, reason, stat
 
 export function installRunnerWebSocketUpgradeHandler({
   server,
-  runnerToken,
+  authenticate,
+  attachSocket,
   runnerWsPath,
   runnerWsServer,
   streamTtsWsServer,
@@ -39,72 +35,35 @@ export function installRunnerWebSocketUpgradeHandler({
   appendDebug,
   logRequests = false,
 }) {
-  server.on("upgrade", (req, socket, head) => {
+  server.on("upgrade", async (req, socket, head) => {
     const reqUrl = parseRequestUrl(req);
     const endpoint = reqUrl.pathname;
     const route = routeFor(endpoint, runnerWsPath);
     const remoteAddress = String(req?.socket?.remoteAddress || "unknown");
-    const authToken = bearerToken(req);
-    const queryToken = String(reqUrl.searchParams.get("token") || "").trim();
-    const providedToken = authToken;
-    // 診断用の一方向指紋のみ。token本文はログへ出さない。アプリ側の
-    // runner_ws_connect_attempt(tokenFp)や起動時のRUNNER_TOKEN_IDと突合する。
-    const tokenDiag = {
-      tokenFp: tokenFingerprint(providedToken),
-      expectedTokenFp: tokenFingerprint(runnerToken),
-      // tokenFingerprintのtrim基準と揃える(アプリ側tokenLengthもtrim後の長さ)。
-      expectedTokenLength: String(runnerToken || "").trim().length,
-    };
-
+    const tokenDiag = {};
     if (logRequests) console.log(`[request] WS ${endpoint} from ${remoteAddress}`);
-    void appendDebug("upgrade_request", {
-      remoteAddress,
-      endpoint,
-      host: String(req?.headers?.host || ""),
-      hasAuthHeaderToken: !!authToken,
-      hasQueryToken: !!queryToken,
-      tokenSource: authToken ? "authorization" : (queryToken ? "query_rejected" : "none"),
-      tokenLength: providedToken.length,
-      ...tokenDiag,
-    });
-
     if (route === "unsupported-ws") {
       rejectUpgrade({ req, socket, appendDebug, route, endpoint, reason: "path_not_supported", tokenDiag });
       return;
     }
-    if (!runnerToken) {
-      rejectUpgrade({
-        req,
-        socket,
-        appendDebug,
-        route,
-        endpoint,
-        reason: "runner_token_missing",
-        status: "500 Internal Server Error",
-        tokenDiag,
-      });
+    let context;
+    try {
+      if (!authenticate) throw new Error("authentication_required");
+      context = await authenticate(req);
+    } catch {
+      rejectUpgrade({ req, socket, appendDebug, route, endpoint, reason: "authentication_required", status: "401 Unauthorized", tokenDiag });
       return;
     }
-    if (!providedToken || providedToken !== runnerToken) {
-      rejectUpgrade({
-        req,
-        socket,
-        appendDebug,
-        route,
-        endpoint,
-        reason: providedToken ? "token_mismatch" : "token_missing",
-        status: "401 Unauthorized",
-        tokenDiag,
-      });
-      return;
-    }
-
+    if (socket.destroyed) return;
     void appendDebug("upgrade_accepted", { remoteAddress, endpoint, route });
     const wsServer = route === "runner-ws"
       ? runnerWsServer
       : route === "stream-stt"
         ? streamSttWsServer
         : streamTtsWsServer;
-    wsServer.handleUpgrade(req, socket, head, (ws) => wsServer.emit("connection", ws, req));
+    wsServer.handleUpgrade(req, socket, head, (ws) => {
+      attachSocket?.(ws, context);
+      wsServer.emit("connection", ws, req);
+    });
   });
 }

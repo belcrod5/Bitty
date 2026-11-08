@@ -1,3 +1,5 @@
+import { createRunnerLoginService } from "../src/runner-login-service.mjs";
+import * as OTPAuth from "otpauth";
 import assert from "node:assert/strict";
 import { X509Certificate } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -24,7 +26,22 @@ test("actual runtime request handler works over HTTPS, while HTTP remains loopba
   assert.equal(runtime.HOST, "127.0.0.1");
   const config = resolveLocalRunnerTlsConfig({ RUNNER_LOCAL_HOSTNAME: "test-mac", RUNNER_LOCAL_TLS_DIR: path.join(root, "tls") });
   const credentials = loadLocalRunnerTls(config);
-  const server = https.createServer(credentials, runtime.handleRunnerRequest);
+  let clock = Date.parse("2026-11-08T00:00:00Z");
+  const sent = [], binding = "x".repeat(43);
+  const login = createRunnerLoginService({ directory: path.join(root, "login"), legacyToken: "test-token",
+    keyProvider: async () => Buffer.alloc(32, 42), now: () => clock, sendMail: async (message) => { sent.push(message); } });
+  await login.initialize(); t.after(() => login.close());
+  const start = async (method) => {
+    const challenge = await login[method]({ email: "owner@example.test", clientBinding: binding });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    return { ...challenge, clientBinding: binding, emailCode: sent.find((message) => message.id === challenge.challengeId).text.match(/\d{8}/)[0] };
+  };
+  const prepared = await login.prepareSetup(await start("startSetup"));
+  const otp = () => new OTPAuth.TOTP({ secret: OTPAuth.Secret.fromBase32(prepared.secret) }).generate({ timestamp: clock });
+  await login.completeSetup({ setupId: prepared.setupId, clientBinding: binding, totpCode: otp() });
+  clock += 61000;
+  const session = await login.completeLogin({ ...await start("startLogin"), totpCode: otp() });
+  const server = https.createServer(credentials, runtime.createAuthenticatedHandler(login));
   const ca = new X509Certificate(Buffer.from(credentials.localRunnerCertificate, "base64")).toString();
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(async () => {
@@ -41,7 +58,8 @@ test("actual runtime request handler works over HTTPS, while HTTP remains loopba
     }).on("error", reject);
   });
   assert.equal((await request("wrong-token")).status, 401);
-  const valid = await request("test-token");
+  assert.equal((await request("test-token")).status, 401);
+  const valid = await request(session.token);
   assert.equal(valid.status, 200);
   assert.equal(valid.json.ok, true);
 });

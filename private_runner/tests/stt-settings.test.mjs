@@ -1,3 +1,4 @@
+import { RUNNER_AUTHENTICATION } from "../src/runner-login-http.mjs";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
@@ -38,10 +39,10 @@ test("authenticated STT settings endpoint validates the provider", async () => {
     json: (_res, status, payload) => replies.push({ status, payload }),
   });
   const request = async (method, body, token = "token") => {
-    await handler({ method, body, token }, {}, "/stt/settings");
+    await handler({ method, body, token, [RUNNER_AUTHENTICATION]: token === "token" ? { sessionId: "test-session" } : undefined }, {}, "/stt/settings");
     return replies.pop();
   };
-  assert.deepEqual(await request("GET", undefined, "wrong"), { status: 401, payload: { error: "unauthorized" } });
+  assert.deepEqual(await request("GET", undefined, "wrong"), { status: 401, payload: { error: "authentication_required" } });
   assert.deepEqual(await request("GET"), { status: 200, payload: { provider: "google",
     correction: { model: "gpt-6-luna", effort: "low" } } });
   assert.deepEqual(await request("PUT", { provider: "macos" }), { status: 200, payload: { provider: "macos" } });

@@ -61,7 +61,7 @@ async function main() {
   const sourceFiles = await filesAt(source);
   // The shipped payload is intentionally limited; config and authentication files are never copied.
   for (const rel of Object.keys(sourceFiles)) {
-    if (!(rel === 'SKILL.md' || rel === 'scripts/bitty-session.mjs' || /^references\/[a-z-]+\.md$/.test(rel))) {
+    if (!(rel === 'SKILL.md' || ['scripts/bitty-session.mjs', 'scripts/runner-control.mjs'].includes(rel) || /^references\/[a-z-]+\.md$/.test(rel))) {
       throw new Error(`Unexpected source file: ${rel}`);
     }
   }

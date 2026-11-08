@@ -460,19 +460,10 @@ export function createWorkspaceFilesService({
   }
 
   async function handleRequest(req, res, {
-    expectedToken,
-    receivedToken,
+    authenticated = false,
     pathname = "/workspace/files",
   }) {
-    if (!expectedToken) {
-      return sendJson(res, 500, {
-        error: "runner_token_missing",
-        message: "RUNNER_TOKEN is required",
-      });
-    }
-    if (receivedToken !== expectedToken) {
-      return sendJson(res, 401, { error: "unauthorized" });
-    }
+    if (!authenticated) return sendJson(res, 401, { error: "authentication_required" });
     try {
       const isUpload = req.method === "POST";
       const requestUrl = new URL(req.url || pathname, "http://runner.local");

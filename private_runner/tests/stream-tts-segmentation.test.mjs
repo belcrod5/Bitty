@@ -1,3 +1,4 @@
+import { RUNNER_AUTHENTICATION } from "../src/runner-login-http.mjs";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
@@ -20,7 +21,7 @@ const {
   createVoiceTurnSpeech,
   fetchTtsWithTimeout,
   startLlmStreamJob,
-  handleRunnerRequest,
+  handleBusinessRequest: handleRunnerRequest,
   STREAM_TTS_MAX_CHARS,
   TTS_FETCH_TIMEOUT_MS,
 } = (await import("../src/server-runtime.mjs")).__TESTING__;
@@ -122,7 +123,7 @@ test("single TTS removes all Japanese full stops before calling the provider", a
   try {
     for (const [text, expectedStatus] of [["最初。次。価格3.14、1,234円。", 200], ["。。。", 400]]) {
       const req = Readable.from([Buffer.from(JSON.stringify({ text, ttsProvider: "elevenlabs" }))]);
-      Object.assign(req, { method: "POST", url: "/tts",
+      Object.assign(req, { [RUNNER_AUTHENTICATION]: { sessionId: "test-session" }, method: "POST", url: "/tts",
         headers: { host: "127.0.0.1", authorization: "Bearer test-runner-token" },
         socket: { remoteAddress: "test" } });
       let status;

@@ -1,3 +1,4 @@
+import { mockRunnerLogin } from "./helpers/runner-login-fixture.mjs";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { once } from "node:events";
@@ -16,7 +17,15 @@ Object.assign(process.env, {
   CLIENT_STATE_STORE_PATH: path.join(tempDir, "client-state.json"), CODEX_WS_PROXY_DEBUG_LOG_DIR: path.join(tempDir, "debug"),
 });
 const { __TESTING__: runtime } = await import("../src/server-runtime.mjs");
-const nativeFetch = globalThis.fetch;
+mockRunnerLogin(runtime);
+const transportFetch = globalThis.fetch;
+const nativeFetch = (url, init = {}) => {
+  const address = new URL(String(url));
+  if (address.origin === base && address.pathname.startsWith("/tts-media/")) {
+    return transportFetch(url, { ...init, headers: { ...init.headers, authorization: "Bearer tts-quality-token" } });
+  }
+  return transportFetch(url, init);
+};
 const ffmpegReady = ["ffmpeg", "ffprobe"].every((command) => spawnSync(command, ["-version"]).status === 0);
 const needsFfmpeg = { skip: ffmpegReady ? false : "ffmpeg and ffprobe are required for audio verification" };
 let base;

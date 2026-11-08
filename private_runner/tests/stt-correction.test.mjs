@@ -1,3 +1,4 @@
+import { RUNNER_AUTHENTICATION } from "../src/runner-login-http.mjs";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
@@ -166,7 +167,7 @@ test("correction endpoint authenticates and validates requests", async () => {
     json: (_res, status, body) => replies.push({ status, body }),
   });
   await handler({ method: "POST", token: "wrong" }, {}, "/stt/correct");
-  assert.deepEqual(replies.pop(), { status: 401, body: { error: "unauthorized" } });
-  await handler({ method: "POST", token: "token", body: { text: "元", context: [] } }, {}, "/stt/correct");
+  assert.deepEqual(replies.pop(), { status: 401, body: { error: "authentication_required" } });
+  await handler({ method: "POST", [RUNNER_AUTHENTICATION]: { sessionId: "test-session", ownerSubjectId: "test-owner" }, token: "token", body: { text: "元", context: [] } }, {}, "/stt/correct");
   assert.deepEqual(replies.pop(), { status: 200, body: { changed: false, text: "元" } });
 });

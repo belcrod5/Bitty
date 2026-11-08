@@ -15,6 +15,7 @@ import type { LlmBackend } from "../types/appTypes";
 import type { RegisteredDirectoryEntry } from "../types/directorySessions";
 import {
   loadSecureRunnerCredentials,
+  runnerCredentialScope,
   saveSecureRunnerCredentials,
   type SecureRunnerCredentials,
 } from "../utils/secureRunnerCredentials";
@@ -225,9 +226,6 @@ export function useAppSettingsPersistenceController({
     // Install the paired CA before any saved LAN route or bootstrap consumer
     // becomes usable. Legacy HTTP LAN settings can only fall back to HTTPS.
     const savedRunnerUrl = String(parsed.runnerUrl || "").trim();
-    const savedRunnerToken = String(parsed.runnerToken || "").trim();
-    const legacyCloudflareAccessClientId = String(parsed.cloudflareAccessClientId || "").trim();
-    const legacyCloudflareAccessClientSecret = String(parsed.cloudflareAccessClientSecret || "").trim();
     const savedCloudflareRunnerUrl = persistedCloudflareRunnerUrl(parsed);
     const savedLocalRunnerUrl = runnerLocalOrigin(parsed.localRunnerUrl);
     const savedLocalRunnerCertificate = String(parsed.localRunnerCertificate || "").trim();
@@ -256,18 +254,7 @@ export function useAppSettingsPersistenceController({
     setCloudflareRunnerUrl(savedCloudflareRunnerUrl);
     setLocalRunnerUrl(savedLocalRunnerUrl);
     setLocalRunnerCertificate(savedLocalRunnerCertificate);
-    // The runner token lives in SecureStore, not in the settings JSON, so the
-    // parsed value is normally empty (only legacy exports carried it). Never
-    // overwrite a SecureStore-provided token with that empty string.
-    if (savedRunnerToken) {
-      setRunnerToken(savedRunnerToken);
-    }
-    if (legacyCloudflareAccessClientId) {
-      setCloudflareAccessClientId(legacyCloudflareAccessClientId);
-    }
-    if (legacyCloudflareAccessClientSecret) {
-      setCloudflareAccessClientSecret(legacyCloudflareAccessClientSecret);
-    }
+    // Legacy exported credentials never establish a paired identity.
     const savedBackend = String(parsed.llmBackend || "").trim();
     setLlmBackend(savedBackend && savedBackend !== "codex_app_server" ? savedBackend : "codex");
     setLlmDirectory(parseLlmDirectory(parsed.llmDirectory));
@@ -422,6 +409,10 @@ export function useAppSettingsPersistenceController({
                 delete importedSettings[field];
               }
               try {
+                // Imported addresses must not receive this device's existing session
+                // or the Access credentials for the previous Runner.
+                await saveSecureRunnerCredentials({ runnerToken: "", cloudflareAccessClientId: "", cloudflareAccessClientSecret: "" });
+                setRunnerToken(""); setCloudflareAccessClientId(""); setCloudflareAccessClientSecret("");
                 await mutatePersistedSettings((current) => {
                   const next = { ...importedSettings };
                   for (const field of PRESERVED_SETTINGS_FIELDS) {
@@ -443,18 +434,18 @@ export function useAppSettingsPersistenceController({
       const message = error instanceof Error ? error.message : String(error);
       Alert.alert("インポート失敗", message || "設定JSONを読み込めませんでした。");
     }
-  }, [applyPersistedSettings]);
+  }, [applyPersistedSettings, setRunnerToken, setCloudflareAccessClientId, setCloudflareAccessClientSecret]);
 
   useEffect(() => {
     async function loadSettings() {
       if (settingsLoadStartedRef.current) return;
       settingsLoadStartedRef.current = true;
 
-      const [settingsResult, credentialsResult] = await Promise.allSettled([
-        readPersistedSettings(),
-        loadSecureRunnerCredentials(),
+      const [settingsResult] = await Promise.allSettled([readPersistedSettings()]);
+      const [credentialsResult] = await Promise.allSettled([
+        loadSecureRunnerCredentials(settingsResult.status === "fulfilled" && settingsResult.value
+          ? runnerCredentialScope(settingsResult.value) : null),
       ]);
-
       if (settingsResult.status === "fulfilled") {
         writablePersistenceRef.current.settings = true;
         if (settingsResult.value) {
@@ -465,41 +456,13 @@ export function useAppSettingsPersistenceController({
       }
       if (credentialsResult.status === "fulfilled") {
         writablePersistenceRef.current.secureCredentials = true;
-        applySecureCredentials(credentialsResult.value, { keepExistingValues: false });
+        if (settingsResult.status === "fulfilled" && settingsResult.value) {
+          applySecureCredentials(credentialsResult.value, { keepExistingValues: false });
+        }
       } else {
         console.warn("[settings] failed to read secure credentials", credentialsResult.reason);
       }
       setSettingsLoaded(true);
-
-      // 旧settings JSONに残る認証情報のSecureStoreへの一回限り移行。以前は250ms
-      // autosaveの認証情報保存が移行を兼ねていたが、その経路は削除済み。ここで
-      // 移行しないと、初回autosaveがJSONを認証キーなしで書き直した時点で値が失われる。
-      // SecureStoreの読み取りに失敗したセッションでは、既存値の有無を判定できない
-      // ため移行しない(上書き事故防止)。
-      if (settingsResult.status === "fulfilled" && settingsResult.value && credentialsResult.status === "fulfilled") {
-        const parsed = settingsResult.value;
-        const stored = credentialsResult.value;
-        const legacyCredentials: Partial<SecureRunnerCredentials> = {};
-        const legacyRunnerToken = String(parsed.runnerToken || "").trim();
-        if (legacyRunnerToken && !stored.runnerToken) {
-          legacyCredentials.runnerToken = legacyRunnerToken;
-        }
-        const legacyClientId = String(parsed.cloudflareAccessClientId || "").trim();
-        if (legacyClientId && !stored.cloudflareAccessClientId) {
-          legacyCredentials.cloudflareAccessClientId = legacyClientId;
-        }
-        const legacyClientSecret = String(parsed.cloudflareAccessClientSecret || "").trim();
-        if (legacyClientSecret && !stored.cloudflareAccessClientSecret) {
-          legacyCredentials.cloudflareAccessClientSecret = legacyClientSecret;
-        }
-        if (Object.keys(legacyCredentials).length > 0) {
-          try {
-            await saveSecureRunnerCredentials(legacyCredentials);
-          } catch (error) {
-            console.warn("[settings] failed to migrate legacy credentials to secure store", error);
-          }
-        }
-      }
     }
 
     void loadSettings();
@@ -516,10 +479,10 @@ export function useAppSettingsPersistenceController({
   // overwrite settings the user changed during the degraded session, so a failed
   // settings read keeps that store read-only until the next launch.
   const recoverSecureCredentials = useCallback(() => {
-    if (writablePersistenceRef.current.secureCredentials) return;
+    if (!writablePersistenceRef.current.settings || writablePersistenceRef.current.secureCredentials) return;
     if (credentialsRecoveryInFlightRef.current) return;
     credentialsRecoveryInFlightRef.current = true;
-    loadSecureRunnerCredentials()
+    loadSecureRunnerCredentials(runnerCredentialScope({ runnerUrl, cloudflareRunnerUrl, localRunnerUrl }))
       .then((credentials) => {
         writablePersistenceRef.current.secureCredentials = true;
         applySecureCredentials(credentials, { keepExistingValues: true });
@@ -530,7 +493,7 @@ export function useAppSettingsPersistenceController({
       .finally(() => {
         credentialsRecoveryInFlightRef.current = false;
       });
-  }, [applySecureCredentials]);
+  }, [applySecureCredentials, runnerUrl, cloudflareRunnerUrl, localRunnerUrl]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => {

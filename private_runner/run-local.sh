@@ -52,6 +52,7 @@ Environment overrides:
   RUNNER_TOKEN_MODE=random|env
   RUNNER_PAIRING_QR=1|0
   RUNNER_TOKEN_FILE=private_runner/logs/runner-token
+  RUNNER_CONTROL_SOCKET=<absolute owner-only Unix socket path>
   RUNNER_PUBLIC_URL=https://app.example.com
   CLOUDFLARE_TUNNEL_ENABLE=1|0
   CLOUDFLARE_TUNNEL_ID=<tunnel uuid>
@@ -83,7 +84,7 @@ RUN_LOCAL_MODE="${RUN_LOCAL_MODE:-full}"
 CODEX_ENABLE="${CODEX_ENABLE:-1}"
 RUNNER_ENABLE="${RUNNER_ENABLE:-1}"
 RUNNER_PORT="${RUNNER_PORT:-${PORT:-8788}}"
-export BITTY_RUNNER_URL="http://127.0.0.1:${RUNNER_PORT}"
+unset BITTY_RUNNER_URL
 export BITTY_REPO_ROOT="$PROJECT_ROOT"
 export PATH="$SCRIPT_DIR/bin:$PATH"
 RUNNER_LOG_REQUESTS="${RUNNER_LOG_REQUESTS:-1}"
@@ -189,6 +190,7 @@ resolve_mode() {
   esac
 }
 resolve_mode
+prepare_runner_control_socket
 
 # RUN_LOCAL_FOREGROUND=1 is an internal control flag for the nohup-launched
 # foreground supervisor process. If it leaks into unrelated shells (for example
@@ -664,7 +666,7 @@ print_restart_pairing_qr_hint() {
   if [ "$RUNNER_ENABLE" = "1" ]; then
     echo "[run-local] run pairing QR after this restart finishes: ./private_runner/run-local.sh pairing-qr" >&2
     if [ "$RUNNER_TOKEN_MODE" = "random" ]; then
-      echo "[run-local] do not restart after scanning; random RUNNER_TOKEN changes on every restart" >&2
+      echo "[run-local] pairing QR configures connectivity; login sessions survive runner restarts" >&2
     fi
   fi
 }
@@ -796,7 +798,6 @@ if [ "$RUN_LOCAL_COMMAND" = "pairing-qr" ]; then
     echo "[run-local] refusing to print pairing QR because stdout is not a terminal" >&2
     exit 1
   fi
-  export RUNNER_TOKEN_FILE
   node "$SCRIPT_DIR/src/print-runner-pairing-qr.mjs"
   exit $?
 fi

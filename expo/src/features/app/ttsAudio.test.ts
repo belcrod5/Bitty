@@ -17,7 +17,7 @@ beforeEach(() => {
   process.mockResolvedValue("file:///tmp/prepared.caf");
   (NativeModules as Record<string, unknown>).BittyTtsEffects = { process, cancel, remove };
   configureCloudflareAccessFetch({ runnerUrl: "https://cloudflare.example.com", cloudflareRunnerUrl: "https://cloudflare.example.com",
-    credentials: { clientId: "test-access-id", clientSecret: "test-access-secret" } });
+    credentials: { clientId: "test-access-id", clientSecret: "test-access-secret" }, sessionToken: "bitty_session_v1." + "x".repeat(43) });
 });
 
 test("standard TTS trims file edges through the same native preparation as themed audio", async () => {
@@ -83,7 +83,7 @@ test("standard Cloudflare TTS supplies origin-scoped credentials to native prepa
   createAsync.mockResolvedValue({ sound });
   await createTtsSoundAsync("https://cloudflare.example.com/tts-media/audio.mp3", { shouldPlay: false, volume: 1 }, null);
   expect(process).toHaveBeenCalledWith("https://cloudflare.example.com/tts-media/audio.mp3", null, expect.any(String),
-    { "CF-Access-Client-Id": "test-access-id", "CF-Access-Client-Secret": "test-access-secret" });
+    { "CF-Access-Client-Id": "test-access-id", "CF-Access-Client-Secret": "test-access-secret", Authorization: "Bearer bitty_session_v1." + "x".repeat(43) });
 });
 
 test("themed Cloudflare TTS supplies the same credentials to its native downloader", async () => {
@@ -92,7 +92,7 @@ test("themed Cloudflare TTS supplies the same credentials to its native download
   await createTtsSoundAsync("https://cloudflare.example.com/tts-media/audio.mp3", { shouldPlay: false, volume: 1 }, VISUAL_THEMES.cyberpunk.ttsEffect);
   expect(process).toHaveBeenCalledWith("https://cloudflare.example.com/tts-media/audio.mp3",
     VISUAL_THEMES.cyberpunk.ttsEffect, expect.any(String),
-    { "CF-Access-Client-Id": "test-access-id", "CF-Access-Client-Secret": "test-access-secret" });
+    { "CF-Access-Client-Id": "test-access-id", "CF-Access-Client-Secret": "test-access-secret", Authorization: "Bearer bitty_session_v1." + "x".repeat(43) });
 });
 
 test("switching from LAN to Cloudflare changes media credentials without sending them to other origins", async () => {
@@ -123,4 +123,18 @@ test("platforms without Apple preparation retain plain playback", async () => {
       .resolves.toBe(sound);
     expect(process).not.toHaveBeenCalled();
   } finally { platform.restore(); }
+});
+
+test("native TTS downloads carry LAN/session and Tunnel/session credentials without leaking to external media", async () => {
+  configureCloudflareAccessFetch({ runnerUrl: "https://mac.local:8789", cloudflareRunnerUrl: "https://cloudflare.example.com",
+    credentials: { clientId: "test-access-id", clientSecret: "test-access-secret" }, sessionToken: "bitty_session_v1." + "x".repeat(43) });
+  createAsync.mockResolvedValue({ sound: { unloadAsync: jest.fn(async () => {}) } });
+  const status = { shouldPlay: false, volume: 1 };
+  await createTtsSoundAsync("https://mac.local:8789/tts-media/lan.mp3", status, null);
+  await createTtsSoundAsync("https://cloudflare.example.com/tts-media/tunnel.mp3", status, null);
+  await createTtsSoundAsync("https://cloudflare.example.com.attacker.test/tts-media/external.mp3", status, null);
+  expect(process.mock.calls[0][3]).toEqual({ Authorization: "Bearer bitty_session_v1." + "x".repeat(43) });
+  expect(process.mock.calls[1][3]).toEqual({ Authorization: "Bearer bitty_session_v1." + "x".repeat(43),
+    "CF-Access-Client-Id": "test-access-id", "CF-Access-Client-Secret": "test-access-secret" });
+  expect(process.mock.calls[2][3]).toEqual({});
 });

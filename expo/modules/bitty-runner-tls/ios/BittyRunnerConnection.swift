@@ -19,21 +19,15 @@ import Security
 //   SecureStoreModule.get's fallback order.
 public enum BittyRunnerConnection {
   static let settingsFileName = "bitty-settings.json"
-  static let runnerTokenKey = "bitty.runnerToken"
-  static let cloudflareAccessClientIdKey = "bitty.cloudflareAccessClientId"
-  static let cloudflareAccessClientSecretKey = "bitty.cloudflareAccessClientSecret"
+  static let credentialRecordKey = "bitty.runnerCredentials.v3"
 
-  public static func readSettingsField(_ field: String) -> Any? {
-    guard let documentsUrl = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
-      return nil
-    }
-    let fileUrl = documentsUrl.appendingPathComponent(settingsFileName)
-    guard let data = try? Data(contentsOf: fileUrl),
-      let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-      return nil
-    }
-    return parsed[field]
+  private static func settingsSnapshot() -> [String: Any]? {
+    guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
+      let data = try? Data(contentsOf: documents.appendingPathComponent(settingsFileName)),
+      let settings = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+    return settings
   }
+  public static func readSettingsField(_ field: String) -> Any? { settingsSnapshot()?[field] }
 
   public struct Configuration: Equatable {
     fileprivate let runnerUrl: String
@@ -73,39 +67,35 @@ public enum BittyRunnerConnection {
   }
 
   public static func load() -> Configuration? {
-    let runnerUrl = readRunnerUrl()
-    let token = readSecureStoreValue(runnerTokenKey)
-    guard !runnerUrl.isEmpty, !token.isEmpty else { return nil }
-    return Configuration(runnerUrl: runnerUrl,
-      configuredRunnerUrl: (readSettingsField("runnerUrl") as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
-      token: token, cloudflareUrl: readCloudflareRunnerUrl(),
-      clientId: readSecureStoreValue(cloudflareAccessClientIdKey),
-      clientSecret: readSecureStoreValue(cloudflareAccessClientSecretKey))
-  }
-
-  static func readRunnerUrl() -> String {
     BittyRunnerTLS.install()
-    let current = (readSettingsField("runnerUrl") as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-    let configuredCloudflare = readSettingsField("cloudflareRunnerUrl") ?? readSettingsField("tunnelRunnerUrl")
-    if let raw = configuredCloudflare as? String, !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-        httpsOrigin(raw).isEmpty { return "" }
-    if let url = URL(string: current), BittyRunnerTLS.shared().handlesURL(url) {
-      return current
-    }
-    let cloudflare = readCloudflareRunnerUrl()
-    if !cloudflare.isEmpty { return cloudflare }
-    let local = (readSettingsField("localRunnerUrl") as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-    // A formerly-selected LAN URL is not a fallback when its trust is missing.
-    if current == local { return "" }
-    return httpsOrigin(current)
-  }
-
-  static func readCloudflareRunnerUrl() -> String {
-    let configured = readSettingsField("cloudflareRunnerUrl") ?? readSettingsField("tunnelRunnerUrl")
-    if let configured = configured as? String, !configured.isEmpty { return httpsOrigin(configured) }
-    let runner = readSettingsField("runnerUrl") as? String ?? ""
-    let local = readSettingsField("localRunnerUrl") as? String ?? ""
-    return runner == local ? "" : httpsOrigin(runner)
+    // Take one settings snapshot and one atomic Keychain record. Old settings
+    // paired with new credentials after a crash must fail closed.
+    guard let settings = settingsSnapshot(),
+      let data = readSecureStoreValueAtExactKey(credentialRecordKey).data(using: .utf8),
+      let record = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+      (record["version"] as? Int) == 3,
+      let scope = record["scope"] as? [String: String],
+      let token = record["runnerToken"] as? String,
+      token.range(of: "^bitty_session_v1\\.[A-Za-z0-9_-]{43,128}$", options: .regularExpression) != nil,
+      let clientId = record["cloudflareAccessClientId"] as? String,
+      let clientSecret = record["cloudflareAccessClientSecret"] as? String else { return nil }
+    let current = (settings["runnerUrl"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    let localRaw = settings["localRunnerUrl"] as? String ?? ""
+    let local = httpsOrigin(localRaw)
+    let cloudflareRaw = settings["cloudflareRunnerUrl"] as? String
+      ?? settings["tunnelRunnerUrl"] as? String ?? (current == localRaw ? "" : current)
+    let cloudflare = httpsOrigin(cloudflareRaw)
+    let selected = httpsOrigin(current)
+    guard (!cloudflareRaw.isEmpty ? !cloudflare.isEmpty : true),
+      (!localRaw.isEmpty ? !local.isEmpty : true),
+      !selected.isEmpty, selected == local || selected == cloudflare,
+      scope["cloudflareOrigin"] == cloudflare, scope["localOrigin"] == local else { return nil }
+    let runnerUrl: String
+    if selected == local, let url = URL(string: local), BittyRunnerTLS.shared().handlesURL(url) { runnerUrl = local }
+    else if !cloudflare.isEmpty { runnerUrl = cloudflare }
+    else { return nil }
+    return Configuration(runnerUrl: runnerUrl, configuredRunnerUrl: current, token: token,
+      cloudflareUrl: cloudflare, clientId: clientId, clientSecret: clientSecret)
   }
 
   static func sameOrigin(_ left: URL, _ right: URL) -> Bool {
@@ -115,21 +105,12 @@ public enum BittyRunnerConnection {
 
   private static func httpsOrigin(_ raw: String) -> String {
     let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard let url = URL(string: value), url.scheme?.lowercased() == "https", url.host != nil,
-      url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
-      url.path.isEmpty || url.path == "/" else { return "" }
-    return value
-  }
-
-  // Credentials migrated to AFTER_FIRST_UNLOCK accessibility live under "<key>.v2"
-  // (see secureRunnerCredentials.ts); the suffix-less key is the pre-migration
-  // location and is checked second, mirroring the JS readField fallback order.
-  static func readSecureStoreValue(_ key: String) -> String {
-    let v2Value = readSecureStoreValueAtExactKey("\(key).v2")
-    if !v2Value.isEmpty {
-      return v2Value
-    }
-    return readSecureStoreValueAtExactKey(key)
+    guard var components = URLComponents(string: value), components.scheme?.lowercased() == "https",
+      let host = components.host, !host.isEmpty, components.user == nil, components.password == nil,
+      components.query == nil, components.fragment == nil, components.path.isEmpty || components.path == "/" else { return "" }
+    components.scheme = "https"; components.host = host.lowercased(); components.path = ""
+    if components.port == 443 { components.port = nil }
+    return components.string ?? ""
   }
 
   private static func readSecureStoreValueAtExactKey(_ key: String) -> String {

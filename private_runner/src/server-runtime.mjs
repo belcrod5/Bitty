@@ -1,3 +1,8 @@
+import { createRunnerLoginLocation } from "./runner-login-location.mjs";
+import { createRunnerLoginService } from "./runner-login-service.mjs";
+import { createRunnerLoginMailer } from "./runner-login-mail.mjs";
+import { createRunnerLoginHttp, RUNNER_AUTHENTICATION, runnerBearerToken } from "./runner-login-http.mjs";
+import { startRunnerControlListener } from "./runner-control-listener.mjs";
 import { createAppControlService, createAppControlHttpHandler } from "./app-control-service.mjs";
 import { createAppStatusSnapshot } from "./app-status-snapshot.mjs";
 import { createWidgetRefreshNotifier } from "./widget-refresh-notifier.mjs";
@@ -600,6 +605,7 @@ function errorMessage(err) {
 }
 
 function writeJsonRequestError(res, err, fallbackError) {
+  if (["authentication_required", "reauthentication_required"].includes(err?.code)) return json(res, err.status, { error: err.code });
   if (isApiError(err)) return json(res, err.apiStatus, err.apiPayload);
   const message = errorMessage(err);
   if (err instanceof SyntaxError || message === "request body is too large") {
@@ -675,13 +681,6 @@ async function waitForOpenAICodexRetry(reason, nextAttemptIndex, opts = {}) {
   await sleep(delayMs);
   if (opts.signal?.aborted) return false;
   return true;
-}
-
-function parseAuthToken(req) {
-  const h = req.headers.authorization || "";
-  const [kind, token] = h.split(" ");
-  if (kind !== "Bearer" || !token) return "";
-  return token;
 }
 
 function isCodexAuthErrorMessage(message) {
@@ -1314,7 +1313,8 @@ const apnsClient = PUSH_ENABLED
     teamId: APPLE_TEAM_ID,
     topic: APNS_TOPIC,
     env: APNS_ENV,
-  })
+  }, { canDeliver: async (token, sessionId) => Boolean(sessionId && (await pushDeviceStore.listDevices()).some((device) => device.apnsToken === token && device.authSessionId === sessionId)),
+    isSessionActive: (sessionId) => runnerLoginService.isSessionActive(sessionId) })
   : null;
 const widgetRefreshNotifier = createWidgetRefreshNotifier({ enabled: PUSH_ENABLED, apnsClient, deviceStore: pushDeviceStore });
 const pushSummarizer = PUSH_ENABLED
@@ -1533,9 +1533,31 @@ function resolveCliSessionEntryExecutionCwd(entry) {
   return "";
 }
 
+const runnerLoginService = createRunnerLoginService({
+  directory: path.resolve(process.env.RUNNER_LOGIN_DIRECTORY || "private_runner/logs/runner-login"),
+  legacyToken: RUNNER_TOKEN,
+  sendMail: createRunnerLoginMailer(),
+  inspectOwners: async () => {
+    const files = [ACP_SESSION_STORE_PATH];
+    const subjects = new Set();
+    const visit = (value) => {
+      if (!value || typeof value !== "object") return;
+      for (const [key, item] of Object.entries(value)) {
+        if ((key === "ownerSubjectId" || key === "subjectId") && typeof item === "string" && item.startsWith("runner:")) subjects.add(item);
+        else if (item && typeof item === "object") visit(item);
+      }
+    };
+    for (const file of files) { try { visit(JSON.parse(await fs.readFile(file, "utf8"))); } catch (error) { if (error.code !== "ENOENT") throw error; } }
+    return [...subjects];
+  },
+});
+if (!RUNNER_SKIP_SERVER_START) await runnerLoginService.initialize();
+const runnerLoginHttp = createRunnerLoginHttp({ service: runnerLoginService, location: createRunnerLoginLocation() });
+let controlListener = null;
+
 let agentService;
 const approvalPushService = createApprovalPushService({
-  enabled: PUSH_ENABLED, runnerToken: RUNNER_TOKEN, apnsClient, deviceStore: pushDeviceStore,
+  enabled: PUSH_ENABLED, apnsClient, deviceStore: pushDeviceStore,
   getAgentSessionBinding,
   respondToAgentAction: (request) => agentService.respondToAction(
     request,
@@ -1543,7 +1565,7 @@ const approvalPushService = createApprovalPushService({
   ),
   getRawRelay: (relayId) => codexWsRelaysById.get(relayId),
   forwardRawData: (relay, data) => forwardCodexRelayClientData(relay, data, false),
-  parseAuthToken, readJsonBody, json, writeJsonRequestError,
+  readJsonBody, json, writeJsonRequestError,
 });
 const orchestratorActivity = createOrchestratorActivity({ broadcast: (payload) => {
   for (const client of runnerWsActiveClients) {
@@ -1551,7 +1573,7 @@ const orchestratorActivity = createOrchestratorActivity({ broadcast: (payload) =
   }
 }, log: RUNNER_LOG_REQUESTS ? (message) => console.log(message) : null });
 const agentRuntime = createPrivateRunnerAgentRuntime({
-  claudeBinary: AGENT_CLAUDE_BINARY, runnerToken: RUNNER_TOKEN, dynamicTools: calendarConversationDynamicTools(),
+  claudeBinary: AGENT_CLAUDE_BINARY, ownerSubjectId: runnerLoginService.ownerSubjectId, dynamicTools: calendarConversationDynamicTools(),
   stores: {
     bindSession: bindAgentSession, getSessionBinding: getAgentSessionBinding, getSessionMode: getAgentSessionMode,
     acquireSessionLease: acquireAgentSessionLease, settleSessionLease: settleAgentSessionLease,
@@ -1579,7 +1601,7 @@ const agentRuntime = createPrivateRunnerAgentRuntime({
     });
   },
   listMessages: listLlmSessionMessages,
-  resolveCanonicalCwd: resolveCanonicalDirectoryIdentity, parseAuthToken, json,
+  resolveCanonicalCwd: resolveCanonicalDirectoryIdentity, json,
   normalizeSessionListLimit, normalizeSessionMessagesLimit, readJsonBody,
   runEventObservers: [approvalPushService.onRunEvent, turnCompletionNotifier.onAgentRunEvent],
   activity: orchestratorActivity,
@@ -1621,7 +1643,7 @@ const appControlService = createAppControlService({
   },
 });
 const appControlHttpHandler = createAppControlHttpHandler({ service: appControlService,
-  runnerToken: RUNNER_TOKEN, parseAuthToken, json, readJsonBody, subjectId: agentOwnerSubjectId });
+  json, readJsonBody, subjectId: agentOwnerSubjectId });
 const codexRawSessionOwnership = createCodexRawSessionOwnership({
   bindSession: bindAgentSession,
   getSessionBinding: getAgentSessionBinding,
@@ -2175,10 +2197,6 @@ async function registerTtsMedia(audioBuffer, mimeType, publicBaseUrl) {
     audioUrl: buildTtsMediaUrl(publicBaseUrl, mediaKey),
     audioBytes: audioBuffer.length,
   };
-}
-
-function parseHttpBearerToken(req) {
-  return parseAuthToken(req);
 }
 
 function parseSingleByteRange(rangeHeader, totalBytes) {
@@ -5371,8 +5389,6 @@ const codexScheduleService = createCodexScheduleService({
 });
 const codexScheduleHttpHandler = createCodexScheduleHttpHandler({
   service: codexScheduleService,
-  runnerToken: RUNNER_TOKEN,
-  parseAuthToken,
   readJsonBody,
   json,
 });
@@ -5389,15 +5405,11 @@ const skiaBoardIngest = createSkiaBoardIngest({
 const skiaBoardHttpHandler = createSkiaBoardHttpHandler({
   service: skiaBoardService,
   ingest: skiaBoardIngest,
-  runnerToken: RUNNER_TOKEN,
-  parseAuthToken,
   readJsonBody,
   json,
   activity: orchestratorActivity,
 });
 const googleCloudHttpHandler = createGoogleCloudHttpHandler({
-  runnerToken: RUNNER_TOKEN,
-  parseAuthToken,
   readJsonBody,
   json,
   googleCloudService,
@@ -5411,15 +5423,11 @@ const sttCorrectionService = createSttCorrectionService({
 const sttSettingsHttpHandler = createSttSettingsHttpHandler({
   service: sttSettings,
   listModels: sttCorrectionService.listModels,
-  runnerToken: RUNNER_TOKEN,
-  parseAuthToken,
   readJsonBody,
   json,
 });
 const sttCorrectionHttpHandler = createSttCorrectionHttpHandler({
   service: sttCorrectionService,
-  runnerToken: RUNNER_TOKEN,
-  parseAuthToken,
   readJsonBody,
   json,
 });
@@ -5917,17 +5925,6 @@ const handleRunnerRequest = async (req, res) => {
   if (await sttCorrectionHttpHandler(req, res, pathname)) return;
 
   if (req.method === "GET" && pathname === "/health") {
-    if (req.headers.authorization) {
-      if (!RUNNER_TOKEN) {
-        return json(res, 500, {
-          error: "runner_token_missing",
-          message: "RUNNER_TOKEN is required",
-        });
-      }
-      if (parseHttpBearerToken(req) !== RUNNER_TOKEN) {
-        return json(res, 401, { error: "unauthorized" });
-      }
-    }
     let llmFileRoot = "";
     try {
       const root = await resolveToolRoot("");
@@ -5945,15 +5942,6 @@ const handleRunnerRequest = async (req, res) => {
   }
 
   if (req.method === "GET" && pathname === "/codex-ws-debug") {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, {
-        error: "runner_token_missing",
-        message: "RUNNER_TOKEN is required",
-      });
-    }
-    if (parseHttpBearerToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
     const limit = Number(reqUrl.searchParams.get("limit") || 50);
     return json(res, 200, {
       ok: true,
@@ -5964,15 +5952,6 @@ const handleRunnerRequest = async (req, res) => {
   }
 
   if (req.method === "GET" && pathname === "/runner/connection-events") {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, {
-        error: "runner_token_missing",
-        message: "RUNNER_TOKEN is required",
-      });
-    }
-    if (parseAuthToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
     try {
       const sinceSeq = Number(reqUrl.searchParams.get("sinceSeq") || 0);
       const limit = Number(reqUrl.searchParams.get("limit") || 50);
@@ -5990,15 +5969,6 @@ const handleRunnerRequest = async (req, res) => {
   }
 
   if (req.method === "GET" && pathname === "/config/limits") {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, {
-        error: "runner_token_missing",
-        message: "RUNNER_TOKEN is required",
-      });
-    }
-    if (parseAuthToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
     return json(res, 200, {
       llm: {
         timeoutMs: OPENAI_CODEX_TIMEOUT_MS,
@@ -6021,7 +5991,6 @@ const handleRunnerRequest = async (req, res) => {
     const startedAt = performance.now();
     let responseCount = -1;
     res.once("finish", () => console.log(`[widget-refresh] event=response at=${new Date().toISOString()} id=${diagnosticId} status=${res.statusCode} count=${responseCount} duration_ms=${Math.round(performance.now() - startedAt)}`));
-    if (!RUNNER_TOKEN || parseAuthToken(req) !== RUNNER_TOKEN) return json(res, 401, { error: "unauthorized" });
     const snapshot = createAppStatusSnapshot({
       listOrchestrators: () => voiceContextService.list(),
       countActiveSessions: () => agentService.countActiveSessions({}, { subjectId: agentOwnerSubjectId }),
@@ -6037,15 +6006,6 @@ const handleRunnerRequest = async (req, res) => {
   }
 
   if (req.method === "GET" && pathname === "/codex-cli/status") {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, {
-        error: "runner_token_missing",
-        message: "RUNNER_TOKEN is required",
-      });
-    }
-    if (parseAuthToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
     try {
       const forceRefresh = String(reqUrl.searchParams.get("force") || "").trim() === "1";
       const status = await withCodexAuthLease(async () => {
@@ -6080,15 +6040,6 @@ const handleRunnerRequest = async (req, res) => {
   }
 
   if (req.method === "GET" && pathname === "/git/changed-files") {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, {
-        error: "runner_token_missing",
-        message: "RUNNER_TOKEN is required",
-      });
-    }
-    if (parseAuthToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
     try {
       const directory = String(reqUrl.searchParams.get("directory") || "").trim();
       const snapshot = await fetchGitChangedFilesSnapshot(directory);
@@ -6108,15 +6059,6 @@ const handleRunnerRequest = async (req, res) => {
   }
 
   if (req.method === "POST" && pathname === "/scripts/execute") {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, {
-        error: "runner_token_missing",
-        message: "RUNNER_TOKEN is required",
-      });
-    }
-    if (parseAuthToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
     try {
       const body = await readJsonBody(req);
       const result = await executeWorkspaceShellScript(body?.path);
@@ -6135,15 +6077,6 @@ const handleRunnerRequest = async (req, res) => {
   }
 
   if (req.method === "GET" && pathname === "/scripts/jobs") {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, {
-        error: "runner_token_missing",
-        message: "RUNNER_TOKEN is required",
-      });
-    }
-    if (parseAuthToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
     try {
       return json(res, 200, {
         ok: true,
@@ -6162,15 +6095,6 @@ const handleRunnerRequest = async (req, res) => {
   }
 
   if (req.method === "POST" && pathname === "/scripts/start") {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, {
-        error: "runner_token_missing",
-        message: "RUNNER_TOKEN is required",
-      });
-    }
-    if (parseAuthToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
     try {
       const body = await readJsonBody(req);
       const job = await startWorkspaceShellScript(body?.path, {
@@ -6192,15 +6116,6 @@ const handleRunnerRequest = async (req, res) => {
   }
 
   if (req.method === "POST" && pathname === "/scripts/kill") {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, {
-        error: "runner_token_missing",
-        message: "RUNNER_TOKEN is required",
-      });
-    }
-    if (parseAuthToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
     try {
       const body = await readJsonBody(req);
       const payload = killWorkspaceShellScriptJob(body?.jobId);
@@ -6217,15 +6132,6 @@ const handleRunnerRequest = async (req, res) => {
   }
 
   if (req.method === "GET" && pathname === "/codex-auth/profiles") {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, {
-        error: "runner_token_missing",
-        message: "RUNNER_TOKEN is required",
-      });
-    }
-    if (parseAuthToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
     try {
       if (reqUrl.searchParams.get("refresh") === "1") {
         try {
@@ -6259,15 +6165,6 @@ const handleRunnerRequest = async (req, res) => {
   }
 
   if (req.method === "POST" && pathname === "/codex-auth/switch") {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, {
-        error: "runner_token_missing",
-        message: "RUNNER_TOKEN is required",
-      });
-    }
-    if (parseAuthToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
     try {
       const body = await readJsonBody(req);
       const authId = String(body?.authId ?? "");
@@ -6297,8 +6194,6 @@ const handleRunnerRequest = async (req, res) => {
   const codexAuthReauthMatch = pathname.match(/^\/codex-auth\/profiles\/([^/]+)\/reauth$/);
   const isCodexAuthManagementRoute = pathname === "/codex-auth/registrations" || codexAuthRegistrationMatch || codexAuthReauthMatch || codexAuthDeleteMatch;
   if (isCodexAuthManagementRoute) {
-    if (!RUNNER_TOKEN) return json(res, 500, { error: "runner_token_missing", message: "RUNNER_TOKEN is required" });
-    if (parseAuthToken(req) !== RUNNER_TOKEN) return json(res, 401, { error: "unauthorized" });
     const isCodexAuthMutation = (req.method === "POST" && (pathname === "/codex-auth/registrations" || codexAuthReauthMatch || codexAuthRegistrationMatch)) || (req.method === "DELETE" && codexAuthDeleteMatch);
     if (isCodexAuthMutation && codexAuthService.gateSnapshot().state === "unready") {
       return json(res, 503, { error: "codex_auth_unready", message: "Codex auth service is unavailable" });
@@ -6351,15 +6246,6 @@ const handleRunnerRequest = async (req, res) => {
   }
 
   if (req.method === "GET" && pathname === "/codex/queued-turns") {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, {
-        error: "runner_token_missing",
-        message: "RUNNER_TOKEN is required",
-      });
-    }
-    if (parseAuthToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
     const threadId = String(reqUrl.searchParams.get("threadId") || "").trim();
     return json(res, 200, {
       ok: true,
@@ -6368,8 +6254,6 @@ const handleRunnerRequest = async (req, res) => {
   }
 
   if ((req.method === "GET" || req.method === "POST") && pathname === "/client-state") {
-    if (!RUNNER_TOKEN) return json(res, 500, { error: "runner_token_missing" });
-    if (parseAuthToken(req) !== RUNNER_TOKEN) return json(res, 401, { error: "unauthorized" });
     try {
       let snapshot, patch;
       if (req.method === "GET") snapshot = await clientStateStore.snapshot();
@@ -6405,15 +6289,6 @@ const handleRunnerRequest = async (req, res) => {
   }
 
   if (req.method === "POST" && pathname === "/codex/queued-turns") {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, {
-        error: "runner_token_missing",
-        message: "RUNNER_TOKEN is required",
-      });
-    }
-    if (parseAuthToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
     try {
       const body = await readJsonBody(req);
       const result = enqueueCodexTurn(body);
@@ -6436,15 +6311,6 @@ const handleRunnerRequest = async (req, res) => {
   }
 
   if (req.method === "POST" && pathname.startsWith("/codex/queued-turns/")) {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, {
-        error: "runner_token_missing",
-        message: "RUNNER_TOKEN is required",
-      });
-    }
-    if (parseAuthToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
     const parts = pathname.split("/").filter(Boolean);
     const queuedTurnId = String(parts[2] || "").trim();
     const action = String(parts[3] || "").trim().toLowerCase();
@@ -6470,15 +6336,6 @@ const handleRunnerRequest = async (req, res) => {
   }
 
   if (req.method === "GET" && pathname === "/jobs") {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, {
-        error: "runner_token_missing",
-        message: "RUNNER_TOKEN is required",
-      });
-    }
-    if (parseAuthToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
     const rawLimit = Number(reqUrl.searchParams.get("limit") || 20);
     const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(200, Math.floor(rawLimit))) : 20;
     return json(res, 200, {
@@ -6487,15 +6344,6 @@ const handleRunnerRequest = async (req, res) => {
   }
 
   if ((req.method === "GET" || req.method === "POST") && pathname.startsWith("/jobs/")) {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, {
-        error: "runner_token_missing",
-        message: "RUNNER_TOKEN is required",
-      });
-    }
-    if (parseAuthToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
     const parts = pathname.split("/").filter(Boolean);
     const jobId = String(parts[1] || "").trim();
     const action = String(parts[2] || "").trim().toLowerCase();
@@ -6535,15 +6383,6 @@ const handleRunnerRequest = async (req, res) => {
   if (await agentHttpHandler(req, res, reqUrl, pathname)) return;
 
   if (req.method === "GET" && pathname === "/directories") {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, {
-        error: "runner_token_missing",
-        message: "RUNNER_TOKEN is required",
-      });
-    }
-    if (parseAuthToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
     try {
       const pathParam = String(reqUrl.searchParams.get("path") || "").trim();
       const payload = await listLlmDirectories(pathParam || DEFAULT_LLM_FILE_ROOT_RELATIVE, reqUrl.searchParams.get("view") === "identity");
@@ -6560,12 +6399,6 @@ const handleRunnerRequest = async (req, res) => {
   }
 
   if (req.method === "POST" && pathname === "/directory-identities/migrate") {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, { error: "runner_token_missing", message: "RUNNER_TOKEN is required" });
-    }
-    if (parseAuthToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
     try {
       const body = await readJsonBody(req);
       const result = await migrateLlmDirectoryIdentity(body?.source, body?.target);
@@ -6583,12 +6416,6 @@ const handleRunnerRequest = async (req, res) => {
   if (await skiaBoardHttpHandler(req, res, pathname)) return;
 
   if (req.method === "POST" && pathname === "/push/devices") {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, { error: "runner_token_missing", message: "RUNNER_TOKEN is required" });
-    }
-    if (parseAuthToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
     if (!PUSH_ENABLED) {
       return json(res, 200, { ok: true, enabled: false });
     }
@@ -6626,7 +6453,12 @@ const handleRunnerRequest = async (req, res) => {
         directories.push(directory);
       }
       const env = String(body?.env || "").trim().toLowerCase() === "production" ? "production" : APNS_ENV;
-      const record = await pushDeviceStore.upsertDevice({ deviceId, apnsToken, env, directories });
+      const context = req[RUNNER_AUTHENTICATION];
+      if (!context.sessionId) return json(res, 403, { error: "reauthentication_required" });
+      const previous = await pushDeviceStore.getDevice(deviceId);
+      if (previous && previous.authSessionId !== context.sessionId) runnerLoginService.assertReauthenticated(context);
+      const record = await pushDeviceStore.upsertDevice({
+        authSessionId: context.sessionId, deviceId, apnsToken, env, directories });
       return json(res, 200, {
         ok: true,
         enabled: true,
@@ -6643,12 +6475,6 @@ const handleRunnerRequest = async (req, res) => {
   }
 
   if (req.method === "DELETE" && pathname.startsWith("/push/devices/")) {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, { error: "runner_token_missing", message: "RUNNER_TOKEN is required" });
-    }
-    if (parseAuthToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
     let deviceId = "";
     try {
       deviceId = decodeURIComponent(pathname.slice("/push/devices/".length)).trim();
@@ -6664,10 +6490,13 @@ const handleRunnerRequest = async (req, res) => {
       return json(res, 200, { ok: true, enabled: false });
     }
     try {
+      const context = req[RUNNER_AUTHENTICATION];
+      const previous = await pushDeviceStore.getDevice(deviceId);
+      if (previous && previous.authSessionId !== context.sessionId) runnerLoginService.assertReauthenticated(context);
       const removed = await pushDeviceStore.removeDevice(deviceId);
       return json(res, 200, { ok: true, enabled: true, removed });
     } catch (err) {
-      return json(res, 500, { error: "push_device_remove_failed", message: errorMessage(err) });
+      return writeJsonRequestError(res, err, "push_device_remove_failed");
     }
   }
 
@@ -6678,22 +6507,12 @@ const handleRunnerRequest = async (req, res) => {
     pathname === "/workspace/files"
   ) {
     return workspaceFilesService.handleRequest(req, res, {
-      expectedToken: RUNNER_TOKEN,
-      receivedToken: parseAuthToken(req),
+      authenticated: Boolean(req[RUNNER_AUTHENTICATION]),
       pathname,
     });
   }
 
   if ((req.method === "GET" || req.method === "HEAD") && pathname === "/files/media") {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, {
-        error: "runner_token_missing",
-        message: "RUNNER_TOKEN is required",
-      });
-    }
-    if (parseHttpBearerToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
     try {
       const pathParam = String(reqUrl.searchParams.get("path") || "").trim();
       const rootDirParam = String(reqUrl.searchParams.get("rootDir") || "").trim();
@@ -6711,15 +6530,6 @@ const handleRunnerRequest = async (req, res) => {
   }
 
   if (req.method === "POST" && pathname === "/session-summaries") {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, {
-        error: "runner_token_missing",
-        message: "RUNNER_TOKEN is required",
-      });
-    }
-    if (parseAuthToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
     try {
       const body = await readJsonBody(req, 32 * 1024);
       return json(res, 200, await getLlmSessionSummaries(body));
@@ -6761,15 +6571,6 @@ const handleRunnerRequest = async (req, res) => {
       } : null
   );
   if (sessionStateRequest) {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, {
-        error: "runner_token_missing",
-        message: "RUNNER_TOKEN is required",
-      });
-    }
-    if (parseAuthToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
     try {
       const body = await readJsonBody(req, 32 * 1024);
       return json(res, 200, { ok: true, ...await sessionStateRequest.run(body) });
@@ -6779,15 +6580,6 @@ const handleRunnerRequest = async (req, res) => {
   }
 
   if (req.method === "POST" && pathname === "/sessions/read") {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, {
-        error: "runner_token_missing",
-        message: "RUNNER_TOKEN is required",
-      });
-    }
-    if (parseAuthToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
     try {
       const routeStartedAtMs = Date.now();
       const bodyReadStartedAtMs = Date.now();
@@ -6816,15 +6608,6 @@ const handleRunnerRequest = async (req, res) => {
   }
 
   if (req.method === "GET" && pathname === "/session-messages") {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, {
-        error: "runner_token_missing",
-        message: "RUNNER_TOKEN is required",
-      });
-    }
-    if (parseAuthToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
     try {
       const routeStartedAt = Date.now();
       const sessionId = String(reqUrl.searchParams.get("sessionId") || "").trim();
@@ -6947,15 +6730,6 @@ const handleRunnerRequest = async (req, res) => {
   }
 
   if (req.method === "POST" && pathname === "/client-logs") {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, {
-        error: "runner_token_missing",
-        message: "RUNNER_TOKEN is required",
-      });
-    }
-    if (parseAuthToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
     try {
       const body = await readJsonBody(req);
       const eventsRaw = Array.isArray(body?.events) ? body.events : [];
@@ -6993,16 +6767,7 @@ const handleRunnerRequest = async (req, res) => {
   }
 
   if (req.method === "GET" && pathname === "/voices") {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, {
-        error: "runner_token_missing",
-        message: "RUNNER_TOKEN is required",
-      });
-    }
 
-    if (parseAuthToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
 
     try {
       const ttsProvider = resolveTtsProvider(reqUrl.searchParams.get("ttsProvider"));
@@ -7049,16 +6814,7 @@ const handleRunnerRequest = async (req, res) => {
   }
 
   if (req.method === "POST" && pathname === "/tts") {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, {
-        error: "runner_token_missing",
-        message: "RUNNER_TOKEN is required",
-      });
-    }
 
-    if (parseAuthToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
 
     try {
       const body = await readJsonBody(req);
@@ -7147,15 +6903,6 @@ const handleRunnerRequest = async (req, res) => {
   }
 
   if (req.method === "POST" && pathname === "/youtube-videos") {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, {
-        error: "runner_token_missing",
-        message: "RUNNER_TOKEN is required",
-      });
-    }
-    if (parseAuthToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
     try {
       const body = await readJsonBody(req);
       const videoIds = normalizeYouTubeVideoIds(body?.videoIds);
@@ -7183,7 +6930,8 @@ const handleRunnerRequest = async (req, res) => {
 
   return notFound(res);
 };
-const server = http.createServer(handleRunnerRequest);
+const authenticatedRunnerRequest = runnerLoginHttp.wrap(handleRunnerRequest, { tunnel: true });
+const server = http.createServer(authenticatedRunnerRequest);
 
 const runnerWsEnvelopeClients = new WeakSet();
 const runnerWsActiveClients = new Set();
@@ -10314,7 +10062,8 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
 }
 
 const runnerWebSocketOptions = {
-  runnerToken: RUNNER_TOKEN,
+  authenticate: (req) => runnerLoginHttp.authenticate(req),
+  attachSocket: (ws, context) => runnerLoginService.attachSocket(ws, context),
   runnerWsPath: RUNNER_WS_PATH,
   runnerWsServer,
   streamTtsWsServer: wsServer,
@@ -10428,19 +10177,23 @@ async function initializeCodexWsDebugRuntime() {
 if (!RUNNER_SKIP_SERVER_START) {
   let stopRequested = false;
   let localHttpsServer = null;
-  const stopAgentsForSignal = (signal) => {
+  let shutdown = null;
+  const shutdownRuntime = () => {
+    if (shutdown) return shutdown;
     stopRequested = true;
-    server.close();
-    localHttpsServer?.close();
-    codexScheduleService.stop();
-    codexAuthService.markUnready();
-    void legacyOrchestratorRuntime.shutdown()
+    server.close(); localHttpsServer?.close();
+    server.closeAllConnections(); localHttpsServer?.closeAllConnections();
+    codexScheduleService.stop(); codexAuthService.markUnready();
+    const authenticationShutdown = runnerLoginService.close().finally(() => controlListener?.close());
+    const agentsShutdown = legacyOrchestratorRuntime.shutdown()
       .then(() => codexAuthService.shutdown())
       .catch(() => {})
       .finally(() => releaseCodexAuthOwnerLock())
-      .finally(() => agentRuntime.close())
-      .finally(() => process.kill(process.pid, signal));
+      .finally(() => agentRuntime.close());
+    shutdown = Promise.allSettled([authenticationShutdown, agentsShutdown]).then(() => {});
+    return shutdown;
   };
+  const stopAgentsForSignal = (signal) => { void shutdownRuntime().finally(() => process.kill(process.pid, signal)); };
   process.once("SIGTERM", () => stopAgentsForSignal("SIGTERM"));
   process.once("SIGINT", () => stopAgentsForSignal("SIGINT"));
   void (async () => {
@@ -10448,12 +10201,13 @@ if (!RUNNER_SKIP_SERVER_START) {
     try {
       localTlsConfig = resolveLocalRunnerTlsConfig();
       if (localTlsConfig) {
-        localHttpsServer = https.createServer(loadLocalRunnerTls(localTlsConfig), handleRunnerRequest);
+        localHttpsServer = https.createServer(loadLocalRunnerTls(localTlsConfig), runnerLoginHttp.wrap(handleRunnerRequest));
         installRunnerWebSocketUpgradeHandler({ ...runnerWebSocketOptions, server: localHttpsServer });
       }
     } catch (error) {
       console.error(`[local-tls] startup stopped: ${errorMessage(error)}`);
       process.exitCode = 1;
+      await shutdownRuntime();
       return;
     }
     try {
@@ -10462,6 +10216,7 @@ if (!RUNNER_SKIP_SERVER_START) {
     } catch {
       console.error("[google-cloud] credential or usage storage validation failed; runner startup stopped");
       process.exitCode = 1;
+      await shutdownRuntime();
       return;
     }
     void initializeLlmRequestLogRuntime();
@@ -10514,6 +10269,18 @@ if (!RUNNER_SKIP_SERVER_START) {
         console.log(`private runner LAN listening on ${localTlsConfig.url}`);
       });
     }
+    try {
+      const logs = await fs.realpath(path.resolve("private_runner/logs"));
+      const stat = await fs.stat(logs);
+      if (stat.uid !== process.getuid()) throw new Error("runner_control_directory_owner");
+      await fs.chmod(logs, 0o700);
+      controlListener = await startRunnerControlListener({ directory: logs, socketPath: process.env.RUNNER_CONTROL_SOCKET,
+        handler: runnerLoginHttp.wrap(handleRunnerRequest, { local: true }),
+        installWebSocket: (controlServer) => installRunnerWebSocketUpgradeHandler({ ...runnerWebSocketOptions, server: controlServer,
+          authenticate: (req) => runnerLoginHttp.authenticate(req, true) }),
+      });
+      controlListener.server.on("error", listenerError);
+    } catch { console.error("[runner-login] control listener unavailable; stopping"); stopAgentsForSignal("SIGTERM"); return; }
     server.listen(PORT, HOST, () => {
       console.log(
         `private runner server listening on http://${HOST}:${PORT} (mode=${
@@ -10528,7 +10295,10 @@ export const __TESTING__ = {
   server,
   macosSttLog,
   HOST,
-  handleRunnerRequest,
+  handleRunnerRequest: authenticatedRunnerRequest,
+  handleBusinessRequest: handleRunnerRequest,
+  createAuthenticatedHandler: (service) => createRunnerLoginHttp({ service }).wrap(handleRunnerRequest),
+  runnerLoginService,
   resolvePublicBaseUrl,
   codexAuthService,
   codexAuthRuntime,
@@ -10595,7 +10365,7 @@ export const __TESTING__ = {
   runCommandSandboxedTool,
   runGitDiffTool,
   extractYouTubeVideoIdsFromToolResult,
-  parseHttpBearerToken,
+  parseHttpBearerToken: runnerBearerToken,
   runCodexStream,
   executeLlmFileToolCall,
   appendAppConversationToCliRollout,
