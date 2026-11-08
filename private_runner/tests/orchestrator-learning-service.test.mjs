@@ -525,6 +525,130 @@ test("explicit edit, merge and retirement proposals use same budgeted analysis a
   assert.equal((await f.service.status()).candidates.filter((entry) => entry.status === "active").length, 1);
 });
 
+test("adopted update lineages recover existing separate records without rewriting their IDs or saved state", async (t) => {
+  const f = await fixture(t);
+  const drafts = await seed(f, [candidate(1, { content: "Brief reports" }), candidate(1, { content: "Check the original goal" })]);
+  await f.service.decide({ items: drafts.map(ref), action: "adopt" });
+  const originals = (await f.service.status()).candidates;
+  f.args.analyze = async () => ({ text: JSON.stringify({ candidates: originals.map((item, index) =>
+    candidate(2, { content: `Updated policy ${index}`, replaces: [item.id] })) }) });
+  await f.service.close(); f.service = await f.open();
+  await f.service.observe([f.pair(2)]); await f.service.runDue();
+  let status = await f.service.status();
+  assert.deepEqual(status.lineages, [], "unaccepted update proposals remain independent candidates");
+  await f.service.decide({ items: status.candidates.filter((item) => item.status === "candidate").map(ref), action: "adopt" });
+  status = await f.service.status();
+  assert.equal(status.candidates.length, 4);
+  const expected = originals.map((original) => ({
+    current: status.candidates.filter((item) => item.replaces?.includes(original.id)).map(ref),
+    previous: status.candidates.filter((item) => item.id === original.id).map(ref),
+  }));
+  assert.deepEqual(status.lineages, expected);
+  await f.service.close();
+  const file = path.join(f.workspace, "orchestrator-learning/state.json");
+  const before = await fs.readFile(file, "utf8");
+  assert.equal(JSON.parse(before).lineages, undefined);
+  f.service = await f.open();
+  const recovered = await f.service.status();
+  assert.deepEqual(recovered.candidates, status.candidates);
+  assert.deepEqual(recovered.lineages, expected);
+  const read = await f.service.readItems({ orchestratorId: "main", status: "all" });
+  assert.deepEqual(read.lineages, expected);
+  assert.deepEqual((await f.service.readItems({ orchestratorId: randomUUID(), status: "all" })).lineages, []);
+  read.lineages[0].previous[0].version = 999;
+  assert.deepEqual((await f.service.status()).lineages, expected);
+  assert.equal(await fs.readFile(file, "utf8"), before, "reading lineage must not migrate or mutate user data");
+});
+
+test("successive updates, rollback and manual stopping keep one current learning with retained version history", async (t) => {
+  let iteration = 0;
+  const f = await fixture(t, { analyze: async ({ input }) => {
+    const { items } = JSON.parse(input); iteration++;
+    const active = items.find((item) => item.status === "active");
+    return { text: JSON.stringify({ candidates: [candidate(iteration, { content: `Policy ${iteration}`, ...(active ? { replaces: [active.id] } : {}) })] }) };
+  } });
+  await configure(f.service);
+  for (let seq = 1; seq <= 3; seq++) {
+    f.advance(1000); await f.service.observe([f.pair(seq)]); await f.service.runDue();
+    const draft = (await f.service.status()).candidates.find((item) => item.status === "candidate");
+    await f.service.decide({ items: [ref(draft)], action: "adopt" });
+  }
+  let status = await f.service.status();
+  const [first, second, third] = status.candidates;
+  assert.deepEqual(status.lineages, [{ current: [ref(third)], previous: [ref(first), ref(second)] }]);
+  f.advance(1000); await f.service.decide({ items: [ref(second)], action: "restore" });
+  status = await f.service.status();
+  assert.deepEqual(status.lineages, [{ current: [ref(status.candidates[1])], previous: [ref(status.candidates[0]), ref(status.candidates[2])] }]);
+  f.advance(1000); await f.service.decide({ items: [ref(status.candidates[1])], action: "retire" });
+  status = await f.service.status();
+  assert.ok(status.candidates.every((item) => item.status === "retired"));
+  assert.deepEqual(status.lineages, [{ current: [ref(status.candidates[1])], previous: [ref(status.candidates[0]), ref(status.candidates[2])] }]);
+  // The persisted decisions also identify a manually stopped head after bounded change history is gone.
+  await f.service.close();
+  const file = path.join(f.workspace, "orchestrator-learning/state.json");
+  const saved = JSON.parse(await fs.readFile(file, "utf8")); saved.changes = [];
+  await fs.writeFile(file, JSON.stringify(saved)); f.service = await f.open();
+  assert.deepEqual((await f.service.status()).lineages, status.lineages);
+});
+
+test("merged learning lineage preserves multiple active restored sources and excludes declined and stop proposals", async (t) => {
+  const f = await fixture(t);
+  const drafts = await seed(f, [candidate(1, { content: "Policy A" }), candidate(1, { content: "Policy B" })]);
+  await f.service.decide({ items: drafts.map(ref), action: "adopt" });
+  const sources = (await f.service.status()).candidates;
+  f.args.analyze = async () => ({ text: JSON.stringify({ candidates: [
+    candidate(2, { content: "Merged policy", replaces: sources.map((item) => item.id) }),
+    candidate(2, { content: "Declined alternative", replaces: [sources[0].id] }),
+    candidate(2, { content: "Stop policy", action: "retire", replaces: [sources[1].id] }),
+  ] }) });
+  await f.service.close(); f.service = await f.open();
+  await f.service.observe([f.pair(2)]); await f.service.runDue();
+  const pending = (await f.service.status()).candidates.filter((item) => item.status === "candidate");
+  await f.service.decide({ items: [ref(pending[1])], action: "reject" });
+  await f.service.decide({ items: [ref(pending[0])], action: "adopt" });
+  let status = await f.service.status();
+  assert.deepEqual(status.lineages, [{ current: [ref(status.candidates[2])], previous: status.candidates.slice(0, 2).map(ref) }]);
+  for (const source of sources) {
+    const retained = (await f.service.status()).candidates.find((item) => item.id === source.id);
+    await f.service.decide({ items: [ref(retained)], action: "restore" });
+  }
+  status = await f.service.status();
+  assert.deepEqual(status.lineages, [{ current: status.candidates.slice(0, 2).map(ref), previous: [ref(status.candidates[2])] }]);
+  assert.equal(status.candidates.filter((item) => item.status === "active").length, 2);
+  await f.service.decide({ items: [ref(status.candidates[0])], action: "retire" });
+  status = await f.service.status();
+  assert.equal(status.candidates[0].status, "retired"); assert.equal(status.candidates[1].status, "active");
+  assert.deepEqual(status.lineages, [{ current: status.candidates.slice(0, 2).map(ref), previous: [ref(status.candidates[2])] }],
+    "a manually stopped independent branch stays current beside its active sibling");
+});
+
+for (const [length, stoppedIndex, restoredIndex] of [[2, 0, 1], [2, 1, 0], [3, 2, 0]]) {
+  test(`restoring version ${restoredIndex + 1} supersedes the manually stopped version ${stoppedIndex + 1} in a ${length}-version lineage`, async (t) => {
+    let iteration = 0;
+    const f = await fixture(t, { analyze: async ({ input }) => {
+      iteration++; const active = JSON.parse(input).items.find((item) => item.status === "active");
+      return { text: JSON.stringify({ candidates: [candidate(iteration, { content: `Policy ${iteration}`, ...(active ? { replaces: [active.id] } : {}) })] }) };
+    } });
+    await configure(f.service);
+    for (let seq = 1; seq <= length; seq++) {
+      await f.service.observe([f.pair(seq)]); await f.service.runDue();
+      const draft = (await f.service.status()).candidates.find((item) => item.status === "candidate");
+      await f.service.decide({ items: [ref(draft)], action: "adopt" });
+    }
+    let stopped = (await f.service.status()).candidates[stoppedIndex];
+    if (stopped.status === "retired") {
+      await f.service.decide({ items: [ref(stopped)], action: "restore" });
+      stopped = (await f.service.status()).candidates[stoppedIndex];
+    }
+    await f.service.decide({ items: [ref(stopped)], action: "retire" });
+    const restored = (await f.service.status()).candidates[restoredIndex];
+    await f.service.decide({ items: [ref(restored)], action: "restore" });
+    const status = await f.service.status();
+    assert.deepEqual(status.lineages, [{ current: [ref(status.candidates[restoredIndex])],
+      previous: status.candidates.filter((_, index) => index !== restoredIndex).map(ref) }]);
+  });
+}
+
 test("delivery, successful reads and inherited reads stay distinct and forgetting removes all references", async (t) => {
   const f = await fixture(t); let [item] = await seed(f);
   await f.service.decide({ items: [ref(item)], action: "adopt" }); item = (await f.service.status()).candidates[0];

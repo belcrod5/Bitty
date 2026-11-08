@@ -9,6 +9,23 @@ import { setStringAsync } from "../clipboard";
 beforeEach(() => { jest.mocked(setStringAsync).mockReset().mockResolvedValue(true); });
 const item = (extra: Partial<LearningKnowledge> = {}): LearningKnowledge => ({ id: "knowledge-1", version: 3, status: "candidate", kind: "preference", content: "報告を短くする", conditions: "作業完了の報告", reason: "簡潔さを希望", scope: { orchestratorId: "main" }, evidence: [{ pairSeq: 1 }], ...extra });
 const props = { knowledge: [] as LearningKnowledge[], chatName: "メイン", selecting: false, selected: false, busy: false, onSelect: jest.fn() };
+test("adopted version history remains read-only and available on a manually stopped current learning", async () => {
+  const current = item({ id: "current", version: 3, status: "retired", content: "現在の報告手順" });
+  const previous = item({ id: "previous", version: 5, status: "retired", content: "以前の報告手順", skill: { steps: "以前の確認手順" } });
+  const manage = jest.fn(async () => null);
+  const screen = await render(<LearningKnowledgeCard {...props} item={current} previousVersions={[previous]} manage={manage} />);
+  await fireEvent.press(screen.getByLabelText(`学習の更新履歴を見る: ${current.content}`));
+  expect(screen.getByText(previous.content)).toBeTruthy(); expect(screen.getByText("v5")).toBeTruthy();
+  await fireEvent.press(screen.getByLabelText(`以前の学習IDをコピー: ${previous.id}`));
+  expect(setStringAsync).toHaveBeenCalledWith(previous.id);
+  await fireEvent.press(screen.getByLabelText("手順の詳細"));
+  expect(screen.getByText(/手順: 以前の確認手順/)).toBeTruthy();
+  expect(screen.queryByText("この内容に戻す")).toBeNull(); expect(manage).not.toHaveBeenCalled();
+  await fireEvent.press(screen.getByLabelText("学習の更新履歴を閉じる"));
+  expect(screen.queryByText(previous.content)).toBeNull();
+  expect(screen.getByRole("switch").props.value).toBe(false); await screen.unmount();
+});
+
 test.each(["candidate", "active"])("%s switch changes eligibility with exact version, without running an answer", async (status) => {
   const value = item({ status }); const manage = jest.fn(async () => null); const screen = await render(<LearningKnowledgeCard {...props} item={value} manage={manage} />);
   const control = screen.getByRole("switch"); expect(control.props.value).toBe(status === "active"); expect(manage).not.toHaveBeenCalled();
