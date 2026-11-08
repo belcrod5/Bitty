@@ -22,25 +22,23 @@ master keyはmacOS Keychainのservice `bitty-runner-login-master-key` に保存�
 
 ## 初回所有者登録と端末接続
 
-以下は対象checkoutのrootで、所有者本人のMacターミナルから実行する。setup / reset / unlockを実行するターミナルでも、Runnerと同じローカル `.env` を読み込んでcustom socket / token / auth directoryを一致させる。秘密値をコマンド引数に含めない。
+先に対応アプリをビルドする。iPhone実機は `./scripts/ios/build-expo-ios-device.sh`、macOS版は `./scripts/macos/build-expo-macos.sh` を使う。次に、対象checkoutのrootで所有者本人がMacのターミナルから実行する。
 
 ```sh
-set -a
-source private_runner/.env
-set +a
-./private_runner/restart-keep-token.sh --mode full
-node private_runner/tools/runner-login.mjs setup
+./private_runner/setup-login.sh
 ```
 
-setupはローカルsocketと既存local credentialを使う。メール入力→メールコード確認→Authenticator用の秘密QR→最初のTOTP確認→復旧コードの一度限りの表示、の順で進む。TOTP master keyのKeychain作成はこの操作で行う。未登録状態でも公開HTTPからownerを取得することはできない。
+このスクリプトはローカル設定と依存関係を準備し、メール設定を確認する。`START` と入力するとRunnerを再起動し、新しいローカル制御socketの応答を待ってから初期登録へ進む。現在の会話は再ログインするまで切断される。旧Runnerには登録機能がないため、初期登録には対応版Runnerの起動が必要である。スクリプトは任意のdirectoryから絶対pathで実行してもよい。
+
+画面の案内に従って、メール入力→メールコード確認→**Authenticatorで秘密QRを読み取り**→最初のTOTP確認→復旧コード保存、の順で進む。復旧コードを保存してEnterを押すと、**Bittyアプリで読み取る接続QR**を表示する。2つのQRは用途が異なる。秘密QR、復旧コード、接続QRはチャットやログへ共有しない。
+
+setupはローカルsocketと既存local credentialを使い、TOTP master keyのKeychain作成もこの操作で行う。未登録状態でも公開HTTPからownerを取得することはできない。登録失敗時は接続QRへ進まず停止し、既存登録を自動resetしない。
 
 過去の保存済みowner subjectが現在のownerと一致しなければ `owner_migration_required` で止まる。旧token由来subjectを一括で新ownerへ付け替えない。対象storeと権限の対応を確認してから個別の移行を判断する。
 
-```sh
-./private_runner/run-local.sh pairing-qr
-```
-
 接続QRにはAccess資格情報、接続先、LANの信頼情報だけを含め、Runner共有tokenも既存sessionも含めない。既存端末も対応アプリでQRを読み直す。資格情報保存をoriginに結び付けた新schemaへ切り替えるため、旧field保存への自動fallbackはしない。その後メールコード＋TOTPでログインする。
+
+reset / unlockなどを個別実行する場合は、対象checkoutのrootで `set -a; source private_runner/.env; set +a` としてRunnerと同じ設定を読み込む。秘密値をコマンド引数に含めない。接続QRだけを再表示する場合は `./private_runner/run-local.sh pairing-qr` を使う。
 
 短命WebSocketの再接続、ネットワーク変更、背景通信では新端末通知を送らない。セッション期限切れ・失効後は再ログインが必要で、background Push応答は成功扱いにせず既存の失敗通知を出す。
 
