@@ -1,3 +1,4 @@
+import { RUNNER_AUTHENTICATION } from "../src/runner-login-http.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createGoogleCloudHttpHandler } from "../src/google-cloud-http.mjs";
@@ -48,7 +49,7 @@ function fixture() {
     usageLedger,
   });
   const request = async (method, pathname, body, auth = RUNNER_TOKEN) => {
-    const handled = await handler({ method, auth, body }, {}, pathname);
+    const handled = await handler({ method, auth, body, [RUNNER_AUTHENTICATION]: auth === RUNNER_TOKEN ? { sessionId: "test-session" } : undefined }, {}, pathname);
     return { handled, response: responses.pop() };
   };
   return { calls, request, googleCloudService };
@@ -59,7 +60,7 @@ test("Google Cloud HTTP handler accepts only the exact authenticated management 
   assert.deepEqual(await f.request("GET", "/health"), { handled: false, response: undefined });
   assert.deepEqual((await f.request("GET", "/google-cloud/status", undefined, "wrong")).response, {
     status: 401,
-    payload: { error: "unauthorized" },
+    payload: { error: "authentication_required" },
   });
   assert.deepEqual((await f.request("GET", "/google-cloud/status/extra")).response, {
     status: 404,

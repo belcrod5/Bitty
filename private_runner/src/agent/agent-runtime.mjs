@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 
 import { createClaudeBackend } from "../claude-backend.mjs";
 import { ClientStateStoreUnavailableError } from "../client-state-store.mjs";
@@ -38,7 +37,7 @@ function historyContent(message) {
 
 export function createPrivateRunnerAgentRuntime({
   claudeBinary,
-  runnerToken,
+  ownerSubjectId,
   dynamicTools,
   stores,
   createCodexClient,
@@ -54,7 +53,6 @@ export function createPrivateRunnerAgentRuntime({
   onNewRegularSession,
   listMessages,
   resolveCanonicalCwd,
-  parseAuthToken,
   json,
   normalizeSessionListLimit,
   normalizeSessionMessagesLimit,
@@ -70,7 +68,8 @@ export function createPrivateRunnerAgentRuntime({
   if (typeof listSessionsForDirectories !== "function") {
     throw new TypeError("listSessionsForDirectories is required");
   }
-  const subjectId = `runner:${createHash("sha256").update(String(runnerToken || "")).digest("hex")}`;
+  if (typeof ownerSubjectId !== "string" || !ownerSubjectId.trim()) throw new TypeError("ownerSubjectId is required");
+  const subjectId = ownerSubjectId;
   const sessionStore = {
     bind: stores.bindSession,
     getBinding: stores.getSessionBinding,
@@ -269,7 +268,7 @@ export function createPrivateRunnerAgentRuntime({
     },
   });
   const httpHandler = createAgentHttpHandler({
-    service, runnerToken, parseAuthToken, json, normalizeSessionListLimit,
+    service, json, normalizeSessionListLimit,
     normalizeSessionMessagesLimit, readJsonBody, workspaceAdmission, subjectId, activity,
   });
   return {

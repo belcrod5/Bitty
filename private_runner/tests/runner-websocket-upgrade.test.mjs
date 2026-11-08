@@ -40,7 +40,10 @@ function install(runnerToken) {
   const debugEvents = [];
   installRunnerWebSocketUpgradeHandler({
     server,
-    runnerToken,
+    authenticate: async (req) => {
+      if (!runnerToken || req.headers.authorization !== `Bearer ${runnerToken}`) throw new Error("authentication_required");
+      return { sessionId: "fixture" };
+    },
     runnerWsPath: "/runner-ws",
     runnerWsServer,
     streamTtsWsServer,
@@ -50,31 +53,34 @@ function install(runnerToken) {
   return { server, runnerWsServer, streamTtsWsServer, streamSttWsServer, debugEvents };
 }
 
-test("rejects a WebSocket upgrade with a mismatched runner token", () => {
+test("rejects a WebSocket upgrade with a mismatched runner token", async () => {
   const { server, runnerWsServer } = install("expected-token");
   const socket = socketProbe();
 
   server.emit("upgrade", request("wrong-token"), socket, Buffer.alloc(0));
+  await new Promise((resolve) => setImmediate(resolve));
 
   assert.deepEqual(socket.writes, ["HTTP/1.1 401 Unauthorized\r\n\r\n"]);
   assert.equal(socket.destroyed, true);
   assert.equal(runnerWsServer.upgrades, 0);
 });
 
-test("routes an authenticated WebSocket upgrade", () => {
+test("routes an authenticated WebSocket upgrade", async () => {
   const { server, runnerWsServer } = install("expected-token");
   const socket = socketProbe();
 
   server.emit("upgrade", request("expected-token"), socket, Buffer.alloc(0));
+  await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(socket.destroyed, false);
   assert.equal(runnerWsServer.upgrades, 1);
 });
 
-test("routes only the exact authenticated /stream-stt upgrade to the isolated STT server", () => {
+test("routes only the exact authenticated /stream-stt upgrade to the isolated STT server", async () => {
   const { server, runnerWsServer, streamTtsWsServer, streamSttWsServer } = install("expected-token");
   const accepted = socketProbe();
   server.emit("upgrade", request("expected-token", "/stream-stt"), accepted, Buffer.alloc(0));
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(accepted.destroyed, false);
   assert.equal(streamSttWsServer.upgrades, 1);
   assert.equal(streamSttWsServer.options.maxPayload, 65_536);
@@ -83,59 +89,58 @@ test("routes only the exact authenticated /stream-stt upgrade to the isolated ST
 
   const rejected = socketProbe();
   server.emit("upgrade", request("expected-token", "/stream-stt/extra"), rejected, Buffer.alloc(0));
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(rejected.destroyed, true);
   assert.equal(streamSttWsServer.upgrades, 1);
 });
 
-test("rejects unauthenticated /stream-stt before creating a speech WebSocket", () => {
+test("rejects unauthenticated /stream-stt before creating a speech WebSocket", async () => {
   const { server, streamSttWsServer } = install("expected-token");
   const socket = socketProbe();
   server.emit("upgrade", request("", "/stream-stt"), socket, Buffer.alloc(0));
+  await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(socket.writes, ["HTTP/1.1 401 Unauthorized\r\n\r\n"]);
   assert.equal(socket.destroyed, true);
   assert.equal(streamSttWsServer.upgrades, 0);
 });
 
-test("rejects the removed legacy Codex WebSocket path", () => {
+test("rejects the removed legacy Codex WebSocket path", async () => {
   const { server, runnerWsServer } = install("expected-token");
   const req = request("expected-token");
   req.url = "/codex-ws";
   const socket = socketProbe();
 
   server.emit("upgrade", req, socket, Buffer.alloc(0));
+  await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(socket.destroyed, true);
   assert.equal(runnerWsServer.upgrades, 0);
 });
 
-test("upgrade logs carry one-way token fingerprints, never the raw token", () => {
+test("upgrade logs never contain credentials or token fingerprints", async () => {
   const { server, debugEvents } = install("expected-token");
   const socket = socketProbe();
 
   server.emit("upgrade", request("wrong-token"), socket, Buffer.alloc(0));
-
-  const upgradeRequest = debugEvents.find((entry) => entry.event === "upgrade_request");
-  assert.equal(upgradeRequest.payload.tokenFp, "a999ff56"); // FNV-1a("wrong-token")
-  assert.equal(upgradeRequest.payload.expectedTokenFp, "d9c94259"); // FNV-1a("expected-token")
-  assert.equal(upgradeRequest.payload.expectedTokenLength, "expected-token".length);
+  await new Promise((resolve) => setImmediate(resolve));
 
   const rejected = debugEvents.find((entry) => entry.event === "upgrade_rejected");
-  assert.equal(rejected.payload.reason, "token_mismatch");
-  assert.equal(rejected.payload.tokenFp, "a999ff56");
-  assert.equal(rejected.payload.expectedTokenFp, "d9c94259");
-
+  assert.equal(rejected.payload.reason, "authentication_required");
+  assert.equal(rejected.payload.tokenFp, undefined);
+  assert.equal(rejected.payload.expectedTokenFp, undefined);
   const serialized = JSON.stringify(debugEvents);
   assert.ok(!serialized.includes("wrong-token"));
   assert.ok(!serialized.includes("expected-token"));
 });
 
-test("does not accept a runner token from the URL query", () => {
+test("does not accept a runner token from the URL query", async () => {
   const { server, runnerWsServer } = install("expected-token");
   const req = request();
   req.url = "/runner-ws?token=expected-token";
   const socket = socketProbe();
 
   server.emit("upgrade", req, socket, Buffer.alloc(0));
+  await new Promise((resolve) => setImmediate(resolve));
 
   assert.deepEqual(socket.writes, ["HTTP/1.1 401 Unauthorized\r\n\r\n"]);
   assert.equal(runnerWsServer.upgrades, 0);

@@ -1,3 +1,4 @@
+import { requireRunnerAuthentication } from "./runner-login-http.mjs";
 import { randomUUID } from "node:crypto";
 
 const TTL = 15 * 60_000;
@@ -243,10 +244,10 @@ export function createAppControlService({ sendEnvelope, validateTarget, now = Da
     close() { for (const op of operations.values()) clearTimeout(op.timer); connections.clear(); contexts.clear(); operations.clear(); } };
 }
 
-export function createAppControlHttpHandler({ service, runnerToken, parseAuthToken, json, readJsonBody, subjectId }) {
+export function createAppControlHttpHandler({ service, json, readJsonBody, subjectId }) {
   return async (req, res, _reqUrl, pathname) => {
     if (!pathname.startsWith("/app-control/")) return false;
-    if (!runnerToken || parseAuthToken(req) !== runnerToken) { json(res, 401, { status: "unauthorized" }); return true; }
+    if (!requireRunnerAuthentication(req, res, json)) return true;
     try {
       const contextMatch = pathname.match(/^\/app-control\/contexts\/(ctx_[A-Za-z0-9-]{1,80})$/);
       const operationMatch = pathname.match(/^\/app-control\/operations\/([A-Za-z0-9.-]{1,100})$/);

@@ -16,10 +16,13 @@ const SOURCE_CLI = path.resolve(
 );
 
 async function makeCliRoot(t, envText, token = "test-runner-token") {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codex-schedules-cli-"));
+  const root = await fs.mkdtemp(path.join(process.platform === "darwin" ? "/tmp" : os.tmpdir(), "codex-schedules-cli-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   await fs.mkdir(path.join(root, "private_runner/tools"), { recursive: true });
   await fs.mkdir(path.join(root, "private_runner/secrets"), { recursive: true });
+  await fs.mkdir(path.join(root, "private_runner/logs"), { recursive: true });
+  await fs.mkdir(path.join(root, "skills/bitty-session-orchestrator/scripts"), { recursive: true });
+  await fs.copyFile(path.resolve("skills/bitty-session-orchestrator/scripts/runner-control.mjs"), path.join(root, "skills/bitty-session-orchestrator/scripts/runner-control.mjs"));
   await fs.copyFile(SOURCE_CLI, path.join(root, "private_runner/tools/codex-schedules.mjs"));
   await fs.writeFile(path.join(root, "private_runner/.env"), envText, "utf8");
   const tokenPath = path.join(root, "private_runner/secrets/token");
@@ -46,11 +49,15 @@ function runCli(cli, args, { input = "", env = {} } = {}) {
 
 async function listen(handler) {
   const server = http.createServer(handler);
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const dir = await fs.mkdtemp(path.join(process.platform === "darwin" ? "/tmp" : os.tmpdir(), "codex-cli-socket-"));
+  const socketPath = path.join(await fs.realpath(dir), "runner.sock");
+  await new Promise((resolve) => server.listen(socketPath, resolve));
   return {
-    server,
-    port: server.address().port,
-    close: () => new Promise((resolve) => server.close(resolve)),
+    server, socketPath,
+    close: async () => {
+      if (server.listening) await new Promise(resolve => server.close(resolve));
+      await fs.rm(dir, { recursive: true, force: true });
+    },
   };
 }
 
@@ -60,7 +67,7 @@ async function readBody(req) {
   return body ? JSON.parse(body) : null;
 }
 
-test("CLI uses env-file overrides, the token file, and fixed loopback CRUD requests", async (t) => {
+test("CLI uses env-file overrides, the token file, and Unix socket CRUD requests", async (t) => {
   const requests = [];
   const listener = await listen(async (req, res) => {
     requests.push({
@@ -77,14 +84,14 @@ test("CLI uses env-file overrides, the token file, and fixed loopback CRUD reque
   const cli = await makeCliRoot(t, [
     "RUNNER_TOKEN_FILE=ignored",
     "export RUNNER_TOKEN_FILE=\"private_runner/secrets/to#ken\" # final value",
-    "RUNNER_PORT=",
-    `PORT='${listener.port}'`,
+    "RUNNER_CONTROL_SOCKET=",
+    `RUNNER_CONTROL_SOCKET='${listener.socketPath}'`,
     "IGNORED=$(touch /tmp/must-not-run)",
   ].join("\n"));
   await fs.writeFile(path.join(cli.root, "private_runner/secrets/to#ken"), "test-runner-token\n", {
     mode: 0o600,
   });
-  const processEnv = { RUNNER_TOKEN_FILE: "wrong", RUNNER_PORT: "2", PORT: "3" };
+  const processEnv = { RUNNER_TOKEN_FILE: "wrong", RUNNER_CONTROL_SOCKET: "/wrong/socket" };
 
   assert.equal((await runCli(cli.cli, ["list"], { env: processEnv })).code, 0);
   const createInput = {
@@ -119,7 +126,7 @@ test("CLI uses env-file overrides, the token file, and fixed loopback CRUD reque
 });
 
 test("create validates requestId before config and preserves it on later failures", async (t) => {
-  const cli = await makeCliRoot(t, "RUNNER_PORT=$(bad)\nRUNNER_TOKEN_FILE=private_runner/secrets/token\n");
+  const cli = await makeCliRoot(t, "RUNNER_CONTROL_SOCKET=$(bad)\nRUNNER_TOKEN_FILE=private_runner/secrets/token\n");
   const invalid = await runCli(cli.cli, ["create"], {
     input: JSON.stringify({ requestId: "private-value", schedule: { prompt: "do not echo" } }),
   });
@@ -135,7 +142,7 @@ test("create validates requestId before config and preserves it on later failure
   assert.equal(configFailure.code, 1);
   assert.deepEqual(JSON.parse(configFailure.stderr), {
     error: "runner_config_invalid",
-    message: "RUNNER_PORT contains unsupported shell syntax",
+    message: "RUNNER_CONTROL_SOCKET contains unsupported shell syntax",
     requestId: ID,
   });
   assert.equal(configFailure.stderr.includes("do not echo"), false);
@@ -156,7 +163,7 @@ test("HTTP errors keep requestId while token and body remain out of output", asy
   const token = "never-print-this-token";
   const cli = await makeCliRoot(t, [
     "RUNNER_TOKEN_FILE=private_runner/secrets/token",
-    `RUNNER_PORT=${listener.port}`,
+    `RUNNER_CONTROL_SOCKET=${listener.socketPath}`,
   ].join("\n"), token);
   const result = await runCli(cli.cli, ["create"], {
     input: JSON.stringify({
@@ -195,7 +202,7 @@ test("HTTP errors retain only bounded messages unrelated to token and input stri
   t.after(listener.close);
   const cli = await makeCliRoot(t, [
     "RUNNER_TOKEN_FILE=private_runner/secrets/token",
-    `RUNNER_PORT=${listener.port}`,
+    `RUNNER_CONTROL_SOCKET=${listener.socketPath}`,
   ].join("\n"));
   const result = await runCli(cli.cli, ["create"], {
     input: JSON.stringify({
@@ -237,7 +244,7 @@ test("CLI preserves the required session directory on create and update cwd mism
   });
   t.after(listener.close);
   const cli = await makeCliRoot(t, [
-    "RUNNER_TOKEN_FILE=private_runner/secrets/token", `RUNNER_PORT=${listener.port}`,
+    "RUNNER_TOKEN_FILE=private_runner/secrets/token", `RUNNER_CONTROL_SOCKET=${listener.socketPath}`,
   ].join("\n"));
   const action = { cwd: child, threadId: "thread-existing", prompt: "private prompt" };
   for (const [args, input] of [
@@ -269,7 +276,7 @@ test("CLI rejects 2xx objects without ok true and never echoes unknown error pay
   t.after(listener.close);
   const cli = await makeCliRoot(t, [
     "RUNNER_TOKEN_FILE=private_runner/secrets/token",
-    `RUNNER_PORT=${listener.port}`,
+    `RUNNER_CONTROL_SOCKET=${listener.socketPath}`,
   ].join("\n"));
 
   const invalidSuccess = await runCli(cli.cli, ["list"]);
@@ -307,7 +314,7 @@ test("CLI maps unreadable config, invalid JSON, and interrupted bodies to fixed 
   t.after(listener.close);
   const cli = await makeCliRoot(t, [
     "RUNNER_TOKEN_FILE=private_runner/secrets/token",
-    `RUNNER_PORT=${listener.port}`,
+    `RUNNER_CONTROL_SOCKET=${listener.socketPath}`,
   ].join("\n"));
   const invalidJson = await runCli(cli.cli, ["list"]);
   assert.equal(invalidJson.code, 1);
@@ -344,7 +351,7 @@ test("CLI aborts a request after the fixed ten-second timeout", async (t) => {
   t.after(listener.close);
   const cli = await makeCliRoot(t, [
     "RUNNER_TOKEN_FILE=private_runner/secrets/token",
-    `RUNNER_PORT=${listener.port}`,
+    `RUNNER_CONTROL_SOCKET=${listener.socketPath}`,
   ].join("\n"));
   const startedAt = Date.now();
   const result = await runCli(cli.cli, ["create"], {
@@ -366,13 +373,13 @@ test("CLI keeps redirects manual and reports connection failures without leaking
   t.after(target.close);
   const redirect = await listen(async (_req, res) => {
     res.statusCode = 302;
-    res.setHeader("Location", `http://127.0.0.1:${target.port}/stolen`);
+    res.setHeader("Location", "https://example.test/stolen");
     res.end(JSON.stringify({ error: "unauthorized", message: "redirect was refused" }));
   });
   t.after(redirect.close);
   const cli = await makeCliRoot(t, [
     "RUNNER_TOKEN_FILE=private_runner/secrets/token",
-    `RUNNER_PORT=${redirect.port}`,
+    `RUNNER_CONTROL_SOCKET=${redirect.socketPath}`,
   ].join("\n"));
   const redirectedResult = await runCli(cli.cli, ["list"]);
   assert.equal(redirectedResult.code, 2);
@@ -382,13 +389,13 @@ test("CLI keeps redirects manual and reports connection failures without leaking
   });
   assert.equal(redirected, 0);
 
-  const closedPort = redirect.port;
-  await redirect.close();
+  const closedSocket = redirect.socketPath;
+  await new Promise(resolve => redirect.server.close(resolve));
   const connection = await runCli(cli.cli, ["list"]);
   assert.equal(connection.code, 1);
   assert.equal(JSON.parse(connection.stderr).error, "runner_connection_failed");
   assert.equal(connection.stderr.includes("test-runner-token"), false);
-  assert.equal(Number.isInteger(closedPort), true);
+  assert.ok(path.isAbsolute(closedSocket));
 });
 
 test("response-loss create retry sends two POSTs, no GET, and preserves baseRevision", async (t) => {
@@ -406,7 +413,7 @@ test("response-loss create retry sends two POSTs, no GET, and preserves baseRevi
   t.after(listener.close);
   const cli = await makeCliRoot(t, [
     "RUNNER_TOKEN_FILE=private_runner/secrets/token",
-    `RUNNER_PORT=${listener.port}`,
+    `RUNNER_CONTROL_SOCKET=${listener.socketPath}`,
   ].join("\n"));
   const input = JSON.stringify({
     requestId: ID,
@@ -430,11 +437,11 @@ test("unsafe config and broad token permissions fail closed before a request", a
   assert.equal(JSON.parse(unsafeResult.stderr).error, "runner_config_invalid");
 
   for (const operation of [
-    "readonly RUNNER_PORT=8788",
+    "readonly RUNNER_CONTROL_SOCKET=/tmp/runner.sock",
     "declare -x RUNNER_TOKEN_FILE=private_runner/secrets/token",
-    "typeset PORT=8788",
-    "unset -v RUNNER_PORT",
-    "export -n PORT",
+    "typeset RUNNER_CONTROL_SOCKET=/tmp/runner.sock",
+    "unset -v RUNNER_CONTROL_SOCKET",
+    "export -n RUNNER_CONTROL_SOCKET",
   ]) {
     const operated = await makeCliRoot(t, `${operation}\n`);
     const operatedResult = await runCli(operated.cli, ["list"]);

@@ -11,6 +11,7 @@ import { BUILD_STAMP } from "../buildStamp";
 import { useAppStyles } from "../styles";
 import { KeyboardAvoidingView } from "../keyboardController";
 import { SettingsSelect } from "../components/SettingsSelect";
+import { RunnerLoginSettings } from "../components/RunnerLoginSettings";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { VISUAL_THEME_OPTIONS } from "../theme/visualThemes";
 
@@ -56,6 +57,7 @@ export function SettingsScreen() {
       <View>
         <Text style={styles.settingsTitle}>設定</Text>
       </View>
+      <RunnerLoginSettings />
       <ConnectionSettings />
       <View style={styles.settingsSection}>
         <View style={styles.settingsGroup}>

@@ -1,6 +1,5 @@
+import { requireRunnerAuthentication } from "./runner-login-http.mjs";
 export function createGoogleCloudHttpHandler({
-  runnerToken,
-  parseAuthToken,
   readJsonBody,
   json,
   googleCloudService,
@@ -17,18 +16,6 @@ export function createGoogleCloudHttpHandler({
     }
     if (/^Unable to start Google Cloud authentication/i.test(message)) return message;
     return "Google Cloud request failed";
-  };
-
-  const authorize = (req, res) => {
-    if (!runnerToken) {
-      json(res, 500, { error: "runner_token_missing", message: "RUNNER_TOKEN is required" });
-      return false;
-    }
-    if (parseAuthToken(req) !== runnerToken) {
-      json(res, 401, { error: "unauthorized" });
-      return false;
-    }
-    return true;
   };
 
   const fullStatus = async () => {
@@ -57,7 +44,7 @@ export function createGoogleCloudHttpHandler({
 
   return async (req, res, pathname) => {
     if (!pathname.startsWith("/google-cloud/")) return false;
-    if (!authorize(req, res)) return true;
+    if (!requireRunnerAuthentication(req, res, json)) return true;
     try {
       if (req.method === "GET" && pathname === "/google-cloud/status") {
         json(res, 200, await fullStatus());

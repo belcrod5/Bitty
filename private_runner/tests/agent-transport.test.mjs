@@ -1,3 +1,4 @@
+import { RUNNER_AUTHENTICATION } from "../src/runner-login-http.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -30,7 +31,7 @@ test("agent HTTP status keeps authentication and provider details in the service
   assert.equal(unauthorized.statusCode, 401);
 
   const authorized = response();
-  assert.equal(await handler({ method: "GET", token: "test-token" }, authorized, reqUrl, reqUrl.pathname), true);
+  assert.equal(await handler({ method: "GET", [RUNNER_AUTHENTICATION]: { sessionId: "test-session", ownerSubjectId: "test-owner" }, token: "test-token" }, authorized, reqUrl, reqUrl.pathname), true);
   assert.equal(authorized.statusCode, 200);
   assert.equal(authorized.payload.protocolVersion, 2);
   assert.equal(authorized.payload.backends[0].backendId, "codex");
@@ -54,7 +55,7 @@ test("agent HTTP history passes a neutral session reference with its authenticat
   });
   const reqUrl = new URL("http://runner.test/agent/session-history?backendId=codex&sessionId=thread-1&limit=7");
   const res = response();
-  await handler({ method: "GET", token: "test-token" }, res, reqUrl, reqUrl.pathname);
+  await handler({ method: "GET", [RUNNER_AUTHENTICATION]: { sessionId: "test-session", ownerSubjectId: "test-owner" }, token: "test-token" }, res, reqUrl, reqUrl.pathname);
 
   assert.equal(res.statusCode, 200);
   assert.deepEqual(received.options.sessionRef, { backendId: "codex", nativeSessionId: "thread-1" });
@@ -80,7 +81,7 @@ test("agent session lists carry the authenticated owner on both transports", asy
   });
   const reqUrl = new URL("http://runner.test/agent/sessions?backendId=all&cwd=/workspace");
   const res = response();
-  await handler({ method: "GET", token: "test-token" }, res, reqUrl, reqUrl.pathname);
+  await handler({ method: "GET", [RUNNER_AUTHENTICATION]: { sessionId: "test-session", ownerSubjectId: "test-owner" }, token: "test-token" }, res, reqUrl, reqUrl.pathname);
   assert.equal(res.statusCode, 200);
   assert.deepEqual(received[0].context, { subjectId: "runner-token" });
   assert.equal(res.payload.sessions[0].title, "テスト①");
@@ -170,7 +171,7 @@ test("agent HTTP and WebSocket forward bounded conversation search and read requ
   });
   const searchUrl = new URL("http://runner.test/agent/session-history/search?query=needle&cwd=/one&cwd=/two&backendId=all&limit=7&order=newest&since=2026-08-22T00%3A00%3A00.000Z&cursor=next");
   const searchResponse = response();
-  await handler({ method: "GET", token: "test-token" }, searchResponse, searchUrl, searchUrl.pathname);
+  await handler({ method: "GET", [RUNNER_AUTHENTICATION]: { sessionId: "test-session", ownerSubjectId: "test-owner" }, token: "test-token" }, searchResponse, searchUrl, searchUrl.pathname);
   assert.equal(searchResponse.statusCode, 200);
   assert.deepEqual(calls[0], {
     kind: "search",
@@ -183,7 +184,7 @@ test("agent HTTP and WebSocket forward bounded conversation search and read requ
 
   const readUrl = new URL("http://runner.test/agent/session-conversation?backendId=claude&sessionId=session-1&limit=4&cursor=older");
   const readResponse = response();
-  await handler({ method: "GET", token: "test-token" }, readResponse, readUrl, readUrl.pathname);
+  await handler({ method: "GET", [RUNNER_AUTHENTICATION]: { sessionId: "test-session", ownerSubjectId: "test-owner" }, token: "test-token" }, readResponse, readUrl, readUrl.pathname);
   assert.equal(readResponse.statusCode, 200);
   assert.deepEqual(calls[1], {
     kind: "read",

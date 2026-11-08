@@ -1,3 +1,14 @@
+prepare_runner_control_socket() {
+  if [ "$RUNNER_ENABLE" != "1" ] || { [ "$RUN_LOCAL_COMMAND" != "start" ] && [ "$RUN_LOCAL_COMMAND" != "restart" ]; }; then
+    return 0
+  fi
+  mkdir -p "$SCRIPT_DIR/logs"
+  # Assignment propagates resolver failure; export alone would hide its exit status.
+  RUNNER_CONTROL_SOCKET="$(node --input-type=module -e 'import { resolveControlSocket } from "./skills/bitty-session-orchestrator/scripts/runner-control.mjs"; console.log(await resolveControlSocket(process.cwd()));')"
+  export RUNNER_CONTROL_SOCKET
+  unset BITTY_RUNNER_URL
+}
+
 preflight_cloudflare_tunnel() {
   if [ "$CLOUDFLARE_TUNNEL_ENABLE" != "1" ]; then
     return 0
@@ -88,7 +99,12 @@ stop_pid_file() {
     fi
     echo "[run-local] stopping ${label} pid=${pid}" >&2
     kill "$pid" >/dev/null 2>&1 || true
-    sleep 0.2
+    # Give stores time to fsync and release their owner locks before force-stop.
+    local attempt
+    for attempt in {1..25}; do
+      if ! kill -0 "$pid" >/dev/null 2>&1; then break; fi
+      sleep 0.2
+    done
     if kill -0 "$pid" >/dev/null 2>&1; then
       echo "[run-local] force-stopping ${label} pid=${pid}" >&2
       kill -9 "$pid" >/dev/null 2>&1 || true
@@ -121,11 +137,16 @@ write_runner_token_file() {
   if [ -z "${RUNNER_TOKEN:-}" ]; then
     return 0
   fi
+  if [ -L "$RUNNER_TOKEN_FILE" ] || { [ -e "$RUNNER_TOKEN_FILE" ] && { [ ! -f "$RUNNER_TOKEN_FILE" ] || [ ! -O "$RUNNER_TOKEN_FILE" ]; }; }; then
+    echo "[run-local] local control token must be an owned regular file" >&2
+    exit 1
+  fi
   mkdir -p "$(dirname "$RUNNER_TOKEN_FILE")"
   local old_umask
   old_umask="$(umask)"
   umask 077
   printf '%s\n' "$RUNNER_TOKEN" >"$RUNNER_TOKEN_FILE"
+  chmod 600 "$RUNNER_TOKEN_FILE"
   umask "$old_umask"
 }
 
@@ -147,7 +168,7 @@ prepare_runner_runtime_token() {
       export RUNNER_TOKEN
       write_runner_token_file
       RUN_LOCAL_REUSE_EXISTING=0
-      echo "[run-local] generated per-start RUNNER_TOKEN; existing runner reuse disabled" >&2
+      echo "[run-local] generated local-control RUNNER_TOKEN; existing runner reuse disabled" >&2
       ;;
     env)
       if [ -z "${RUNNER_TOKEN:-}" ]; then
@@ -171,7 +192,6 @@ print_runner_pairing_qr() {
     echo "[run-local] pairing QR not printed because stdout is not a terminal; run: ./private_runner/run-local.sh pairing-qr" >&2
     return 0
   fi
-  export RUNNER_TOKEN_FILE
   node "$SCRIPT_DIR/src/print-runner-pairing-qr.mjs" || true
 }
 

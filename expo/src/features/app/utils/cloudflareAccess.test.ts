@@ -52,3 +52,14 @@ test("legacy HTTP QR pairs only Cloudflare and discards local trust", () => {
     runnerUrl: validPayload.runnerUrl, localRunnerUrl: "", localRunnerCertificate: "",
   });
 });
+
+test("schema 2 pairing configures transport without a Runner token", () => {
+  const { runnerToken: _legacyToken, ...connection } = validPayload;
+  expect(parseCloudflareRunnerPairingPayload(JSON.stringify({ ...connection, schemaVersion: 2 }))).toMatchObject({
+    runnerUrl: validPayload.runnerUrl, runnerToken: "",
+  });
+});
+
+test("legacy QR credentials never become an authenticated session", () => {
+  expect(parseCloudflareRunnerPairingPayload(JSON.stringify(validPayload)).runnerToken).toBe("");
+});

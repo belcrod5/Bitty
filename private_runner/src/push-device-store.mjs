@@ -24,7 +24,7 @@ export function createPushDeviceStore(storePath) {
         .map((directory) => String(directory || "").trim())
         .filter(Boolean)
     )).slice(0, MAX_DEVICE_DIRECTORIES);
-    return { deviceId, apnsToken, env, directories, registeredAt, lastSeenAt };
+    return { deviceId, apnsToken, env, directories, registeredAt, lastSeenAt, authSessionId: String(raw?.authSessionId || "") };
   }
 
   async function load() {
@@ -82,7 +82,7 @@ export function createPushDeviceStore(storePath) {
     return op;
   }
 
-  async function upsertDevice({ deviceId, apnsToken, env, directories }) {
+  async function upsertDevice({ deviceId, apnsToken, env, directories, authSessionId }) {
     await ensureLoaded();
     const id = String(deviceId || "").trim();
     const existing = byDeviceId.get(id);
@@ -90,6 +90,7 @@ export function createPushDeviceStore(storePath) {
     const record = normalizeRecord({
       deviceId,
       apnsToken,
+      authSessionId,
       env,
       directories,
       registeredAt: existing?.registeredAt || now,

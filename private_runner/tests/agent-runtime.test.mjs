@@ -56,9 +56,8 @@ test("Codex Agent history preserves timestamps and unavailable client titles fal
   let storedSelection = null;
   const nativeSummary = { contextUsage: { usedPct: 42 }, modelRef: "native-model", reasoningEffort: "high", lastReadAt: "2026-08-24T03:00:00.000Z" };
   const warnings = [];
-  const runtime = createPrivateRunnerAgentRuntime({
+  const runtime = createPrivateRunnerAgentRuntime({ ownerSubjectId: "fixed-fixture-owner",
     claudeBinary: "claude",
-    runnerToken: "test-token",
     dynamicTools: null,
     stores: {
       bindSession: async () => ({ status: "bound" }),
@@ -121,7 +120,6 @@ test("Codex Agent history preserves timestamps and unavailable client titles fal
       }],
     }),
     resolveCanonicalCwd: async (cwd) => cwd === aliasWorkspace ? canonicalWorkspace : cwd,
-    parseAuthToken: () => "",
     json: () => {},
     normalizeSessionListLimit: (value) => value,
     normalizeSessionMessagesLimit: (value) => value,
@@ -179,7 +177,7 @@ test("resumed Codex main run warms a cold identity index before active classific
   let cachedEntry = null;
   let resolveClient;
   const pendingClient = new Promise((resolve) => { resolveClient = resolve; });
-  const runtime = createPrivateRunnerAgentRuntime({
+  const runtime = createPrivateRunnerAgentRuntime({ ownerSubjectId: "fixed-fixture-owner",
     claudeBinary: "claude", runnerToken: "test-token", dynamicTools: null,
     stores: {
       bindSession: async () => ({ status: "bound" }),
@@ -243,9 +241,8 @@ test("Agent runtime composes completion notification with the production event f
     broadcast: (payload) => broadcasts.push(payload),
     log: { warn() {} },
   });
-  const runtime = createPrivateRunnerAgentRuntime({
+  const runtime = createPrivateRunnerAgentRuntime({ ownerSubjectId: "fixed-fixture-owner",
     claudeBinary: "claude",
-    runnerToken: "test-token",
     dynamicTools: null,
     stores: {
       bindSession: async () => ({ status: "bound" }),
@@ -279,7 +276,6 @@ test("Agent runtime composes completion notification with the production event f
     })),
     listMessages: async () => ({ messages: [] }),
     resolveCanonicalCwd: async (cwd) => cwd,
-    parseAuthToken: () => "",
     json: () => {},
     normalizeSessionListLimit: (value) => value,
     normalizeSessionMessagesLimit: (value) => value,

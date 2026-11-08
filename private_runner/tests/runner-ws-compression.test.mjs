@@ -1,3 +1,4 @@
+import { mockRunnerLogin } from "./helpers/runner-login-fixture.mjs";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
@@ -12,6 +13,7 @@ process.env.RUNNER_TOKEN = "test-compression-token";
 process.env.CLIENT_STATE_STORE_PATH = path.join(tempDir, "client-state.json");
 process.env.CODEX_WS_DEBUG_FILE = path.join(tempDir, "ws-debug.jsonl");
 const { __TESTING__ } = await import("../src/server-runtime.mjs");
+mockRunnerLogin(__TESTING__);
 const { server, runnerWsServer } = __TESTING__;
 const fixture = JSON.stringify({ channel: "agent", op: "compression.fixture", payload: {
   sessions: Array.from({ length: 300 }, (_, index) => ({

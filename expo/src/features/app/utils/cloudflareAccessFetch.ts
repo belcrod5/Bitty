@@ -9,6 +9,8 @@ type FetchPatchConfig = {
   runnerUrl: string;
   cloudflareRunnerUrl: string;
   credentials: CloudflareAccessCredentials;
+  sessionToken?: string;
+  onSessionInvalid?: (token: string) => void;
 };
 
 let installed = false;
@@ -17,6 +19,8 @@ let activeRunnerOrigin = "";
 let cloudflareAccessOrigin = "";
 let activeHeaders: Record<string, string> = {};
 let pendingHttpMeasurements = 0;
+let sessionToken = "";
+let onSessionInvalid: FetchPatchConfig["onSessionInvalid"];
 
 export function getPendingHttpNetworkMeasurements() {
   return pendingHttpMeasurements;
@@ -120,6 +124,8 @@ export function configureCloudflareAccessFetch(config: FetchPatchConfig) {
     config.credentials.clientId,
     config.credentials.clientSecret
   ));
+  sessionToken = config.sessionToken || "";
+  onSessionInvalid = config.onSessionInvalid;
 
   if (installed) return;
   if (typeof fetch !== "function") return;
@@ -127,10 +133,25 @@ export function configureCloudflareAccessFetch(config: FetchPatchConfig) {
   originalFetch = fetch.bind(globalThis);
   globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     if (!originalFetch) return fetch(input, init);
-    const finalInit = shouldAttachCloudflareAccessHeaders(input)
-      ? { ...(init || {}), headers: mergeHeaders(init?.headers, activeHeaders) }
+    const inputHeaders = typeof input === "object" && "headers" in input ? input.headers : undefined;
+    let finalInit = shouldAttachCloudflareAccessHeaders(input)
+      ? { ...(init || {}), headers: mergeHeaders(init?.headers || inputHeaders, activeHeaders) }
       : init;
+    const sentHeaders = new Headers(finalInit?.headers || inputHeaders);
+    const sentToken = sentHeaders.get("authorization")?.replace(/^Bearer /, "") || "";
+    const requestOrigin = normalizeOrigin(requestUrl(input));
+    if ([activeRunnerOrigin, cloudflareAccessOrigin].includes(requestOrigin) &&
+      (sentToken || sentHeaders.has("CF-Access-Client-Secret"))) finalInit = { ...finalInit, redirect: "error" };
     const responsePromise = originalFetch(input, finalInit);
+    void responsePromise.then(async (response) => {
+      if (response.status !== 401 || !sentToken || sentToken !== sessionToken ||
+        ![activeRunnerOrigin, cloudflareAccessOrigin].includes(requestOrigin)) return;
+      const path = new URL(requestUrl(input)).pathname;
+      if (path.startsWith("/auth/") && path !== "/auth/session") return;
+      const body = await response.clone().json().catch(() => null);
+      // Cloudflare login errors and stale requests must not erase a valid session.
+      if (body?.error === "authentication_required" && sentToken === sessionToken) onSessionInvalid?.(sentToken);
+    }).catch(() => undefined);
     pendingHttpMeasurements += 1;
     try {
       const url = requestUrl(input);
@@ -151,4 +172,17 @@ export function configureCloudflareAccessFetch(config: FetchPatchConfig) {
 export function getCloudflareAccessHeadersForUrl(url: string) {
   if (!shouldAttachCloudflareAccessHeaders(url)) return {};
   return activeHeaders;
+}
+
+// Native media downloads bypass the JS fetch patch. Limit both credentials to
+// configured Runner origins; file/external URLs must remain credential-free.
+export function getRunnerMediaHeadersForUrl(url: string): Record<string, string> {
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { return {}; }
+  if (!["https:", "http:"].includes(parsed.protocol) || parsed.username || parsed.password ||
+    ![activeRunnerOrigin, cloudflareAccessOrigin].filter(Boolean).includes(parsed.origin)) return {};
+  return {
+    ...getCloudflareAccessHeadersForUrl(url),
+    ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
+  };
 }

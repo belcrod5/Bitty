@@ -2,143 +2,106 @@ const mockGetItemAsync = jest.fn();
 const mockSetItemAsync = jest.fn();
 const mockDeleteItemAsync = jest.fn();
 let storedValues: Map<string, string>;
-
 jest.mock("expo-secure-store", () => ({
   AFTER_FIRST_UNLOCK: 0,
   getItemAsync: (...args: unknown[]) => mockGetItemAsync(...args),
   setItemAsync: (...args: unknown[]) => mockSetItemAsync(...args),
   deleteItemAsync: (...args: unknown[]) => mockDeleteItemAsync(...args),
 }));
-
-import {
-  loadSecureRunnerCredentials,
-  saveSecureRunnerCredentials,
-} from "./secureRunnerCredentials";
-
-const AFTER_FIRST_UNLOCK_OPTIONS = expect.objectContaining({ keychainAccessible: 0 });
-
+import { clearSecureRunnerSession, loadSecureRunnerCredentials, runnerCredentialScope, saveSecureRunnerCredentials } from "./secureRunnerCredentials";
+const SESSION_A = "bitty_session_v1." + "a".repeat(43);
+const SESSION_B = "bitty_session_v1." + "b".repeat(43);
+const KEY = "bitty.runnerCredentials.v3";
+const SCOPE = { cloudflareOrigin: "https://runner.test", localOrigin: "https://mac.local:8789" };
+const OTHER_SCOPE = { cloudflareOrigin: "https://other.test", localOrigin: "https://other.local:8789" };
+const OPTIONS = expect.objectContaining({ keychainAccessible: 0 });
+const EMPTY = { runnerToken: "", cloudflareAccessClientId: "", cloudflareAccessClientSecret: "" };
+const record = (token = SESSION_A) => ({ version: 3, scope: SCOPE, ...EMPTY, runnerToken: token, cloudflareAccessClientId: "access-id", cloudflareAccessClientSecret: "access-secret" });
 beforeEach(() => {
-  jest.clearAllMocks();
-  storedValues = new Map();
+  jest.resetAllMocks(); storedValues = new Map();
   mockGetItemAsync.mockImplementation(async (key: string) => storedValues.get(key) ?? null);
-  mockSetItemAsync.mockImplementation(async (key: string, value: string) => {
-    storedValues.set(key, value);
-  });
-  mockDeleteItemAsync.mockImplementation(async (key: string) => {
-    storedValues.delete(key);
-  });
+  mockSetItemAsync.mockImplementation(async (key: string, value: string) => { storedValues.set(key, value); });
+  mockDeleteItemAsync.mockImplementation(async (key: string) => { storedValues.delete(key); });
 });
-
-test("distinguishes an unavailable secure store from missing credentials", async () => {
-  mockGetItemAsync.mockRejectedValue(new Error("secure store temporarily unavailable"));
-
-  await expect(loadSecureRunnerCredentials()).rejects.toThrow("secure store temporarily unavailable");
+test("distinguishes unavailable Keychain from absent credentials", async () => {
+  mockGetItemAsync.mockRejectedValue(new Error("unavailable"));
+  await expect(loadSecureRunnerCredentials(SCOPE)).rejects.toThrow("unavailable");
 });
-
-test("represents missing credentials as empty values", async () => {
-  await expect(loadSecureRunnerCredentials()).resolves.toEqual({
-    runnerToken: "",
-    cloudflareAccessClientId: "",
-    cloudflareAccessClientSecret: "",
-  });
+test("legacy per-field credentials cannot silently become paired sessions or Access credentials", async () => {
+  storedValues.set("bitty.runnerToken.v2", "legacy-token");
+  storedValues.set("bitty.cloudflareAccessClientSecret.v2", "old-secret");
+  await expect(loadSecureRunnerCredentials(SCOPE)).resolves.toEqual(EMPTY);
+  expect(mockGetItemAsync).toHaveBeenCalledTimes(1);
 });
-
-test("prefers the v2 key and falls back to the legacy key per field", async () => {
+test("loads one atomic scoped record with background accessibility", async () => {
+  storedValues.set(KEY, JSON.stringify(record()));
+  expect((await loadSecureRunnerCredentials(SCOPE)).runnerToken).toBe(SESSION_A);
+  expect(mockGetItemAsync).toHaveBeenCalledWith(KEY, OPTIONS);
+});
+test("settings read failure or an interrupted QR settings save cannot attach secrets to a different Runner", async () => {
+  storedValues.set(KEY, JSON.stringify(record()));
+  await expect(loadSecureRunnerCredentials(null)).resolves.toEqual(EMPTY);
+  await expect(loadSecureRunnerCredentials(OTHER_SCOPE)).resolves.toEqual(EMPTY);
+});
+test("LAN and Tunnel selection have the same scope, but unpaired selections do not", () => {
+  expect(runnerCredentialScope({ runnerUrl: SCOPE.cloudflareOrigin, cloudflareRunnerUrl: SCOPE.cloudflareOrigin, localRunnerUrl: SCOPE.localOrigin })).toEqual(SCOPE);
+  expect(runnerCredentialScope({ runnerUrl: SCOPE.localOrigin, cloudflareRunnerUrl: SCOPE.cloudflareOrigin, localRunnerUrl: SCOPE.localOrigin })).toEqual(SCOPE);
+  expect(runnerCredentialScope({ runnerUrl: "https://attacker.test", cloudflareRunnerUrl: SCOPE.cloudflareOrigin, localRunnerUrl: SCOPE.localOrigin })).toBeNull();
+});
+test("rejects shared tokens and unbound secrets before writing", async () => {
+  await expect(saveSecureRunnerCredentials({ runnerToken: "legacy" }, SCOPE)).rejects.toThrow("runner_session_required");
+  await expect(saveSecureRunnerCredentials({ runnerToken: SESSION_A })).rejects.toThrow("runner_configuration_required");
+  expect(mockSetItemAsync).not.toHaveBeenCalled();
+});
+test("persists all secrets with their allowed origins in a single item", async () => {
+  await saveSecureRunnerCredentials({ runnerToken: SESSION_A, cloudflareAccessClientId: "id", cloudflareAccessClientSecret: "secret" }, SCOPE);
+  expect(mockSetItemAsync).toHaveBeenCalledTimes(1);
+  const saved = JSON.parse(storedValues.get(KEY)!);
+  expect(saved).toMatchObject({ version: 3, scope: SCOPE, runnerToken: SESSION_A, cloudflareAccessClientId: "id", cloudflareAccessClientSecret: "secret" });
+});
+test("readback failure restores the previous whole record", async () => {
+  storedValues.set(KEY, JSON.stringify(record()));
+  let corrupt = false;
+  mockSetItemAsync.mockImplementation(async (key: string, value: string) => { storedValues.set(key, value); if (value.includes(SESSION_B)) corrupt = true; });
   mockGetItemAsync.mockImplementation(async (key: string) => {
-    if (key === "bitty.runnerToken.v2") return "v2-token";
-    if (key === "bitty.cloudflareAccessClientId") return "legacy-client-id";
-    return null;
-  });
-
-  await expect(loadSecureRunnerCredentials()).resolves.toEqual({
-    runnerToken: "v2-token",
-    cloudflareAccessClientId: "legacy-client-id",
-    cloudflareAccessClientSecret: "",
-  });
-});
-
-test("reads with the AFTER_FIRST_UNLOCK accessibility so locked-device launches can load credentials", async () => {
-  await loadSecureRunnerCredentials();
-
-  expect(mockGetItemAsync.mock.calls.length).toBeGreaterThan(0);
-  for (const call of mockGetItemAsync.mock.calls) {
-    expect(call[1]).toEqual(AFTER_FIRST_UNLOCK_OPTIONS);
-  }
-});
-
-test("saving a value sets the v2 key first and never deletes it", async () => {
-  await saveSecureRunnerCredentials({ runnerToken: "token-1" });
-
-  expect(mockSetItemAsync).toHaveBeenCalledWith("bitty.runnerToken.v2", "token-1", AFTER_FIRST_UNLOCK_OPTIONS);
-  expect(mockDeleteItemAsync).toHaveBeenCalledWith("bitty.runnerToken", AFTER_FIRST_UNLOCK_OPTIONS);
-  // The credential must exist under some key at every point in time: the new copy is
-  // written before the legacy copy is removed, and the v2 key itself is never deleted.
-  const setOrder = mockSetItemAsync.mock.invocationCallOrder[0];
-  const deleteOrder = mockDeleteItemAsync.mock.invocationCallOrder[0];
-  expect(setOrder).toBeLessThan(deleteOrder);
-  expect(mockDeleteItemAsync).not.toHaveBeenCalledWith("bitty.runnerToken.v2", expect.anything());
-});
-
-test("saving succeeds only after the stored value is read back", async () => {
-  await expect(saveSecureRunnerCredentials({ runnerToken: " token-1 " })).resolves.toBeUndefined();
-
-  expect(mockGetItemAsync).toHaveBeenLastCalledWith("bitty.runnerToken.v2", expect.objectContaining({
-    authenticationPrompt: expect.stringContaining("キーチェーン"),
-  }));
-  expect(storedValues.get("bitty.runnerToken.v2")).toBe("token-1");
-});
-
-test("surfaces a keychain write rejection and keeps the previous value", async () => {
-  storedValues.set("bitty.runnerToken.v2", "old-token");
-  mockSetItemAsync.mockRejectedValueOnce(new Error("User denied keychain access"));
-
-  await expect(saveSecureRunnerCredentials({ runnerToken: "new-token" }))
-    .rejects.toThrow("User denied keychain access");
-  expect(storedValues.get("bitty.runnerToken.v2")).toBe("old-token");
-});
-
-test("rejects a readback mismatch and restores the previous value", async () => {
-  storedValues.set("bitty.runnerToken.v2", "old-token");
-  let corruptNextRead = false;
-  mockSetItemAsync.mockImplementation(async (key: string, value: string) => {
-    storedValues.set(key, value);
-    if (value === "new-token") corruptNextRead = true;
-  });
-  mockGetItemAsync.mockImplementation(async (key: string) => {
-    if (key === "bitty.runnerToken.v2" && corruptNextRead) {
-      corruptNextRead = false;
-      return "different-token";
-    }
+    if (key === KEY && corrupt) { corrupt = false; return "corrupt"; }
     return storedValues.get(key) ?? null;
   });
-
-  await expect(saveSecureRunnerCredentials({ runnerToken: "new-token" }))
-    .rejects.toThrow("secure_credentials_readback_mismatch: runnerToken");
-  expect(storedValues.get("bitty.runnerToken.v2")).toBe("old-token");
+  await expect(saveSecureRunnerCredentials({ runnerToken: SESSION_B }, SCOPE)).rejects.toThrow("secure_credentials_readback_mismatch");
+  expect(JSON.parse(storedValues.get(KEY)!)).toEqual(record());
+});
+test("an old 401 cannot erase a newer serialized login", async () => {
+  storedValues.set(KEY, JSON.stringify(record()));
+  const login = saveSecureRunnerCredentials({ runnerToken: SESSION_B }, SCOPE);
+  const staleClear = clearSecureRunnerSession(SESSION_A);
+  await login; await expect(staleClear).resolves.toBe(false);
+  expect((await loadSecureRunnerCredentials(SCOPE)).runnerToken).toBe(SESSION_B);
+});
+test("an old login cannot overwrite a newly paired connection", async () => {
+  storedValues.set(KEY, JSON.stringify(record()));
+  await saveSecureRunnerCredentials({ runnerToken: "", cloudflareAccessClientId: "new-id", cloudflareAccessClientSecret: "new-secret" }, OTHER_SCOPE);
+  await expect(saveSecureRunnerCredentials({ runnerToken: SESSION_B }, SCOPE)).rejects.toThrow("runner_configuration_changed");
+  expect((await loadSecureRunnerCredentials(OTHER_SCOPE)).cloudflareAccessClientId).toBe("new-id");
+  await expect(loadSecureRunnerCredentials(SCOPE)).resolves.toEqual(EMPTY);
+});
+test("expiry clears only the matching session and preserves its transport settings", async () => {
+  storedValues.set(KEY, JSON.stringify(record()));
+  await expect(clearSecureRunnerSession(SESSION_A)).resolves.toBe(true);
+  expect(await loadSecureRunnerCredentials(SCOPE)).toEqual({ ...EMPTY, cloudflareAccessClientId: "access-id", cloudflareAccessClientSecret: "access-secret" });
 });
 
-test("deletes both copies only when an explicit empty value is saved", async () => {
-  await saveSecureRunnerCredentials({
-    runnerToken: "",
-    cloudflareAccessClientId: "client-id",
-  });
-
-  expect(mockDeleteItemAsync).toHaveBeenCalledWith("bitty.runnerToken.v2", AFTER_FIRST_UNLOCK_OPTIONS);
-  expect(mockDeleteItemAsync).toHaveBeenCalledWith("bitty.runnerToken", AFTER_FIRST_UNLOCK_OPTIONS);
-  expect(mockSetItemAsync).not.toHaveBeenCalledWith("bitty.runnerToken.v2", expect.anything(), expect.anything());
-  expect(mockSetItemAsync).toHaveBeenCalledWith("bitty.cloudflareAccessClientId.v2", "client-id", AFTER_FIRST_UNLOCK_OPTIONS);
+test("an in-flight credential recovery cannot restore a session after logout or pairing", async () => {
+  storedValues.set(KEY, JSON.stringify(record()));
+  let resolve!: (value: string) => void;
+  mockGetItemAsync.mockImplementationOnce(() => new Promise<string>((done) => { resolve = done; }));
+  const recovering = loadSecureRunnerCredentials(SCOPE);
+  const logout = saveSecureRunnerCredentials({ runnerToken: "" }, SCOPE);
+  resolve(JSON.stringify(record()));
+  await logout;
+  await expect(recovering).resolves.toEqual(EMPTY);
 });
 
-test("never touches credentials that are omitted from a partial save", async () => {
-  await saveSecureRunnerCredentials({
-    cloudflareAccessClientId: "",
-    cloudflareAccessClientSecret: "",
-  });
-
-  const touchedKeys = [
-    ...mockSetItemAsync.mock.calls,
-    ...mockDeleteItemAsync.mock.calls,
-  ].map((call) => call[0]);
-  expect(touchedKeys).not.toContain("bitty.runnerToken");
-  expect(touchedKeys).not.toContain("bitty.runnerToken.v2");
+test("corrupt credential data fails closed without exposing JSON fragments in the error", async () => {
+  storedValues.set(KEY, '{"runnerToken":"sensitive-fragment"');
+  await expect(loadSecureRunnerCredentials(SCOPE)).rejects.toThrow(/^invalid_runner_credentials$/);
 });

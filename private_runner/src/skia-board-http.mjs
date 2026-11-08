@@ -1,3 +1,4 @@
+import { requireRunnerAuthentication } from "./runner-login-http.mjs";
 // Skiaボード状態のHTTPハンドラ。server-runtime のif連鎖から1行で差し込む。
 // 認証・ボディ読取・JSON応答は server-runtime のヘルパーを注入して使う。
 
@@ -21,8 +22,6 @@ function message(error) {
 export function createSkiaBoardHttpHandler({
   service,
   ingest = null,
-  runnerToken,
-  parseAuthToken,
   readJsonBody,
   json,
   activity,
@@ -59,14 +58,7 @@ export function createSkiaBoardHttpHandler({
     const route = routes[pathname];
     if (!route) return false;
 
-    if (!runnerToken) {
-      json(res, 500, { error: "runner_token_missing", message: "RUNNER_TOKEN is required" });
-      return true;
-    }
-    if (parseAuthToken(req) !== runnerToken) {
-      json(res, 401, { error: "unauthorized" });
-      return true;
-    }
+    if (!requireRunnerAuthentication(req, res, json)) return true;
     if (req.method !== route.method) {
       json(res, 405, { error: "method_not_allowed" });
       return true;

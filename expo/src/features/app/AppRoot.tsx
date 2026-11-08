@@ -1,5 +1,7 @@
 import { getVoiceOrchestrators } from "./utils/voiceOrchestratorClient";
 import { getVoiceControl } from "../appControl/voiceControl";
+import { RunnerLoginScreen } from "./screens/RunnerLoginScreen";
+import { useRunnerSessionLifecycle } from "./hooks/useRunnerSessionLifecycle";
 import { WidgetSnapshotPublisher } from "./components/WidgetSnapshotPublisher";
 import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import {
@@ -641,12 +643,18 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   ), [cloudflareAccessClientId, cloudflareAccessClientSecret]);
   const cloudflareAccessEnabled = hasCloudflareAccessCredentials(cloudflareAccessCredentials);
   const effectiveCloudflareRunnerUrl = runnerHttpsOrigin(cloudflareRunnerUrl);
+  const [activeScreen, setActiveScreen] = useState<AppScreen>("skia_board");
+  const { onSessionInvalid, verifySession, verified: runnerSessionVerified } = useRunnerSessionLifecycle({
+    settingsLoaded, runnerUrl, runnerToken, setRunnerToken,
+    onLoginRequired: () => setActiveScreen("settings"),
+  });
   configureCloudflareAccessFetch({
     runnerUrl,
     cloudflareRunnerUrl: effectiveCloudflareRunnerUrl,
     credentials: cloudflareAccessCredentials,
+    sessionToken: runnerToken,
+    onSessionInvalid,
   });
-  const [activeScreen, setActiveScreen] = useState<AppScreen>("skia_board");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [sessionDeepLinkJumpTarget, setSessionDeepLinkJumpTarget] =
     useState<SessionDeepLinkJumpTarget | null>(null);
@@ -760,8 +768,9 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   // runner WSの切断理由ログ(runner_ws_closed)。フラップは分単位なので通常は全件残るが、
   // 接続不能時の再試行ストーム(1秒間隔close)ではイベント名単位で1行/秒に抑える。
   const handleRunnerWsDiagEvent = useCallback((event: string, payload: Record<string, unknown>) => {
+    if (event === "runner_ws_closed" && (payload.authClassifiedBy || payload.closeCode === 4401)) void verifySession();
     logSessionDiag(event, payload, { throttleMs: event === "runner_ws_session_list_sent" ? 0 : 1000, throttleKey: event });
-  }, [logSessionDiag]);
+  }, [logSessionDiag, verifySession]);
   const {
     voicesLoading,
     voiceFilter,
@@ -4481,7 +4490,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     increaseTtsSpeedFromSettingsContext,
     selectVoiceIdFromSettingsContext,
   } = useAppContextActions({
-    drawerOpen,
+    drawerOpen, runnerUrl, cloudflareRunnerUrl, localRunnerUrl,
     defaultLlmDirectory: DEFAULT_LLM_DIRECTORY,
     directoryExplorerParentPath,
     directoryExplorerRootPath,
@@ -4618,8 +4627,17 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     autoSpeakAfterReply,
     faceIdRequiredForApproval,
     toolAutoApprovalRuleCount: Object.keys(toolAutoApprovalMap).length,
-    changeCloudflareRunnerUrl: setCloudflareRunnerUrl,
-    changeLocalRunnerUrl: setLocalRunnerUrl,
+    changeCloudflareRunnerUrl: (value: string) => {
+      if (value === cloudflareRunnerUrl) return;
+      void saveRunnerToken("").then(() => clearCloudflareAccessCredentials())
+        .then(() => setCloudflareRunnerUrl(value))
+        .catch(() => Alert.alert("接続先を変更できません", "認証情報を消去できませんでした。再度お試しください。"));
+    },
+    changeLocalRunnerUrl: (value: string) => {
+      if (value === localRunnerUrl) return;
+      void saveRunnerToken("").then(() => clearCloudflareAccessCredentials()).then(() => setLocalRunnerUrl(value))
+        .catch(() => Alert.alert("接続先を変更できません", "認証情報を消去できませんでした。再度お試しください。"));
+    },
     changeLlmDirectory,
     saveRunnerToken,
     clearCloudflareAccessCredentials,
@@ -6091,6 +6109,30 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     () => <AppDrawer {...appDrawerProps} />,
     [appDrawerProps]
   );
+  const screenContent = (
+    <AppScreenContent
+        activeScreen={activeScreen}
+        boardPopupRef={boardPopupRef}
+        pendingVoiceOrchestratorId={pendingVoiceOrchestratorId}
+        onVoiceNavigationHandled={clearPendingVoiceOrchestratorId}
+        onStartNewSessionInDirectory={appDrawerProps.onStartNewSessionInDirectory}
+        openSessionHistoryPopup={openSessionHistoryPopup}
+        voicePlayback={{
+          getPlaybackState: () => ({ messageId: ttsPlaybackMessageIdRef.current, active: Boolean(ttsPlaybackWantedRef.current
+            || ttsPlayingRef.current || streamAudioQueueRef.current.length || streamAudioQueueProcessingRef.current
+            || streamTtsControlRef.current || streamSocketRef.current) }),
+          synthesizeSpeechStream,
+          stopTtsPlayback,
+          isTtsPlaybackActive,
+          isTtsPlaying: ttsPlaying,
+          ttsUiStatus,
+          ttsSpeed,
+          lightweightTtsOnCellular,
+          runnerBaseUrl: baseUrl(),
+          runnerToken,
+        }}
+      />
+  );
   return (
       <GestureHandlerRootView style={styles.safeArea}
         onStartShouldSetResponderCapture={captureNetworkUsageInteraction}
@@ -6126,7 +6168,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
           enabled={settingsLoaded && !!runnerUrl && !!runnerToken}
           connectionInterrupted={runnerClientStateConnectionInterrupted}
         />
-        {activeScreen === "computer" && chatBottomToast ? (
+        {runnerSessionVerified && activeScreen === "computer" && chatBottomToast ? (
           <Animated.View pointerEvents="none" style={[styles.chatBottomToastWrap, styles.computerToastForeground, { opacity: chatBottomToastAnimRef.current }]}>
             <View style={[styles.chatBottomToast, styles.chatBottomToastAssistant]}>
               <Text style={styles.chatBottomToastText} accessibilityLiveRegion="polite">{chatBottomToast.text}</Text>
@@ -6134,6 +6176,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
           </Animated.View>
         ) : null}
       </>}>
+        {settingsLoaded && (runnerSessionVerified ? <>
         <AppDrawerLayout
         open={drawerOpen}
         onOpen={openDrawer}
@@ -6145,28 +6188,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
         swipeEnabled={activeScreen === "skia_board"}
       >
       <View style={styles.safeArea}>
-      <AppScreenContent
-        activeScreen={activeScreen}
-        boardPopupRef={boardPopupRef}
-        pendingVoiceOrchestratorId={pendingVoiceOrchestratorId}
-        onVoiceNavigationHandled={clearPendingVoiceOrchestratorId}
-        onStartNewSessionInDirectory={appDrawerProps.onStartNewSessionInDirectory}
-        openSessionHistoryPopup={openSessionHistoryPopup}
-        voicePlayback={{
-          getPlaybackState: () => ({ messageId: ttsPlaybackMessageIdRef.current, active: Boolean(ttsPlaybackWantedRef.current
-            || ttsPlayingRef.current || streamAudioQueueRef.current.length || streamAudioQueueProcessingRef.current
-            || streamTtsControlRef.current || streamSocketRef.current) }),
-          synthesizeSpeechStream,
-          stopTtsPlayback,
-          isTtsPlaybackActive,
-          isTtsPlaying: ttsPlaying,
-          ttsUiStatus,
-          ttsSpeed,
-          lightweightTtsOnCellular,
-          runnerBaseUrl: baseUrl(),
-          runnerToken,
-        }}
-      />
+      {screenContent}
       <SafeAreaView pointerEvents="box-none" style={styles.appOverlaySafeArea}>
       <AppOverlays
         slashCommandSelectOpen={slashCommandSelectOpen}
@@ -6202,8 +6224,9 @@ function AppContent({ onReady }: { onReady?: () => void }) {
             />
           </DrawerSessionPopupHost>
         ) : null}
-        <WidgetSnapshotPublisher ready={settingsLoaded} />
         <PushNotificationRegistrar onUnreadCountSnapshot={sessionNotificationLifecycle.applyUnreadCountSnapshot} />
+        </> : <RunnerLoginScreen onRetry={() => void verifySession()} />)}
+        <WidgetSnapshotPublisher ready={settingsLoaded} />
       </AppModalHost>
       </KeyboardProvider>
       </AppProviders>

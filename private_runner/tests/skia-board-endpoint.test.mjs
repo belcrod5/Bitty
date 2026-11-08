@@ -1,3 +1,4 @@
+import { RUNNER_AUTHENTICATION } from "../src/runner-login-http.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
@@ -23,7 +24,7 @@ async function withHandler(fn) {
       json: (_res, status, payload) => responses.push({ status, payload }),
     });
     const call = async (method, pathname, body, auth = RUNNER_TOKEN) => {
-      const handled = await handler({ method, auth, body }, {}, pathname);
+      const handled = await handler({ method, auth, body, [RUNNER_AUTHENTICATION]: auth === RUNNER_TOKEN ? { sessionId: "test-session" } : undefined }, {}, pathname);
       return { handled, response: responses.pop() };
     };
     await fn(call);
@@ -48,7 +49,7 @@ test("ignores unrelated paths and rejects bad auth and methods", async () => {
     assert.equal(unrelated.response, undefined);
 
     const unauthorized = await call("GET", "/skia-board", undefined, "wrong");
-    assert.deepEqual(unauthorized.response, { status: 401, payload: { error: "unauthorized" } });
+    assert.deepEqual(unauthorized.response, { status: 401, payload: { error: "authentication_required" } });
 
     const wrongMethod = await call("POST", "/skia-board", {});
     assert.deepEqual(wrongMethod.response, { status: 405, payload: { error: "method_not_allowed" } });
@@ -136,12 +137,12 @@ test("GET validates the post-ingest body, including changes with an unchanged re
     runnerToken: "token", parseAuthToken: () => "token", readJsonBody: async () => {},
     json: (_res, status, body, headers) => replies.push({ status, body, headers }) });
   const response = { writeHead(status, headers) { replies.push({ status, headers }); }, end() {} };
-  await handler({ method: "GET", headers: {} }, response, "/skia-board");
+  await handler({ method: "GET", [RUNNER_AUTHENTICATION]: { sessionId: "test-session" }, headers: {} }, response, "/skia-board");
   const first = replies.pop();
   assert.equal(first.status, 200); assert.match(first.headers.etag, /^W\//);
-  await handler({ method: "GET", headers: { "if-none-match": first.headers.etag } }, response, "/skia-board");
+  await handler({ method: "GET", [RUNNER_AUTHENTICATION]: { sessionId: "test-session" }, headers: { "if-none-match": first.headers.etag } }, response, "/skia-board");
   assert.equal(replies.pop().status, 304); assert.equal(sweeps, 2);
   board = { ...board, board: { cards: [{ id: "new" }], sections: [] } };
-  await handler({ method: "GET", headers: { "if-none-match": first.headers.etag } }, response, "/skia-board");
+  await handler({ method: "GET", [RUNNER_AUTHENTICATION]: { sessionId: "test-session" }, headers: { "if-none-match": first.headers.etag } }, response, "/skia-board");
   const changed = replies.pop(); assert.equal(changed.status, 200); assert.notEqual(changed.headers.etag, first.headers.etag);
 });

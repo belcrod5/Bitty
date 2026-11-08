@@ -83,6 +83,10 @@ final class BittyWidgetSnapshotStore: NSObject, URLSessionTaskDelegate {
       let startedAt = ProcessInfo.processInfo.systemUptime
       self.logger.notice("[widget-refresh] event=refresh id=\(diagnosticID, privacy: .public) app_initiated=\(expectedRunnerUrl != nil)")
       guard let connection = BittyRunnerConnection.load() else {
+        self.revision += 1
+        self.activeRequest?.cancel()
+        self.invalidateSnapshot()
+        UserDefaults.standard.removeObject(forKey: self.sourceKey)
         self.logger.notice("[widget-refresh] event=refresh id=\(diagnosticID, privacy: .public) outcome=connection_unavailable")
         completion(.noData); return
       }
@@ -138,6 +142,10 @@ final class BittyWidgetSnapshotStore: NSObject, URLSessionTaskDelegate {
             completion(.failed); return
           }
           guard status == 200 else {
+            if status == 401 {
+              self.invalidateSnapshot()
+              UserDefaults.standard.removeObject(forKey: self.sourceKey)
+            }
             self.logger.notice("[widget-refresh] event=refresh id=\(diagnosticID, privacy: .public) outcome=http_failed")
             completion(.failed); return
           }

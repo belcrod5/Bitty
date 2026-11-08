@@ -1,3 +1,5 @@
+import { Ionicons } from "@expo/vector-icons";
+import { runnerLoginStylesByTheme } from "../styles/runnerLoginStyles";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, SafeAreaView, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import {
@@ -165,7 +167,7 @@ function mergeEventHistory(current: RunnerConnectionEvent[], incoming: RunnerCon
 function cloudflareAccessRecoveryHint(status: number, message: string) {
   const rawMessage = String(message || "").trim().toLowerCase();
   if (status === 401 && rawMessage === "unauthorized") {
-    return "RUNNER_TOKENが現在起動中のprivate runnerと一致していません。Runner起動後にPairing QRを再表示し、読み直してください。";
+    return "設定画面で本人ログインをやり直してください。接続設定QRだけではログインは完了しません。";
   }
   const text = `${status} ${message}`.toLowerCase();
   if (status !== 401 && status !== 403 && !text.includes("cloudflare access")) return "";
@@ -231,8 +233,9 @@ function ConnectionEventCard({
   );
 }
 
-export function CloudflareTunnelMonitorScreen() {
-  const { themeId } = useVisualTheme();
+export function CloudflareTunnelMonitorScreen({ setupOnly = false }: { setupOnly?: boolean } = {}) {
+  const { theme, themeId } = useVisualTheme();
+  const loginStyles = runnerLoginStylesByTheme[themeId];
   const screenStyles = screenStylesByTheme[themeId];
   const { openSettingsScreen } = useAppShell();
   const {
@@ -245,6 +248,14 @@ export function CloudflareTunnelMonitorScreen() {
   } = useAppSettings();
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const [scanning, setScanning] = useState(false);
+  const [savingPairing, setSavingPairing] = useState(false);
+  const [pairingSaved, setPairingSaved] = useState(false);
+  const scanPhase = useRef<"idle" | "scanning" | "saving">("idle");
+  const screenActive = useRef(true);
+  useEffect(() => {
+    screenActive.current = true;
+    return () => { screenActive.current = false; scanPhase.current = "idle"; };
+  }, []);
   const [pairingStatus, setPairingStatus] = useState("");
   const [events, setEvents] = useState<RunnerConnectionEvent[]>([]);
   const [allowedEvents, setAllowedEvents] = useState<RunnerConnectionEvent[]>([]);
@@ -289,6 +300,7 @@ export function CloudflareTunnelMonitorScreen() {
   }, []);
 
   const fetchEvents = useCallback(async () => {
+    if (setupOnly) return;
     const baseUrl = normalizeRunnerBaseUrl(runnerUrl);
     const token = String(runnerToken || "").trim();
     if (!baseUrl || !token) {
@@ -337,20 +349,88 @@ export function CloudflareTunnelMonitorScreen() {
     } finally {
       setLoading(false);
     }
-  }, [runnerToken, runnerUrl]);
+  }, [runnerToken, runnerUrl, setupOnly]);
 
   useEffect(() => {
+    if (setupOnly) return;
     void fetchEvents();
     const timer = setInterval(() => {
       void fetchEvents();
     }, 5000);
     return () => clearInterval(timer);
-  }, [fetchEvents]);
+  }, [fetchEvents, setupOnly]);
 
   useEffect(() => {
+    if (setupOnly) return;
     const timer = setInterval(() => setNowMs(Date.now()), 1000);
     return () => clearInterval(timer);
-  }, []);
+  }, [setupOnly]);
+
+  const startScanning = async () => {
+    if (scanPhase.current === "saving") return;
+    const permission = cameraPermission?.granted ? cameraPermission : await requestCameraPermission();
+    if (!screenActive.current) return;
+    if (!permission.granted) { setPairingStatus("QRを読むにはカメラの許可が必要です。"); return; }
+    scanPhase.current = "scanning"; setPairingSaved(false);
+    setPairingStatus("Macに表示した接続QRを読み取ってください。"); setScanning(true);
+  };
+  const pairingScanner = supportsCamera && scanning ? <View style={screenStyles.cameraCard}>
+    <CameraView style={screenStyles.camera} barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
+      onBarcodeScanned={async (result: BarcodeScanningResult) => {
+        if (scanPhase.current !== "scanning") return;
+        scanPhase.current = "saving"; setScanning(false); setSavingPairing(true);
+        const rawText = String(result.data || "");
+        if (!setupOnly) setLastPairingSanitizedText(sanitizedPairingDebugText(rawText));
+        try {
+          const pairing = await applyCloudflareRunnerPairing(rawText);
+          if (!screenActive.current) return;
+          if (!setupOnly) setLastPairingLocalRunnerUrl(pairing.localRunnerUrl || "");
+          setPairingSaved(true); setPairingStatus("接続先を保存しました。次はログインしてください。");
+        } catch (failure) {
+          if (screenActive.current) setPairingStatus(setupOnly ? "保存できませんでした。Macの接続QRでもう一度お試しください。"
+            : failure instanceof Error ? failure.message : String(failure));
+        } finally { scanPhase.current = "idle"; if (screenActive.current) setSavingPairing(false); }
+      }} />
+    <TouchableOpacity style={screenStyles.button} accessibilityRole="button" accessibilityLabel="読み取りをキャンセル"
+      onPress={() => { scanPhase.current = "idle"; setScanning(false); }}>
+      <Text style={screenStyles.buttonText}>キャンセル</Text>
+    </TouchableOpacity>
+  </View> : null;
+
+  if (setupOnly) {
+    let localRunner = false;
+    try { localRunner = ["127.0.0.1", "localhost", "[::1]"].includes(new URL(runnerUrl).hostname); } catch {}
+    return <SafeAreaView style={loginStyles.screen}>
+      <ScrollView contentContainerStyle={loginStyles.page}>
+        <View style={loginStyles.container}>
+          <TouchableOpacity accessibilityRole="button" accessibilityLabel="ログインに戻る" disabled={savingPairing} onPress={openSettingsScreen}
+            style={[loginStyles.secondary, savingPairing && loginStyles.disabled]}>
+            <Ionicons name="arrow-back-outline" size={17} color={theme.colors.controlAccent} />
+            <Text style={loginStyles.secondaryText}>ログインに戻る</Text>
+          </TouchableOpacity>
+          <View style={loginStyles.card}>
+            <View style={loginStyles.header}>
+              <View style={loginStyles.iconTile}><Ionicons name={pairingSaved ? "checkmark-outline" : "qr-code-outline"} size={25} color={theme.colors.controlAccent} /></View>
+              <Text accessibilityRole="header" style={loginStyles.title}>{pairingSaved ? "接続先を保存しました" : "接続先を設定"}</Text>
+              <Text style={loginStyles.description}>{pairingSaved ? "次はメールと認証アプリでログインします。" : supportsCamera
+                ? "Macの「接続QR」を読み取ってください。認証アプリ用QRとは別です。"
+                : localRunner ? "このMacのサーバーに接続します。QRを読まずにログインへ進めます。"
+                  : "この端末ではQRを読み取れません。接続先が設定済みなら、ログインへ進んでください。"}</Text>
+            </View>
+            {pairingSaved || !supportsCamera ? <TouchableOpacity accessibilityRole="button" accessibilityLabel="ログインへ" onPress={openSettingsScreen} style={loginStyles.primary}>
+              <Text style={loginStyles.primaryText}>ログインへ</Text><Ionicons name="arrow-forward-outline" size={18} color={theme.colors.textOnAccent} />
+            </TouchableOpacity> : !scanning ? <TouchableOpacity accessibilityRole="button" accessibilityLabel="接続QRを読み取る" disabled={savingPairing}
+              onPress={startScanning} style={[loginStyles.primary, savingPairing && loginStyles.disabled]}>
+              {savingPairing ? <ActivityIndicator color={theme.colors.textOnAccent} /> : <Ionicons name="scan-outline" size={20} color={theme.colors.textOnAccent} />}
+              <Text style={loginStyles.primaryText}>{savingPairing ? "保存中…" : "接続QRを読み取る"}</Text>
+            </TouchableOpacity> : null}
+            {pairingStatus && !pairingSaved ? <Text accessibilityLiveRegion="polite" style={loginStyles.description}>{pairingStatus}</Text> : null}
+            {pairingScanner}
+          </View>
+        </View>
+      </ScrollView>
+    </SafeAreaView>;
+  }
 
   return (
     <SafeAreaView style={screenStyles.safeArea}>
@@ -389,19 +469,12 @@ export function CloudflareTunnelMonitorScreen() {
           {supportsCamera ? <View style={screenStyles.buttonRow}>
             <TouchableOpacity
               style={screenStyles.button}
-              onPress={async () => {
-                const permission = cameraPermission?.granted
-                  ? cameraPermission
-                  : await requestCameraPermission();
-                if (!permission.granted) {
-                  setPairingStatus("カメラ権限が必要です。");
-                  return;
-                }
-                setPairingStatus("Runner起動ターミナルのQRを読み取ってください。");
-                setScanning(true);
-              }}
+              onPress={startScanning}
+              disabled={savingPairing || scanning}
+              accessibilityRole="button"
+              accessibilityLabel="接続QRを読み取る"
             >
-              <Text style={screenStyles.buttonText}>Pairing QRを読む</Text>
+              <Text style={screenStyles.buttonText}>接続QRを読み取る</Text>
             </TouchableOpacity>
           </View> : null}
           {showConnectionSettings ? (
@@ -431,31 +504,7 @@ export function CloudflareTunnelMonitorScreen() {
           ) : null}
         </View>
 
-        {supportsCamera && scanning ? (
-          <View style={screenStyles.cameraCard}>
-            <CameraView
-              style={screenStyles.camera}
-              barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
-              onBarcodeScanned={async (result: BarcodeScanningResult) => {
-                setScanning(false);
-                const rawText = String(result.data || "");
-                setLastPairingSanitizedText(sanitizedPairingDebugText(rawText));
-                try {
-                  const pairing = await applyCloudflareRunnerPairing(rawText);
-                  setLastPairingLocalRunnerUrl(pairing.localRunnerUrl || "");
-                  setPairingStatus(
-                    `Pairing QRを保存しました。localRunnerUrl: ${pairing.localRunnerUrl || "-"}`
-                  );
-                } catch (error) {
-                  setPairingStatus(error instanceof Error ? error.message : String(error));
-                }
-              }}
-            />
-            <TouchableOpacity style={screenStyles.button} onPress={() => setScanning(false)}>
-              <Text style={screenStyles.buttonText}>キャンセル</Text>
-            </TouchableOpacity>
-          </View>
-        ) : null}
+        {pairingScanner}
 
         <RouteDebugPanel
           pairingStatus={pairingStatus}

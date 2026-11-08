@@ -409,8 +409,7 @@ test("accepts an authenticated multipart upload request", async () => {
       maxUploadBytes: 1024,
     });
     const server = http.createServer((req, res) => service.handleRequest(req, res, {
-      expectedToken: "test-token",
-      receivedToken: String(req.headers.authorization || "").replace(/^Bearer\s+/i, ""),
+      authenticated: true,
     }));
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
     try {
@@ -454,8 +453,7 @@ test("accepts authenticated write, rename, and delete requests", async () => {
       maxUploadBytes: 1024,
     });
     const server = http.createServer((req, res) => service.handleRequest(req, res, {
-      expectedToken: "test-token",
-      receivedToken: String(req.headers.authorization || "").replace(/^Bearer\s+/i, ""),
+      authenticated: true,
     }));
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
     try {

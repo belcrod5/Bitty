@@ -15,7 +15,7 @@ const require = createRequire(path.join(dependencyRepo, 'private_runner/package.
 const { WebSocketServer } = require('ws');
 
 async function fixture(t, handler) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'bitty-control-cli-'));
+  const dir = await fs.mkdtemp(path.join(process.platform === 'darwin' ? '/tmp' : os.tmpdir(), 'bitty-control-cli-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const tokenFile = path.join(dir, 'token');
   await fs.writeFile(tokenFile, 'test-private-token\n', { mode: 0o600 });
@@ -27,10 +27,11 @@ async function fixture(t, handler) {
     response.setHeader('content-type', 'application/json');
     await handler(entry, response);
   });
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const socketPath = path.join(await fs.realpath(dir), 'runner.sock');
+  await new Promise(resolve => server.listen(socketPath, resolve));
   t.after(() => new Promise(resolve => server.close(resolve)));
   const env = { ...process.env, BITTY_REPO_ROOT: dependencyRepo, BITTY_RUNNER_TOKEN_FILE: tokenFile,
-    BITTY_RUNNER_URL: `http://127.0.0.1:${server.address().port}`, CODEX_THREAD_ID: 'display-only' };
+    RUNNER_CONTROL_SOCKET: socketPath, CODEX_THREAD_ID: 'display-only' };
   const run = (args, input = '', overrides = {}) => new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [cli, ...args], { env: { ...env, ...overrides }, cwd: dir });
     let stdout = '', stderr = '';
@@ -102,13 +103,12 @@ test('exact bounded stdin target rejects caller override, malformed and oversize
   assert.equal(f.requests.length, 0);
 });
 
-test('token symlink, public token mode and non-local HTTP origin are rejected without requests', async t => {
+test('token symlink and public token mode are rejected without requests', async t => {
   const f = await fixture(t, (_, response) => send(response, ready));
   const link = path.join(f.dir, 'token-link'); await fs.symlink(f.tokenFile, link);
   assert.equal((await f.run(['control', 'status', '--context', 'ctx_current'], '', { BITTY_RUNNER_TOKEN_FILE: link })).code, 1);
   await fs.chmod(f.tokenFile, 0o644);
   assert.equal((await f.run(['control', 'status', '--context', 'ctx_current'])).code, 1);
-  assert.equal((await f.run(['control', 'status', '--context', 'ctx_current'], '', { BITTY_RUNNER_URL: 'http://example.com' })).code, 1);
   assert.equal(f.requests.length, 0);
 });
 

@@ -1,3 +1,4 @@
+import { mockRunnerLogin } from "./helpers/runner-login-fixture.mjs";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { promises as fs } from "node:fs";
@@ -17,6 +18,7 @@ process.env.TTS_MEDIA_DIR = tempDir;
 process.env.LLM_JOB_EVENT_MAX = "100";
 
 const { __TESTING__ } = await import("../src/server-runtime.mjs");
+mockRunnerLogin(__TESTING__);
 
 test.after(async () => {
   await new Promise((resolve) => setTimeout(resolve, 50));

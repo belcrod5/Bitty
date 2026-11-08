@@ -1,3 +1,4 @@
+import { mockRunnerLogin } from "./helpers/runner-login-fixture.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -10,6 +11,7 @@ delete process.env.APNS_KEY_ID;
 delete process.env.APPLE_TEAM_ID;
 
 const { __TESTING__ } = await import("../src/server-runtime.mjs");
+mockRunnerLogin(__TESTING__);
 const { server } = __TESTING__;
 
 async function withServer(fn) {
@@ -34,7 +36,7 @@ test("POST /push/devices requires a bearer token", async () => {
     });
     assert.equal(response.status, 401);
     const data = await response.json();
-    assert.equal(data.error, "unauthorized");
+    assert.equal(data.error, "authentication_required");
   });
 });
 

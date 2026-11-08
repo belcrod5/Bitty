@@ -1,3 +1,4 @@
+import { mockRunnerLogin } from "./helpers/runner-login-fixture.mjs";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
@@ -56,6 +57,7 @@ await fs.mkdir(sessionsDir, { recursive: true });
 await fs.writeFile(rolloutPath, `${initialRecords.map((record) => JSON.stringify(record)).join("\n")}\n`);
 
 const { __TESTING__ } = await import("../src/server-runtime.mjs?session-messages-delta-endpoint");
+mockRunnerLogin(__TESTING__);
 const { server } = __TESTING__;
 
 test.after(async () => {

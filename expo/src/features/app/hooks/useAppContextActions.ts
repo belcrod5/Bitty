@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { Alert } from "react-native";
 import type { ModelOption, RunnerPairingResult } from "../contexts/AppSettingsContext";
@@ -8,11 +8,15 @@ import { TTS_SPEED_STEP, type SelectedVoiceIdByProvider, type TtsProvider } from
 import { isBackendChangeBlocked } from "../modelOptions";
 import type { CodexApprovalPolicy, ReasoningEffort } from "../utils/settingsParsers";
 import { parseCloudflareRunnerPairingPayload } from "../utils/cloudflareAccess";
-import { saveSecureRunnerCredentials } from "../utils/secureRunnerCredentials";
+import { clearSecureRunnerSession, runnerCredentialScope, saveSecureRunnerCredentials } from "../utils/secureRunnerCredentials";
+import { isRunnerSessionToken } from "../utils/runnerLogin";
 import { configureLocalRunnerTls } from "../utils/localRunnerTls";
 
 type UseAppContextActionsArgs = {
   drawerOpen: boolean;
+  runnerUrl: string;
+  cloudflareRunnerUrl: string;
+  localRunnerUrl: string;
   defaultLlmDirectory: string;
   directoryExplorerParentPath: string;
   directoryExplorerRootPath: string;
@@ -62,6 +66,7 @@ type UseAppContextActionsArgs = {
 
 export function useAppContextActions({
   drawerOpen,
+  runnerUrl, cloudflareRunnerUrl, localRunnerUrl,
   defaultLlmDirectory,
   directoryExplorerParentPath,
   directoryExplorerRootPath,
@@ -107,6 +112,9 @@ export function useAppContextActions({
   setTtsSpeedWithSync,
   setSelectedVoiceIdByProvider,
 }: UseAppContextActionsArgs) {
+  const connectionScope = runnerCredentialScope({ runnerUrl, cloudflareRunnerUrl, localRunnerUrl });
+  const scopeRef = useRef(connectionScope);
+  scopeRef.current = connectionScope;
   const openDrawer = useCallback(() => {
     setDrawerOpen(true);
   }, [setDrawerOpen]);
@@ -127,13 +135,18 @@ export function useAppContextActions({
   }, [selectLlmDirectory]);
   const saveRunnerToken = useCallback(async (valueRaw: string) => {
     const value = String(valueRaw || "").trim();
-    if (!value) throw new Error("runner_token_required");
-    await saveSecureRunnerCredentials({ runnerToken: value });
+    if (value && !isRunnerSessionToken(value)) throw new Error("runner_session_required");
+    const scope = connectionScope;
+    await saveSecureRunnerCredentials({ runnerToken: value }, scope);
+    if (value && JSON.stringify(scopeRef.current) !== JSON.stringify(scope)) {
+      await clearSecureRunnerSession(value);
+      throw new Error("runner_configuration_changed");
+    }
     setRunnerToken(value);
     // 保存値が既存tokenと同一だとManagerのoptionsは変化せず再接続が走らないため、
     // 「保存して接続」の意図どおり認証ブロックを解除して必ず接続を試みる。
     retryRunnerWsConnection?.();
-  }, [retryRunnerWsConnection, setRunnerToken]);
+  }, [retryRunnerWsConnection, setRunnerToken, runnerUrl, cloudflareRunnerUrl, localRunnerUrl]);
   const clearCloudflareAccessCredentials = useCallback(async () => {
     // Only the Cloudflare fields: passing runnerToken here would delete it whenever
     // this runs in a session whose credential load failed (state still empty).
@@ -146,12 +159,13 @@ export function useAppContextActions({
   }, [setCloudflareAccessClientId, setCloudflareAccessClientSecret]);
   const applyCloudflareRunnerPairing = useCallback(async (payload: string): Promise<RunnerPairingResult> => {
     const pairing = parseCloudflareRunnerPairingPayload(payload);
-    await configureLocalRunnerTls(pairing.localRunnerUrl, pairing.localRunnerCertificate);
+    setRunnerToken("");
     await saveSecureRunnerCredentials({
       runnerToken: pairing.runnerToken,
       cloudflareAccessClientId: pairing.cloudflareAccessClientId,
       cloudflareAccessClientSecret: pairing.cloudflareAccessClientSecret,
-    });
+    }, runnerCredentialScope({ runnerUrl: pairing.runnerUrl, cloudflareRunnerUrl: pairing.runnerUrl, localRunnerUrl: pairing.localRunnerUrl }));
+    await configureLocalRunnerTls(pairing.localRunnerUrl, pairing.localRunnerCertificate);
     setRunnerUrl(pairing.runnerUrl);
     setRunnerToken(pairing.runnerToken);
     setCloudflareAccessClientId(pairing.cloudflareAccessClientId);

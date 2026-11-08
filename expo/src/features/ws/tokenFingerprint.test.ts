@@ -20,3 +20,9 @@ test("returns a placeholder for an empty token", () => {
   expect(tokenFingerprint(undefined)).toBe("-");
   expect(tokenLength("")).toBe(0);
 });
+
+test("does not expose device session fingerprints or lengths in diagnostics", () => {
+  const session = "bitty_session_v1." + "a".repeat(43);
+  expect(tokenFingerprint(session)).toBe("-");
+  expect(tokenLength(session)).toBe(0);
+});

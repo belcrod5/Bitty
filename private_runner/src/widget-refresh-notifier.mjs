@@ -16,7 +16,7 @@ export function createWidgetRefreshNotifier({ enabled, apnsClient, deviceStore, 
       await Promise.allSettled(devices.map(async (device) => {
         const result = await apnsClient.sendToDevice(device.apnsToken,
           { aps: { "content-available": 1 }, bittyWidgetRefresh: 1 },
-          { env: device.env, pushType: "background", priority: 5, collapseId: "bitty-widget-refresh" });
+          { authSessionId: device.authSessionId, env: device.env, pushType: "background", priority: 5, collapseId: "bitty-widget-refresh" });
         if (result?.status === 410) await deviceStore.removeDevice(device.deviceId);
       }));
     } catch { /* A missed hint never interrupts agent activity. A later change can retry. */ }

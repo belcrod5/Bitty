@@ -1,3 +1,4 @@
+import { mockRunnerLogin } from "./helpers/runner-login-fixture.mjs";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
@@ -47,6 +48,7 @@ process.env.SESSION_ROOT_BINDING_ENABLED = "1";
 process.env.CLI_SESSION_INDEX_REFRESH_MIN_INTERVAL_MS = "0";
 
 const { __TESTING__ } = await import("../src/server-runtime.mjs?session-summaries-endpoint");
+mockRunnerLogin(__TESTING__);
 const { server } = __TESTING__;
 test.after(() => fs.rm(fixtureRoot, { recursive: true, force: true }));
 
@@ -93,7 +95,7 @@ test("POST /session-summaries requires runner authentication", async () => {
       sessionIds: [],
     }), "");
     assert.equal(response.status, 401);
-    assert.equal((await response.json()).error, "unauthorized");
+    assert.equal((await response.json()).error, "authentication_required");
   });
 });
 

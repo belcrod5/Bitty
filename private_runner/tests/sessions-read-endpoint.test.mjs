@@ -1,3 +1,4 @@
+import { mockRunnerLogin } from "./helpers/runner-login-fixture.mjs";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
@@ -39,6 +40,7 @@ process.env.CODEX_CLI_SESSIONS_DIR = path.join(tempRoot, "cli-sessions");
 process.env.CLI_SESSION_INDEX_PATH = path.join(tempRoot, "cli-index.json");
 
 const { __TESTING__ } = await import("../src/server-runtime.mjs?sessions-read-endpoint");
+mockRunnerLogin(__TESTING__);
 const { server } = __TESTING__;
 // This fixture exercises session counts; voice state belongs to its own temporary-store tests.
 __TESTING__.voiceContextService.unreadCount = async () => 0;
@@ -87,7 +89,7 @@ test("POST /sessions/read requires runner authentication", async () => {
       directory: projectRoot,
     }), "");
     assert.equal(response.status, 401);
-    assert.equal((await response.json()).error, "unauthorized");
+    assert.equal((await response.json()).error, "authentication_required");
   });
 });
 

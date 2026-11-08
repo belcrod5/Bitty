@@ -2,9 +2,10 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { requestControl, resolveControlSocket } from "../../skills/bitty-session-orchestrator/scripts/runner-control.mjs";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const CONFIG_KEYS = ["RUNNER_TOKEN_FILE", "RUNNER_PORT", "PORT"];
+const CONFIG_KEYS = ["RUNNER_TOKEN_FILE", "RUNNER_CONTROL_SOCKET"];
 const RUNNER_ERROR_CODES = new Set([
   "invalid_codex_schedules",
   "invalid_codex_schedule_id",
@@ -100,23 +101,22 @@ async function loadRunnerConfig() {
     }
   }
   for (const key of CONFIG_KEYS) validateEffectiveValue(values[key], key);
-  const portText = values.RUNNER_PORT || values.PORT || "8788";
-  if (!/^\d+$/.test(portText)) fail("runner_config_invalid", "Runner port must be an integer");
-  const port = Number(portText);
-  if (port < 1 || port > 65535) fail("runner_config_invalid", "Runner port is outside the valid range");
   const configuredTokenPath = values.RUNNER_TOKEN_FILE || "private_runner/logs/runner-token";
   const tokenPath = path.isAbsolute(configuredTokenPath)
     ? configuredTokenPath
     : path.resolve(REPOSITORY_ROOT, configuredTokenPath);
-  return { port, tokenPath };
+  let socketPath;
+  try { socketPath = await resolveControlSocket(REPOSITORY_ROOT, values.RUNNER_CONTROL_SOCKET); }
+  catch { fail("runner_config_invalid", "Runner control socket configuration is unavailable or invalid"); }
+  return { socketPath, tokenPath };
 }
 
 async function readToken(tokenPath) {
   let stat;
   let token;
   try {
-    stat = await fs.stat(tokenPath);
-    if (!stat.isFile() || (process.platform !== "win32" && (stat.mode & 0o077) !== 0)) {
+    stat = await fs.lstat(tokenPath);
+    if (!stat.isFile() || (process.platform !== "win32" && ((stat.mode & 0o077) !== 0 || stat.uid !== process.getuid()))) {
       fail("runner_token_file_invalid", `Runner token file must be a regular file with mode 600: ${tokenPath}`);
     }
     token = (await fs.readFile(tokenPath, "utf8")).trim();
@@ -184,7 +184,7 @@ function parseArguments(argv) {
 }
 
 async function requestRunner({ command, id, input, requestId }) {
-  const { port, tokenPath } = await loadRunnerConfig();
+  const { socketPath, tokenPath } = await loadRunnerConfig();
   const token = await readToken(tokenPath);
   const memberPath = id ? `/${encodeURIComponent(id)}` : "";
   const method = { list: "GET", create: "POST", update: "PATCH", delete: "DELETE" }[command];
@@ -195,31 +195,20 @@ async function requestRunner({ command, id, input, requestId }) {
     body = JSON.stringify(input);
   }
   if (requestId) headers["Idempotency-Key"] = requestId;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10_000);
   let response;
   try {
-    response = await fetch(`http://127.0.0.1:${port}/codex-schedules${memberPath}`, {
+    response = await requestControl(socketPath, `/codex-schedules${memberPath}`, {
       method,
       headers,
       body,
-      redirect: "manual",
-      signal: controller.signal,
+      timeout: 10_000,
     });
   } catch (error) {
-    clearTimeout(timeout);
-    if (error?.name === "AbortError") fail("runner_request_timeout", "Runner request timed out");
+    if (error?.message === "Runner control request timed out") fail("runner_request_timeout", "Runner request timed out");
+    if (error?.code === "runner_response_incomplete") fail("invalid_runner_response", "Runner response could not be read");
     fail("runner_connection_failed", "Could not connect to the local Runner");
   }
-  let text;
-  try {
-    text = await response.text();
-  } catch (error) {
-    clearTimeout(timeout);
-    if (error?.name === "AbortError") fail("runner_request_timeout", "Runner request timed out");
-    fail("invalid_runner_response", "Runner response could not be read");
-  }
-  clearTimeout(timeout);
+  const text = await response.text();
   let payload;
   try {
     payload = JSON.parse(text);

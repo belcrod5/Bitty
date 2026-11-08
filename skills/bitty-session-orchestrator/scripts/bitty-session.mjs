@@ -4,6 +4,8 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
+import net from "node:net";
+import { requestControl, resolveControlSocket } from "./runner-control.mjs";
 
 // Only infer a repository from the actual working tree, never an installed skill's layout.
 async function findRepoRoot() {
@@ -14,16 +16,8 @@ async function findRepoRoot() {
   }
 }
 const repoRoot = await findRepoRoot();
-let baseUrl;
-function runnerOrigin() {
-  const url = new URL(process.env.BITTY_RUNNER_URL || "http://127.0.0.1:8788");
-  if (url.username || url.password || url.search || url.hash || url.pathname !== "/"
-    || !["http:", "https:"].includes(url.protocol)
-    || (url.protocol === "http:" && !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) {
-    throw new Error("BITTY_RUNNER_URL must be an HTTPS origin or a local loopback HTTP origin");
-  }
-  return url;
-}
+const baseUrl = new URL("http://runner.local/");
+let socketPath;
 const configuredTokenFile = process.env.BITTY_RUNNER_TOKEN_FILE || process.env.RUNNER_TOKEN_FILE;
 const tokenFile = configuredTokenFile && path.isAbsolute(configuredTokenFile) ? configuredTokenFile
   : repoRoot ? path.resolve(repoRoot, configuredTokenFile || "private_runner/logs/runner-token") : null;
@@ -75,7 +69,7 @@ function assertOptions(opts, allowed) {
 async function auth() {
   if (!tokenFile) throw new Error("Set BITTY_REPO_ROOT or an absolute BITTY_RUNNER_TOKEN_FILE");
   const stat = await fs.lstat(tokenFile);
-  if (!stat.isFile() || (process.platform !== "win32" && (stat.mode & 0o077) !== 0)) {
+  if (!stat.isFile() || (process.platform !== "win32" && ((stat.mode & 0o077) !== 0 || stat.uid !== process.getuid()))) {
     throw new Error(`Runner token file must be a regular file with mode 600: ${tokenFile}`);
   }
   const token = (await fs.readFile(tokenFile, "utf8")).trim();
@@ -87,13 +81,12 @@ async function auth() {
 async function http(token, pathname, params, init = {}, timeout = 30_000) {
   const url = new URL(pathname, `${baseUrl}/`);
   for (const [key, value] of Object.entries(params || {})) if (value) url.searchParams.set(key, value);
-  const response = await fetch(url, {
+  const response = await requestControl(socketPath, url.pathname + url.search, {
     ...init,
     headers: { authorization: `Bearer ${token}`,
       ...(process.env.CODEX_THREAD_ID ? { "x-bitty-display-caller": process.env.CODEX_THREAD_ID } : {}),
       ...(init.body ? { "content-type": "application/json" } : {}) },
-    redirect: "error",
-    signal: AbortSignal.timeout(timeout),
+    timeout,
   });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -129,7 +122,7 @@ async function runSocket(token, mode, details) {
   const WebSocket = require("ws");
   const url = new URL("/runner-ws", `${baseUrl}/`);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  const ws = new WebSocket(url, { headers: { authorization: `Bearer ${token}`,
+  const ws = new WebSocket(url, { createConnection: () => net.createConnection({ path: socketPath }), headers: { authorization: `Bearer ${token}`,
     ...(process.env.CODEX_THREAD_ID ? { "x-bitty-display-caller": process.env.CODEX_THREAD_ID } : {}),
   } });
   const subscriptionId = randomUUID();
@@ -300,7 +293,7 @@ async function listOrchestrators(token) {
   const WebSocket = require("ws");
   const url = new URL("/runner-ws", baseUrl);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  const ws = new WebSocket(url, { headers: { authorization: `Bearer ${token}` }, followRedirects: false });
+  const ws = new WebSocket(url, { createConnection: () => net.createConnection({ path: socketPath }), headers: { authorization: `Bearer ${token}` }, followRedirects: false });
   const requestId = randomUUID();
   return await new Promise((resolve, reject) => {
     let settled = false;
@@ -331,7 +324,7 @@ async function listOrchestrators(token) {
 async function main() {
   const [command, ...args] = process.argv.slice(2);
   if (!command || command === "help" || command === "--help") return console.log(usage);
-  baseUrl = runnerOrigin();
+  socketPath = await resolveControlSocket(repoRoot);
   const subcommand = command === "control" ? args.shift() : null;
   const opts = options(args);
   const token = await auth();

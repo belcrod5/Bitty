@@ -1,3 +1,4 @@
+import { RUNNER_AUTHENTICATION } from "../src/runner-login-http.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -120,12 +121,12 @@ test("Bearer protected HTTP handler passes bounded request and JSON result end t
     readJsonBody: async (_req, limit) => { assert.equal(limit, 8192); reads++; return body; } });
   await handler({ method: "POST", token: "bad" }, {}, null, "/app-control/operations");
   assert.equal(responses.at(-1).status, 401); assert.equal(reads, 0);
-  await handler({ method: "GET", token: "secret" }, {}, null, `/app-control/contexts/${body.context}`);
+  await handler({ method: "GET", [RUNNER_AUTHENTICATION]: { sessionId: "test-session", ownerSubjectId: "test-owner" }, token: "secret" }, {}, null, `/app-control/contexts/${body.context}`);
   assert.equal(responses.at(-1).value.status, "ready");
-  await handler({ method: "POST", token: "secret" }, {}, null, "/app-control/operations");
+  await handler({ method: "POST", [RUNNER_AUTHENTICATION]: { sessionId: "test-session", ownerSubjectId: "test-owner" }, token: "secret" }, {}, null, "/app-control/operations");
   assert.equal(responses.at(-1).status, 202);
   f.envelope("result", { connectionGeneration: f.connectionGeneration, status: "applied", generation: 5, desired: "stopped", observed: "stopped", target: source }, body.operationId);
-  await handler({ method: "GET", token: "secret" }, {}, null, `/app-control/operations/${body.operationId}`);
+  await handler({ method: "GET", [RUNNER_AUTHENTICATION]: { sessionId: "test-session", ownerSubjectId: "test-owner" }, token: "secret" }, {}, null, `/app-control/operations/${body.operationId}`);
   assert.equal(responses.at(-1).value.status, "applied");
   assert.equal(JSON.stringify(responses).includes("secret"), false);
 });

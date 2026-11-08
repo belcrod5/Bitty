@@ -4,7 +4,7 @@
 // 同一で、runner起動ログの RUNNER_TOKEN_ID やupgradeログとそのまま比較できる。
 export function tokenFingerprint(raw: unknown): string {
   const token = String(raw || "").trim();
-  if (!token) return "-";
+  if (!token || token.startsWith("bitty_session_v1.")) return "-";
   let hash = 0x811c9dc5;
   for (let i = 0; i < token.length; i += 1) {
     hash ^= token.charCodeAt(i);
@@ -14,5 +14,6 @@ export function tokenFingerprint(raw: unknown): string {
 }
 
 export function tokenLength(raw: unknown): number {
-  return String(raw || "").trim().length;
+  const token = String(raw || "").trim();
+  return token.startsWith("bitty_session_v1.") ? 0 : token.length;
 }

@@ -6,6 +6,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { Readable, Writable } from "node:stream";
 import { finished } from "node:stream/promises";
+import * as OTPAuth from "otpauth";
+import { createRunnerLoginService } from "../src/runner-login-service.mjs";
 
 // Exercise the real dispatch without opening a port or touching the user's stores.
 const runnerRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -18,9 +20,33 @@ Object.assign(process.env, { RUNNER_SKIP_SERVER_START: "1", RUNNER_MOCK: "1", RU
   RUNNER_LOG_REQUESTS: "0", DIRECTORY_EXPLORER_MAX_ENTRIES: "2", CODEX_WS_DEBUG_FILE: path.join(temp, "ws-debug.jsonl"),
   CODEX_AUTH_STORE_DIR: path.join(temp, "auth"), ACP_SESSION_STORE_PATH: path.join(temp, "agent-sessions.json") });
 const { __TESTING__ } = await import(pathToFileURL(path.join(temp, "private_runner/src/server-runtime.mjs")));
-test.after(async () => { process.chdir(originalCwd); await fs.rm(temp, { recursive: true, force: true }); });
+let clock = Date.parse("2026-11-08T00:00:00Z");
+const messages = [], binding = "x".repeat(43);
+const login = createRunnerLoginService({ directory: path.join(temp, "login"), legacyToken: "synthetic-token",
+  keyProvider: async () => Buffer.alloc(32, 42), now: () => clock,
+  sendMail: async (message) => { messages.push(message); } });
+await login.initialize();
+const start = async (method) => {
+  const challenge = await login[method]({ email: "owner@example.test", clientBinding: binding });
+  const deadline = Date.now() + 5000;
+  while (true) {
+    const state = JSON.parse(await fs.readFile(path.join(temp, "login/state.json"), "utf8"));
+    if (state.challenges.some((item) => item.id === challenge.challengeId && item.delivered)) break;
+    assert.ok(Date.now() < deadline, "isolated login email delivery timed out");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return { ...challenge, clientBinding: binding,
+    emailCode: messages.find((message) => message.id === challenge.challengeId).text.match(/\d{8}/)[0] };
+};
+const prepared = await login.prepareSetup(await start("startSetup"));
+const otp = () => new OTPAuth.TOTP({ secret: OTPAuth.Secret.fromBase32(prepared.secret) }).generate({ timestamp: clock });
+await login.completeSetup({ setupId: prepared.setupId, clientBinding: binding, totpCode: otp() });
+clock += 61000;
+const session = await login.completeLogin({ ...await start("startLogin"), totpCode: otp() });
+const handler = __TESTING__.createAuthenticatedHandler(login);
+test.after(async () => { await login.close(); process.chdir(originalCwd); await fs.rm(temp, { recursive: true, force: true }); });
 
-async function request(url, { token = "synthetic-token", method = "GET", body } = {}) {
+async function request(url, { token = session.token, method = "GET", body } = {}) {
   let status, headers;
   const chunks = [];
   const req = Readable.from(body ? [JSON.stringify(body)] : []);
@@ -28,8 +54,9 @@ async function request(url, { token = "synthetic-token", method = "GET", body } 
     headers: { host: "127.0.0.1", authorization: `Bearer ${token}` }, socket: { remoteAddress: "synthetic" } });
   const res = new Writable({ write(chunk, _encoding, callback) { chunks.push(Buffer.from(chunk)); callback(); } });
   res.req = req;
+  res.setHeader = () => {};
   res.writeHead = (code, values) => { status = code; headers = values; };
-  await __TESTING__.handleRunnerRequest(req, res);
+  await handler(req, res);
   await finished(res);
   const data = Buffer.concat(chunks).toString();
   return { status, payload: headers?.["content-type"]?.includes("application/json") ? JSON.parse(data) : data };
@@ -37,6 +64,8 @@ async function request(url, { token = "synthetic-token", method = "GET", body } 
 
 test("computer information requires authentication and has only a read endpoint", async () => {
   assert.equal((await request("/computer", { token: "wrong" })).status, 401);
+  assert.equal((await request("/computer", { token: "synthetic-token" })).status, 401);
+  assert.equal((await request("/directories", { token: "synthetic-token" })).status, 401);
   const { status, payload } = await request("/computer");
   assert.equal(status, 200);
   assert.equal(payload.hostname, os.hostname());

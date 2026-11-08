@@ -1,3 +1,4 @@
+import { mockRunnerLogin } from "./helpers/runner-login-fixture.mjs";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
@@ -14,6 +15,7 @@ process.env.APPLE_TEAM_ID = "TESTTEAMID";
 process.env.PUSH_DEVICE_STORE_PATH = path.join(tempDir, "push_devices.json");
 
 const { __TESTING__ } = await import("../src/server-runtime.mjs");
+mockRunnerLogin(__TESTING__);
 const { server, codexWsRelaysById } = __TESTING__;
 
 test.after(async () => {

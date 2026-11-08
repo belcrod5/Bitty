@@ -68,12 +68,12 @@ export function parseCloudflareRunnerPairingPayload(raw: string): CloudflareRunn
   const runnerUrl = readString(record, "runnerUrl");
   const localRunnerUrl = readString(record, "localRunnerUrl");
   const localRunnerCertificate = readString(record, "localRunnerCertificate");
-  const runnerToken = readString(record, "runnerToken");
+  // Pairing configures transport only. A legacy QR never grants a login session.
+  const runnerToken = "";
   const cloudflareAccessClientId = readString(record, "cloudflareAccessClientId");
   const cloudflareAccessClientSecret = readString(record, "cloudflareAccessClientSecret");
 
   if (!runnerUrl) throw new Error("QR payload is missing runnerUrl");
-  if (!runnerToken) throw new Error("QR payload is missing runnerToken");
   if (!cloudflareAccessClientId) {
     throw new Error("QR payload is missing Cloudflare Access client id");
   }

@@ -1,3 +1,4 @@
+import { RUNNER_AUTHENTICATION } from "../src/runner-login-http.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -65,6 +66,7 @@ async function respond(service, approvalId, approved, overrides = {}) {
   const req = {
     method: "POST",
     token: overrides.token ?? "runner-token",
+    [RUNNER_AUTHENTICATION]: !overrides.token || overrides.token === "runner-token" ? { sessionId: "test-session" } : undefined,
     body: overrides.body ?? { approved },
   };
   const res = {};

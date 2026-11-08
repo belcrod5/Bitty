@@ -28,6 +28,7 @@ jest.mock("../utils/persistedSettingsFile", () => ({
 }));
 
 jest.mock("../utils/secureRunnerCredentials", () => ({
+  ...jest.requireActual("../utils/secureRunnerCredentials"),
   loadSecureRunnerCredentials: jest.fn(),
   saveSecureRunnerCredentials: jest.fn(),
 }));
@@ -200,7 +201,7 @@ afterEach(() => {
   jest.restoreAllMocks();
 });
 
-test("legacy settings-JSON credentials migrate to the secure store once", async () => {
+test("legacy unbound credentials require pairing again instead of automatic migration", async () => {
   // 250ms autosaveの認証情報保存(移行を兼ねていた)は削除済み。移行しないと
   // 初回autosaveがJSONから認証キーを落とした時点でtokenが失われる。
   mockReadPersistedSettings.mockResolvedValue({
@@ -214,10 +215,7 @@ test("legacy settings-JSON credentials migrate to the secure store once", async 
   });
   await renderPersistenceController();
 
-  expect(mockSaveSecureRunnerCredentials).toHaveBeenCalledWith({
-    runnerToken: "legacy-json-token",
-    cloudflareAccessClientId: "legacy-id",
-  });
+  expect(mockSaveSecureRunnerCredentials).not.toHaveBeenCalled();
 });
 
 test("legacy settings-JSON credentials never overwrite existing secure store values", async () => {
@@ -551,9 +549,9 @@ test("clipboard import never restores credentials from an old settings payload",
     importButton?.onPress?.();
   });
 
-  expect(setRunnerToken).not.toHaveBeenCalled();
-  expect(setCloudflareAccessClientId).not.toHaveBeenCalled();
-  expect(setCloudflareAccessClientSecret).not.toHaveBeenCalled();
+  expect(setRunnerToken).toHaveBeenCalledWith("");
+  expect(setCloudflareAccessClientId).toHaveBeenCalledWith("");
+  expect(setCloudflareAccessClientSecret).toHaveBeenCalledWith("");
 });
 
 test("keeps a persisted unsent local session as an unlocked draft", async () => {
@@ -605,7 +603,7 @@ test("preserves a persisted backend and model before its catalog is available", 
   expect(setModelRef).toHaveBeenCalledWith("sonnet");
 });
 
-test("local startup preserves legacy credentials before applying SecureStore values", async () => {
+test("local startup ignores legacy settings credentials and applies only scoped SecureStore values", async () => {
   mockReadPersistedSettings.mockResolvedValue({
     runnerToken: "legacy-runner-token",
     cloudflareAccessClientId: "legacy-cloudflare-id",
@@ -626,13 +624,13 @@ test("local startup preserves legacy credentials before applying SecureStore val
     setCloudflareAccessClientSecret,
   } as Parameters<typeof renderPersistenceController>[0]);
 
-  expect(setRunnerToken.mock.calls[0][0]).toBe("legacy-runner-token");
-  expect(setCloudflareAccessClientId.mock.calls[0][0]).toBe("legacy-cloudflare-id");
-  expect(setCloudflareAccessClientSecret.mock.calls[0][0]).toBe("legacy-cloudflare-secret");
+  expect(setRunnerToken.mock.calls.some(([value]) => value === "legacy-runner-token")).toBe(false);
+  expect(setCloudflareAccessClientId.mock.calls.some(([value]) => value === "legacy-cloudflare-id")).toBe(false);
+  expect(setCloudflareAccessClientSecret.mock.calls.some(([value]) => value === "legacy-cloudflare-secret")).toBe(false);
 
-  const secureRunnerUpdate = setRunnerToken.mock.calls[1][0];
-  const secureCloudflareIdUpdate = setCloudflareAccessClientId.mock.calls[1][0];
-  const secureCloudflareSecretUpdate = setCloudflareAccessClientSecret.mock.calls[1][0];
+  const secureRunnerUpdate = setRunnerToken.mock.calls[0][0];
+  const secureCloudflareIdUpdate = setCloudflareAccessClientId.mock.calls[0][0];
+  const secureCloudflareSecretUpdate = setCloudflareAccessClientSecret.mock.calls[0][0];
   expect(secureRunnerUpdate("legacy-runner-token")).toBe("secure-runner-token");
   expect(secureCloudflareIdUpdate("legacy-cloudflare-id")).toBe("secure-cloudflare-id");
   expect(secureCloudflareSecretUpdate("legacy-cloudflare-secret")).toBe("secure-cloudflare-secret");
@@ -727,4 +725,20 @@ test("macOS hydrates a saved loopback local URL without TLS or Cloudflare", asyn
   await renderPersistenceController({ setRunnerUrl, setLocalRunnerUrl });
   expect(setLocalRunnerUrl).toHaveBeenCalledWith("http://127.0.0.1:8788");
   expect(setRunnerUrl).toHaveBeenCalledWith("http://127.0.0.1:8788");
+});
+
+test("does not publish scoped credentials when the settings snapshot cannot be read", async () => {
+  mockReadPersistedSettings.mockRejectedValue(new Error("settings unavailable"));
+  mockLoadSecureRunnerCredentials.mockResolvedValue({
+    runnerToken: "bitty_session_v1." + "a".repeat(43),
+    cloudflareAccessClientId: "old-id", cloudflareAccessClientSecret: "old-secret",
+  });
+  const setRunnerToken = jest.fn();
+  const setCloudflareAccessClientId = jest.fn();
+  const setCloudflareAccessClientSecret = jest.fn();
+  await renderPersistenceController({ setRunnerToken, setCloudflareAccessClientId, setCloudflareAccessClientSecret });
+  expect(mockLoadSecureRunnerCredentials).toHaveBeenCalledWith(null);
+  expect(setRunnerToken).not.toHaveBeenCalled();
+  expect(setCloudflareAccessClientId).not.toHaveBeenCalled();
+  expect(setCloudflareAccessClientSecret).not.toHaveBeenCalled();
 });

@@ -1,3 +1,4 @@
+import { requireRunnerAuthentication, RUNNER_AUTHENTICATION } from "../runner-login-http.mjs";
 import { createHash } from "node:crypto";
 import {
   AGENT_EVENT_TYPES,
@@ -11,8 +12,6 @@ import {
 
 export function createAgentHttpHandler({
   service,
-  runnerToken,
-  parseAuthToken,
   json,
   normalizeSessionListLimit,
   normalizeSessionMessagesLimit,
@@ -21,20 +20,9 @@ export function createAgentHttpHandler({
   subjectId = "runner-token",
   activity,
 }) {
-  function authenticate(req, res) {
-    if (!runnerToken) {
-      json(res, 500, { error: "runner_token_missing", message: "RUNNER_TOKEN is required" });
-      return false;
-    }
-    if (parseAuthToken(req) !== runnerToken) {
-      json(res, 401, { error: "unauthorized" });
-      return false;
-    }
-    return true;
-  }
 
   return async function handleAgentHttp(req, res, reqUrl, pathname) {
-    if (activity && runnerToken && parseAuthToken(req) === runnerToken && pathname.startsWith("/agent/")
+    if (activity && req[RUNNER_AUTHENTICATION] && pathname.startsWith("/agent/")
       && pathname !== "/agent/session-mode") {
       const backendId = String(reqUrl.searchParams.get("backendId") || "").trim();
       const nativeSessionId = String(reqUrl.searchParams.get("sessionId") || "").trim();
@@ -43,7 +31,7 @@ export function createAgentHttpHandler({
       ...(backendId && nativeSessionId ? { sessionRef: { backendId, nativeSessionId } } : {}) }); } catch {}
     }
     if (req.method === "GET" && pathname === "/agent/backends/status") {
-      if (!authenticate(req, res)) return true;
+      if (!requireRunnerAuthentication(req, res, json)) return true;
       try {
         json(res, 200, {
           protocolVersion: AGENT_PROTOCOL_VERSION,
@@ -55,7 +43,7 @@ export function createAgentHttpHandler({
       return true;
     }
     if (req.method === "GET" && pathname === "/agent/sessions") {
-      if (!authenticate(req, res)) return true;
+      if (!requireRunnerAuthentication(req, res, json)) return true;
       try {
         json(res, 200, await service.listSessions({
           backendId: String(reqUrl.searchParams.get("backendId") || "").trim(),
@@ -70,7 +58,7 @@ export function createAgentHttpHandler({
       return true;
     }
     if (req.method === "GET" && pathname === "/agent/session-history/search") {
-      if (!authenticate(req, res)) return true;
+      if (!requireRunnerAuthentication(req, res, json)) return true;
       try {
         json(res, 200, await service.searchConversationHistory({
           query: reqUrl.searchParams.get("query"),
@@ -87,7 +75,7 @@ export function createAgentHttpHandler({
       return true;
     }
     if (req.method === "GET" && pathname === "/agent/session-conversation") {
-      if (!authenticate(req, res)) return true;
+      if (!requireRunnerAuthentication(req, res, json)) return true;
       const backendId = String(reqUrl.searchParams.get("backendId") || "").trim();
       try {
         json(res, 200, await service.readConversationHistory({
@@ -106,7 +94,7 @@ export function createAgentHttpHandler({
       return true;
     }
     if (req.method === "GET" && pathname === "/agent/session-history") {
-      if (!authenticate(req, res)) return true;
+      if (!requireRunnerAuthentication(req, res, json)) return true;
       const backendId = String(reqUrl.searchParams.get("backendId") || "").trim();
       try {
         json(res, 200, await service.readHistory({
@@ -126,7 +114,7 @@ export function createAgentHttpHandler({
       return true;
     }
     if (req.method === "GET" && pathname === "/agent/workspaces") {
-      if (!authenticate(req, res)) return true;
+      if (!requireRunnerAuthentication(req, res, json)) return true;
       try {
         json(res, 200, { workspaces: await workspaceAdmission.list(subjectId) });
       } catch (error) {
@@ -135,7 +123,7 @@ export function createAgentHttpHandler({
       return true;
     }
     if (req.method === "POST" && pathname === "/agent/workspaces/prepare") {
-      if (!authenticate(req, res)) return true;
+      if (!requireRunnerAuthentication(req, res, json)) return true;
       try {
         const body = await readJsonBody(req, 16 * 1024);
         json(res, 200, await workspaceAdmission.prepare(subjectId, body?.path));
@@ -145,7 +133,7 @@ export function createAgentHttpHandler({
       return true;
     }
     if (req.method === "POST" && pathname === "/agent/workspaces/confirm") {
-      if (!authenticate(req, res)) return true;
+      if (!requireRunnerAuthentication(req, res, json)) return true;
       try {
         const body = await readJsonBody(req, 8 * 1024);
         json(res, 200, { workspace: await workspaceAdmission.confirm(subjectId, body?.requestId) });
@@ -155,7 +143,7 @@ export function createAgentHttpHandler({
       return true;
     }
     if (req.method === "POST" && pathname === "/agent/workspaces/revoke") {
-      if (!authenticate(req, res)) return true;
+      if (!requireRunnerAuthentication(req, res, json)) return true;
       try {
         const body = await readJsonBody(req, 16 * 1024);
         const workspace = await workspaceAdmission.revoke(subjectId, body?.canonicalRoot);
@@ -166,7 +154,7 @@ export function createAgentHttpHandler({
       return true;
     }
     if (req.method === "POST" && pathname === "/agent/session-mode") {
-      if (!authenticate(req, res)) return true;
+      if (!requireRunnerAuthentication(req, res, json)) return true;
       try {
         const body = await readJsonBody(req, 16 * 1024);
         try { activity?.observeHttp(req, res, { label: "切替中", sessionRef: body?.sessionRef }); } catch {}

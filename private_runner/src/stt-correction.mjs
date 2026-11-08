@@ -1,3 +1,4 @@
+import { requireRunnerAuthentication } from "./runner-login-http.mjs";
 import { promises as fs } from "node:fs";
 import { extractCodexAgentMessageText, listCodexModelsFromAppServer } from "./codex-turn-execution.mjs";
 
@@ -155,11 +156,10 @@ export function createSttCorrectionService({ createClient, settings, workspaceDi
   };
 }
 
-export function createSttCorrectionHttpHandler({ service, runnerToken, parseAuthToken, readJsonBody, json }) {
+export function createSttCorrectionHttpHandler({ service, readJsonBody, json }) {
   return async (req, res, pathname) => {
     if (pathname !== "/stt/correct" && pathname !== "/stt/models") return false;
-    if (!runnerToken) json(res, 500, { error: "runner_token_missing" });
-    else if (parseAuthToken(req) !== runnerToken) json(res, 401, { error: "unauthorized" });
+    if (!requireRunnerAuthentication(req, res, json)) return true;
     else {
       try {
         if (pathname === "/stt/models" && req.method === "GET") {

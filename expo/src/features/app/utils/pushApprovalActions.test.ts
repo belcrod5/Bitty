@@ -37,6 +37,7 @@ jest.mock("expo-notifications", () => ({
 }));
 
 jest.mock("./secureRunnerCredentials", () => ({
+  ...jest.requireActual("./secureRunnerCredentials"),
   loadSecureRunnerCredentials: jest.fn(),
 }));
 

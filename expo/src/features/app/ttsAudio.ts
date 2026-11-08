@@ -1,7 +1,7 @@
 import { NativeModules, Platform } from "react-native";
 import { Audio } from "./audio";
 import type { VisualThemeTtsEffect } from "./theme/visualThemes";
-import { getCloudflareAccessHeadersForUrl } from "./utils/cloudflareAccessFetch";
+import { getRunnerMediaHeadersForUrl } from "./utils/cloudflareAccessFetch";
 
 type TtsEffectsModule = {
   process(uri: string, effect: VisualThemeTtsEffect | null, requestId: string, headers: Record<string, string>): Promise<string>;
@@ -18,7 +18,7 @@ export async function createTtsSoundAsync(
   signal?: AbortSignal
 ): Promise<Audio.Sound> {
   if (signal?.aborted) throw new Error("TTS音声加工を中止しました。");
-  const headers = getCloudflareAccessHeadersForUrl(uri);
+  const headers = getRunnerMediaHeadersForUrl(uri);
   if (!effect && Platform.OS !== "ios" && Platform.OS !== "macos") {
     const source = Object.keys(headers).length ? { uri, headers } : { uri };
     const { sound } = await Audio.Sound.createAsync(source, status);
