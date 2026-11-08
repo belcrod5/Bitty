@@ -33,7 +33,7 @@ jobs:
 
       - name: Test Runner login UI and credential boundaries
         working-directory: expo
-        run: npx jest --runInBand --silent src/features/app/components/RunnerLoginSettings.test.tsx src/features/app/hooks/useRunnerSessionLifecycle.test.tsx src/features/app/screens/RunnerLoginScreen.test.tsx src/features/app/utils/runnerLogin.test.ts src/features/app/utils/secureRunnerCredentials.test.ts src/features/app/utils/cloudflareAccessFetch.test.ts src/features/app/ttsAudio.test.ts
+        run: npx jest --runInBand --silent src/features/app/components/RunnerLoginSettings.test.tsx src/features/app/hooks/useRunnerSessionLifecycle.test.tsx src/features/app/screens/RunnerLoginScreen.test.tsx src/features/app/screens/SettingsScreen.test.tsx src/features/app/screens/CloudflareTunnelMonitorScreen.test.tsx src/features/app/utils/runnerLogin.test.ts src/features/app/utils/secureRunnerCredentials.test.ts src/features/app/utils/cloudflareAccessFetch.test.ts src/features/app/ttsAudio.test.ts
 
       - name: Install private runner dependencies
         working-directory: private_runner

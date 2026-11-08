@@ -63,14 +63,14 @@ export async function requestRunnerLogin<T>(
 }
 
 export function runnerLoginErrorMessage(error: unknown) {
-  if (!(error instanceof RunnerLoginError)) return "通信できませんでした。接続設定を確認して再度お試しください。";
+  if (!(error instanceof RunnerLoginError)) return "接続できません。Macとネットワークを確認してください。";
   switch (error.code) {
-    case "authentication_required": return "ログインの期限が切れたか、端末が失効しました。再ログインしてください。";
-    case "reauthentication_required": return "他の端末を失効するには、メールとAuthenticatorで再確認してください。";
-    case "invalid_authentication": return "コードが違うか、期限が切れています。確認して再度お試しください。";
-    case "authentication_rate_limited": return "試行回数の上限に達しました。しばらく待ってからお試しください。";
-    case "authentication_unavailable": return "Mac側の本人認証設定が必要です。所有者登録とメール送信設定を確認してください。";
-    case "invalid_runner_origin": return "初回はMacの接続設定QRを読み込んでください。";
-    default: return "ログイン処理に失敗しました。接続設定を確認して再度お試しください。";
+    case "authentication_required": return "もう一度ログインしてください。";
+    case "reauthentication_required": return "端末の操作には、もう一度本人確認が必要です。";
+    case "invalid_authentication": return "最新メールの8桁と、認証アプリの新しい6桁を確認してください。";
+    case "authentication_rate_limited": return "少し待ってから、もう一度お試しください。";
+    case "authentication_unavailable": return "Macの初期設定とメール設定を確認してください。";
+    case "invalid_runner_origin": return "接続先を設定してください。Macの接続QRを使います。";
+    default: return "ログインできませんでした。もう一度お試しください。";
   }
 }

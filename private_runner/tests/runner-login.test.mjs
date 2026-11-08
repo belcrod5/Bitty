@@ -431,3 +431,16 @@ test("UDS local credential parser accepts RFC 6750 base64 characters without ena
   assert.equal((await adapter.authenticate(request, true)).local, true);
   await assert.rejects(adapter.authenticate({ headers: { authorization: `Bearer ${token}` } }), { code: "authentication_required" });
 });
+
+test("verification emails distinguish setup, login, device management and recovery", async (t) => {
+  const f = await fixture(t), owner = await f.setup();
+  const session = await f.login(owner.secret), context = await f.service.authenticate(session.token);
+  f.advance(61000); await f.start("reauth", {}, context);
+  f.advance(61000); await f.start("recovery");
+  assert.deepEqual(f.messages.filter(message => /コード$/.test(message.subject)).map(message => message.subject),
+    ["Bitty 初期設定コード", "Bitty ログインコード", "Bitty 端末管理の確認コード", "Bitty 復旧コード"]);
+  for (const message of f.messages.filter(message => /コード$/.test(message.subject))) {
+    assert.match(message.text, /コード: \d{8}/);
+    assert.match(message.text, /10分以内/);
+  }
+});

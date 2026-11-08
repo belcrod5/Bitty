@@ -146,7 +146,12 @@ export function createRunnerLoginService({ directory, legacyToken = "", sendMail
     });
     const deliver = async () => {
       let delivered = false;
-      try { await sendMail({ to: destination, subject: "Bitty 本人確認コード", text: `本人確認コード: ${code}\n10分間有効です。心当たりがない場合は入力せず、このメールを破棄してください。`, id }); delivered = true; } catch {}
+      try {
+        const title = { setup: "初期設定", login: "ログイン", reauth: "端末管理の確認", recovery: "復旧" }[purpose];
+        await sendMail({ to: destination, subject: `Bitty ${title}コード`,
+          text: `${title}コード: ${code}\n\n10分以内に入力してください。再送した場合は最新のメールを使います。\n心当たりがない場合は、このメールを破棄してください。`, id });
+        delivered = true;
+      } catch {}
       await change((state) => { const challenge = state.challenges.find((item) => item.id === id); if (challenge) challenge.delivered = delivered; });
       return delivered;
     };

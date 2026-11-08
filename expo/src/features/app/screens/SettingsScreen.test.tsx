@@ -140,6 +140,8 @@ test("renders real settings and wires their actions securely", async () => {
   expect(screen.queryByLabelText("Codexトークン")).toBeNull();
   expect(screen.queryByLabelText("Runnerトークン")).toBeNull();
   expect(screen.getByText("本人ログインと端末")).toBeTruthy();
+  expect(screen.getAllByText(/^(本人ログインと端末|接続)$/).map((node) => node.props.children))
+    .toEqual(["本人ログインと端末", "接続"]);
 
   expect(screen.queryByLabelText("Runner URL")).toBeNull();
   await fireEvent.changeText(screen.getByLabelText("ローカルURL"), "http://next.local:8788");

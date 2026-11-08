@@ -5,7 +5,6 @@ import { effortOptionsForModel } from "../modelOptions";
 import { useAppStyles } from "../styles";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { SettingsSelect } from "./SettingsSelect";
-import { RunnerLoginSettings } from "./RunnerLoginSettings";
 
 const APPROVAL_OPTIONS = [
   { value: "on-request", label: "必要時に確認" },
@@ -70,7 +69,7 @@ export function ConnectionSettings() {
         <Text style={styles.settingsSectionTitle}>接続</Text>
       </View>
 
-      <Text style={styles.hint}>接続先を変更するとログイン情報を消去します。Cloudflare経由では接続設定QRを読み直してください。</Text>
+      <Text style={styles.hint}>接続先を変えるとログアウトします。Cloudflare接続はQRを読み直してください。</Text>
       <View style={styles.settingsGroup}>
         <View style={[styles.settingsInputRow, styles.settingsRowDivider]}>
           <Ionicons name="server-outline" size={22} color={theme.colors.controlTextPrimary} />
@@ -108,8 +107,6 @@ export function ConnectionSettings() {
 
       </View>
     </View>
-
-    <RunnerLoginSettings />
 
     <View style={styles.settingsSection}>
       <View style={styles.settingsSectionHeader}>

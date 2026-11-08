@@ -1,9 +1,12 @@
-import { useEffect, useRef, useState } from "react";
-import { Alert, Platform, Pressable, Text, TextInput, View } from "react-native";
+import { useEffect, useRef, useState, type ComponentProps } from "react";
+import { ActivityIndicator, Alert, Platform, Pressable, Text, TextInput, View } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import * as Crypto from "expo-crypto";
 import { useAppSettings } from "../contexts/AppSettingsContext";
 import { useAppShell } from "../contexts/AppShellContext";
-import { useAppStyles } from "../styles";
+import { useVisualTheme } from "../theme/VisualThemeContext";
+import { runnerLoginStylesByTheme } from "../styles/runnerLoginStyles";
+import { setStringAsync } from "../clipboard";
 import {
   isRunnerSessionToken, requestRunnerLogin, RunnerLoginError, runnerLoginErrorMessage,
   type RunnerChallenge, type RunnerDevice, type RunnerLoginResult, type RunnerSession,
@@ -11,20 +14,34 @@ import {
 
 type Challenge = RunnerChallenge & { clientBinding: string; purpose: "login" | "reauth" | "recovery" };
 type Recovery = { recoveryId: string; secret: string; uri: string; expiresAt: string };
+type IconName = ComponentProps<typeof Ionicons>["name"];
+const digits = (value: string, length: number) => value.normalize("NFKC").replace(/\D/g, "").slice(0, length);
+const dateLabel = (value: string) => {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "不明" : date.toLocaleString("ja-JP", {
+    month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit",
+  });
+};
 
 export function RunnerLoginSettings() {
-  const styles = useAppStyles();
+  const { theme, themeId } = useVisualTheme();
+  const styles = runnerLoginStylesByTheme[themeId];
   const { runnerUrl, runnerToken, saveRunnerToken } = useAppSettings();
   const { openCloudflareTunnelMonitorScreen } = useAppShell();
   const [email, setEmail] = useState("");
   const [emailCode, setEmailCode] = useState("");
   const [totpCode, setTotpCode] = useState("");
-  const [deviceName, setDeviceName] = useState(Platform.OS === "macos" ? "Mac" : "iPhone");
   const [challenge, setChallenge] = useState<Challenge | null>(null);
+  const [codeStep, setCodeStep] = useState<"mail" | "authenticator">("mail");
   const [devices, setDevices] = useState<RunnerDevice[]>([]);
+  const [sessionExpiry, setSessionExpiry] = useState("");
+  const [pendingDevice, setPendingDevice] = useState<RunnerDevice | null>(null);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  const [resendAt, setResendAt] = useState(0);
+  const [now, setNow] = useState(Date.now());
   const [recoveryMode, setRecoveryMode] = useState(false);
   const [recoveryCode, setRecoveryCode] = useState("");
   const [recovery, setRecovery] = useState<Recovery | null>(null);
@@ -33,12 +50,20 @@ export function RunnerLoginSettings() {
   current.current = { runnerUrl, runnerToken };
   const generation = useRef(0);
   const loggedIn = isRunnerSessionToken(runnerToken);
-  useEffect(() => () => { generation.current += 1; }, []);
+  const resendSeconds = Math.max(0, Math.ceil((resendAt - now) / 1000));
+  const expired = Boolean(challenge && Date.parse(challenge.expiresAt) <= now);
 
+  useEffect(() => () => { generation.current += 1; }, []);
+  useEffect(() => {
+    if (!challenge) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [challenge]);
   useEffect(() => {
     generation.current += 1;
     setChallenge(null); setRecovery(null); setEmailCode(""); setTotpCode("");
     setRecoveryCode(""); setDevices([]); setError(""); setMessage(""); setBusy(false);
+    setCodeStep("mail"); setPendingDevice(null); setSessionExpiry(""); busyRef.current = false;
     if (!isRunnerSessionToken(runnerToken) || !runnerUrl) return;
     let active = true;
     void Promise.all([
@@ -46,18 +71,28 @@ export function RunnerLoginSettings() {
       requestRunnerLogin<{ devices: RunnerDevice[] }>(runnerUrl, "/auth/devices", { token: runnerToken }),
     ]).then(([session, result]) => {
       if (!active) return;
-      setEmail(session.ownerEmail); setDevices(result.devices);
+      setEmail(session.ownerEmail); setSessionExpiry(session.expiresAt); setDevices(result.devices);
     }).catch((reason) => { if (active) setError(runnerLoginErrorMessage(reason)); });
     return () => { active = false; };
   }, [runnerUrl, runnerToken]);
 
   async function run(action: () => Promise<void>) {
-    if (busy) return;
+    if (busyRef.current) return;
     const started = generation.current;
-    setBusy(true); setError(""); setMessage("");
+    busyRef.current = true; setBusy(true); setError(""); setMessage("");
     try { await action(); }
-    catch (reason) { if (started === generation.current) setError(runnerLoginErrorMessage(reason)); }
-    finally { if (started === generation.current) setBusy(false); }
+    catch (reason) {
+      if (started === generation.current) setError(reason instanceof RunnerLoginError && reason.code === "invalid_authentication" && recoveryMode
+        ? recovery ? "新しく登録した認証アプリの6桁を確認してください。" : "最新メールの8桁と、保存した復旧コードを確認してください。"
+        : runnerLoginErrorMessage(reason));
+    }
+    finally { if (started === generation.current) { busyRef.current = false; setBusy(false); } }
+  }
+
+  function cancelFlow() {
+    generation.current += 1;
+    setChallenge(null); setRecovery(null); setEmailCode(""); setTotpCode("");
+    setRecoveryCode(""); setCodeStep("mail"); setError(""); setMessage(""); setPendingDevice(null);
   }
 
   async function start(purpose: Challenge["purpose"]) {
@@ -69,8 +104,29 @@ export function RunnerLoginSettings() {
       token: purpose === "reauth" ? snapshot.runnerToken : "", body: { email: email.trim(), clientBinding },
     });
     if (started !== generation.current || current.current.runnerUrl !== snapshot.runnerUrl || current.current.runnerToken !== snapshot.runnerToken) return;
-    setChallenge({ ...result, clientBinding, purpose }); setEmailCode(""); setTotpCode("");
-    setMessage("メールの確認コードを入力してください。有効期限は10分です。");
+    setChallenge({ ...result, clientBinding, purpose }); setEmailCode(""); setTotpCode(""); setCodeStep("mail");
+    setNow(Date.now()); setResendAt(Date.now() + 60000);
+  }
+
+  async function revoke(device: RunnerDevice) {
+    const snapshot = { ...current.current };
+    const started = generation.current;
+    try {
+      await requestRunnerLogin(snapshot.runnerUrl, `/auth/devices/${encodeURIComponent(device.id)}`, {
+        token: snapshot.runnerToken, method: "DELETE",
+      });
+    } catch (reason) {
+      if (started !== generation.current || current.current.runnerToken !== snapshot.runnerToken || current.current.runnerUrl !== snapshot.runnerUrl) return;
+      if (reason instanceof RunnerLoginError && reason.code === "reauthentication_required") {
+        setPendingDevice(device); await start("reauth"); return;
+      }
+      throw reason;
+    }
+    if (started !== generation.current || current.current.runnerToken !== snapshot.runnerToken || current.current.runnerUrl !== snapshot.runnerUrl) return;
+    const result = await requestRunnerLogin<{ devices: RunnerDevice[] }>(snapshot.runnerUrl, "/auth/devices", { token: snapshot.runnerToken });
+    if (started === generation.current && current.current.runnerToken === snapshot.runnerToken && current.current.runnerUrl === snapshot.runnerUrl) {
+      setDevices(result.devices); setPendingDevice(null); setMessage("端末の接続を解除しました。");
+    }
   }
 
   async function complete() {
@@ -78,14 +134,13 @@ export function RunnerLoginSettings() {
     const snapshot = { ...current.current };
     const started = generation.current;
     const body = { challengeId: challenge.challengeId, clientBinding: challenge.clientBinding,
-      emailCode: emailCode.trim(), totpCode: totpCode.trim(), deviceName: deviceName.trim(), os: Platform.OS };
+      emailCode, totpCode, deviceName: Platform.OS === "macos" ? "Mac" : "iPhone", os: Platform.OS };
     if (challenge.purpose === "recovery") {
       const result = await requestRunnerLogin<Recovery>(snapshot.runnerUrl, "/auth/recovery/prepare", {
         body: { ...body, recoveryCode: recoveryCode.trim() },
       });
       if (started !== generation.current || current.current.runnerUrl !== snapshot.runnerUrl || current.current.runnerToken !== snapshot.runnerToken) return;
-      setRecovery(result); setEmailCode(""); setRecoveryCode(""); setTotpCode("");
-      return;
+      setRecovery(result); setEmailCode(""); setRecoveryCode(""); setTotpCode(""); return;
     }
     const result = await requestRunnerLogin<RunnerLoginResult>(snapshot.runnerUrl, `/auth/${challenge.purpose}/complete`, {
       token: challenge.purpose === "reauth" ? snapshot.runnerToken : "", body,
@@ -95,134 +150,170 @@ export function RunnerLoginSettings() {
       if (!isRunnerSessionToken(result.token)) throw new RunnerLoginError("invalid_authentication_response", 0);
       try { await saveRunnerToken(result.token); }
       catch (reason) {
-        // A credential that could not be persisted must not leave an unmanageable
-        // live session behind. No old shared-token fallback is permitted.
         await requestRunnerLogin(snapshot.runnerUrl, "/auth/logout", { token: result.token, body: {} }).catch(() => undefined);
-        setChallenge(null);
-        throw reason;
+        setChallenge(null); throw reason;
       }
     } else {
       setChallenge(null); setEmailCode(""); setTotpCode("");
-      setMessage("本人確認が完了しました。対象端末の失効をもう一度押してください。");
-    }
-  }
-
-  async function revoke(device: RunnerDevice) {
-    if (device.current) return logout();
-    const snapshot = { ...current.current };
-    const started = generation.current;
-    await requestRunnerLogin(snapshot.runnerUrl, `/auth/devices/${encodeURIComponent(device.id)}`, {
-      token: snapshot.runnerToken, method: "DELETE",
-    });
-    if (started !== generation.current || current.current.runnerToken !== snapshot.runnerToken || current.current.runnerUrl !== snapshot.runnerUrl) return;
-    if (device.current) await saveRunnerToken("");
-    else {
-      const result = await requestRunnerLogin<{ devices: RunnerDevice[] }>(snapshot.runnerUrl, "/auth/devices", {
-        token: snapshot.runnerToken,
-      });
-      if (current.current.runnerToken === snapshot.runnerToken) setDevices(result.devices);
+      if (pendingDevice) await revoke(pendingDevice);
     }
   }
 
   async function logout() {
     const snapshot = { ...current.current };
-    // Local access ends even offline. Remote revocation is a separate outcome,
-    // and a failed request must never be presented as confirmed revocation.
     await saveRunnerToken("");
-    try {
-      await requestRunnerLogin(snapshot.runnerUrl, "/auth/logout", { token: snapshot.runnerToken, body: {} });
-    } catch (reason) {
+    try { await requestRunnerLogin(snapshot.runnerUrl, "/auth/logout", { token: snapshot.runnerToken, body: {} }); }
+    catch (reason) {
       if (!(reason instanceof RunnerLoginError && reason.code === "authentication_required")) {
-        Alert.alert("この端末からログアウトしました", "通信できず、サーバーでの失効は確認できませんでした。他の登録端末またはMacから、この端末を失効してください。");
+        Alert.alert("この端末からログアウトしました", "サーバー側の解除は未確認です。他の端末かMacから確認してください。");
       }
     }
+  }
+
+  function confirmDisconnect(device?: RunnerDevice) {
+    const snapshot = { ...current.current };
+    const started = generation.current;
+    Alert.alert(device ? "端末の接続を解除しますか？" : "ログアウトしますか？",
+      device ? `${device.name || "この端末"}では、再ログインが必要になります。` : "この端末では、再ログインが必要になります。", [
+        { text: "キャンセル", style: "cancel" },
+        { text: device ? "接続を解除" : "ログアウト", style: "destructive", onPress: () => {
+          if (started !== generation.current || current.current.runnerUrl !== snapshot.runnerUrl || current.current.runnerToken !== snapshot.runnerToken) return;
+          void run(() => !device || device.current ? logout() : revoke(device));
+        } },
+      ]);
   }
 
   async function finishRecovery() {
     if (!recovery || !challenge) return;
     const snapshot = { ...current.current };
     const started = generation.current;
-    const result = await requestRunnerLogin<{ recoveryCodes: string[] }>(runnerUrl, "/auth/recovery/complete", {
-      body: { recoveryId: recovery.recoveryId, clientBinding: challenge.clientBinding, totpCode: totpCode.trim() },
+    const result = await requestRunnerLogin<{ recoveryCodes: string[] }>(snapshot.runnerUrl, "/auth/recovery/complete", {
+      body: { recoveryId: recovery.recoveryId, clientBinding: challenge.clientBinding, totpCode },
     });
     if (started !== generation.current || current.current.runnerUrl !== snapshot.runnerUrl || current.current.runnerToken !== snapshot.runnerToken) return;
-    setRecoveryCodes(result.recoveryCodes); setRecovery(null); setChallenge(null); setRecoveryMode(false);
-    setTotpCode(""); setMessage("復旧が完了し、すべての端末が失効しました。新しいコードを保管して再ログインしてください。");
+    setRecoveryCodes(result.recoveryCodes); setRecovery(null); setChallenge(null); setRecoveryMode(false); setTotpCode("");
   }
 
-  const input = (label: string, value: string, onChangeText: (value: string) => void, secret = false) => (
-    <View style={styles.settingsInputContent}>
-      <Text style={styles.settingsRowLabel}>{label}</Text>
-      <TextInput accessibilityLabel={label} style={styles.settingsInlineInput} value={value}
-        onChangeText={onChangeText} editable={!busy} autoCapitalize="none" autoCorrect={false}
-        secureTextEntry={secret} textContentType={label === "メールアドレス" ? "emailAddress" : "none"}
-        keyboardType={label === "メールアドレス" ? "email-address" : "default"} />
+  const input = (label: string, value: string, onChange: (value: string) => void, length?: number) => (
+    <View style={styles.field}>
+      <Text style={styles.label}>{label}</Text>
+      <TextInput accessibilityLabel={label} style={[styles.input, length ? styles.codeInput : undefined]} value={value}
+        onChangeText={length ? (text) => onChange(digits(text, length)) : onChange} editable={!busy}
+        autoCapitalize="none" autoCorrect={false} placeholder={length ? `${length}桁のコード` : label === "メールアドレス" ? "you@example.com" : "復旧コードを貼り付け"}
+        placeholderTextColor={theme.colors.textSubtle}
+        textContentType={label === "メールアドレス" ? "emailAddress" : label === "メール確認コード" ? "oneTimeCode" : "none"}
+        autoComplete={label === "メール確認コード" ? "one-time-code" : "off"}
+        keyboardType={length ? "number-pad" : label === "メールアドレス" ? "email-address" : "default"}
+        secureTextEntry={label === "復旧コード"} />
     </View>
   );
-  const button = (label: string, action: () => void, disabled = false) => (
-    <Pressable accessibilityRole="button" accessibilityLabel={label} onPress={action} disabled={busy || disabled}
-      style={[styles.settingsPrimaryButton, (busy || disabled) && styles.buttonDisabled]}>
-      <Text style={styles.settingsPrimaryButtonText}>{label}</Text>
+  const button = (label: string, action: () => void, icon: IconName, primary = false, disabled = false) => (
+    <Pressable accessibilityRole="button" accessibilityLabel={label} disabled={busy || disabled}
+      accessibilityState={{ disabled: busy || disabled, busy: primary && busy }} onPress={action}
+      style={[primary ? styles.primary : styles.secondary, (busy || disabled) && styles.disabled]}>
+      {primary && busy ? <ActivityIndicator color={theme.colors.textOnAccent} /> :
+        <Ionicons name={icon} size={primary ? 18 : 16} color={primary ? theme.colors.textOnAccent : theme.colors.controlAccent} />}
+      <Text style={primary ? styles.primaryText : styles.secondaryText}>{primary && busy ? label === "確認メールを送る" ? "送信中…" : "確認中…" : label}</Text>
     </Pressable>
   );
+  const notice = <>
+    {error ? <View style={styles.notice}><Ionicons name="alert-circle-outline" size={18} color={theme.tones.danger.foreground} />
+      <Text accessibilityRole="alert" style={[styles.error, styles.noticeText]}>{error}</Text></View> : null}
+    {message ? <Text style={styles.success}>{message}</Text> : null}
+  </>;
 
-  return <View style={styles.settingsSection}>
-    <View style={styles.settingsSectionHeader}><Text style={styles.settingsSectionTitle}>本人ログインと端末</Text></View>
-    <View style={styles.settingsGroup}>
-      {!loggedIn ? <>
-        <Text style={styles.hint}>初回はMacの接続設定QRを読み込み、メールとGoogle Authenticator等のコードでログインしてください。</Text>
-        {button("接続設定QRを読み込む", openCloudflareTunnelMonitorScreen)}
-        {recoveryCodes.length ? <View>
-          <Text style={styles.settingsRowLabel}>新しい復旧コード（一度だけ表示）</Text>
-          {recoveryCodes.map((code) => <Text key={code} selectable style={styles.hint}>{code}</Text>)}
-          {button("復旧コードを保管しました", () => setRecoveryCodes([]))}
-        </View> : null}
-        {!recovery ? <>
-          {input("メールアドレス", email, setEmail)}
-          {!challenge ? <>
-            {button(recoveryMode ? "復旧用メールを送る" : "ログイン用メールを送る",
-              () => void run(() => start(recoveryMode ? "recovery" : "login")), !email.trim() || !runnerUrl)}
-            {button(recoveryMode ? "ログインに戻る" : "Authenticatorを紛失した場合", () => {
-              setRecoveryMode(!recoveryMode); setError(""); setRecoveryCodes([]);
-            })}
-          </> : <>
-            {input("メール確認コード", emailCode, setEmailCode, true)}
-            {recoveryMode ? input("復旧コード", recoveryCode, setRecoveryCode, true) : <>
-              {input("Authenticatorコード", totpCode, setTotpCode, true)}
-              {input("この端末の名前", deviceName, setDeviceName)}
-            </>}
-            {button(recoveryMode ? "新しいAuthenticatorを登録する" : "ログイン", () => void run(complete),
-              !emailCode.trim() || !(recoveryMode ? recoveryCode.trim() : totpCode.trim()))}
-            {button("コードを再送する", () => void run(() => start(challenge.purpose)))}
-            {button("入力をやり直す", () => { setChallenge(null); setEmailCode(""); setTotpCode(""); setRecoveryCode(""); })}
-          </>}
-        </> : <>
-          <Text style={styles.hint}>Authenticatorの手動登録に次の設定キーを入力し、新しいコードで確認してください。</Text>
-          <Text selectable style={styles.hint}>{recovery.secret}</Text>
-          {input("新しいAuthenticatorコード", totpCode, setTotpCode, true)}
-          {button("復旧を完了する", () => void run(finishRecovery), !totpCode.trim())}
-        </>}
-      </> : <>
-        <Text style={styles.hint}>{email ? `${email} でログイン中` : "この端末はログイン済みです。"}</Text>
-        <Text style={styles.hint}>最長30日・未使用7日で再ログインが必要です。他の端末の失効には本人確認が必要です。</Text>
-        {devices.map((device) => <View key={device.id} style={styles.settingsInputRow}>
-          <View style={styles.settingsInputContent}>
-            <Text style={styles.settingsRowLabel}>{device.name || "名前なし"}{device.current ? "（この端末）" : ""}</Text>
-            <Text style={styles.hint}>{device.os || "OS不明"} ・登録 {device.createdAt} ・最終利用 {device.lastUsedAt}</Text>
-            {device.notificationStatus === "failed" ? <Text style={styles.settingsErrorText}>ログイン通知メールを送信できませんでした。</Text> : null}
-            {button(`${device.name || "端末"}を失効する`, () => void run(() => revoke(device)))}
-          </View>
-        </View>)}
-        {challenge?.purpose === "reauth" ? <>
-          {input("メール確認コード", emailCode, setEmailCode, true)}
-          {input("Authenticatorコード", totpCode, setTotpCode, true)}
-          {button("本人確認を完了する", () => void run(complete), !emailCode.trim() || !totpCode.trim())}
-        </> : button("他の端末を管理するため本人確認", () => void run(() => start("reauth")), !email)}
-        {button("この端末からログアウト", () => void run(logout))}
-      </>}
-      {busy ? <Text style={styles.hint}>処理中…</Text> : null}
-      {error ? <Text accessibilityRole="alert" style={styles.settingsErrorText}>{error}</Text> : null}
-      {message ? <Text style={styles.settingsSuccessText}>{message}</Text> : null}
+  if (loggedIn && !challenge) return <View style={styles.section}>
+    <Text style={styles.sectionTitle}>セキュリティ</Text>
+    <View style={styles.group}>
+      <View style={styles.summary}>
+        <View style={styles.summaryIcon}><Ionicons name="shield-checkmark-outline" size={23} color={theme.colors.controlAccent} /></View>
+        <View style={styles.rowContent}><Text style={styles.rowTitle}>2段階認証で保護されています</Text>
+          <Text style={styles.rowSubtitle}>{email || "ログイン情報を確認中…"}</Text></View>
+      </View>
+      {devices.map((device) => <View key={device.id} style={styles.device}>
+        <Ionicons name={device.os === "macos" ? "laptop-outline" : "phone-portrait-outline"} size={23} color={theme.colors.groupedTextMuted} />
+        <View style={styles.rowContent}><View style={styles.deviceHeading}>
+          <Text style={styles.rowTitle}>{device.name || "名前なしの端末"}</Text>
+          {device.current ? <View style={styles.badge}><Text style={styles.badgeText}>この端末</Text></View> : null}
+        </View><Text style={styles.rowSubtitle}>最終利用 {dateLabel(device.lastUsedAt)}</Text>
+          {!device.current ? <Text style={styles.rowSubtitle}>登録 {dateLabel(device.createdAt)}</Text> : null}
+          {device.notificationStatus === "failed" ? <Text style={styles.rowSubtitle}>ログイン通知を送れませんでした</Text> : null}
+        </View>
+        {!device.current ? <Pressable accessibilityRole="button" accessibilityLabel={`${device.name || "端末"}の接続を解除`}
+          disabled={busy} onPress={() => confirmDisconnect(device)} style={styles.deviceAction}>
+          <Text style={styles.deviceActionText}>解除</Text>
+        </Pressable> : null}
+      </View>)}
+      <Pressable accessibilityRole="button" accessibilityLabel="この端末からログアウト" disabled={busy}
+        onPress={() => confirmDisconnect()} style={styles.groupAction}>
+        <Ionicons name="log-out-outline" size={20} color={theme.colors.controlDanger} />
+        <Text style={styles.dangerText}>ログアウト</Text>
+      </Pressable>
     </View>
+    {notice}
+    <Text style={styles.sectionFooter}>{sessionExpiry ? `${dateLabel(sessionExpiry)}までログインを保持。` : "最長30日間ログインを保持。"}7日間使わないと再ログインが必要です。</Text>
+  </View>;
+
+  const step = !challenge ? 0 : codeStep === "mail" ? 1 : 2;
+  const title = recoveryCodes.length ? "復旧コードを保存" : recovery ? "認証アプリを再登録" : !challenge
+    ? recoveryMode ? "ログインを復旧" : "Bittyにログイン" : codeStep === "mail" ? "メールを確認" : recoveryMode ? "復旧コードを入力" : "認証アプリを確認";
+  const description = recoveryCodes.length ? "一度だけ表示します。安全な場所に保管してください。" : recovery
+    ? "Google Authenticatorなどに、下の設定キーを登録してください。" : !challenge
+      ? recoveryMode ? "メールと復旧コードで、認証アプリを再登録します。" : "いつもの会話へ、安全につながる。"
+      : codeStep === "mail" ? email : recoveryMode ? "初期設定で保存したコードを使います。" : "最後に登録した「Bitty」の6桁を使います。";
+  return <View style={styles.section}>
+    {loggedIn ? <Text style={styles.sectionTitle}>{pendingDevice ? `「${pendingDevice.name || "端末"}」の接続を解除` : "本人確認"}</Text> : null}
+    <View style={styles.card}>
+      <View style={styles.header}>
+        <View style={styles.iconTile}><Ionicons name={recoveryMode || recovery || recoveryCodes.length ? "key-outline" : step === 1 ? "mail-outline" : step === 2 ? "shield-checkmark-outline" : "lock-closed-outline"} size={24} color={theme.colors.controlAccent} /></View>
+        <Text accessibilityRole="header" style={styles.title}>{title}</Text><Text style={styles.description}>{description}</Text>
+      </View>
+      {!recoveryCodes.length && !recovery ? <View accessible accessibilityLabel={`手順${step + 1}/3`} style={styles.progress}>
+        {["メール", "メール確認", recoveryMode ? "復旧コード" : "認証アプリ"].map((label, index) => <View key={label} style={styles.progressItem}>
+          <View style={[styles.progressLine, index <= step && styles.progressLineActive]} />
+          <Text style={[styles.progressLabel, index === step && styles.progressLabelActive]}>{label}</Text>
+        </View>)}
+      </View> : null}
+      {recoveryCodes.length ? <>
+        <View style={styles.recoveryCodes}>{recoveryCodes.map((code) => <Text key={code} selectable style={styles.recoveryCode}>{code}</Text>)}</View>
+        {button("復旧コードをコピー", () => void run(async () => { await setStringAsync(recoveryCodes.join("\n")); setMessage("復旧コードをコピーしました。"); }), "copy-outline")}
+        {button("保存してログインへ", () => setRecoveryCodes([]), "checkmark-outline", true)}
+      </> : recovery ? <View style={styles.fields}>
+        <Text selectable style={[styles.recoveryCodes, styles.recoveryCode]}>{recovery.secret}</Text>
+        {button("設定キーをコピー", () => void run(async () => { await setStringAsync(recovery.secret); setMessage("設定キーをコピーしました。"); }), "copy-outline")}
+        {input("新しい認証アプリのコード", totpCode, setTotpCode, 6)}
+        {button("登録を完了", () => void run(finishRecovery), "checkmark-outline", true, totpCode.length !== 6)}
+      </View> : !challenge ? <View style={styles.fields}>
+        {input("メールアドレス", email, setEmail)}
+        {button("確認メールを送る", () => void run(() => start(recoveryMode ? "recovery" : "login")), "arrow-forward-outline", true, !email.trim() || !runnerUrl)}
+      </View> : <View style={styles.fields}>
+        {codeStep === "mail" ? <>
+          <Text style={styles.description}>アプリから送った最新メールの8桁を入力してください。</Text>
+          {input("メール確認コード", emailCode, setEmailCode, 8)}
+          {button("次へ", () => { setCodeStep("authenticator"); setError(""); }, "arrow-forward-outline", true, emailCode.length !== 8 || expired)}
+        </> : <>
+          {!recoveryMode ? <Text style={styles.description}>数字が切り替わってから入力してください。</Text> : null}
+          {recoveryMode ? input("復旧コード", recoveryCode, setRecoveryCode) : input("認証アプリのコード", totpCode, setTotpCode, 6)}
+          {button(challenge.purpose === "reauth" ? "確認して接続を解除" : recoveryMode ? "認証アプリを再登録" : "ログイン",
+            () => void run(complete), "checkmark-outline", true, (recoveryMode ? !recoveryCode.trim() : totpCode.length !== 6) || expired)}
+        </>}
+        {expired ? <Text style={styles.error}>メールの期限が切れました。再送してください。</Text> : null}
+        <View style={styles.actions}>
+          {button(resendSeconds ? `再送まで${resendSeconds}秒` : "メールを再送", () => void run(() => start(challenge.purpose)), "refresh-outline", false, resendSeconds > 0)}
+          {button(codeStep === "authenticator" ? "メールコードを見直す" : loggedIn ? "キャンセル" : "メールアドレスを変更",
+            () => { if (codeStep === "authenticator") { setCodeStep("mail"); setTotpCode(""); setError(""); } else cancelFlow(); }, "arrow-back-outline")}
+        </View>
+      </View>}
+      {notice}
+      {!loggedIn && !challenge && !recovery && !recoveryCodes.length ? <>
+        <View style={styles.divider} />
+        <View style={styles.actions}>
+          {button(recoveryMode ? "ログインに戻る" : "認証アプリを使えない場合", () => { setRecoveryMode(!recoveryMode); setError(""); }, "key-outline")}
+          {button("接続先を設定", openCloudflareTunnelMonitorScreen, "qr-code-outline")}
+        </View>
+      </> : null}
+    </View>
+    {!loggedIn && !challenge && !recovery && !recoveryCodes.length ? <View style={styles.footer}><Ionicons name="shield-checkmark-outline" size={15} color={theme.colors.groupedTextMuted} />
+      <Text style={styles.footerNote}>初回はMacで初期設定を済ませ、接続QRを読み取ってください。</Text></View> : null}
   </View>;
 }
