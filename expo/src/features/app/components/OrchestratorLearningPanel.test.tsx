@@ -560,6 +560,71 @@ test("all includes retained disabled knowledge while rejected and stale proposal
   await screen.unmount();
 });
 
+test("accepted updates stay in their current learning with previous versions readable and manual stops visible", async () => {
+  const base = initialStatus().candidates[0];
+  const oldReport = { ...base, id: "old-report", version: 3, status: "retired", content: "以前の報告方針" };
+  const oldCheck = { ...base, id: "old-check", version: 5, status: "retired", content: "以前の確認手順" };
+  const report = { ...base, id: "report", version: 2, status: "active", content: "更新した報告方針", replaces: [oldReport.id] };
+  const check = { ...base, id: "check", version: 2, status: "active", content: "更新した確認手順", replaces: [oldCheck.id] };
+  const stopped = { ...base, id: "manual-stop", version: 3, status: "retired", content: "手動停止した別の方針" };
+  const status = { ...initialStatus(), candidates: [oldReport, oldCheck, report, check, stopped], lineages: [
+    { current: [{ id: report.id, version: report.version }], previous: [{ id: oldReport.id, version: oldReport.version }] },
+    { current: [{ id: check.id, version: check.version }], previous: [{ id: oldCheck.id, version: oldCheck.version }] },
+  ] };
+  const request = mockApi(status);
+  const screen = await render(<OrchestratorLearningPanel request={request} orchestrator={orchestrators[0]} />);
+  await waitFor(() => screen.getByText(report.content));
+  expect(screen.getByText(check.content)).toBeTruthy();
+  expect(screen.queryByText(oldReport.content)).toBeNull(); expect(screen.queryByText(oldCheck.content)).toBeNull();
+  expect(screen.getByLabelText(`関連する回答で使う: ${stopped.content}`).props.value).toBe(false);
+  await fireEvent.press(screen.getByLabelText(`学習の更新履歴を見る: ${check.content}`));
+  expect(screen.getByText(oldCheck.content)).toBeTruthy(); expect(screen.getByText("v5")).toBeTruthy();
+  expect(screen.getByText("以前の学習ID")).toBeTruthy();
+  expect(request.mock.calls.some(([op]) => op === "voice.learning.decide" || op === "voice.learning.forget")).toBe(false);
+  await fireEvent.press(screen.getByLabelText("学習の更新履歴を閉じる"));
+  expect(screen.queryByText(oldCheck.content)).toBeNull();
+  await fireEvent.press(screen.getByLabelText("学習: 履歴"));
+  expect(screen.getByText(oldReport.content)).toBeTruthy(); expect(screen.getByText(oldCheck.content)).toBeTruthy();
+  expect(screen.queryByText(report.content)).toBeNull(); await screen.unmount();
+});
+
+test("adopting an update switches the existing list to the server-projected learning lineage", async () => {
+  const original = { ...initialStatus().candidates[0], id: "original", status: "active", version: 2, content: "現在の方針" };
+  const update = { ...original, id: "update", status: "candidate", version: 1, content: "更新後の方針",
+    replaces: [original.id], replacementVersions: [{ id: original.id, version: original.version }] };
+  const before = { ...initialStatus(), candidates: [original, update] };
+  const after = { ...before, candidates: [{ ...original, status: "retired", version: 3 }, { ...update, status: "active", version: 2 }],
+    lineages: [{ current: [{ id: update.id, version: 2 }], previous: [{ id: original.id, version: 3 }] }] };
+  const api = mockApi(before);
+  const request = jest.fn(async (op: string, payload?: Record<string, unknown>) => op === "voice.learning.decide" ? after : api(op, payload));
+  const screen = await render(<OrchestratorLearningPanel request={request} orchestrator={orchestrators[0]} />);
+  await waitFor(() => screen.getByLabelText(`更新案1件を見る: ${original.content}`));
+  await fireEvent.press(screen.getByLabelText(`更新案1件を見る: ${original.content}`));
+  await fireEvent.press(screen.getByLabelText(`この案に更新: ${update.content}`));
+  await waitFor(() => screen.getByLabelText(`学習の更新履歴を見る: ${update.content}`));
+  expect(screen.queryByText(original.content)).toBeNull();
+  expect(request).toHaveBeenCalledWith("voice.learning.decide", { orchestratorId: "main", items: [{ id: update.id, version: 1 }], action: "adopt" });
+  await fireEvent.press(screen.getByLabelText(`学習の更新履歴を見る: ${update.content}`));
+  expect(screen.getByText(original.content)).toBeTruthy(); expect(screen.getByText("v3")).toBeTruthy();
+  await screen.unmount();
+});
+
+test.each(["active", "retired"])("a rolled back merge retains a %s independent branch while grouping previous versions", async (firstStatus) => {
+  const base = initialStatus().candidates[0];
+  const first = { ...base, id: "first", version: 4, status: firstStatus, content: "方針A" };
+  const second = { ...base, id: "second", version: 4, status: "active", content: "再開した方針B" };
+  const merged = { ...base, id: "merged", version: 3, status: "retired", content: "以前の統合版", replaces: [first.id, second.id] };
+  const status = { ...initialStatus(), candidates: [first, second, merged], lineages: [{
+    current: [{ id: first.id, version: 4 }, { id: second.id, version: 4 }], previous: [{ id: merged.id, version: 3 }],
+  }] };
+  const screen = await render(<OrchestratorLearningPanel request={mockApi(status)} orchestrator={orchestrators[0]} />);
+  await waitFor(() => screen.getByText(first.content)); expect(screen.getByText(second.content)).toBeTruthy();
+  expect(screen.getByLabelText(`関連する回答で使う: ${first.content}`).props.value).toBe(firstStatus === "active");
+  expect(screen.queryByText(merged.content)).toBeNull();
+  await fireEvent.press(screen.getByLabelText(`学習の更新履歴を見る: ${first.content}`));
+  expect(screen.getByText(merged.content)).toBeTruthy(); await screen.unmount();
+});
+
 test("stale-only updates are retained in history, not in normal confirmation or bulk adoption", async () => {
   const status = initialStatus(); const original = { ...status.candidates[0], id: "original", status: "active", version: 4 };
   const update = { ...status.candidates[0], id: "update", content: "古い更新案", replaces: [original.id], replacementVersions: [{ id: original.id, version: 3 }] };

@@ -144,13 +144,13 @@ function LearningUpdateReview({ updates, initialProposal, historyMode, knowledge
   </LearningDetailsModal>;
 }
 
-export function LearningKnowledgeCard({ item, knowledge, changes = [], chatName, selecting, selected, busy, onSelect, manage }: {
-  item: LearningKnowledge; knowledge: LearningKnowledge[]; changes?: LearningChange[]; chatName: string; selecting: boolean; selected: boolean; busy: boolean;
+export function LearningKnowledgeCard({ item, knowledge, changes = [], previousVersions = [], chatName, selecting, selected, busy, onSelect, manage }: {
+  item: LearningKnowledge; knowledge: LearningKnowledge[]; changes?: LearningChange[]; previousVersions?: LearningKnowledge[]; chatName: string; selecting: boolean; selected: boolean; busy: boolean;
   onSelect: () => void; manage: Manage;
 }) {
   const { theme: { colors, tones } } = useVisualTheme();
   const [expanded, setExpanded] = useState(false);
-  const [reviewing, setReviewing] = useState<"proposal" | "history" | null>(null);
+  const [reviewing, setReviewing] = useState<"proposal" | "history" | "versions" | null>(null);
   const references = { items: [{ id: item.id, version: item.version }] };
   const isUpdate = item.status === "candidate" && item.action !== "retire" && Boolean(item.replaces?.length);
   const applicable = canApplyLearningProposal(item, knowledge);
@@ -228,6 +228,10 @@ export function LearningKnowledgeCard({ item, knowledge, changes = [], chatName,
       disabled={busy} onPress={() => setReviewing("history")} style={styles.action}>
       <Ionicons name="time-outline" size={18} color={colors.textMuted} /><Text style={[styles.actionText, { color: colors.textSecondary }]}>履歴</Text>
     </Pressable> : null}
+    {!selecting && previousVersions.length ? <Pressable accessibilityRole="button" accessibilityLabel={`学習の更新履歴を見る: ${item.content}`}
+      disabled={busy} onPress={() => setReviewing("versions")} style={styles.action}>
+      <Ionicons name="time-outline" size={18} color={colors.textMuted} /><Text style={[styles.actionText, { color: colors.textSecondary }]}>更新履歴 · {previousVersions.length}件</Text>
+    </Pressable> : null}
     {expanded ? <View style={[styles.details, { borderColor: colors.borderSubtle }]}>
       <LearningItemReference key={item.id} id={item.id} label={item.status === "candidate" ? "提案ID" : "学習ID"} version={item.version} />
       <Text style={[styles.title, { color: colors.textPrimary }]}>{item.content}</Text>
@@ -251,7 +255,18 @@ export function LearningKnowledgeCard({ item, knowledge, changes = [], chatName,
       </View>
     </View> : null}
   </View>
-    {reviewing ? <LearningUpdateReview updates={item.status === "candidate" && !updates.some((entry) => entry.id === item.id) ? [item] : updates}
+    {reviewing === "versions" ? <LearningDetailsModal visible title="学習の更新履歴" subtitle={humanLearningDate(item.updatedAt || item.createdAt || "")} page={0} testID="learning-versions-modal" onClose={() => setReviewing(null)}>
+      <LearningItemReference id={item.id} label="現在の学習ID" version={item.version} />
+      <Text style={[styles.title, { color: colors.textPrimary }]}>{item.content}</Text>
+      {previousVersions.map((version) => <View key={version.id} style={[styles.historyEntry, { borderColor: colors.borderSubtle }]}>
+        <LearningItemReference id={version.id} label="以前の学習ID" version={version.version} />
+        <Text style={[styles.caption, { color: colors.textMuted }]}>{humanLearningDate(version.createdAt || "")}</Text>
+        <Text style={[styles.title, { color: colors.textPrimary }]}>{version.content}</Text>
+        {version.conditions ? <Text style={[styles.caption, { color: colors.textSecondary }]}>適用条件：{version.conditions}</Text> : null}
+        {version.skill ? <LearningDisclosure title="手順の詳細"><Text style={[styles.caption, { color: colors.textSecondary }]}>{learningSkillText(version.skill)}</Text></LearningDisclosure> : null}
+      </View>)}
+      <LearningChangeHistory changes={changes.filter((entry) => [entry.before, entry.after].some((value) => value && [item, ...previousVersions].some((version) => version.id === value.id)))} requests={[]} />
+    </LearningDetailsModal> : reviewing ? <LearningUpdateReview updates={item.status === "candidate" && !updates.some((entry) => entry.id === item.id) ? [item] : updates}
       initialProposal={item.status === "candidate" ? item : reviewing === "history" ? pastUpdates[0] : currentUpdates[0]} historyMode={reviewing === "history"}
       knowledge={knowledge} changes={changes} chatName={chatName} orchestratorId={item.scope.orchestratorId} busy={busy} manage={manage} onClose={() => setReviewing(null)} /> : null}
   </>;
