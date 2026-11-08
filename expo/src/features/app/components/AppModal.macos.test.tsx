@@ -2,6 +2,7 @@ import React from "react";
 import { StyleSheet, Text, View } from "react-native";
 import { fireEvent, render } from "@testing-library/react-native";
 import { AppModal, AppModalHost } from "./AppModal.macos";
+import { mediaModalStylesByTheme } from "../styles/mediaModalStyles";
 import { appLayoutStylesByTheme } from "../styles/appLayoutStyles";
 
 test("modal roots stack directly above session popups in opening order", async () => {
@@ -86,8 +87,9 @@ test("Escape targets only the top modal and does not fall through when it has no
   await screen.unmount();
 });
 
-test("foreground stays above every macOS modal and drawer", async () => {
-  const screen = await render(<AppModalHost foreground={<View testID="foreground" pointerEvents="none" />}>
+test.each(["standard", "cyberpunk"] as const)("computer toast foreground stays above every macOS modal and drawer in %s", async (theme) => {
+  const toastStyles = mediaModalStylesByTheme[theme];
+  const screen = await render(<AppModalHost foreground={<View testID="foreground" pointerEvents="none" style={[toastStyles.chatBottomToastWrap, toastStyles.computerToastForeground]} />}>
     <View testID="drawer" />
     <AppModal visible testID="first-modal"><Text>First</Text></AppModal>
     <AppModal visible testID="top-modal"><Text>Top</Text></AppModal>
@@ -99,5 +101,9 @@ test("foreground stays above every macOS modal and drawer", async () => {
     { props: { testID: "foreground", pointerEvents: "none" } },
   ] });
   expect(screen.getAllByTestId("foreground")).toHaveLength(1);
+  const foregroundStyle = StyleSheet.flatten(screen.getByTestId("foreground").props.style);
+  const modalStyle = StyleSheet.flatten(screen.getByTestId("top-modal").props.style);
+  expect(foregroundStyle.position).toBe("absolute");
+  expect(foregroundStyle.zIndex).toBeGreaterThan(modalStyle.zIndex);
   await screen.unmount();
 });

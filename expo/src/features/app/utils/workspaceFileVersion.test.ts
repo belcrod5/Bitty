@@ -57,3 +57,19 @@ test("rejects a write response without the next version", async () => {
     expectedVersion: "opened-version",
   })).rejects.toThrow("保存後のファイルバージョンを取得できませんでした。");
 });
+
+
+test("read and write transport preserve absolute POSIX path identity", async () => {
+  const root = "/external/project ";
+  const path = String.raw`/external/project /memo\copy.md `;
+  const fetchMock = jest.fn()
+    .mockResolvedValueOnce({ ok: true, text: async () => JSON.stringify({ path, content: "selected", version: "v1" }) })
+    .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true, path, version: "v2" }) });
+  global.fetch = fetchMock as typeof fetch;
+  const opened = await fetchRunnerTextFileContent({ runnerUrl: "http://runner.test", runnerToken: "token", rootDir: root, path, timeoutMs: 1000 });
+  expect(new URL(fetchMock.mock.calls[0][0]).searchParams.get("path")).toBe(path);
+  expect(new URL(fetchMock.mock.calls[0][0]).searchParams.get("rootDir")).toBe(root);
+  expect(opened.path).toBe(path);
+  await writeWorkspaceTextFile({ runnerUrl: "http://runner.test", runnerToken: "token", rootDirectory: root, path, content: "updated", expectedVersion: opened.version });
+  expect(JSON.parse(String(fetchMock.mock.calls[1][1].body))).toMatchObject({ rootDir: root, path });
+});

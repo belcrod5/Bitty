@@ -1,3 +1,4 @@
+import { normalizeRunnerPath } from "./runnerFileResources";
 import * as Clipboard from "../clipboard";
 import { File as ExpoFile, Paths } from "expo-file-system";
 import { pickWorkspaceUploadAsset } from "./workspaceUploadPicker";
@@ -157,8 +158,8 @@ export async function uploadWorkspaceFile({
   const timeoutHandle = setTimeout(() => controller.abort(), WORKSPACE_UPLOAD_TIMEOUT_MS);
   try {
     const form = new FormData();
-    form.append("rootDir", String(rootDirectory || "").trim());
-    form.append("targetDirectory", String(targetDirectory || "").trim());
+    form.append("rootDir", normalizeRunnerPath(rootDirectory));
+    form.append("targetDirectory", normalizeRunnerPath(targetDirectory));
     form.append("fileName", asset.name);
     form.append("file", {
       uri: asset.uri,
@@ -216,7 +217,7 @@ export async function mutateWorkspaceFile({
 }): Promise<WorkspaceFileMutationResult> {
   const baseUrl = String(runnerUrl || "").trim().replace(/\/$/, "");
   const token = String(runnerToken || "").trim();
-  const targetPath = String(path || "").trim();
+  const targetPath = normalizeRunnerPath(path);
   if (!baseUrl || !token) {
     throw new Error("Runner URL または Runner Token が未設定です。");
   }
@@ -233,7 +234,7 @@ export async function mutateWorkspaceFile({
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        rootDir: String(rootDirectory || "").trim(),
+        rootDir: normalizeRunnerPath(rootDirectory),
         path: targetPath,
         ...(operation === "rename" ? { name: String(name || "").trim() } : {}),
       }),
@@ -279,7 +280,7 @@ export async function createWorkspaceTextFile({
   const baseUrl = String(runnerUrl || "").trim().replace(/\/$/, "");
   const token = String(runnerToken || "").trim();
   const fileName = String(name || "").trim();
-  const directory = String(targetDirectory || "").trim();
+  const directory = normalizeRunnerPath(targetDirectory);
   if (!baseUrl || !token) {
     throw new Error("Runner URL または Runner Token が未設定です。");
   }
@@ -297,7 +298,7 @@ export async function createWorkspaceTextFile({
       },
       body: JSON.stringify({
         create: true,
-        rootDir: String(rootDirectory || "").trim(),
+        rootDir: normalizeRunnerPath(rootDirectory),
         targetDirectory: directory,
         name: fileName,
         content: String(content ?? ""),
@@ -341,7 +342,7 @@ export async function writeWorkspaceTextFile({
 }): Promise<WorkspaceFileWriteResult> {
   const baseUrl = String(runnerUrl || "").trim().replace(/\/$/, "");
   const token = String(runnerToken || "").trim();
-  const targetPath = String(path || "").trim();
+  const targetPath = normalizeRunnerPath(path);
   if (!baseUrl || !token) {
     throw new Error("Runner URL または Runner Token が未設定です。");
   }
@@ -358,7 +359,7 @@ export async function writeWorkspaceTextFile({
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        rootDir: String(rootDirectory || "").trim(),
+        rootDir: normalizeRunnerPath(rootDirectory),
         path: targetPath,
         content: String(content ?? ""),
         expectedVersion: String(expectedVersion || "").trim(),

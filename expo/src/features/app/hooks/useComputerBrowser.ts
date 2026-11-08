@@ -13,10 +13,12 @@ export type ComputerFileEntry = {
   name: string;
   path: string;
   modifiedAt: string | null;
+  resolvedPath?: string;
 };
 
 type DirectoryListing = {
   basePath: string;
+  rootPath: string;
   parentPath: string;
   entries: ComputerFileEntry[];
   truncated: boolean;

@@ -1,10 +1,19 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, FlatList, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { ActivityIndicator, Alert, FlatList, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { setStringAsync } from "../clipboard";
 import { useAppSettings } from "../contexts/AppSettingsContext";
 import { useAppShell } from "../contexts/AppShellContext";
-import { useComputerBrowser } from "../hooks/useComputerBrowser";
+import { useConversation } from "../contexts/ConversationContext";
+import { useComputerBrowser, type ComputerFileEntry } from "../hooks/useComputerBrowser";
+import { RunnerMediaViewer } from "../components/RunnerMediaViewer";
+import { RunnerFileViewer } from "../components/RunnerFileViewer";
+import { WorkspaceTextFileEditor } from "../components/WorkspaceTextFileEditor";
+import {
+  buildRunnerMediaItem, getRunnerFileOpenKind, openRunnerFile,
+  type RunnerMediaFile, type RunnerFileViewerTarget, type RunnerFileTarget,
+} from "../utils/runnerFileContextMenu";
+import { writeWorkspaceTextFile, type WorkspaceFileTarget } from "../utils/workspaceFiles";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 
@@ -15,27 +24,96 @@ function modifiedDate(value: string | null) {
     : "—";
 }
 
+type OpenFile = {
+  connection: string;
+  runnerUrl: string;
+  runnerToken: string;
+  rootDirectory: string;
+} & (
+  | { kind: "media"; target: RunnerMediaFile }
+  | { kind: "viewer"; target: RunnerFileViewerTarget }
+  | { kind: "text"; target: RunnerFileTarget }
+);
+
 export function ComputerScreen() {
   const { runnerUrl, runnerToken } = useAppSettings();
   const { openSkiaBoardScreen, openDrawer } = useAppShell();
+  const { showChatBottomToast } = useConversation();
   const { theme } = useVisualTheme();
   const styles = stylesByTheme[theme.id];
   const { computer, directory, loading, error, browse } = useComputerBrowser(runnerUrl, runnerToken);
+  const connection = JSON.stringify([runnerUrl, runnerToken]);
+  const connectionRef = useRef(connection);
+  connectionRef.current = connection;
+  const [openFile, setOpenFile] = useState<OpenFile | null>(null);
+  const activeFile = openFile?.connection === connection ? openFile : null;
   const [showInfo, setShowInfo] = useState(false);
-  const [copyStatus, setCopyStatus] = useState("");
   const copySequence = useRef(0);
   useEffect(() => {
-    setCopyStatus("");
-    return () => { ++copySequence.current; };
-  }, [runnerUrl, runnerToken]);
+    connectionRef.current = connection;
+    setOpenFile(null);
+    return () => {
+      ++copySequence.current;
+      if (connectionRef.current === connection) connectionRef.current = "";
+    };
+  }, [connection]);
 
   const copyPath = async (path: string) => {
     const sequence = ++copySequence.current;
     try {
       await setStringAsync(path);
-      if (sequence === copySequence.current) setCopyStatus(`コピーしました: ${path}`);
+      if (sequence === copySequence.current) showChatBottomToast("assistant", `コピーしました: ${path}`);
     } catch {
-      if (sequence === copySequence.current) setCopyStatus("パスをコピーできませんでした。");
+      if (sequence === copySequence.current) showChatBottomToast("assistant", "パスをコピーできませんでした。");
+    }
+  };
+
+  const openEntry = (entry: ComputerFileEntry) => {
+    if (!getRunnerFileOpenKind(entry.resolvedPath || entry.path)) { void copyPath(entry.path); return; }
+    const session = { connection, runnerUrl, runnerToken, rootDirectory: directory?.rootPath || "/" };
+    openRunnerFile({
+      filePathRaw: entry.resolvedPath || entry.path,
+      fileNameRaw: entry.name,
+      runnerUrl,
+      runnerToken,
+      rootDir: session.rootDirectory,
+      allowExecute: false,
+      allowMutate: true,
+      getPathLabel: (path) => String(path).split("/").at(-1) || String(path),
+      showInfoToast: (text) => {
+        if (session.connection === connectionRef.current) showChatBottomToast("assistant", String(text));
+      },
+      onOpenMedia: (target) => setOpenFile({ ...session, kind: "media", target }),
+      onOpenFile: (target) => setOpenFile({ ...session, kind: "viewer", target }),
+      onRequestEdit: (target) => setOpenFile({ ...session, kind: "text", target }),
+      mediaItems: (directory?.entries || []).flatMap((item) => {
+        const media = item.kind === "file" ? buildRunnerMediaItem({ runnerUrl, rootDir: session.rootDirectory, path: item.resolvedPath || item.path, name: item.name }) : null;
+        return media ? [media] : [];
+      }),
+    });
+  };
+
+  const closeFile = () => setOpenFile((current) => current === activeFile ? null : current);
+
+  const saveFile = async (target: WorkspaceFileTarget, content: string, expectedVersion: string) => {
+    if (!activeFile || activeFile.connection !== connectionRef.current) throw new Error("接続先が変更されました。");
+    try {
+      const result = await writeWorkspaceTextFile({
+        runnerUrl: activeFile.runnerUrl,
+        runnerToken: activeFile.runnerToken,
+        rootDirectory: target.rootDirectory || activeFile.rootDirectory,
+        path: target.path,
+        content,
+        expectedVersion,
+      });
+      if (activeFile.connection === connectionRef.current) {
+        showChatBottomToast("assistant", `保存しました: ${result.path}`);
+        void browse(directory?.basePath);
+      }
+      return result;
+    } catch (error) {
+      if (activeFile.connection === connectionRef.current) Alert.alert("保存失敗", error instanceof Error ? error.message : String(error));
+      throw error;
     }
   };
 
@@ -67,7 +145,6 @@ export function ComputerScreen() {
           <Text style={styles.title}>コンピューター</Text>
           <Text style={styles.subtitle} numberOfLines={1}>{computer?.hostname || "接続先のファイル"}</Text>
         </View>
-        <Text style={styles.readOnly}>読み取り専用</Text>
       </View>
       {showInfo && computer ? (
         <View style={styles.info}>
@@ -106,7 +183,6 @@ export function ComputerScreen() {
           </TouchableOpacity>
         </View>
       ) : null}
-      {copyStatus ? <Text style={styles.status} accessibilityLiveRegion="polite">{copyStatus}</Text> : null}
       {error ? <Text style={styles.error} accessibilityRole="alert">{error}</Text> : null}
       {loading ? <ActivityIndicator style={styles.loading} color={theme.colors.controlAccent} accessibilityLabel="ファイルを読み込み中" /> : null}
       <View style={styles.columnHeader}>
@@ -124,9 +200,9 @@ export function ComputerScreen() {
           <View style={[styles.row, index % 2 === 1 && styles.alternateRow]}>
             <TouchableOpacity style={styles.nameCell} disabled={loading}
               accessibilityRole="button"
-              accessibilityLabel={item.kind === "dir" ? `${item.name}フォルダーを開く` : `ファイルのパスをコピー: ${item.name}`}
+              accessibilityLabel={item.kind === "dir" ? `${item.name}フォルダーを開く` : getRunnerFileOpenKind(item.resolvedPath || item.path) ? `${item.name}を開く` : `ファイルのパスをコピー: ${item.name}`}
               accessibilityState={{ disabled: loading }}
-              onPress={() => item.kind === "dir" ? void browse(item.path) : void copyPath(item.path)}>
+              onPress={() => item.kind === "dir" ? void browse(item.path) : openEntry(item)}>
               <Ionicons name={item.kind === "dir" ? "folder" : "document-outline"} size={20}
                 color={item.kind === "dir" ? theme.colors.controlAccent : theme.colors.textMuted} />
               <Text style={styles.fileName} numberOfLines={1}>{item.name}</Text>
@@ -139,6 +215,16 @@ export function ComputerScreen() {
           </View>
         )}
       />
+      {activeFile?.kind === "media" ? (
+        <RunnerMediaViewer media={activeFile.target} onRequestClose={closeFile} />
+      ) : activeFile?.kind === "viewer" ? (
+        <RunnerFileViewer target={activeFile.target} runnerUrl={activeFile.runnerUrl} runnerToken={activeFile.runnerToken}
+          onRequestClose={closeFile} onAutoSave={saveFile} />
+      ) : activeFile?.kind === "text" ? (
+        <WorkspaceTextFileEditor target={activeFile.target} runnerUrl={activeFile.runnerUrl} runnerToken={activeFile.runnerToken}
+          rootDirectory={activeFile.rootDirectory} onClose={closeFile} onSave={saveFile} />
+      ) : null}
+
     </View>
   );
 }
@@ -152,7 +238,6 @@ const stylesByTheme = createStylesByTheme((theme: VisualTheme) => StyleSheet.cre
   titleRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 18, paddingVertical: 14 },
   title: { fontSize: 24, fontWeight: "700", color: theme.colors.textPrimary },
   subtitle: { fontSize: 12, color: theme.colors.textMuted },
-  readOnly: { fontSize: 11, color: theme.colors.textSecondary, backgroundColor: theme.colors.surfaceMuted, borderRadius: 5, padding: 6 },
   info: { marginHorizontal: 18, marginBottom: 12, padding: 12, gap: 5, backgroundColor: theme.colors.surfaceMuted, borderRadius: 10 },
   infoText: { fontSize: 14, color: theme.colors.textPrimary },
   toolbar: { flexDirection: "row", alignItems: "center", paddingHorizontal: 6, borderTopWidth: StyleSheet.hairlineWidth, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: theme.colors.border, backgroundColor: theme.colors.surfaceMuted },

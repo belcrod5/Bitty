@@ -73,6 +73,10 @@ export function createMediaModalStyles(theme: VisualTheme) {
     zIndex: 6,
     elevation: 16,
   },
+  computerToastForeground: {
+    zIndex: 1001,
+    elevation: 17,
+  },
   chatBottomToast: {
     borderRadius: 12,
     borderWidth: theme.borders.thin,

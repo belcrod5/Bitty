@@ -48,7 +48,8 @@ function normalizeFileName(rawName) {
 }
 
 async function resolveRootPath(workspaceRoot, rawRootDir) {
-  const rootInput = String(rawRootDir || "").trim();
+  const rootValue = String(rawRootDir || "");
+  const rootInput = path.isAbsolute(rootValue) ? rootValue : rootValue.trim();
   if (!rootInput) {
     throw new WorkspaceFilesError(400, "root_directory_required", "rootDir is required");
   }
@@ -67,7 +68,8 @@ async function resolveExistingPath(workspaceRoot, rootReal, rawPath, {
   requiredCode = "path_required",
   invalidCode = "path_invalid",
 } = {}) {
-  const targetInput = String(rawPath || "").trim();
+  const targetValue = String(rawPath || "");
+  const targetInput = path.isAbsolute(targetValue) ? targetValue : targetValue.trim();
   if (!targetInput) {
     throw new WorkspaceFilesError(400, requiredCode, "path is required");
   }
@@ -108,7 +110,8 @@ async function resolveExistingPath(workspaceRoot, rootReal, rawPath, {
 }
 
 async function resolveTargetDirectory(workspaceRoot, rootReal, rawTargetDirectory) {
-  const targetInput = String(rawTargetDirectory || "").trim();
+  const targetValue = String(rawTargetDirectory || "");
+  const targetInput = path.isAbsolute(targetValue) ? targetValue : targetValue.trim();
   if (!targetInput) {
     throw new WorkspaceFilesError(400, "target_directory_required", "targetDirectory is required");
   }

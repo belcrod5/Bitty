@@ -560,22 +560,17 @@ export function createMenuScreenStyles(theme: VisualTheme) {
     fontWeight: "700",
     color: theme.colors.infoAction,
   },
+  menuNavRow: {
+    flexDirection: "row",
+    gap: 8,
+  },
   menuNavButton: {
-    marginTop: 2,
+    minWidth: 48,
+    minHeight: 48,
     borderRadius: 12,
     backgroundColor: theme.colors.surface,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    gap: 4,
-  },
-  menuNavTitle: {
-    fontSize: theme.typography.compact.fontSize,
-    fontWeight: "700",
-    color: theme.colors.textPrimary,
-  },
-  menuNavValue: {
-    fontSize: theme.typography.caption.fontSize,
-    color: theme.colors.textMuted,
+    alignItems: "center",
+    justifyContent: "center",
   },
   } as const;
 }

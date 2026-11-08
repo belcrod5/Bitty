@@ -1183,9 +1183,12 @@ async function listLlmDirectories(rawPath, identityOnly = false, computerView = 
       continue;
     }
     if (!entry.isFile() && !linkedStat?.isFile()) continue;
+    const resolvedPath = entry.isSymbolicLink() ? await fs.realpath(childAbs).catch(() => "") : "";
+    if (entry.isSymbolicLink() && !resolvedPath) continue;
     files.push({
       name: entry.name,
       path: toUnixPath(childAbs),
+      ...(resolvedPath ? { resolvedPath: toUnixPath(resolvedPath) } : {}),
     });
   }
   directories.sort((a, b) => a.name.localeCompare(b.name));
@@ -2253,7 +2256,7 @@ const CLIENT_MEDIA_MIME_BY_EXT = new Map([
 ]);
 
 function getClientMediaMimeType(filePath) {
-  return CLIENT_MEDIA_MIME_BY_EXT.get(path.extname(String(filePath || "")).toLowerCase()) || "";
+  return CLIENT_MEDIA_MIME_BY_EXT.get(path.extname(String(filePath || "")).trimEnd().toLowerCase()) || "";
 }
 
 function buildInlineContentDisposition(rawFileName) {
@@ -4470,7 +4473,8 @@ function makeToolError(code, message, details = {}) {
 }
 
 async function resolveToolRoot(rawRootDir, opts = {}) {
-  const rootInput = String(rawRootDir || "").trim();
+  const rootValue = String(rawRootDir || "");
+  const rootInput = path.isAbsolute(rootValue) ? rootValue : rootValue.trim();
   const rootAbs = rootInput
     ? (path.isAbsolute(rootInput) ? path.resolve(rootInput) : path.resolve(WORKSPACE_ROOT, rootInput))
     : DEFAULT_LLM_FILE_ROOT;
@@ -4608,12 +4612,14 @@ const {
 });
 
 async function resolveClientFilePath(rawPath, rawRootDir = "") {
-  const requestedPath = String(rawPath || "").trim();
+  const pathValue = String(rawPath || "");
+  const requestedPath = path.isAbsolute(pathValue) ? pathValue : pathValue.trim();
   if (!requestedPath) {
     throw makeApiError(400, "path_required", "path is required");
   }
   const workspaceReal = await getWorkspaceRealPath();
-  const rootInput = String(rawRootDir || "").trim();
+  const rootValue = String(rawRootDir || "");
+  const rootInput = path.isAbsolute(rootValue) ? rootValue : rootValue.trim();
   try {
     const rootReal = rootInput
       ? (await resolveToolRoot(rootInput, { create: false })).rootReal
@@ -6712,8 +6718,8 @@ const handleRunnerRequest = async (req, res) => {
       return json(res, 401, { error: "unauthorized" });
     }
     try {
-      const pathParam = String(reqUrl.searchParams.get("path") || "").trim();
-      const rootDirParam = String(reqUrl.searchParams.get("rootDir") || "").trim();
+      const pathParam = reqUrl.searchParams.get("path") || "";
+      const rootDirParam = reqUrl.searchParams.get("rootDir") || "";
       await sendClientMediaFile(req, res, pathParam, rootDirParam);
       return;
     } catch (err) {

@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
+import { Readable, Writable } from "node:stream";
+import { finished } from "node:stream/promises";
 
 // Exercise the real dispatch without opening a port or touching the user's stores.
 const runnerRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -18,13 +20,19 @@ Object.assign(process.env, { RUNNER_SKIP_SERVER_START: "1", RUNNER_MOCK: "1", RU
 const { __TESTING__ } = await import(pathToFileURL(path.join(temp, "private_runner/src/server-runtime.mjs")));
 test.after(async () => { process.chdir(originalCwd); await fs.rm(temp, { recursive: true, force: true }); });
 
-async function request(url, { token = "synthetic-token", method = "GET" } = {}) {
-  let status, payload;
-  await __TESTING__.handleRunnerRequest({ method, url,
-    headers: { host: "127.0.0.1", authorization: `Bearer ${token}` }, socket: { remoteAddress: "synthetic" } }, {
-    writeHead(code) { status = code; }, end(body) { payload = body ? JSON.parse(body.toString()) : null; },
-  });
-  return { status, payload };
+async function request(url, { token = "synthetic-token", method = "GET", body } = {}) {
+  let status, headers;
+  const chunks = [];
+  const req = Readable.from(body ? [JSON.stringify(body)] : []);
+  Object.assign(req, { method, url,
+    headers: { host: "127.0.0.1", authorization: `Bearer ${token}` }, socket: { remoteAddress: "synthetic" } });
+  const res = new Writable({ write(chunk, _encoding, callback) { chunks.push(Buffer.from(chunk)); callback(); } });
+  res.req = req;
+  res.writeHead = (code, values) => { status = code; headers = values; };
+  await __TESTING__.handleRunnerRequest(req, res);
+  await finished(res);
+  const data = Buffer.concat(chunks).toString();
+  return { status, payload: headers?.["content-type"]?.includes("application/json") ? JSON.parse(data) : data };
 }
 
 test("computer information requires authentication and has only a read endpoint", async () => {
@@ -99,4 +107,58 @@ test("one unavailable modification date does not hide the other files", async ()
     assert.equal(result.entries.find((entry) => entry.name === "unavailable.txt").modifiedAt, null);
     assert.ok(result.entries.find((entry) => entry.name === "readable.txt").modifiedAt);
   } finally { fs.stat = originalStat; }
+});
+
+
+test("the real text and media routes preserve selected absolute file identities", async () => {
+  const root = path.join(temp, "literal ");
+  const otherRoot = path.join(temp, "literal");
+  await fs.mkdir(root); await fs.mkdir(otherRoot);
+  const file = path.join(root, "memo.md ");
+  await fs.writeFile(file, "selected trailing-space file");
+  await fs.writeFile(path.join(root, "memo.md"), "unselected trimmed filename");
+  await fs.writeFile(path.join(otherRoot, "memo.md"), "unselected trimmed directory");
+  const canonicalRoot = await fs.realpath(root);
+  const canonicalFile = path.join(canonicalRoot, "memo.md ");
+  const textUrl = `/workspace/files?${new URLSearchParams({ path: canonicalFile, rootDir: canonicalRoot })}`;
+  const opened = await request(textUrl);
+  assert.equal(opened.status, 200);
+  assert.equal(opened.payload.content, "selected trailing-space file");
+  const saved = await request("/workspace/files", { method: "PUT", body: {
+    rootDir: canonicalRoot, path: canonicalFile, content: "saved selected file", expectedVersion: opened.payload.version,
+  } });
+  assert.equal(saved.status, 200);
+  assert.equal(await fs.readFile(file, "utf8"), "saved selected file");
+  assert.equal(await fs.readFile(path.join(root, "memo.md"), "utf8"), "unselected trimmed filename");
+  assert.equal(await fs.readFile(path.join(otherRoot, "memo.md"), "utf8"), "unselected trimmed directory");
+
+  const imageName = String.raw`photo\copy.png `;
+  const image = path.join(canonicalRoot, imageName);
+  await fs.writeFile(image, "selected image bytes");
+  await fs.writeFile(path.join(canonicalRoot, "photocopy.png"), "unselected image");
+  const media = await request(`/files/media?${new URLSearchParams({ path: image, rootDir: canonicalRoot })}`);
+  assert.equal(media.status, 200, JSON.stringify(media.payload));
+  assert.equal(media.payload, "selected image bytes");
+  const missing = await request(`/files/media?${new URLSearchParams({ path: path.join(canonicalRoot, "photocopy.png "), rootDir: canonicalRoot })}`);
+  assert.equal(missing.status, 400);
+});
+
+test("symlink metadata separates alias copying from canonical opening while existing guards remain", async () => {
+  const aliases = path.join(temp, "aliases");
+  const targets = path.join(temp, "targets ");
+  await fs.mkdir(aliases); await fs.mkdir(targets);
+  const target = path.join(targets, "note.md ");
+  const alias = path.join(aliases, "Shortcut.md");
+  await fs.writeFile(target, "symlink target content");
+  await fs.symlink(target, alias);
+  const listing = await request(`/directories?${new URLSearchParams({ path: aliases, view: "computer" })}`);
+  const entry = listing.payload.entries[0];
+  assert.equal(entry.path, path.join(await fs.realpath(aliases), "Shortcut.md"));
+  assert.equal(entry.resolvedPath, await fs.realpath(target));
+  assert.equal(listing.payload.rootPath, "/");
+  const opened = await request(`/workspace/files?${new URLSearchParams({ path: entry.resolvedPath, rootDir: listing.payload.rootPath })}`);
+  assert.equal(opened.status, 200);
+  assert.equal(opened.payload.content, "symlink target content");
+  assert.equal((await request(`/workspace/files?${new URLSearchParams({ path: entry.path, rootDir: "/" })}`)).status, 400);
+  assert.equal((await request(`/workspace/files?${new URLSearchParams({ path: entry.resolvedPath, rootDir: await fs.realpath(aliases) })}`)).status, 400);
 });
