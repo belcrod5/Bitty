@@ -60,7 +60,7 @@ export function WorkspaceTextFileEditor({
 
   const targetPath = target?.path || "";
   const targetRootDirectory = target?.rootDirectory || rootDirectory;
-  const isMarkdown = /\.md$/iu.test(targetPath);
+  const isMarkdown = /\.md$/iu.test(targetPath.trimEnd());
 
   useEffect(() => {
     contentRef.current = "";

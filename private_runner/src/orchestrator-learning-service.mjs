@@ -51,6 +51,59 @@ const learningReferences = (use) => [...(use.items || []), ...(use.inheritedItem
   ...(use.inheritedReads || []), ...(use.contextReads || []).flatMap((read) => read.items || [])];
 const score = (value) => value === null || Number.isInteger(value) && value >= 0 && value <= 100;
 
+// Adoption links identify retained versions, independent of their current enabled state.
+function learningLineages(items, changes) {
+  const adopted = new Map(items.filter((item) => ["active", "retired"].includes(item.status) && item.action !== "retire")
+    .map((item) => [item.id, item]));
+  const links = new Map([...adopted.keys()].map((id) => [id, new Set()]));
+  for (const item of adopted.values()) for (const id of item.replaces || []) {
+    const previous = adopted.get(id);
+    if (!previous || previous.scope.orchestratorId !== item.scope.orchestratorId) continue;
+    links.get(item.id).add(id); links.get(id).add(item.id);
+  }
+  const visited = new Set();
+  const lastChanges = new Map(changes.map((entry, index) => [entry.itemId, index]));
+  const lineages = [];
+  for (const id of adopted.keys()) {
+    if (visited.has(id)) continue;
+    const connected = new Set(); const pending = [id];
+    while (pending.length) {
+      const next = pending.pop();
+      if (visited.has(next)) continue;
+      visited.add(next); connected.add(next); pending.push(...links.get(next));
+    }
+    if (connected.size < 2) continue;
+    const versions = items.filter((item) => connected.has(item.id));
+    const ancestors = new Map();
+    for (const item of versions) {
+      const previous = new Set(); const pendingSources = [...(item.replaces || [])];
+      while (pendingSources.length) {
+        const source = pendingSources.pop();
+        if (!connected.has(source) || previous.has(source)) continue;
+        previous.add(source); pendingSources.push(...(adopted.get(source).replaces || []));
+      }
+      ancestors.set(item.id, previous);
+    }
+    const current = versions.filter((item) => {
+      if (item.status === "active") return true;
+      if (item.decision?.action !== "retire") return false;
+      return !versions.some((other) => {
+        if (!ancestors.get(item.id).has(other.id) && !ancestors.get(other.id).has(item.id)) return false;
+        const difference = Date.parse(other.decision?.at || other.updatedAt || other.createdAt) - Date.parse(item.decision.at);
+        return difference > 0 || difference === 0 && (lastChanges.get(other.id) ?? -1) > (lastChanges.get(item.id) ?? -1);
+      });
+    });
+    if (!current.length) {
+      const latest = changes.findLast((entry) => connected.has(entry.itemId));
+      current.push(versions.find((item) => item.id === latest?.itemId) || [...versions].sort((a, b) =>
+        Date.parse(b.decision?.at || b.updatedAt || b.createdAt) - Date.parse(a.decision?.at || a.updatedAt || a.createdAt))[0]);
+    }
+    lineages.push({ current: current.map(({ id: itemId, version }) => ({ id: itemId, version })),
+      previous: versions.filter((item) => !current.includes(item)).map(({ id: itemId, version }) => ({ id: itemId, version })) });
+  }
+  return lineages;
+}
+
 
 // Single owner of evidence, adoption, skill versions and response delivery records.
 export async function openOrchestratorLearning({ workspace, memoryConversationId, initialThrough, orchestratorId: ownerId,
@@ -676,7 +729,7 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
         observedThrough: state.observedThrough, processedThrough: state.processedThrough,
         retry: state.batch ? { batchId: state.batch.id, settingsRevision: state.settings.settingsRevision,
           attempts: state.batch.attempts, ceiling: state.batch.retryCeiling || bounds.maxAttempts } : null,
-        pendingCount: state.pending.length, candidates: structuredClone(state.candidates), gaps: structuredClone(state.gaps),
+        pendingCount: state.pending.length, candidates: structuredClone(state.candidates), lineages: learningLineages(state.candidates, state.changes), gaps: structuredClone(state.gaps),
         evaluations: structuredClone(state.evaluations.map((entry) => ({ ...entry, corrections: state.corrections.filter((correction) => correction.evaluationId === entry.id) }))),
         changes: structuredClone(state.changes), uses: structuredClone(state.uses), proposals: structuredClone(state.proposals),
         requests: structuredClone(state.requests), autoPublish: false,
@@ -766,7 +819,8 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
         const visible = item ? [learningItemSnapshot(item)] : status !== undefined
           ? items.filter((entry) => status === "all" || entry.status === status).map(learningItemSnapshot)
           : items.filter((entry) => entry.status === "active").map(({ id, version, kind, content }) => ({ id, version, kind, content }));
-        return { contextRevision: state.contextRevision, selectedDigest: digest(visible), items: visible };
+        return { contextRevision: state.contextRevision, selectedDigest: digest(visible), items: visible,
+          lineages: learningLineages(items, state.changes) };
       });
     },
     async editItem({ orchestratorId, id, version, changes, signal }) {

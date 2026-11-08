@@ -27,9 +27,11 @@ let mockRunnerUrl = "http://runner";
 let mockRunnerToken = "runner-token";
 let mockUnreadCount = 0;
 let mockDrawerOpen = true;
+const mockSetActiveScreen = jest.fn();
+const mockCloseDrawer = jest.fn();
 
 jest.mock("../contexts/AppShellContext", () => ({
-  useAppShell: () => ({ unreadCount: mockUnreadCount, drawerOpen: mockDrawerOpen }),
+  useAppShell: () => ({ unreadCount: mockUnreadCount, drawerOpen: mockDrawerOpen, setActiveScreen: mockSetActiveScreen, closeDrawer: mockCloseDrawer }),
 }));
 jest.mock("../contexts/SkiaBoardContext", () => ({
   useSkiaBoard: () => ({
@@ -184,17 +186,20 @@ test("shows Settings without the removed title and navigation links", async () =
   expect(drawer.queryByText("Board")).toBeNull();
   expect(drawer.queryByText("ボードを開く")).toBeNull();
   expect(drawer.queryByText("Cloudflare Tunnel")).toBeNull();
-  expect(drawer.getByText("設定")).toBeTruthy();
+  expect(drawer.getByLabelText("設定を開く")).toBeTruthy();
+  expect(drawer.queryByText("設定")).toBeNull();
+  expect(drawer.queryByText("コンピューター")).toBeNull();
+  expect(drawer.queryByText("ファイルとコンピューター情報")).toBeNull();
 });
 
 test("opens Settings from the left navigation", async () => {
   const onOpenSettings = jest.fn();
   const drawer = await renderDrawer({ onOpenSettings });
 
-  await fireEvent.press(drawer.getByText("設定"));
+  await fireEvent.press(drawer.getByLabelText("設定を開く"));
 
   expect(onOpenSettings).toHaveBeenCalledTimes(1);
-  expect(drawer.getByText("接続・モデル・音声を設定")).toBeTruthy();
+  expect(drawer.queryByText("接続・モデル・音声を設定")).toBeNull();
 });
 
 test("adds a long-pressed session to the Skia board", async () => {
@@ -1230,4 +1235,11 @@ test.each([[0, ""], [1, "1"], [120, "99+"]] as const)("shows the shared menu unr
   }
   await fireEvent.press(filter);
   expect(drawer.getByLabelText("未読のみ表示").props.accessibilityValue.text).toBe(`未読 ${count}件`);
+});
+
+test("opens the computer independently of a selected chat", async () => {
+  const drawer = await renderDrawer({ registeredDirectories: [], expandedDirectoryIds: [] });
+  await fireEvent.press(drawer.getByLabelText("コンピューターを開く"));
+  expect(mockSetActiveScreen).toHaveBeenCalledWith("computer");
+  expect(mockCloseDrawer).toHaveBeenCalledTimes(1);
 });

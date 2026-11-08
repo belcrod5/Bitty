@@ -10,6 +10,7 @@ import {
 import { KeyboardProvider } from "./keyboardController";
 import {
   Alert,
+  Animated,
   AppState,
   DeviceEventEmitter,
   NativeEventEmitter,
@@ -20,6 +21,7 @@ import {
   type NativeSyntheticEvent,
   Platform,
   SafeAreaView,
+  Text,
   TextInput,
   View,
 } from "react-native";
@@ -6161,10 +6163,19 @@ function AppContent({ onReady }: { onReady?: () => void }) {
         chatScreen={chatScreenContextValue}
       >
       <KeyboardProvider>
-      <AppModalHost foreground={<RunnerConnectionIndicator
-        enabled={settingsLoaded && !!runnerUrl && !!runnerToken}
-        connectionInterrupted={runnerClientStateConnectionInterrupted}
-      />}>
+      <AppModalHost foreground={<>
+        <RunnerConnectionIndicator
+          enabled={settingsLoaded && !!runnerUrl && !!runnerToken}
+          connectionInterrupted={runnerClientStateConnectionInterrupted}
+        />
+        {runnerSessionVerified && activeScreen === "computer" && chatBottomToast ? (
+          <Animated.View pointerEvents="none" style={[styles.chatBottomToastWrap, styles.computerToastForeground, { opacity: chatBottomToastAnimRef.current }]}>
+            <View style={[styles.chatBottomToast, styles.chatBottomToastAssistant]}>
+              <Text style={styles.chatBottomToastText} accessibilityLiveRegion="polite">{chatBottomToast.text}</Text>
+            </View>
+          </Animated.View>
+        ) : null}
+      </>}>
         {settingsLoaded && (runnerSessionVerified ? <>
         <AppDrawerLayout
         open={drawerOpen}

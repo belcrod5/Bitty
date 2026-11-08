@@ -589,3 +589,15 @@ test.each(["wav", "mp3", "m4a", "aac", "flac", "ogg", "opus", "aif", "aiff", "ca
   expect(labels).toContain("再生");
   expect(labels).not.toContain("ファイル内容をコピー");
 });
+
+
+test("selects a viewer by extension without trimming absolute target identity", () => {
+  const path = String.raw`/external/project /memo\copy.md `;
+  const onRequestEdit = jest.fn();
+  expect(getRunnerFileOpenKind(path)).toBe("text");
+  expect(openRunnerFile({ filePathRaw: path, fileNameRaw: "memo.md ", rootDir: "/external/project ",
+    runnerUrl: "http://runner.test", runnerToken: "token", allowMutate: true,
+    onRequestEdit, getPathLabel: String, showInfoToast: jest.fn(),
+  })).toBe(true);
+  expect(onRequestEdit).toHaveBeenCalledWith(expect.objectContaining({ path, name: "memo.md ", rootDirectory: "/external/project " }));
+});

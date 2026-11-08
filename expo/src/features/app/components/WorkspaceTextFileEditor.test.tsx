@@ -158,10 +158,10 @@ test("treats the current macOS draft as unsaved when closing", async () => {
   expect(onClose).not.toHaveBeenCalled();
 });
 
-test("opens Markdown in edit mode and previews the current content", async () => {
+test.each(["/external/note.md", String.raw`/external/project /note\copy.md `])("opens Markdown %s in edit mode and previews the current content", async (targetPath) => {
   Object.defineProperty(Platform, "OS", { configurable: true, value: "macos" });
   mockFetchRunnerTextFileContent.mockResolvedValue({
-    path: "/external/note.md",
+    path: targetPath,
     content: "# Before",
     totalBytes: 8,
     version: "opened-version",
@@ -169,7 +169,7 @@ test("opens Markdown in edit mode and previews the current content", async () =>
   const view = await render(
     <WorkspaceTextFileEditor
       target={{
-        path: "/external/note.md",
+        path: targetPath,
         name: "note.md",
         rootDirectory: "/external",
       }}
@@ -185,7 +185,7 @@ test("opens Markdown in edit mode and previews the current content", async () =>
   await waitFor(() => expect(editor.props.value).toBe("# Before"));
   expect(mockFetchRunnerTextFileContent).toHaveBeenCalledWith(expect.objectContaining({
     rootDir: "/external",
-    path: "/external/note.md",
+    path: targetPath,
   }));
 
   await fireEvent.changeText(editor, "# After");

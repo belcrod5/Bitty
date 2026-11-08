@@ -17,6 +17,7 @@ type LearningStatus = {
   settings: { model: string; effort: string; settingsRevision: number };
   status: string; enabled: boolean; observedThrough: number; processedThrough: number;
   pendingCount: number; unreadCount?: number; candidates: LearningKnowledge[];
+  lineages?: { current: { id: string; version: number }[]; previous: { id: string; version: number }[] }[];
   gaps: { from: number; through: number; reason: string }[];
   error: { code: string; message: string } | null;
   outputLimitEnforced: boolean;
@@ -179,10 +180,11 @@ export function OrchestratorLearningPanel({ request: sendRequest, orchestrator }
       onPress={() => void manage(op, payload)} style={[styles.settingsBackButton, { opacity: busy || disabled ? 0.5 : 1 }]}>
       <Text style={styles.settingsActionText}>{label}</Text>
     </TouchableOpacity>);
+  const previousVersions = new Set(status?.lineages?.flatMap((lineage) => lineage.previous.map(({ id, version }) => `${id}:${version}`)));
   const filteredKnowledge = (status?.candidates || []).filter((item) => {
     const past = item.status === "candidate" && !canApplyLearningProposal(item, status?.candidates || []);
     if (knowledgeFilter === "inactive") return past || item.status === "retired" || item.status === "rejected";
-    if (past || item.status === "rejected") return false;
+    if (past || item.status === "rejected" || previousVersions.has(`${item.id}:${item.version}`)) return false;
     if (knowledgeFilter === "all") return selecting || item.action === "retire" || !learningProposalSources(item, status?.candidates || []).length;
     return item.status === knowledgeFilter;
   });
@@ -256,6 +258,8 @@ export function OrchestratorLearningPanel({ request: sendRequest, orchestrator }
         </View> : null}
         {filteredKnowledge.length ? <View style={{ gap: 12 }}>{filteredKnowledge.slice(knowledgeCurrentPage * 5, knowledgeCurrentPage * 5 + 5).map((item) => (
           <LearningKnowledgeCard key={item.id} item={item} knowledge={status.candidates} changes={status.changes || []}
+            previousVersions={(status.lineages?.find((lineage) => lineage.current.some((current) => current.id === item.id && current.version === item.version))?.previous || [])
+              .flatMap((reference) => status.candidates.filter((entry) => entry.id === reference.id && entry.version === reference.version))}
             chatName={orchestrator.name}
             selecting={selecting} selected={selected.includes(item.id)} busy={busy} manage={manage}
             onSelect={() => setSelected((current) => current.includes(item.id) ? current.filter((id) => id !== item.id) : [...current, item.id])} />

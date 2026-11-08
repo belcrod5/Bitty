@@ -22,6 +22,13 @@ jest.mock("../screens/SettingsScreen", () => ({
     return ReactModule.createElement(Text, null, "Settings screen");
   },
 }));
+jest.mock("../screens/ComputerScreen", () => ({
+  ComputerScreen: () => {
+    const ReactModule = require("react");
+    const { Text } = require("react-native");
+    return ReactModule.createElement(Text, null, "Computer screen");
+  },
+}));
 jest.mock("../screens/CloudflareTunnelMonitorScreen", () => ({
   CloudflareTunnelMonitorScreen: () => null,
 }));
@@ -36,7 +43,8 @@ const voicePlayback = {
   ttsUiStatus: "idle" as const,
 };
 
-test("keeps the native Skia surface mounted while visiting Settings", async () => {
+test.each([["settings", "Settings screen"], ["computer", "Computer screen"]] as const)(
+  "renders %s and keeps the native Skia surface mounted when returning", async (activeScreen, title) => {
   const openSessionHistoryPopup = jest.fn();
   const screen = await render(
     <AppScreenContent
@@ -50,13 +58,13 @@ test("keeps the native Skia surface mounted while visiting Settings", async () =
   expect(mockBoardMountCount).toBe(1);
   await screen.rerender(
     <AppScreenContent
-      activeScreen="settings"
+      activeScreen={activeScreen}
       voicePlayback={voicePlayback}
       onStartNewSessionInDirectory={jest.fn()}
       openSessionHistoryPopup={openSessionHistoryPopup}
     />
   );
-  expect(screen.getByText("Settings screen")).toBeTruthy();
+  expect(screen.getByText(title)).toBeTruthy();
 
   await screen.rerender(
     <AppScreenContent
@@ -66,5 +74,6 @@ test("keeps the native Skia surface mounted while visiting Settings", async () =
       openSessionHistoryPopup={openSessionHistoryPopup}
     />
   );
+  expect(screen.queryByText(title)).toBeNull();
   expect(mockBoardMountCount).toBe(1);
 });
