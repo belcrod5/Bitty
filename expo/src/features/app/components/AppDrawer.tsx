@@ -13,7 +13,7 @@ import {
   type GestureResponderEvent,
   type LayoutChangeEvent,
 } from "react-native";
-import Svg, { Path } from "react-native-svg";
+import Svg, { Circle, Path } from "react-native-svg";
 import type { LlmSessionHistoryEntry, LlmSessionSource } from "../hooks/useLlmSessionExplorer";
 import type { PopupChatSourceRect } from "./popupChatTypes";
 import { useAppStyles } from "../styles";
@@ -133,7 +133,7 @@ export const AppDrawer = memo(function AppDrawer({
   onMarkDirectorySessionsRead,
 }: AppDrawerProps) {
   const styles = useAppStyles();
-  const { drawerOpen } = useAppShell();
+  const { drawerOpen, setActiveScreen, closeDrawer } = useAppShell();
   const { theme } = useVisualTheme();
   const {
     addDirectory,
@@ -378,10 +378,29 @@ export const AppDrawer = memo(function AppDrawer({
           }
         }}
       >
-        <TouchableOpacity style={styles.menuNavButton} onPress={onOpenSettings}>
-          <Text style={styles.menuNavTitle}>設定</Text>
-          <Text style={styles.menuNavValue}>接続・モデル・音声を設定</Text>
-        </TouchableOpacity>
+        <View style={styles.menuNavRow}>
+          <TouchableOpacity
+            style={styles.menuNavButton}
+            onPress={() => { setActiveScreen("computer"); closeDrawer(); }}
+            accessibilityRole="button"
+            accessibilityLabel="コンピューターを開く"
+          >
+            <Svg width={24} height={24} viewBox="0 0 24 24" fill="none">
+              <Path d="M3 4h18v13H3zM8 21h8M12 17v4" stroke={theme.colors.textPrimary} strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" />
+            </Svg>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.menuNavButton}
+            onPress={onOpenSettings}
+            accessibilityRole="button"
+            accessibilityLabel="設定を開く"
+          >
+            <Svg width={24} height={24} viewBox="0 0 24 24" fill="none">
+              <Path d="M10 2h4l.6 3.1 2.2 1.3 3-.9 2 3.5-2.4 2.2v2.6l2.4 2.2-2 3.5-3-.9-2.2 1.3L14 22h-4l-.6-3.1-2.2-1.3-3 .9-2-3.5 2.4-2.2v-2.6L2.2 8l2-3.5 3 .9 2.2-1.3L10 2Z" stroke={theme.colors.textPrimary} strokeWidth={1.5} strokeLinejoin="round" />
+              <Circle cx={12} cy={12} r={3} stroke={theme.colors.textPrimary} strokeWidth={1.5} />
+            </Svg>
+          </TouchableOpacity>
+        </View>
 
         <View style={styles.appDrawerSection}>
           <View style={styles.appDrawerSectionHeader}>

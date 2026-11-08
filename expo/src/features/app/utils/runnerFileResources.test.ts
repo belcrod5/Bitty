@@ -1,5 +1,6 @@
 import {
   buildRunnerMediaFileUrl,
+  normalizeRunnerPath,
   getRunnerMediaSource,
   resolveRunnerMarkdownImage,
 } from "./runnerFileResources";
@@ -74,4 +75,14 @@ describe("Runner image resources", () => {
     expect(resolveRunnerMarkdownImage("https://images.test/a.jpg", { ...context, runnerToken: "" }))
       .toEqual({ uri: "https://images.test/a.jpg" });
   });
+});
+
+
+test("keeps absolute POSIX identity while normalizing relative input as before", () => {
+  const path = String.raw`/external/project /photo\copy.png `;
+  expect(normalizeRunnerPath(path)).toBe(path);
+  expect(normalizeRunnerPath(String.raw`  project\note.md  `)).toBe("project/note.md");
+  const url = new URL(buildRunnerMediaFileUrl({ runnerUrl: "http://runner.test", rootDir: "/external/project ", path }));
+  expect(url.searchParams.get("path")).toBe(path);
+  expect(url.searchParams.get("rootDir")).toBe("/external/project ");
 });

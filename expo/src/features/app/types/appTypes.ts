@@ -265,7 +265,7 @@ export type GitChangedFilesDirectoryState = {
   error: string;
 };
 
-export type AppScreen = "skia_board" | "settings" | "cloudflare_tunnel_monitor";
+export type AppScreen = "skia_board" | "settings" | "computer" | "cloudflare_tunnel_monitor";
 export type VoiceContextStats = {
   contextUsagePercent: number | null;
   unsummarizedMessageCount: number;

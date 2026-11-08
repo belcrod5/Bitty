@@ -1131,11 +1131,12 @@ async function resolveCanonicalDirectoryIdentity(rawDirectory, fallback = DEFAUL
   }
 }
 
-async function listLlmDirectories(rawPath, identityOnly = false) {
-  const requestedPath = String(rawPath || "").trim() || DEFAULT_LLM_FILE_ROOT_RELATIVE;
+async function listLlmDirectories(rawPath, identityOnly = false, computerView = false) {
+  const requestedPath = (computerView ? String(rawPath || "") : String(rawPath || "").trim())
+    || DEFAULT_LLM_FILE_ROOT_RELATIVE;
   let resolved = null;
   try {
-    resolved = await resolveToolRoot(requestedPath, { create: false });
+    resolved = { rootReal: await fs.realpath(path.resolve(WORKSPACE_ROOT, requestedPath)) };
   } catch (err) {
     const code = String(err?.code || "").toUpperCase();
     if (code === "ENOENT") {
@@ -1165,8 +1166,10 @@ async function listLlmDirectories(rawPath, identityOnly = false) {
   for (const entry of dirEntries) {
     if (entry.name.startsWith(".") && entry.name !== ".agents") continue;
     const childAbs = path.join(resolved.rootReal, entry.name);
-    if (entry.isDirectory()) {
-      if (LLM_FILE_SKIP_SCAN_DIRS.has(entry.name)) continue;
+    const linkedStat = computerView && entry.isSymbolicLink()
+      ? await fs.stat(childAbs).catch(() => null) : null;
+    if (entry.isDirectory() || linkedStat?.isDirectory()) {
+      if (!computerView && LLM_FILE_SKIP_SCAN_DIRS.has(entry.name)) continue;
       let childReal = childAbs;
       try {
         childReal = await fs.realpath(childAbs);
@@ -1175,20 +1178,27 @@ async function listLlmDirectories(rawPath, identityOnly = false) {
       }
       directories.push({
         name: entry.name,
-        path: toUnixPath(childReal),
+        path: toUnixPath(entry.isSymbolicLink() ? childAbs : childReal),
       });
       continue;
     }
-    if (!entry.isFile()) continue;
+    if (!entry.isFile() && !linkedStat?.isFile()) continue;
+    const resolvedPath = entry.isSymbolicLink() ? await fs.realpath(childAbs).catch(() => "") : "";
+    if (entry.isSymbolicLink() && !resolvedPath) continue;
     files.push({
       name: entry.name,
       path: toUnixPath(childAbs),
+      ...(resolvedPath ? { resolvedPath: toUnixPath(resolvedPath) } : {}),
     });
   }
   directories.sort((a, b) => a.name.localeCompare(b.name));
   files.sort((a, b) => a.name.localeCompare(b.name));
   const limitedDirectories = directories.slice(0, Math.max(1, DIRECTORY_EXPLORER_MAX_ENTRIES));
   const limitedFiles = files.slice(0, Math.max(1, DIRECTORY_EXPLORER_MAX_ENTRIES));
+  await Promise.all([...limitedDirectories, ...limitedFiles].map(async (item) => {
+    item.modifiedAt = await fs.stat(item.path)
+      .then((stat) => stat.mtime.toISOString()).catch(() => null);
+  }));
   const entries = [
     ...limitedDirectories.map((item) => ({
       ...item,
@@ -2246,7 +2256,7 @@ const CLIENT_MEDIA_MIME_BY_EXT = new Map([
 ]);
 
 function getClientMediaMimeType(filePath) {
-  return CLIENT_MEDIA_MIME_BY_EXT.get(path.extname(String(filePath || "")).toLowerCase()) || "";
+  return CLIENT_MEDIA_MIME_BY_EXT.get(path.extname(String(filePath || "")).trimEnd().toLowerCase()) || "";
 }
 
 function buildInlineContentDisposition(rawFileName) {
@@ -4463,7 +4473,8 @@ function makeToolError(code, message, details = {}) {
 }
 
 async function resolveToolRoot(rawRootDir, opts = {}) {
-  const rootInput = String(rawRootDir || "").trim();
+  const rootValue = String(rawRootDir || "");
+  const rootInput = path.isAbsolute(rootValue) ? rootValue : rootValue.trim();
   const rootAbs = rootInput
     ? (path.isAbsolute(rootInput) ? path.resolve(rootInput) : path.resolve(WORKSPACE_ROOT, rootInput))
     : DEFAULT_LLM_FILE_ROOT;
@@ -4601,12 +4612,14 @@ const {
 });
 
 async function resolveClientFilePath(rawPath, rawRootDir = "") {
-  const requestedPath = String(rawPath || "").trim();
+  const pathValue = String(rawPath || "");
+  const requestedPath = path.isAbsolute(pathValue) ? pathValue : pathValue.trim();
   if (!requestedPath) {
     throw makeApiError(400, "path_required", "path is required");
   }
   const workspaceReal = await getWorkspaceRealPath();
-  const rootInput = String(rawRootDir || "").trim();
+  const rootValue = String(rawRootDir || "");
+  const rootInput = path.isAbsolute(rootValue) ? rootValue : rootValue.trim();
   try {
     const rootReal = rootInput
       ? (await resolveToolRoot(rootInput, { create: false })).rootReal
@@ -6534,7 +6547,7 @@ const handleRunnerRequest = async (req, res) => {
   if (await appControlHttpHandler(req, res, reqUrl, pathname)) return;
   if (await agentHttpHandler(req, res, reqUrl, pathname)) return;
 
-  if (req.method === "GET" && pathname === "/directories") {
+  if (req.method === "GET" && (pathname === "/directories" || pathname === "/computer")) {
     if (!RUNNER_TOKEN) {
       return json(res, 500, {
         error: "runner_token_missing",
@@ -6545,8 +6558,18 @@ const handleRunnerRequest = async (req, res) => {
       return json(res, 401, { error: "unauthorized" });
     }
     try {
-      const pathParam = String(reqUrl.searchParams.get("path") || "").trim();
-      const payload = await listLlmDirectories(pathParam || DEFAULT_LLM_FILE_ROOT_RELATIVE, reqUrl.searchParams.get("view") === "identity");
+      if (pathname === "/computer") {
+        return json(res, 200, {
+          hostname: os.hostname(),
+          operatingSystem: process.platform === "darwin" ? "macOS" : os.type(),
+          architecture: os.arch(),
+          totalMemory: os.totalmem(),
+          homePath: toUnixPath(os.homedir()),
+        });
+      }
+      const pathParam = reqUrl.searchParams.get("path") || DEFAULT_LLM_FILE_ROOT_RELATIVE;
+      const view = reqUrl.searchParams.get("view");
+      const payload = await listLlmDirectories(pathParam, view === "identity", view === "computer");
       return json(res, 200, payload);
     } catch (err) {
       if (isApiError(err)) {
@@ -6695,8 +6718,8 @@ const handleRunnerRequest = async (req, res) => {
       return json(res, 401, { error: "unauthorized" });
     }
     try {
-      const pathParam = String(reqUrl.searchParams.get("path") || "").trim();
-      const rootDirParam = String(reqUrl.searchParams.get("rootDir") || "").trim();
+      const pathParam = reqUrl.searchParams.get("path") || "";
+      const rootDirParam = reqUrl.searchParams.get("rootDir") || "";
       await sendClientMediaFile(req, res, pathParam, rootDirParam);
       return;
     } catch (err) {

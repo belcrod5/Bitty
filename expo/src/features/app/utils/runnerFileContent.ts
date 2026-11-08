@@ -1,3 +1,5 @@
+import { normalizeRunnerPath } from "./runnerFileResources";
+
 type JsonRecord = Record<string, unknown>;
 
 export type RunnerTextFileContent = {
@@ -16,7 +18,7 @@ export async function fetchRunnerTextFileContent(params: {
 }): Promise<RunnerTextFileContent> {
   const baseUrl = String(params.runnerUrl || "").trim().replace(/\/$/, "");
   const token = String(params.runnerToken || "").trim();
-  const targetPath = String(params.path || "").trim();
+  const targetPath = normalizeRunnerPath(params.path);
   if (!targetPath) {
     throw new Error("ファイルパスが未指定です");
   }
@@ -50,7 +52,7 @@ export async function fetchRunnerTextFileContent(params: {
       throw new Error(String(data?.message || data?.error || `HTTP ${response.status}`));
     }
     return {
-      path: String(data?.path || targetPath).trim(),
+      path: String(data?.path || targetPath),
       content: typeof data?.content === "string" ? data.content : "",
       totalBytes: Number(data?.totalBytes || 0),
       version: String(data?.version || ""),

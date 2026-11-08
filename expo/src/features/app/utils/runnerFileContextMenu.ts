@@ -203,7 +203,7 @@ function getRunnerFileOpenPresentation(
 
 export function openRunnerFile(params: RunnerFileActionParams): boolean {
   const filePath = normalizeRunnerPath(params.filePathRaw);
-  const fileName = String(params.fileNameRaw || "").trim()
+  const fileName = String(params.fileNameRaw || "")
     || params.getPathLabel(filePath)
     || filePath
     || "file";
@@ -270,7 +270,7 @@ export function openRunnerFile(params: RunnerFileActionParams): boolean {
 
 export function createRunnerFileTarget(params: RunnerFileActionParams): RunnerFileTarget & { rootDirectory: string } {
   const location = getRunnerFileLocation(params.filePathRaw, params.rootDir);
-  const name = String(params.fileNameRaw || "").trim()
+  const name = String(params.fileNameRaw || "")
     || params.getPathLabel(location.path)
     || location.path;
   return {
@@ -309,7 +309,7 @@ export function openRunnerFileContextMenu(params: RunnerFileActionParams, includ
   skiaBoard,
   } = params;
   const filePath = normalizeRunnerPath(filePathRaw);
-  const fileName = String(fileNameRaw || "").trim() || getPathLabel(filePath) || filePath || "file";
+  const fileName = String(fileNameRaw || "") || getPathLabel(filePath) || filePath || "file";
   if (!filePath) return;
   const fileLocation = getRunnerFileLocation(filePath, rootDir);
   const isShellScript = allowExecute && filePath.toLowerCase().endsWith(".sh");
@@ -541,7 +541,7 @@ export function getRunnerFileViewerKind(pathRaw: unknown): RunnerFileViewerKind 
 }
 
 export function getRunnerFileOpenKind(pathRaw: unknown): RunnerFileOpenKind | null {
-  const path = normalizeRunnerPath(pathRaw).toLowerCase();
+  const path = normalizeRunnerPath(pathRaw).trimEnd().toLowerCase();
   const match = /\.([a-z0-9]+)$/.exec(path);
   return match ? RUNNER_FILE_OPEN_KIND_BY_EXTENSION[match[1]] ?? null : null;
 }
@@ -565,7 +565,7 @@ export function buildRunnerMediaItem(params: {
     path: targetPath,
   });
   if (!kind || !targetPath || !url) return null;
-  const name = String(params.name || "").trim()
+  const name = String(params.name || "")
     || targetPath.split("/").filter(Boolean).pop()
     || targetPath;
   return {
@@ -590,7 +590,7 @@ function normalizeRunnerMediaItems(
     next.push({
       kind: itemRaw.kind,
       path,
-      name: String(itemRaw.name || "").trim() || path,
+      name: String(itemRaw.name || "") || path,
       url: String(itemRaw.url || "").trim(),
     });
   };

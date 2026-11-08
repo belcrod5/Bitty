@@ -1,7 +1,9 @@
 import { getCloudflareAccessHeadersForUrl } from "./cloudflareAccessFetch";
 
 export function normalizeRunnerPath(value: unknown) {
-  return String(value || "").trim().replace(/\\/g, "/");
+  const path = String(value || "");
+  // Absolute POSIX paths are filesystem identities; spaces and backslashes are literal.
+  return path.startsWith("/") ? path : path.trim().replace(/\\/g, "/");
 }
 
 function normalizeRunnerDirectoryPath(value: unknown) {
