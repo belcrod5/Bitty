@@ -133,7 +133,7 @@ export const AppDrawer = memo(function AppDrawer({
   onMarkDirectorySessionsRead,
 }: AppDrawerProps) {
   const styles = useAppStyles();
-  const { drawerOpen } = useAppShell();
+  const { drawerOpen, setActiveScreen, closeDrawer } = useAppShell();
   const { theme } = useVisualTheme();
   const {
     addDirectory,
@@ -378,6 +378,21 @@ export const AppDrawer = memo(function AppDrawer({
           }
         }}
       >
+        <TouchableOpacity
+          style={styles.menuNavButton}
+          onPress={() => { setActiveScreen("computer"); closeDrawer(); }}
+          accessibilityRole="button"
+          accessibilityLabel="コンピューターを開く"
+        >
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <Svg width={22} height={22} viewBox="0 0 24 24" fill="none">
+              <Path d="M3 4h18v13H3zM8 21h8M12 17v4" stroke={theme.colors.textPrimary} strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" />
+            </Svg>
+            <Text style={styles.menuNavTitle}>コンピューター</Text>
+          </View>
+          <Text style={styles.menuNavValue}>ファイルとコンピューター情報</Text>
+        </TouchableOpacity>
+
         <TouchableOpacity style={styles.menuNavButton} onPress={onOpenSettings}>
           <Text style={styles.menuNavTitle}>設定</Text>
           <Text style={styles.menuNavValue}>接続・モデル・音声を設定</Text>

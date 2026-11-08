@@ -27,9 +27,11 @@ let mockRunnerUrl = "http://runner";
 let mockRunnerToken = "runner-token";
 let mockUnreadCount = 0;
 let mockDrawerOpen = true;
+const mockSetActiveScreen = jest.fn();
+const mockCloseDrawer = jest.fn();
 
 jest.mock("../contexts/AppShellContext", () => ({
-  useAppShell: () => ({ unreadCount: mockUnreadCount, drawerOpen: mockDrawerOpen }),
+  useAppShell: () => ({ unreadCount: mockUnreadCount, drawerOpen: mockDrawerOpen, setActiveScreen: mockSetActiveScreen, closeDrawer: mockCloseDrawer }),
 }));
 jest.mock("../contexts/SkiaBoardContext", () => ({
   useSkiaBoard: () => ({
@@ -1230,4 +1232,11 @@ test.each([[0, ""], [1, "1"], [120, "99+"]] as const)("shows the shared menu unr
   }
   await fireEvent.press(filter);
   expect(drawer.getByLabelText("未読のみ表示").props.accessibilityValue.text).toBe(`未読 ${count}件`);
+});
+
+test("opens the computer independently of a selected chat", async () => {
+  const drawer = await renderDrawer({ registeredDirectories: [], expandedDirectoryIds: [] });
+  await fireEvent.press(drawer.getByLabelText("コンピューターを開く"));
+  expect(mockSetActiveScreen).toHaveBeenCalledWith("computer");
+  expect(mockCloseDrawer).toHaveBeenCalledTimes(1);
 });
