@@ -1,3 +1,4 @@
+jest.mock("../components/ImageViewer", () => ({ ImageViewer: () => null }));
 import { Alert, Platform, StyleSheet } from "react-native";
 import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
 import { StreamingSttFooter } from "../components/StreamingSttFooter";

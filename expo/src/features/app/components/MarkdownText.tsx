@@ -1,10 +1,11 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   Alert,
   Linking,
   Platform,
   StyleSheet,
   View,
+  type ImageURISource,
   type StyleProp,
   type TextStyle,
   type ViewStyle,
@@ -21,6 +22,7 @@ import {
   prepareMarkdownForDisplay,
   splitMarkdownForMermaid,
 } from "../utils/markdownDisplay";
+import { ImageViewer } from "./ImageViewer";
 import { MermaidCodeBlock } from "./MermaidCodeBlock";
 
 const MONOSPACE_FONT = Platform.select({
@@ -69,6 +71,11 @@ export type MarkdownTextProps = {
 };
 
 export function MarkdownText(props: MarkdownTextProps) {
+  const [imageSource, setImageSource] = useState<ImageURISource | null>(null);
+  const handleImagePress = useCallback(({ url }: { url: string }) => {
+    const source = props.resolveImageSource ? props.resolveImageSource(url) : { uri: url };
+    if (source) setImageSource(source);
+  }, [props.resolveImageSource]);
   const styles = useAppStyles();
   const { theme } = useVisualTheme();
   const { content, tone, textStyle, onLocalFileLinkPress, onSelectedTextTtsPress } = props;
@@ -288,11 +295,12 @@ export function MarkdownText(props: MarkdownTextProps) {
     return items;
   }, [copySelectedText, onSelectedTextTtsPress, readSelectedText]);
 
-  if (!mermaidSegments || (mermaidSegments.length === 1 && mermaidSegments[0]?.type === "markdown")) {
-    return (
+  return <>
+    {!mermaidSegments || (mermaidSegments.length === 1 && mermaidSegments[0]?.type === "markdown") ? (
       <EnrichedMarkdownText
         markdown={markdown}
         resolveImageSource={props.resolveImageSource}
+        onImagePress={handleImagePress}
         selectable
         flavor="github"
         allowTrailingMargin={false}
@@ -303,10 +311,7 @@ export function MarkdownText(props: MarkdownTextProps) {
           handleOpenLink(url);
         }}
       />
-    );
-  }
-
-  return (
+    ) : (
     <View style={containerStyle}>
       {mermaidSegments.map((segment, index) => {
         if (segment.type === "mermaid") {
@@ -324,6 +329,7 @@ export function MarkdownText(props: MarkdownTextProps) {
             key={`markdown-${index}`}
             markdown={segment.markdown}
             resolveImageSource={props.resolveImageSource}
+            onImagePress={handleImagePress}
             selectable
             flavor="github"
             allowTrailingMargin={false}
@@ -337,5 +343,7 @@ export function MarkdownText(props: MarkdownTextProps) {
         );
       })}
     </View>
-  );
+    )}
+    {imageSource ? <ImageViewer key={imageSource.uri} source={imageSource} onRequestClose={() => setImageSource(null)} /> : null}
+  </>;
 }
