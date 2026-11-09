@@ -1,9 +1,10 @@
-import { render } from "@testing-library/react-native";
+import { act, render } from "@testing-library/react-native";
 import { VISUAL_THEMES, type VisualThemeId } from "../theme/visualThemes";
 import { MarkdownText } from "./MarkdownText";
 
 let mockThemeId: VisualThemeId = "standard";
 let mockMarkdownProps: Record<string, any> = {};
+let mockImageViewerProps: Record<string, any> | null = null;
 let mockAllMarkdownProps: Record<string, any>[] = [];
 
 jest.mock("react-native-enriched-markdown", () => ({
@@ -13,6 +14,10 @@ jest.mock("react-native-enriched-markdown", () => ({
     return null;
   },
 }));
+jest.mock("./ImageViewer", () => ({ ImageViewer: (props: Record<string, any>) => {
+  mockImageViewerProps = props;
+  return null;
+} }));
 jest.mock("./MermaidCodeBlock", () => ({ MermaidCodeBlock: () => null }));
 jest.mock("../styles", () => ({
   useAppStyles: () => ({ markdownRoot: {}, markdownRootAssistant: { width: "100%" }, markdownRootUser: {} }),
@@ -89,6 +94,58 @@ describe("Markdown image sources", () => {
     for (const props of mockAllMarkdownProps) {
       expect(props.resolveImageSource).toBe(resolveImageSource);
       expect(props.selectable).toBe(true);
+    }
+  });
+});
+
+describe("Markdown image popup", () => {
+  beforeEach(() => { mockImageViewerProps = null; });
+
+  it("opens the tapped parsed image with the authenticated source and closes it", async () => {
+    const path = "/Volumes/SSD-500GB-SanDisk/work/shape管理/変更後.png";
+    const source = { uri: "https://runner.test/image", headers: { authorization: "Bearer secret" } };
+    const resolver = jest.fn(() => source);
+    await render(<MarkdownText content={`![変更後](<${path}>)`} tone="assistant" textStyle={{}} resolveImageSource={resolver} />);
+    expect(mockImageViewerProps).toBeNull();
+    await act(() => mockMarkdownProps.onImagePress({ url: path }));
+    expect(resolver).toHaveBeenCalledWith(path);
+    expect(mockImageViewerProps!.source).toBe(source);
+    const close = mockImageViewerProps!.onRequestClose;
+    mockImageViewerProps = null;
+    await act(() => close());
+    expect(mockImageViewerProps).toBeNull();
+  });
+
+  it("opens remote images without invoking the file-link menu", async () => {
+    const onLocalFileLinkPress = jest.fn();
+    const url = "https://images.test/image.png";
+    await render(<MarkdownText content={`![image](${url})`} tone="user" textStyle={{}} onLocalFileLinkPress={onLocalFileLinkPress} />);
+    await act(() => mockMarkdownProps.onImagePress({ url }));
+    expect(mockImageViewerProps!.source).toEqual({ uri: url });
+    expect(onLocalFileLinkPress).not.toHaveBeenCalled();
+  });
+
+  it("respects rejected sources and uses the latest resolver after credentials change", async () => {
+    const url = "/tmp/image.png";
+    const view = await render(<MarkdownText content={`![image](${url})`} tone="assistant" textStyle={{}} resolveImageSource={() => null} />);
+    await act(() => mockMarkdownProps.onImagePress({ url }));
+    expect(mockImageViewerProps).toBeNull();
+    const source = { uri: "https://new-runner.test/image", headers: { authorization: "Bearer new" } };
+    await view.rerender(<MarkdownText content={`![image](${url})`} tone="assistant" textStyle={{}} resolveImageSource={() => source} />);
+    await act(() => mockMarkdownProps.onImagePress({ url }));
+    expect(mockImageViewerProps!.source).toEqual(source);
+  });
+
+  it("opens images in every Markdown segment around Mermaid", async () => {
+    mockAllMarkdownProps = [];
+    await render(<MarkdownText content={"![a](https://images.test/a.png)\n\n```mermaid\ngraph TD; A-->B\n```\n\n![b](https://images.test/b.png)"}
+      tone="assistant" textStyle={{}} />);
+    const segments = [...mockAllMarkdownProps];
+    expect(segments).toHaveLength(2);
+    for (const [index, props] of segments.entries()) {
+      const url = `https://images.test/${index}.png`;
+      await act(() => props.onImagePress({ url }));
+      expect(mockImageViewerProps!.source).toEqual({ uri: url });
     }
   });
 });

@@ -26,6 +26,8 @@ describe("native Markdown image contract in Metro", () => {
     const config = exports.__INTERNAL_VIEW_CONFIG;
     expect(config.validAttributes.resolveImages).toBe(true);
     expect(config.validAttributes.imageSources).toBe(true);
+    expect(config.validAttributes.onImagePress).toBe(true);
+    expect(config.directEventTypes.topImagePress.registrationName).toBe("onImagePress");
     expect(config.validAttributes.onImageSources).toBe(true);
     expect(config.directEventTypes.topImageSources.registrationName).toBe("onImageSources");
   });

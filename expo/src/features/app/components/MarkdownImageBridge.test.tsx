@@ -74,6 +74,18 @@ describe.each(implementations)("%s native image source bridge", (_name, Markdown
     expect(mockNativeProps.imageSources).toEqual([{ url: uri, uri, headers: [] }]);
   });
 
+  it("forwards current image taps and ignores taps from replaced native content", async () => {
+    const onImagePress = jest.fn();
+    const view = await render(<Markdown markdown={markdown} flavor="github" onImagePress={onImagePress} />);
+    const event = { nativeEvent: { markdown, url: "/private/tmp/screen.jpg" } };
+    await act(() => mockNativeProps.onImagePress(event));
+    expect(onImagePress).toHaveBeenCalledWith({ url: event.nativeEvent.url });
+    const oldHandler = mockNativeProps.onImagePress;
+    await view.rerender(<Markdown markdown="changed" flavor="github" onImagePress={onImagePress} />);
+    await act(() => oldHandler(event));
+    expect(onImagePress).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps CommonMark outside the new source-resolution contract", async () => {
     await render(<Markdown markdown={markdown} flavor="commonmark" resolveImageSource={() => null} />);
     expect(mockNativeProps.resolveImages).toBeUndefined();

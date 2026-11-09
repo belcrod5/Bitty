@@ -1,3 +1,4 @@
+jest.mock("../components/ImageViewer", () => ({ ImageViewer: () => null }));
 import { useState, type ReactElement, type ReactNode } from "react";
 import { act, fireEvent, render as testingRender, waitFor, within } from "@testing-library/react-native";
 import { AppState, Platform, ScrollView, StyleSheet, type AppStateStatus } from "react-native";
