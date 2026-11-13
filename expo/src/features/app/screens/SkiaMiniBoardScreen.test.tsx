@@ -129,14 +129,12 @@ jest.mock("@shopify/react-native-skia", () => {
         })),
     ]);
   return {
-    BlurMask: Stub,
     Canvas: CanvasStub,
     Circle: Stub,
     Group: Stub,
     Line: Stub,
     Path: PathStub,
     Picture: PictureStub,
-    SweepGradient: Stub,
     vec: (x: number, y: number) => ({ x, y }),
     useImage: () => (globalThis as Record<string, unknown>).__skiaBoardTestImage || null,
     RoundedRect: Stub,
@@ -551,7 +549,7 @@ test("places each actor on the verified target and retains parallel work after o
     .reduce((sum, badge) => sum + badge.count, 0)).toBe(4);
 });
 
-test("activity pushes draw floating card badge and whole-board frame without adding cards", async () => {
+test("activity pushes retain card badges and a static status without adding cards", async () => {
   const screen = await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()}
     openSessionHistoryPopup={jest.fn()} />);
   await act(async () => mockBoardVoiceHandlers.get("voice.unread.changed")?.({ payload: {
@@ -565,7 +563,7 @@ test("activity pushes draw floating card badge and whole-board frame without add
     ],
   } }));
   expect(screen.getByTestId("skia-text:読み込み中")).toBeTruthy();
-  expect(screen.getByTestId("skia-board-activity-frame")).toBeTruthy();
+  expect(screen.getByTestId("skia-board-activity-indicator")).toBeTruthy();
   expect(screen.getByTestId("skia-board-activity-actor-one")).toBeTruthy();
   expect(screen.getByTestId("skia-board-activity-actor-two")).toBeTruthy();
   expect(screen.getByTestId("skia-board-activity-status").props.children.join("")).toBe("読み込み中 · 実行中");
@@ -582,8 +580,12 @@ test("activity pushes draw floating card badge and whole-board frame without add
         kind: "tool", status: "running", label: "読み込み中", startedAt: 1 },
     ],
   } }));
-  expect(screen.getByTestId("skia-board-activity-frame")).toBeTruthy();
+  expect(screen.getByTestId("skia-board-activity-indicator")).toBeTruthy();
   expect(screen.queryByTestId("skia-board-activity-actor-two")).toBeNull();
+  await act(async () => mockBoardVoiceHandlers.get("orchestrator_activity_updated")?.({ payload: {
+    instanceId: "server", revision: 3, activities: [],
+  } }));
+  expect(screen.queryByTestId("skia-board-activity-indicator")).toBeNull();
   expect(mockSessions).toHaveLength(1);
 });
 

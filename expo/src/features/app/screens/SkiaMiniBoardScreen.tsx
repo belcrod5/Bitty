@@ -62,7 +62,7 @@ import {
 import { useOrchestratorActivities, type OrchestratorActivity } from "../hooks/useOrchestratorActivities";
 import { useRegisteredDirectoryActiveSessionCount } from "../hooks/useRegisteredDirectoryActiveSessionCount";
 import type { VoiceOrchestrator } from "../components/VoiceOrchestratorIcon";
-import { SkiaBoardActivityFrame, activityStatusText } from "../components/SkiaBoardActivityFrame";
+import { SkiaBoardActivityStatus, activityStatusText } from "../components/SkiaBoardActivityStatus";
 import { DIRECTORY_MARKER_COLORS } from "../theme/directoryMarkerColors";
 import {
   normalizeRunnerPath,
@@ -2093,18 +2093,9 @@ export function SkiaMiniBoardScreen({
         </View>
       </GestureDetector>
 
-      <SkiaBoardActivityFrame
+      <SkiaBoardActivityStatus
         badges={[...activityPlacement.global, ...Array.from(activityPlacement.cards.values()).flat()]}
         theme={theme}
-        targets={items.flatMap((item, index) => {
-          const cardBadges = activityPlacement.cards.get(item.cardId) || [];
-          return cardBadges.map((_, badgeIndex) => ({ index, badgeIndex, badgeCount: cardBadges.length }));
-        })}
-        positions={positions}
-        boardX={boardX}
-        boardY={boardY}
-        scale={scale}
-        cardWidth={cardWidth}
       />
 
       <SafeAreaView
