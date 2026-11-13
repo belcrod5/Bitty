@@ -1,8 +1,8 @@
 import { isReasoningEffort, type ReasoningEffort } from "../app/utils/settingsParsers";
 
 export type CodexScheduleReasoningEffort = ReasoningEffort;
-export type CodexScheduleRrule = null | "FREQ=DAILY" | "FREQ=WEEKLY" | "FREQ=MONTHLY" | "FREQ=YEARLY";
-export type CodexScheduleRepeat = "none" | "daily" | "weekly" | "monthly" | "yearly";
+export type CodexScheduleRrule = null | "FREQ=DAILY" | "FREQ=WEEKLY" | "FREQ=MONTHLY" | "FREQ=YEARLY" | `FREQ=MINUTELY;INTERVAL=${number}`;
+export type CodexScheduleRepeat = "none" | "daily" | "weekly" | "monthly" | "yearly" | "interval";
 
 type CodexScheduleBase = {
   id: string;
@@ -17,6 +17,7 @@ export type CodexScheduleAction = {
   kind: "voice";
   orchestratorId: string;
   prompt: string;
+  systemInstruction?: string;
 } | {
   kind: "llm";
   cwd: string;
@@ -52,7 +53,7 @@ export type CodexScheduleDispatch = {
   occurrenceAt: string;
   claimedAt: string;
   definitionHash: string;
-  status: "claimed" | "fired" | "failed" | "failed_uncertain_after_restart";
+  status: "claimed" | "fired" | "skipped" | "failed" | "failed_uncertain_after_restart";
   result: CodexScheduleDispatchResult | null;
   errorCode: string;
   errorMessage: string;
@@ -72,6 +73,7 @@ export type CodexScheduleSnapshot = {
 };
 
 const RRULE_BY_REPEAT: Record<CodexScheduleRepeat, CodexScheduleRrule> = {
+  interval: "FREQ=MINUTELY;INTERVAL=60",
   none: null,
   daily: "FREQ=DAILY",
   weekly: "FREQ=WEEKLY",
@@ -81,6 +83,7 @@ const RRULE_BY_REPEAT: Record<CodexScheduleRepeat, CodexScheduleRrule> = {
 
 export const CODEX_SCHEDULE_REPEAT_OPTIONS: readonly { value: CodexScheduleRepeat; label: string }[] = [
   { value: "none", label: "なし" },
+  { value: "interval", label: "間隔指定" },
   { value: "daily", label: "毎日" },
   { value: "weekly", label: "毎週" },
   { value: "monthly", label: "毎月" },
@@ -92,6 +95,7 @@ export function codexScheduleRepeatToRrule(repeat: CodexScheduleRepeat): CodexSc
 }
 
 export function codexScheduleRruleToRepeat(rrule: CodexScheduleRrule): CodexScheduleRepeat {
+  if (rrule?.startsWith("FREQ=MINUTELY;")) return "interval";
   const match = CODEX_SCHEDULE_REPEAT_OPTIONS.find((option) => RRULE_BY_REPEAT[option.value] === rrule);
   if (!match) throw new Error("Unsupported schedule recurrence");
   return match.value;
@@ -138,7 +142,7 @@ function parseDispatch(raw: unknown): CodexScheduleDispatch | null {
   if (raw === null) return null;
   const value = object(raw, "lastDispatch");
   exactKeys(value, ["occurrenceAt", "claimedAt", "definitionHash", "status", "result", "errorCode", "errorMessage", "updatedAt"], "lastDispatch");
-  const statuses = ["claimed", "fired", "failed", "failed_uncertain_after_restart"] as const;
+  const statuses = ["claimed", "fired", "skipped", "failed", "failed_uncertain_after_restart"] as const;
   if (!statuses.includes(value.status as typeof statuses[number])) throw new Error("lastDispatch.status is invalid");
   const definitionHash = typeof value.definitionHash === "string" && /^[a-f0-9]{64}$/.test(value.definitionHash)
     ? value.definitionHash
@@ -197,7 +201,8 @@ export function parseCodexScheduleDefinition(raw: unknown): CodexScheduleDefinit
   const id = text(value.id, "id", 36);
   if (!isUuid(id)) throw new Error("id is invalid");
   const rrules: CodexScheduleRrule[] = [null, "FREQ=DAILY", "FREQ=WEEKLY", "FREQ=MONTHLY", "FREQ=YEARLY"];
-  if (!rrules.includes(value.rrule as CodexScheduleRrule)) throw new Error("rrule is invalid");
+  const interval = typeof value.rrule === "string" && /^FREQ=MINUTELY;INTERVAL=([1-9]\d{0,4})$/.exec(value.rrule);
+  if (!rrules.includes(value.rrule as CodexScheduleRrule) && !(interval && Number(interval[1]) <= 10080)) throw new Error("rrule is invalid");
   if (typeof value.enabled !== "boolean") throw new Error("enabled is invalid");
   const timeZone = text(value.timeZone, "timeZone", 100);
   try {
@@ -215,10 +220,15 @@ export function parseCodexScheduleDefinition(raw: unknown): CodexScheduleDefinit
   } : object(value.action, "action");
   let action: CodexScheduleAction;
   if (rawAction.kind === "voice") {
-    exactKeys(rawAction, ["kind", "orchestratorId", "prompt"], "action");
+    exactKeys(rawAction, ["kind", "orchestratorId", "prompt", "systemInstruction"], "action");
     const orchestratorId = text(rawAction.orchestratorId, "action.orchestratorId", 36);
     if (orchestratorId !== "main" && !isUuid(orchestratorId)) throw new Error("action.orchestratorId is invalid");
-    action = { kind: "voice", orchestratorId, prompt: text(rawAction.prompt, "action.prompt", 24_000) };
+    if (rawAction.systemInstruction !== undefined && (typeof rawAction.systemInstruction !== "string"
+      || rawAction.systemInstruction !== rawAction.systemInstruction.trim() || rawAction.systemInstruction.length > 4000)) {
+      throw new Error("action.systemInstruction is invalid");
+    }
+    action = { kind: "voice", orchestratorId, prompt: text(rawAction.prompt, "action.prompt", 24_000),
+      ...(rawAction.systemInstruction ? { systemInstruction: rawAction.systemInstruction } : {}) };
   } else if (rawAction.kind === "script") {
     exactKeys(rawAction, ["kind", "cwd", "scriptPath"], "action");
     const scriptPath = text(rawAction.scriptPath, "action.scriptPath", 2_048);

@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Alert,
   Platform,
@@ -80,6 +80,10 @@ export function CodexScheduleEditor({
     () => schedule ? dateFromCodexScheduleStartLocal(schedule.startLocal) : new Date(),
     [schedule],
   );
+  const [intervalText, setIntervalText] = useState("60");
+  useEffect(() => {
+    setIntervalText(schedule?.rrule?.startsWith("FREQ=MINUTELY;") ? schedule.rrule.split("INTERVAL=")[1] : "60");
+  }, [schedule?.id, schedule?.rrule]);
   if (!schedule) return null;
 
   const update = (patch: Partial<CodexSchedule>) => onChange({ ...schedule, ...patch });
@@ -116,7 +120,14 @@ export function CodexScheduleEditor({
     ...(voiceAction?.orchestratorId && !(orchestrators || []).some((item) => item.id === voiceAction.orchestratorId)
       ? [{ value: voiceAction.orchestratorId, label: orchestrators === null ? "登録先の確認待ち" : "削除済みオーケストレーター" }] : []),
   ];
-  const finish = onClose;
+  const validInterval = /^[1-9]\d{0,4}$/.test(intervalText) && Number(intervalText) <= 10080;
+  const finish = () => {
+    if (codexScheduleRruleToRepeat(schedule.rrule) === "interval" && !validInterval) {
+      Alert.alert("実行間隔を確認してください", "1〜10,080分の整数を入力してください。");
+      return;
+    }
+    onClose();
+  };
 
   return (
     <AppModal visible animationType="slide" presentationStyle="fullScreen" onRequestClose={finish}>
@@ -137,7 +148,7 @@ export function CodexScheduleEditor({
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>基本</Text>
             <View style={styles.switchRow}>
-              <Text style={styles.label}>有効</Text>
+              <Text style={styles.label}>このスケジュールを有効にする</Text>
               <Switch accessibilityLabel="スケジュールを有効にする" value={schedule.enabled} onValueChange={(enabled) => update({ enabled })} />
             </View>
             <TextInput accessibilityLabel="スケジュール名" style={styles.input} value={schedule.name} maxLength={100} onChangeText={(name) => update({ name })} placeholder="名前" />
@@ -169,6 +180,18 @@ export function CodexScheduleEditor({
               selectedValue={codexScheduleRruleToRepeat(schedule.rrule)}
               onSelect={(repeat) => update({ rrule: codexScheduleRepeatToRrule(repeat as CodexScheduleRepeat) })}
             />
+            {codexScheduleRruleToRepeat(schedule.rrule) === "interval" ? <>
+              <Text style={styles.label}>実行間隔（分）</Text>
+              <TextInput accessibilityLabel="実行間隔（分）" style={styles.input} keyboardType="number-pad"
+                value={intervalText} maxLength={5}
+                onChangeText={(value) => {
+                  setIntervalText(value);
+                  if (/^[1-9]\d{0,4}$/.test(value) && Number(value) <= 10080) {
+                    update({ rrule: `FREQ=MINUTELY;INTERVAL=${Number(value)}` });
+                  }
+                }} />
+              <Text style={styles.count}>1〜10,080分。60分＝1時間。経過時間で繰り返します。</Text>
+            </> : null}
             <Text style={styles.timeZone}>{schedule.timeZone}</Text>
             <TouchableOpacity
               accessibilityRole="button"
@@ -217,6 +240,12 @@ export function CodexScheduleEditor({
                 <OptionSelectField title="オーケストレーター" options={orchestratorOptions}
                   selectedValue={voiceAction.orchestratorId}
                   onSelect={(orchestratorId) => update({ action: { ...voiceAction, orchestratorId } })} />
+                <Text style={styles.label}>定期実行専用の追加指示</Text>
+                <TextInput accessibilityLabel="定期実行専用の追加指示" style={[styles.input, styles.prompt]} multiline
+                  value={voiceAction.systemInstruction || ""} maxLength={4000}
+                  placeholder="学習と会話から役立つ提案を考え、同じ提案を繰り返さない"
+                  onChangeText={(systemInstruction) => update({ action: { ...voiceAction, systemInstruction } })} />
+                <Text style={styles.count}>共通の基本指示・学習・メモリを使い、この実行時だけ追加します。実行中やセッション更新の確認待ちはスキップします。</Text>
               </>
             ) : (
               <>

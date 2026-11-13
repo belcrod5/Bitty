@@ -100,7 +100,7 @@ test("dispatch parser enforces Runner hash, error, and status invariants", () =>
 
 test("all repeat choices map to and from their canonical RRULE", () => {
   expect(CODEX_SCHEDULE_REPEAT_OPTIONS.map((option) => option.value)).toEqual([
-    "none", "daily", "weekly", "monthly", "yearly",
+    "none", "interval", "daily", "weekly", "monthly", "yearly",
   ]);
   for (const option of CODEX_SCHEDULE_REPEAT_OPTIONS) {
     expect(codexScheduleRruleToRepeat(codexScheduleRepeatToRrule(option.value))).toBe(option.value);
@@ -132,4 +132,24 @@ test("voice actions and dispatch IDs round-trip and reject malformed or director
   }] });
   expect(parseCodexScheduleSnapshot(snapshot(result)).schedules[0].lastDispatch?.result).toEqual(result);
   expect(() => parseCodexScheduleSnapshot(snapshot({ ...result, clientOperationId: "invalid" }))).toThrow("voice IDs");
+});
+
+
+test("parses minute intervals, separate scheduled instructions and skipped outcomes", () => {
+  const voice = { ...definition, rrule: "FREQ=MINUTELY;INTERVAL=45",
+    action: { kind: "voice", orchestratorId: "main", prompt: "What should I do next?", systemInstruction: "Suggest one useful step" } };
+  expect(parseCodexScheduleDefinition(voice)).toEqual(voice);
+  expect(codexScheduleRruleToRepeat("FREQ=MINUTELY;INTERVAL=45")).toBe("interval");
+  expect(codexScheduleRepeatToRrule("interval")).toBe("FREQ=MINUTELY;INTERVAL=60");
+  for (const interval of ["0", "01", "1.5", "10081"]) {
+    expect(() => parseCodexScheduleDefinition({ ...voice, rrule: `FREQ=MINUTELY;INTERVAL=${interval}` })).toThrow("rrule");
+  }
+  expect(() => parseCodexScheduleDefinition({ ...voice, action: { ...voice.action, systemInstruction: "x".repeat(4001) } })).toThrow("systemInstruction");
+  const snapshot = parseCodexScheduleSnapshot({ ok: true, revision: 1, schedules: [{ ...voice,
+    nextOccurrenceAt: "2026-08-14T00:45:00.000Z", lastDispatch: {
+      occurrenceAt: "2026-08-14T00:00:00.000Z", claimedAt: "2026-08-14T00:00:00.000Z",
+      updatedAt: "2026-08-14T00:00:00.000Z", definitionHash: "a".repeat(64),
+      status: "skipped", result: null, errorCode: "session_busy", errorMessage: "Busy",
+    } }] });
+  expect(snapshot.schedules[0].lastDispatch?.status).toBe("skipped");
 });
