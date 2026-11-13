@@ -79,7 +79,9 @@ export function parseCodexScheduleStartLocal(raw) {
 
 export function normalizeCodexScheduleRrule(raw) {
   if (raw === null) return null;
-  if (typeof raw !== "string" || !CODEX_SCHEDULE_RRULES.has(raw)) {
+  const interval = typeof raw === "string" && /^FREQ=MINUTELY;INTERVAL=([1-9]\d{0,4})$/.exec(raw);
+  if (typeof raw !== "string" || (!CODEX_SCHEDULE_RRULES.has(raw)
+    && !(interval && Number(interval[1]) <= 10080))) {
     throw new Error("rrule is invalid");
   }
   return raw;
@@ -171,6 +173,22 @@ function normalizeArgs(input) {
   return { startLocal, parts, timeZone, rrule };
 }
 
+// Minute intervals measure elapsed time; calendar recurrences below preserve wall time.
+function intervalOccurrence(recurrence, reference, after, inclusive = true) {
+  const minutes = Number(recurrence.rrule.split("INTERVAL=")[1]);
+  const step = minutes * 60_000;
+  let first;
+  // A start in a DST gap begins at the first real local minute after that gap.
+  for (let offset = 0; offset <= 1440 && !first; offset += 1) {
+    first = wallInstants(pseudoParts(new Date(pseudoDate(recurrence.parts).getTime() + offset * 60_000)), recurrence.timeZone)[0];
+  }
+  if (!first) return null;
+  const elapsed = reference.getTime() - first.getTime();
+  const index = after ? Math.max(0, inclusive ? Math.ceil(elapsed / step) : Math.floor(elapsed / step) + 1)
+    : Math.floor(elapsed / step);
+  return index < 0 ? null : new Date(first.getTime() + index * step).toISOString();
+}
+
 export function codexScheduleOccurrenceAfter(input, afterRaw, inclusive = false) {
   const recurrence = normalizeArgs(input);
   const after = new Date(afterRaw);
@@ -182,6 +200,8 @@ export function codexScheduleOccurrenceAfter(input, afterRaw, inclusive = false)
       ? occurrence.toISOString()
       : null;
   }
+
+  if (recurrence.rrule.startsWith("FREQ=MINUTELY;")) return intervalOccurrence(recurrence, after, true, inclusive);
 
   const localAfter = wallPartsAt(after, recurrence.timeZone);
   const rule = createWallRule(recurrence.parts, recurrence.rrule, localAfter);
@@ -210,6 +230,8 @@ export function codexScheduleOccurrenceAtOrBefore(input, beforeRaw) {
     const occurrence = wallInstants(recurrence.parts, recurrence.timeZone)[0] || null;
     return occurrence && occurrence.getTime() <= before.getTime() ? occurrence.toISOString() : null;
   }
+
+  if (recurrence.rrule.startsWith("FREQ=MINUTELY;")) return intervalOccurrence(recurrence, before, false);
 
   const localBefore = wallPartsAt(before, recurrence.timeZone);
   const rule = createWallRule(recurrence.parts, recurrence.rrule, localBefore);

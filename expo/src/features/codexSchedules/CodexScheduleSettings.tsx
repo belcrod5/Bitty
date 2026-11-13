@@ -72,7 +72,8 @@ function savedShape(schedules: readonly CodexSchedule[]) {
 function scheduleSubtitle(schedule: CodexSchedule) {
   if (!schedule.enabled) return "停止中";
   if (schedule.nextOccurrenceAt) {
-    const repeat = CODEX_SCHEDULE_REPEAT_OPTIONS.find((option) => option.value === codexScheduleRruleToRepeat(schedule.rrule))?.label;
+    const repeat = schedule.rrule?.startsWith("FREQ=MINUTELY;") ? `${schedule.rrule.split("INTERVAL=")[1]}分ごと`
+      : CODEX_SCHEDULE_REPEAT_OPTIONS.find((option) => option.value === codexScheduleRruleToRepeat(schedule.rrule))?.label;
     const next = new Intl.DateTimeFormat(undefined, {
       month: "numeric",
       day: "numeric",
@@ -80,8 +81,9 @@ function scheduleSubtitle(schedule: CodexSchedule) {
       minute: "2-digit",
       timeZone: schedule.timeZone,
     }).format(new Date(schedule.nextOccurrenceAt));
-    return `${repeat}・次回 ${next}`;
+    return `${repeat}・次回 ${next}${schedule.lastDispatch?.status === "skipped" ? "・前回スキップ" : ""}`;
   }
+  if (schedule.lastDispatch?.status === "skipped") return "スキップ";
   if (schedule.lastDispatch?.status === "failed" || schedule.lastDispatch?.status === "failed_uncertain_after_restart") {
     return "発火失敗";
   }

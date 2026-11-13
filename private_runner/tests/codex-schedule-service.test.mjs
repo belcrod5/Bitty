@@ -8,6 +8,7 @@ import { createAgentService } from "../src/agent/agent-service.mjs";
 import { createScheduledCodexTurnStarter } from "../src/codex-scheduled-turn.mjs";
 import { operationStore, sessionStore } from "./agent-service-fixtures.mjs";
 
+import { RUNNER_AUTHENTICATION } from "../src/runner-login-http.mjs";
 import { createCodexScheduleHttpHandler } from "../src/codex-schedule-http.mjs";
 import {
   CODEX_SCHEDULE_DEFINITIONS_MAX_BYTES,
@@ -360,12 +361,10 @@ test("real HTTP handler maps oversized PUT, POST, and PATCH to 400 without poiso
     const responses = [];
     const handler = createCodexScheduleHttpHandler({
       service,
-      runnerToken: "secret",
-      parseAuthToken: (req) => req.auth,
       readJsonBody: async (req) => req.body,
       json: (_res, status, payload) => responses.push({ status, payload }),
     });
-    await handler({ method, auth: "secret", body, headers }, {}, pathname);
+    await handler({ method, body, headers, [RUNNER_AUTHENTICATION]: { sessionId: "test-session", ownerSubjectId: "test-owner" } }, {}, pathname);
     return responses[0];
   }
 
@@ -587,12 +586,10 @@ test("matching revisions with a stale definition hash fail closed", async (t) =>
   const responses = [];
   const handler = createCodexScheduleHttpHandler({
     service: restarted,
-    runnerToken: "secret",
-    parseAuthToken: () => "secret",
     readJsonBody: async () => ({}),
     json: (_res, status, payload) => responses.push({ status, payload }),
   });
-  await handler({ method: "GET" }, {}, "/codex-schedules");
+  await handler({ method: "GET", [RUNNER_AUTHENTICATION]: { sessionId: "test-session", ownerSubjectId: "test-owner" } }, {}, "/codex-schedules");
   assert.equal(responses[0].status, 503);
   assert.equal(responses[0].payload.error, "codex_schedule_store_unavailable");
 });
@@ -1128,12 +1125,11 @@ test("existing-chat saves reject cwd mismatches atomically and dispatch rechecks
   }
   let response;
   const handler = createCodexScheduleHttpHandler({
-    service: harness.service, runnerToken: "secret",
-    parseAuthToken: () => "secret",
+    service: harness.service,
     readJsonBody: async () => ({ baseRevision: 1, patch: { threadId: sessionRef.nativeSessionId } }),
     json: (_res, status, payload) => { response = { status, payload }; },
   });
-  await handler({ method: "PATCH" }, {}, `/codex-schedules/${id}`);
+  await handler({ method: "PATCH", [RUNNER_AUTHENTICATION]: { sessionId: "test-session", ownerSubjectId: "test-owner" } }, {}, `/codex-schedules/${id}`);
   assert.equal(response.status, 400);
   assert.equal(response.payload.error, "invalid_codex_schedules");
   assert.ok(response.payload.message.includes(canonicalParent));

@@ -550,6 +550,12 @@ export function createVoiceOrchestratorService({ rootDir, createClient, createLe
         await load();
         const service = await loadedContext(id, key);
         const orchestrator = registry.orchestrators.find((item) => item.id === id);
+        if (hooks?.source === "scheduled") {
+          if (introductionDrafts.has(id)) throw failure("Orchestrator is busy", "session_busy");
+          for (const context of await ownerContexts(id)) {
+            if (await context.isBusy()) throw failure("Orchestrator is busy", "session_busy");
+          }
+        }
         const operationId = message.payload?.clientOperationId;
         const reservation = `${id}:${operationId}`;
         // A completion must finish its durable observation before a recovery scan advances the high water.

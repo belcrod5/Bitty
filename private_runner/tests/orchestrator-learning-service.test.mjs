@@ -1661,3 +1661,25 @@ test("restore cancellation during a skill read leaves the saved state and artifa
   mocked.mock.restore();
   assert.equal(await fs.readFile(file, "utf8"), before); assert.deepEqual(await fs.readdir(folder), artifacts);
 });
+
+
+test("scheduled sources advance observation without becoming learning or proposal feedback evidence", async (t) => {
+  const seen = [];
+  const f = await fixture(t, { analyze: async ({ input }) => {
+    seen.push(JSON.parse(input)); return { text: '{"candidates":[]}' };
+  } });
+  await configure(f.service);
+  const scheduled = f.pair(1, { source: "scheduled", user: "I always want this done", assistant: "I infer you prefer this." });
+  await f.service.observe([scheduled]); await f.service.runDue();
+  assert.equal((await f.service.status()).observedThrough, 1);
+  assert.equal((await f.service.status()).pendingCount, 0);
+  assert.equal(seen.length, 0);
+  await f.service.close();
+  const recovered = await f.open();
+  await recovered.observe([scheduled, f.pair(2)]); await recovered.runDue();
+  assert.equal(seen.length, 1);
+  assert.deepEqual(seen[0].pairs.map((pair) => pair.pairSeq), [2]);
+  assert.deepEqual(seen[0].history, []);
+  assert.equal((await recovered.status()).processedThrough, 2);
+  assert.deepEqual((await recovered.status()).gaps, []);
+});

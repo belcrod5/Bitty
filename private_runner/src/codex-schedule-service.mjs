@@ -23,6 +23,7 @@ const EFFORTS = new Set(["low", "medium", "high", "xhigh", "max", "ultra"]);
 const DISPATCH_STATUSES = new Set([
   "claimed",
   "fired",
+  "skipped",
   "failed",
   "failed_uncertain_after_restart",
 ]);
@@ -131,7 +132,8 @@ export function codexScheduleDefinitionHash(definition) {
   if (action.kind === "script") {
     canonical.action = { kind: "script", cwd: action.cwd, scriptPath: action.scriptPath };
   } else if (action.kind === "voice") {
-    canonical.action = { kind: "voice", orchestratorId: action.orchestratorId, prompt: action.prompt };
+    canonical.action = { kind: "voice", orchestratorId: action.orchestratorId, prompt: action.prompt,
+      ...(action.systemInstruction ? { systemInstruction: action.systemInstruction } : {}) };
   } else {
     canonical.cwd = action.cwd;
     canonical.modelRef = action.modelRef;
@@ -160,14 +162,17 @@ function normalizeAction(value, index, parseCodexOptions, strictStoredFields, le
   }
   const kind = requireString(value.kind, `${label}.action.kind`).trim();
   if (kind === "voice") {
-    onlyKeys(value, new Set(["kind", "orchestratorId", "prompt"]), `${label}.action`);
+    onlyKeys(value, new Set(["kind", "orchestratorId", "prompt", "systemInstruction"]), `${label}.action`);
     const orchestratorId = requireString(value.orchestratorId, `${label}.action.orchestratorId`).trim();
     if (orchestratorId !== "main" && !CODEX_SCHEDULE_UUID_PATTERN.test(orchestratorId)) {
       throw new Error(`${label}.action.orchestratorId is invalid`);
     }
     const prompt = requireString(value.prompt, `${label}.action.prompt`).trim();
     if (!prompt || prompt.length > MAX_PROMPT_CHARS) throw new Error(`${label}.action.prompt is invalid`);
-    return { kind, orchestratorId, prompt };
+    if (value.systemInstruction !== undefined && (typeof value.systemInstruction !== "string"
+      || value.systemInstruction.length > 4000)) throw new Error(`${label}.action.systemInstruction is invalid`);
+    const systemInstruction = value.systemInstruction?.trim();
+    return { kind, orchestratorId, prompt, ...(systemInstruction ? { systemInstruction } : {}) };
   }
   const cwd = requireString(value.cwd, `${label}.action.cwd`).trim();
   if (!cwd || cwd.length > 2048) throw new Error(`${label}.action.cwd is invalid`);
@@ -684,7 +689,7 @@ export function createCodexScheduleService({
     });
   }
 
-  async function finishDispatch(claim, result, failure) {
+  async function finishDispatch(claim, result, failure, skipped = false) {
     return await serialize(async () => {
       const runtime = runtimeStore.runtimes[claim.definition.id];
       const dispatch = runtime?.lastDispatch;
@@ -692,7 +697,7 @@ export function createCodexScheduleService({
         dispatch.definitionHash !== claim.definitionHash ||
         (dispatch.status !== "claimed" && !(failure && dispatch.status === "fired"))) return;
       if (failure) {
-        dispatch.status = "failed";
+        dispatch.status = skipped ? "skipped" : "failed";
         dispatch.errorCode = String(failure.code || "schedule_dispatch_failed").slice(0, 200);
         dispatch.errorMessage = errorMessage(failure).slice(0, MAX_ERROR_CHARS);
         // A native failure can race with recording the successful start.
@@ -804,12 +809,18 @@ export function createCodexScheduleService({
             logicalConversationId: opened.logicalConversationId,
             clientOperationId,
             input: { blocks: [{ type: "text", text: action.prompt }] },
+            ...(action.systemInstruction ? { additionalInstructions: action.systemInstruction } : {}),
           } }, (state) => {
             if (!started) reject(Object.assign(new Error("Voice turn ended before it started"), { code: state.code || "turn_failed" }));
           }, (request, signal) => onVoiceApproval(clientOperationId, action.orchestratorId, request, signal), {
+            source: "scheduled",
             onStarted: () => { result = voiceResult; started = true; resolve(); },
             onFailed: (error) => { if (started) onFailed(error); else reject(error); },
             onSettled: () => { if (!started) reject(new Error("Voice turn ended before it started")); },
+          }).then((state) => {
+            if (!started && state?.status === "confirmation_required") {
+              reject(Object.assign(new Error("Voice reset confirmation is awaiting a decision"), { code: "voice_context_reset_required" }));
+            }
           }).catch(reject);
         });
       } else if (action.kind === "script") {
@@ -850,7 +861,10 @@ export function createCodexScheduleService({
       failure = error instanceof Error ? error : new Error(errorMessage(error));
     }
     if (!claim) return;
-    if (failure) await reportFailure(failure);
+    if (failure && claim.definition.action.kind === "voice"
+      && ["session_busy", "voice_context_reset_required"].includes(failure.code)) {
+      await finishDispatch(claim, null, failure, true);
+    } else if (failure) await reportFailure(failure);
     else {
       const dispatch = await finishDispatch(claim, result, null);
       if (dispatch?.status === "failed") {

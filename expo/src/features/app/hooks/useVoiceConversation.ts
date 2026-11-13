@@ -9,7 +9,7 @@ import { playVoiceSound } from "../voiceSounds";
 import type { VoiceContextStats } from "../types/appTypes";
 
 type TurnStatus = "idle" | "sending" | "accepted" | "running" | "completed" | "failed";
-export type VoiceHistoryMessage = { role: "user" | "assistant"; text: string; clientOperationId: string; at?: string; outputTokens?: number; completedOrdinal?: number; sessionSwitched?: boolean };
+export type VoiceHistoryMessage = { role: "user" | "assistant"; text: string; clientOperationId: string; at?: string; outputTokens?: number; completedOrdinal?: number; sessionSwitched?: boolean; source?: "scheduled" };
 export type VoiceTaskChecklist = { status: "present"; markdown: string } | { status: "missing" } | { status: "unavailable" };
 export type VoiceTaskChecklistOverview = { status: "present"; markdown: string }
   | { status: "pending" } | { status: "unavailable" };

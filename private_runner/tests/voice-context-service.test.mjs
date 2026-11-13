@@ -1688,7 +1688,7 @@ test("voice system instructions save in the active store and drive later turns",
   assert.equal(instructions.includes("Current orchestrator chat metadata"), false);
   for (const { params } of codex.calls.filter(({ method }) => method === "turn/start")) {
     if (params.approvalPolicy === "on-request") {
-      assert.deepEqual(Object.keys(params.additionalContext), ["bitty.appControl"]);
+      assert.deepEqual(Object.keys(params.additionalContext), ["bitty.appControl", "bitty.turn"]);
       const context = params.additionalContext["bitty.appControl"];
       assert.equal(context.kind, "application");
       assert.match(context.value, /^No app control context is available for this turn\. Never reuse references from earlier turns\.$/);
@@ -5153,4 +5153,89 @@ test("event pair recovery preserves distinct acceptance and completion times", (
   ].map((event, i) => ({ seq: i + 1, clientOperationId, ...event }));
   const recovered = readVoiceEventState(Buffer.from(`${events.map((event) => JSON.stringify(event)).join("\n")}\n`));
   assert.deepEqual(recovered.pairs, [{ pairSeq: 1, user: "change the setting", assistant: "setting changed", userAt, assistantAt }]);
+});
+
+
+test("scheduled triggers cannot consent to checklist clearing or renew a user-requested offer", async (t) => {
+  const nativeRequests = [checklistReadCall("preflight"), checklistTurnCall("read", "read_task_checklist"),
+    checklistTurnCall("offer", "offer_completion_clear")];
+  const { service, conversation, codex } = await fixture(t, { taskChecklistPath: "task-checklists/main.md", nativeRequests });
+  const workspace = await service.getWorkspaceDirectory();
+  const source = path.join(workspace, "task-checklists", "main.md");
+  const markdown = "- [x] Preserve user consent\n";
+  await fs.writeFile(source, markdown);
+  await complete(service, conversation, "Check completion");
+  nativeRequests.splice(0, nativeRequests.length, checklistTurnCall("read-scheduled", "read_task_checklist"),
+    checklistTurnCall("confirm-scheduled", "confirm_completion_clear"),
+    checklistTurnCall("renew-scheduled", "offer_completion_clear", { userRequested: true }));
+  await complete(service, conversation, "Please clear it", randomUUID(), undefined, { source: "scheduled" });
+  assert.deepEqual(codex.calls.filter(({ method }) => method === "native/result").slice(-3).map(({ result }) => result.success), [true, false, false]);
+  assert.equal(await fs.readFile(source, "utf8"), markdown);
+  assert.deepEqual(await fs.readdir(path.join(workspace, "task-checklists", "completed")).catch((error) => error.code === "ENOENT" ? [] : Promise.reject(error)), []);
+});
+
+test("scheduled triggers cannot edit, restore or delete learning even when the model calls confirmation-only tools", async (t) => {
+  const id = randomUUID(); const writes = [];
+  const nativeRequests = [
+    { method: "item/tool/call", namespace: "orchestrator_learning", tool: "update_item", callId: "scheduled-update",
+      arguments: { id, version: 1, changes: { content: "Unapproved" } }, threadId: "root", turnId: "root" },
+    { method: "item/tool/call", namespace: "orchestrator_learning", tool: "restore_item", callId: "scheduled-restore",
+      arguments: { id, version: 1, contextRevision: 1 }, threadId: "root", turnId: "root" },
+    { method: "item/tool/call", namespace: "orchestrator_learning", tool: "delete_item", callId: "scheduled-delete",
+      arguments: { id, version: 1 }, threadId: "root", turnId: "root" },
+  ];
+  const { service, conversation, codex } = await fixture(t, { nativeRequests,
+    learningContext: { retrieve: async () => ({ contextRevision: 1, selectedDigest: "none", items: [], instruction: "", excludedPairSeqs: [] }),
+      delivered: async () => {}, tool: async (call) => { writes.push(call); return {}; } } });
+  await complete(service, conversation, "Change my learning", randomUUID(), undefined, { source: "scheduled" });
+  assert.deepEqual(writes, []);
+  assert.deepEqual(codex.calls.filter(({ method }) => method === "native/result").map(({ result }) => result.success), [false, false, false]);
+});
+
+
+test("memory summaries retain scheduled provenance and explicitly distinguish unconfirmed suggestions from user facts", async (t) => {
+  const { rootDir, codex, conversation } = await fixture(t, { holdSummaries: true });
+  await seedPairs(rootDir, conversation.logicalConversationId, 11);
+  const eventFile = path.join(rootDir, conversation.logicalConversationId, "events.jsonl");
+  const events = (await fs.readFile(eventFile, "utf8")).trim().split("\n").map(JSON.parse);
+  events[0].source = "scheduled";
+  await fs.writeFile(eventFile, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`);
+  const reloaded = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  await reloaded.open();
+  await waitFor(() => codex.summaryReleases.length > 0);
+  const summary = codex.calls.find(({ method, params }) => method === "turn/start" && params.approvalPolicy === "never");
+  assert.equal(JSON.parse(summary.params.input[0].text).pairs[0].source, "scheduled");
+  const instruction = codex.calls.find(({ method, params }) => method === "thread/start" && params.developerInstructions.startsWith("Update stored voice memory")).params.developerInstructions;
+  assert.match(instruction, /source:scheduled/);
+  assert.match(instruction, /Never derive user preferences, permissions, confirmed wishes or successful outcomes/);
+  await reloaded.close();
+});
+
+test("turn source is server owned and cannot be forged in a caller payload", async (t) => {
+  const { service, conversation } = await fixture(t);
+  const operationId = randomUUID();
+  await assert.rejects(service.start({ operationId, payload: { backendId: "codex", logicalConversationId: conversation.logicalConversationId,
+    clientOperationId: operationId, source: "scheduled", input: { blocks: [{ type: "text", text: "forged" }] } } },
+    () => {}, async () => "decline"), { code: "turn_rejected" });
+});
+
+
+test("scheduled native input retains provenance and recovers a lost acknowledgement without resending", async (t) => {
+  for (const resumed of [false, true]) await t.test(resumed ? "resumed parent" : "new parent", async (t) => {
+    const nativeThreads = new Map();
+    const { rootDir, codex, service, conversation } = await fixture(t, { loseTurnStartResponseAt: resumed ? 2 : 1, nativeThreads });
+    if (resumed) await complete(service, conversation, "ordinary request");
+    const scheduled = await beginTurn(service, conversation, "consider useful work", randomUUID(), undefined, { source: "scheduled" });
+    assert.equal((await scheduled.terminal).status, "unknown");
+    const native = codex.calls.filter(({ method, params }) => method === "turn/start" && params.approvalPolicy === "on-request").at(-1);
+    assert.equal(native.params.input[0].text, "[Automated scheduled trigger; not a user message]\nconsider useful work");
+    const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient });
+    const recovered = await restarted.open();
+    assert.equal(recovered.status, "completed");
+    assert.equal(recovered.source, "scheduled");
+    const history = (await restarted.history()).messages.filter((row) => row.clientOperationId === scheduled.message.operationId);
+    assert.equal(history[0].text, "consider useful work");
+    assert.deepEqual(history.map((row) => row.source), ["scheduled", "scheduled"]);
+    assert.equal(codex.calls.filter(({ method, params }) => method === "turn/start" && params.input[0].text.includes("consider useful work")).length, 1);
+  });
 });

@@ -107,7 +107,7 @@ function fakeCodex({ hold = false, failSummary = false, failTurn = false,
             }
             turn.status = "completed";
             listener("item/completed", { threadId: params.threadId, turnId,
-              item: { type: "agentMessage", text: `reply:${params.input[0].text}` } });
+              item: { type: "agentMessage", text: `reply:${params.input[0].text.replace(/^\[Automated scheduled trigger; not a user message\]\n/, "")}` } });
             listener("turn/completed", { threadId: params.threadId, turnId, turn: { status: "completed" } });
             resolveCompletion();
           };
@@ -261,7 +261,7 @@ test("orchestrator names share the settings parent lifecycle across rename and r
       assert.equal(requests.filter(({ method }) => method === "thread/start").length, newParent ? 1 : 0);
       for (const { params } of codex.calls.slice(offset).filter(({ method }) => method === "turn/start")) {
         if (codex.threads.get(params.threadId)?.ephemeral === false) {
-          assert.deepEqual(Object.keys(params.additionalContext), ["bitty.appControl"]);
+          assert.deepEqual(Object.keys(params.additionalContext), ["bitty.appControl", "bitty.turn"]);
           assert.equal(params.additionalContext["bitty.appControl"].kind, "application");
           assert.match(params.additionalContext["bitty.appControl"].value, /^No app control context/);
         } else {
@@ -690,7 +690,7 @@ test("an interrupted subagent cleanup resumes from the saved registry", async (t
 });
 
 
-async function scheduledFixture(t, voice, orchestratorId, rrule = null, onVoiceApproval = async () => "decline") {
+async function scheduledFixture(t, voice, orchestratorId, rrule = null, onVoiceApproval = async () => "decline", extra = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "voice-schedules-test-"));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   let current = new Date("2026-09-01T00:00:00.000Z");
@@ -698,6 +698,7 @@ async function scheduledFixture(t, voice, orchestratorId, rrule = null, onVoiceA
     definitionsPath: path.join(directory, "definitions.json"), runtimePath: path.join(directory, "runtime.json"),
     voiceContextService: voice,
     onVoiceApproval,
+    onExecutionFailed: extra.onExecutionFailed,
     validateCwd: async () => { throw new Error("voice must not validate cwd"); },
     parseCodexOptions: () => { throw new Error("voice uses its own model settings"); },
     now: () => new Date(current), scheduleTimer: () => ({ unref() {} }), clearTimer() {},
@@ -706,10 +707,11 @@ async function scheduledFixture(t, voice, orchestratorId, rrule = null, onVoiceA
   await scheduler.replaceSchedules({ baseRevision: 0, schedules: [{
     id: "11111111-1111-4111-8111-111111111111", name: "定期調査", enabled: true,
     startLocal: "2026-09-02T09:00:00", timeZone: "Asia/Tokyo", rrule,
-    action: { kind: "voice", orchestratorId, prompt: "scheduled request" },
+    action: { kind: "voice", orchestratorId, prompt: "scheduled request",
+      ...(extra.systemInstruction ? { systemInstruction: extra.systemInstruction } : {}) },
   }] });
   current = new Date("2026-09-02T00:00:00.000Z");
-  return { scheduler, options };
+  return { scheduler, options, advance: (ms) => { current = new Date(current.getTime() + ms); } };
 }
 
 test("voice schedules use the named orchestrator history and settings after rename, and persist dispatch results", async (t) => {
@@ -726,8 +728,8 @@ test("voice schedules use the named orchestrator history and settings after rena
   assert.equal(dispatch.status, "fired");
   assert.equal(dispatch.result.orchestratorId, item.id);
   assert.equal(dispatch.result.logicalConversationId, opened.logicalConversationId);
-  await waitFor(() => codex.calls.some((call) => call.method === "turn/start" && call.params.input[0].text === "scheduled request"));
-  const call = codex.calls.find((call) => call.method === "turn/start" && call.params.input[0].text === "scheduled request");
+  await waitFor(() => codex.calls.some((call) => call.method === "turn/start" && call.params.input[0].text.endsWith("\nscheduled request")));
+  const call = codex.calls.find((call) => call.method === "turn/start" && call.params.input[0].text.endsWith("\nscheduled request"));
   assert.equal(call.params.model, "another-model");
   assert.equal(call.params.effort, "high");
   const threadStart = codex.calls.find((entry) => entry.method === "thread/start" && entry.params.model === "another-model");
@@ -738,7 +740,7 @@ test("voice schedules use the named orchestrator history and settings after rena
     && entry.params.developerInstructions.includes(JSON.stringify({ name: "改名後" })));
   assert.ok(renamedStart);
   assert.equal(renamedStart.params.developerInstructions.includes(JSON.stringify({ name: "調査担当" })), false);
-  assert.deepEqual(Object.keys(call.params.additionalContext), ["bitty.appControl"]);
+  assert.deepEqual(Object.keys(call.params.additionalContext), ["bitty.appControl", "bitty.turn"]);
   assert.equal(call.params.additionalContext["bitty.appControl"].kind, "application");
   assert.match(call.params.additionalContext["bitty.appControl"].value, /^No app control context/);
   assert.ok(codex.calls.some((entry) => entry.method === "thread/inject_items"
@@ -755,21 +757,23 @@ test("voice schedules use the named orchestrator history and settings after rena
   assert.deepEqual((await reloaded.snapshot()).schedules[0].lastDispatch, dispatch);
 });
 
-test("busy voice schedule occurrences fail without interrupting or retrying and advance recurrence", async (t) => {
+test("busy voice schedule occurrences skip without interrupting, retrying or failure notifications and advance recurrence", async (t) => {
   const { service, codex } = await fixture(t, { hold: true });
   const opened = await service.open("main");
   const active = await turn(service, "main", opened.logicalConversationId, "ongoing request");
   await waitFor(() => codex.releases.length > 0);
-  const { scheduler } = await scheduledFixture(t, service, "main", "FREQ=DAILY");
+  const failures = [];
+  const { scheduler } = await scheduledFixture(t, service, "main", "FREQ=DAILY", undefined, { onExecutionFailed: (value) => failures.push(value) });
   await scheduler.evaluate();
   const schedule = (await scheduler.snapshot()).schedules[0];
-  assert.equal(schedule.lastDispatch.status, "failed");
+  assert.equal(schedule.lastDispatch.status, "skipped");
   assert.equal(schedule.lastDispatch.errorCode, "session_busy");
+  assert.deepEqual(failures, []);
   assert.equal(schedule.nextOccurrenceAt, "2026-09-03T00:00:00.000Z");
   codex.releases.splice(0).forEach((release) => release());
   await active.finished;
   await scheduler.evaluate();
-  assert.equal(codex.calls.some((call) => call.method === "turn/start" && call.params.input[0].text === "scheduled request"), false);
+  assert.equal(codex.calls.some((call) => call.method === "turn/start" && call.params.input[0].text.endsWith("\nscheduled request")), false);
 });
 
 test("deleted voice schedule targets fail without falling back to main", async (t) => {
@@ -1723,4 +1727,125 @@ test("chat tools list inactive states and restore only a current owned retired i
   assert.deepEqual(status.candidates.slice(1), items.slice(1)); assert.equal(status.changes.at(-1).action, "restore");
   const active = JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8"));
   assert.ok(active.learningSnapshot.items.some(({ id, version, status }) => id === args.id && version === 3 && status === undefined));
+});
+
+
+test("scheduled instructions apply on resume and never become persistent user instructions", async (t) => {
+  for (const scheduledFirst of [false, true]) await t.test(scheduledFirst ? "scheduled parent first" : "ordinary parent first", async (t) => {
+    const { rootDir, codex, service } = await fixture(t);
+    const opened = await service.open("main");
+    const before = await service.getSettings("main");
+    if (!scheduledFirst) {
+      await (await turn(service, "main", opened.logicalConversationId, "ordinary before")).finished;
+      await waitFor(async () => !await service.isBusy("main"));
+    }
+    const custom = "PERIODIC_ONLY: propose one concrete maintenance action.";
+    const { scheduler, options } = await scheduledFixture(t, service, "main", null, undefined, { systemInstruction: custom });
+    await scheduler.evaluate();
+    await waitFor(async () => (await service.history("main")).messages.some((row) => row.text === "reply:scheduled request"));
+    const scheduledCall = codex.calls.find(({ method, params }) => method === "turn/start" && params.input[0].text.endsWith("\nscheduled request"));
+    const context = JSON.parse(scheduledCall.params.additionalContext["bitty.turn"].value);
+    assert.equal(context.source, "scheduled");
+    assert.match(context.instructions, /PERIODIC_ONLY/);
+    assert.equal(codex.calls.filter(({ method }) => ["thread/start", "thread/resume"].includes(method))
+      .some(({ params }) => params.developerInstructions.includes(custom)), false);
+    await (await turn(service, "main", opened.logicalConversationId, "ordinary after")).finished;
+    const ordinaryCall = codex.calls.find(({ method, params }) => method === "turn/start" && params.input[0].text === "ordinary after");
+    assert.equal(ordinaryCall.params.threadId, scheduledCall.params.threadId);
+    assert.deepEqual(JSON.parse(ordinaryCall.params.additionalContext["bitty.turn"].value), { source: "user" });
+    assert.equal((await service.getSettings("main")).systemInstruction, before.systemInstruction);
+    const savedSchedule = (await createCodexScheduleService(options).snapshot()).schedules[0];
+    assert.equal(savedSchedule.action.systemInstruction, custom);
+    const scheduledId = (await scheduler.snapshot()).schedules[0].lastDispatch.result.clientOperationId;
+    const messages = (await service.history("main")).messages.filter((row) => row.clientOperationId === scheduledId);
+    assert.deepEqual(messages.map((row) => row.source), ["scheduled", "scheduled"]);
+    const raw = JSON.parse(await fs.readFile(path.join(rootDir, "workspace", "voice-memory", "recent.json"), "utf8"));
+    assert.equal(raw.find((pair) => pair.user === "scheduled request").source, "scheduled");
+    const learning = await service.learningStatus("main");
+    assert.equal(learning.pendingCount, scheduledFirst ? 1 : 2);
+    assert.equal(learning.observedThrough, scheduledFirst ? 2 : 3);
+    await service.close();
+    const reloaded = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
+    t.after(() => reloaded.close());
+    assert.deepEqual((await reloaded.history("main")).messages.filter((row) => row.text.includes("scheduled request")).map((row) => row.source), ["scheduled", "scheduled"]);
+    assert.equal((await reloaded.learningStatus()).pendingCount, scheduledFirst ? 1 : 2);
+  });
+});
+
+test("scheduled execution rolls the existing native parent safely and continues subsequent intervals", async (t) => {
+  for (const contextLimitReached of [false, true]) await t.test(contextLimitReached ? "context limit" : "message limit", async (t) => {
+    const { rootDir, codex, service } = await fixture(t);
+    const opened = await service.open("main");
+    await (await turn(service, "main", opened.logicalConversationId, "prior user request")).finished;
+    await service.close();
+    const file = path.join(rootDir, "active.json");
+    const active = JSON.parse(await fs.readFile(file, "utf8"));
+    active.completedOnParent = 20; active.nextResetPromptAt = 20; active.contextLimitReached = contextLimitReached;
+    await fs.writeFile(file, JSON.stringify(active));
+    const reloaded = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
+    t.after(() => reloaded.close());
+    const { scheduler, advance } = await scheduledFixture(t, reloaded, "main", "FREQ=MINUTELY;INTERVAL=15");
+    await scheduler.evaluate();
+    await waitFor(async () => (await reloaded.history("main")).messages.length === 4);
+    const after = JSON.parse(await fs.readFile(file, "utf8"));
+    assert.notEqual(after.nativeThreadId, active.nativeThreadId);
+    assert.equal(after.parentGeneration, active.parentGeneration + 1);
+    assert.equal(after.logicalConversationId, opened.logicalConversationId);
+    assert.equal(after.memoryConversationId, active.memoryConversationId);
+    assert.equal(after.pendingConfirmation, undefined);
+    assert.equal(after.contextLimitReached, false);
+    assert.equal((await scheduler.snapshot()).schedules[0].lastDispatch.status, "fired");
+    assert.ok(codex.calls.some(({ method, params }) => method === "thread/inject_items" && params.threadId === after.nativeThreadId
+      && JSON.stringify(params.items).includes("prior user request")));
+    advance(15 * 60_000); await scheduler.evaluate();
+    await waitFor(async () => (await reloaded.history("main")).messages.length === 6);
+    assert.equal((await scheduler.snapshot()).schedules[0].lastDispatch.status, "fired");
+    assert.equal((await reloaded.learningStatus()).pendingCount, 1);
+  });
+});
+
+test("scheduled execution never answers or mutates an existing real user reset confirmation", async (t) => {
+  const { rootDir, codex, service } = await fixture(t);
+  const opened = await service.open("main");
+  await (await turn(service, "main", opened.logicalConversationId, "prior user request")).finished;
+  await service.close();
+  const file = path.join(rootDir, "active.json");
+  const active = JSON.parse(await fs.readFile(file, "utf8"));
+  active.completedOnParent = 20; active.nextResetPromptAt = 20;
+  await fs.writeFile(file, JSON.stringify(active));
+  const reloaded = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
+  t.after(() => reloaded.close());
+  const operationId = randomUUID();
+  const request = { operationId, payload: { orchestratorId: "main", backendId: "codex",
+    logicalConversationId: opened.logicalConversationId, clientOperationId: operationId,
+    input: { blocks: [{ type: "text", text: "real user request" }] } } };
+  assert.equal((await reloaded.start(request, () => {}, async () => "decline")).status, "confirmation_required");
+  const before = await fs.readFile(file, "utf8");
+  const failures = [];
+  const { scheduler } = await scheduledFixture(t, reloaded, "main", "FREQ=MINUTELY;INTERVAL=15", undefined,
+    { onExecutionFailed: (value) => failures.push(value) });
+  await scheduler.evaluate();
+  const saved = (await scheduler.snapshot()).schedules[0];
+  assert.equal(saved.lastDispatch.status, "skipped");
+  assert.equal(saved.lastDispatch.errorCode, "session_busy");
+  assert.equal(saved.nextOccurrenceAt, "2026-09-02T00:15:00.000Z");
+  assert.equal(await fs.readFile(file, "utf8"), before);
+  assert.deepEqual(failures, []);
+});
+
+
+test("disabled schedules do not run and re-enabling does not accumulate missed intervals", async (t) => {
+  const { service, codex } = await fixture(t);
+  const { scheduler, advance } = await scheduledFixture(t, service, "main", "FREQ=MINUTELY;INTERVAL=15");
+  await scheduler.patchSchedule("11111111-1111-4111-8111-111111111111", { baseRevision: 1, patch: { enabled: false } });
+  advance(3 * 60 * 60_000);
+  await scheduler.evaluate();
+  assert.equal(codex.calls.some(({ method }) => method === "turn/start"), false);
+  await scheduler.patchSchedule("11111111-1111-4111-8111-111111111111", { baseRevision: 2, patch: { enabled: true } });
+  await scheduler.evaluate();
+  assert.equal(codex.calls.some(({ method }) => method === "turn/start"), false);
+  advance(15 * 60_000);
+  await scheduler.evaluate();
+  await waitFor(async () => (await service.history("main")).messages.some((row) => row.text === "reply:scheduled request"));
+  assert.equal(codex.calls.filter(({ method, params }) => method === "turn/start" && params.input[0].text.endsWith("\nscheduled request")).length, 1);
 });

@@ -270,10 +270,16 @@ test("selects named orchestrators and saves their stable ID without directory or
   expect(view.queryByLabelText("ディレクトリ")).toBeNull();
   expect(view.queryByLabelText("モデル")).toBeNull();
   await act(async () => fireEvent.changeText(view.getByLabelText("プロンプト"), "調べてください"));
+  await act(async () => fireEvent.changeText(view.getByLabelText("定期実行専用の追加指示"), "役立つ提案を一つ考える"));
+  await act(async () => fireEvent.press(view.getByLabelText("繰り返し")));
+  await act(async () => fireEvent.press(view.getByText("間隔指定")));
+  await act(async () => fireEvent.changeText(view.getByLabelText("実行間隔（分）"), "45"));
+  await act(async () => fireEvent(view.getByLabelText("スケジュールを有効にする"), "valueChange", false));
   await act(async () => fireEvent.press(view.getByLabelText("編集を閉じる")));
   await act(async () => fireEvent.press(view.getByLabelText("スケジュールを保存")));
   expect(mockPut).toHaveBeenCalledWith(expect.anything(), 0, [expect.objectContaining({
-    action: { kind: "voice", orchestratorId: mockOrchestrators[1].id, prompt: "調べてください" },
+    enabled: false, rrule: "FREQ=MINUTELY;INTERVAL=45",
+    action: { kind: "voice", orchestratorId: mockOrchestrators[1].id, prompt: "調べてください", systemInstruction: "役立つ提案を一つ考える" },
   })]);
 });
 
