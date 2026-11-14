@@ -1,6 +1,11 @@
 import { act, renderHook } from "@testing-library/react-native";
 import { useOrchestratorActivities } from "./useOrchestratorActivities";
 
+let mockLogSessionDiag = jest.fn();
+jest.mock("../contexts/ConversationContext", () => ({
+  useConversation: () => ({ logSessionDiag: mockLogSessionDiag }),
+}));
+
 const mockMutatePersistedSettings = jest.fn(async (mutate: (settings: Record<string, unknown>) => Record<string, unknown>) =>
   mutate({}));
 jest.mock("../utils/persistedSettingsFile", () => ({
@@ -39,6 +44,7 @@ const snapshot = (instanceId: string, revision: number, activities = [activity])
 });
 
 beforeEach(() => {
+  mockLogSessionDiag = jest.fn();
   mockConfigurationGeneration = 0;
   mockManager = { ...mockManager };
   mockConnection = { connected: true, generation: 1, appState: "active" };
@@ -199,5 +205,52 @@ test("a queued notification after domain apply cannot be overwritten by the requ
   });
   expect(hook.result.current.selectedId).toBe("other");
   expect(hook.result.current.orchestrators[0]).toMatchObject({ name: "New", icon: "new", unreadCount: 9 });
+  await hook.unmount();
+});
+
+test("diagnoses snapshot decisions without recording content or complete identities", async () => {
+  const hook = await renderHook(() => useOrchestratorActivities("private-url", "private-token", true));
+  const sessionId = "abcdef01-2345-6789-abcd-0123456789ab";
+  const instanceId = "12345678-1234-1234-1234-123456789abc";
+  const target = { ...activity, label: "private-content", sessionRef: { backendId: "codex", nativeSessionId: sessionId } };
+  const emit = (payload: unknown) => mockHandlers.get("orchestrator_activity_updated")?.({ payload });
+  await act(async () => emit(snapshot(instanceId, 2, Array(10).fill(target))));
+  expect(mockLogSessionDiag).toHaveBeenCalledWith("orchestrator_activity_snapshot", expect.objectContaining({
+    source: "notification", decision: "accepted", revision: 2, instancePrefix: "12345678", activityCount: 10,
+    targets: Array(8).fill({ backendId: "codex", sessionIdPrefix: "abcdef01", status: "running" }),
+  }), { throttleMs: 0 });
+  await act(async () => emit(snapshot(instanceId, 1)));
+  expect(mockLogSessionDiag).toHaveBeenLastCalledWith("orchestrator_activity_snapshot", expect.objectContaining({
+    decision: "rejected", reason: "stale_revision",
+  }), { throttleMs: 0 });
+  await act(async () => emit({ ...snapshot(instanceId, 3), activities: [{ label: "malformed-private-data" }] }));
+  expect(mockLogSessionDiag).toHaveBeenLastCalledWith("orchestrator_activity_snapshot", expect.objectContaining({
+    decision: "rejected", reason: "invalid_snapshot", activityCount: null, targets: [],
+  }), { throttleMs: 0 });
+  await act(async () => emit(snapshot(instanceId, 4, [])));
+  expect(hook.result.current.activities).toEqual([]);
+  expect(mockLogSessionDiag).toHaveBeenLastCalledWith("orchestrator_activity_snapshot", expect.objectContaining({
+    decision: "accepted", activityCount: 0,
+  }), { throttleMs: 0 });
+  const serialized = JSON.stringify(mockLogSessionDiag.mock.calls);
+  for (const secret of [sessionId, instanceId, "private-content", "malformed-private-data", "private-url", "private-token"])
+    expect(serialized).not.toContain(secret);
+  await hook.unmount();
+});
+
+test("a replaced or failing diagnostic logger does not restart subscriptions or prevent updates", async () => {
+  const hook = await renderHook(() => useOrchestratorActivities("url", "token", true));
+  const subscription = mockHandlers.get("orchestrator_activity_updated")!;
+  const requests = mockRequest.mock.calls.length;
+  mockLogSessionDiag = jest.fn(() => { throw new Error("diagnostic failure"); });
+  await hook.rerender(undefined);
+  expect(mockHandlers.get("orchestrator_activity_updated")).toBe(subscription);
+  expect(mockRequest).toHaveBeenCalledTimes(requests);
+  await act(async () => subscription({ payload: snapshot("server", 1) }));
+  expect(hook.result.current.activities).toEqual([activity]);
+  mockConnection = { ...mockConnection, appState: "background" };
+  await hook.rerender(undefined);
+  expect(hook.result.current.activities).toEqual([]);
+  expect(hook.result.current.activitySnapshot).toBeNull();
   await hook.unmount();
 });
