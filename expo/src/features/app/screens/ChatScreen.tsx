@@ -45,6 +45,7 @@ import { useChatVisual } from "../contexts/ChatVisualContext";
 import { useChatScreen } from "../contexts/ChatScreenContext";
 import { useSkiaBoard } from "../contexts/SkiaBoardContext";
 import { ChatContextUsageMenu } from "../components/ChatContextUsageMenu";
+import { RunningSessionCount } from "../components/RunningSessionCount";
 import { CodexStatusSummaryMenu } from "../components/CodexStatusSummaryMenu";
 import { CommandExecutionRow } from "../components/CommandExecutionRow";
 import { BouncingDotsIndicator } from "../components/BouncingDotsIndicator";
@@ -2550,16 +2551,6 @@ export function ChatScreen({
           )}
         </View>
         <View style={styles.chatFooterSettingsRow}>
-          <View pointerEvents="none" style={styles.chatThreadStatusCenter}>
-            <Text
-              style={styles.chatThreadStatusText}
-              numberOfLines={1}
-              adjustsFontSizeToFit
-              minimumFontScale={0.82}
-            >
-              {selectedThreadStatusTypeForView}
-            </Text>
-          </View>
           <View style={styles.chatFooterSettingsInline}>
             <View ref={modelSelectTriggerRef} collapsable={false}>
               <TouchableOpacity
@@ -2580,7 +2571,10 @@ export function ChatScreen({
               </TouchableOpacity>
             </View> : null}
           </View>
-          <CodexStatusSummaryMenu dismissed={approvalDialogPending} />
+          <View style={styles.chatFooterStatusRow}>
+            <RunningSessionCount />
+            <CodexStatusSummaryMenu dismissed={approvalDialogPending} />
+          </View>
         </View>
         <ComposerFullscreenEditor
           visible={popupComposerFullscreenOpen && !approvalDialogPending}

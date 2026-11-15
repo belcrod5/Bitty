@@ -183,6 +183,10 @@ jest.mock("../../stt/useStreamingSttTransport", () => ({
 jest.mock("expo-clipboard", () => ({ setStringAsync: (text: string) => mockSetStringAsync(text) }));
 
 jest.mock("../components/ChatContextUsageMenu", () => ({ ChatContextUsageMenu: () => null }));
+let mockRunningSessionCount: number | null = 3;
+jest.mock("../hooks/useRegisteredDirectoryActiveSessionCount", () => ({
+  useRegisteredDirectoryActiveSessionCount: () => mockRunningSessionCount,
+}));
 jest.mock("../components/CodexStatusSummaryMenu", () => ({ CodexStatusSummaryMenu: () => null }));
 jest.mock("../components/CommandExecutionRow", () => ({ CommandExecutionRow: () => null }));
 jest.mock("../components/BouncingDotsIndicator", () => ({ BouncingDotsIndicator: () => null }));
@@ -498,6 +502,7 @@ jest.mock("../contexts/ConversationContext", () => ({
 
 describe("ChatScreen voice input", () => {
   beforeEach(() => {
+    mockRunningSessionCount = 3;
     mockScheduledThreadIds = new Set();
     mockUseActualStreamingStt = false;
     mockUseActualLegendList = false;
@@ -528,6 +533,15 @@ describe("ChatScreen voice input", () => {
 
   afterEach(() => {
     if (platformOSDescriptor) Object.defineProperty(Platform, "OS", platformOSDescriptor);
+  });
+
+  it("shows the shared running count and omits the raw thread status", async () => {
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    expect(screen.getByLabelText("実行中のセッション 3件")).toBeTruthy();
+    expect(screen.queryByText("idle")).toBeNull();
+    mockRunningSessionCount = null;
+    await screen.rerender(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    expect(screen.getByTestId("running-session-count").props.children).toBe("--");
   });
 
   it("starts bottom settling when a delayed popup skeleton reveals the list", async () => {

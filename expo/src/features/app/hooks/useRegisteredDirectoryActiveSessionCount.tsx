@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useRunnerWebSocketManager, useRunnerWebSocketSnapshot } from "../../runnerWs/RunnerWebSocketContext";
-import { useAppShell } from "../contexts/AppShellContext";
 import { useConversation } from "../contexts/ConversationContext";
 
-export function useRegisteredDirectoryActiveSessionCount() {
-  const { activeScreen } = useAppShell();
+const ActiveSessionCountContext = createContext<number | null>(null);
+
+export function RegisteredDirectoryActiveSessionCountProvider({ children }: { children: ReactNode }) {
   const { registeredDirectories } = useConversation();
   const manager = useRunnerWebSocketManager();
   const { connected, generation, appState } = useRunnerWebSocketSnapshot();
@@ -14,7 +14,7 @@ export function useRegisteredDirectoryActiveSessionCount() {
   const [count, setCount] = useState<number | null>(null);
 
   useEffect(() => {
-    if (!connected || appState !== "active" || activeScreen !== "skia_board") {
+    if (!connected || appState !== "active") {
       setCount(null);
       return;
     }
@@ -53,7 +53,11 @@ export function useRegisteredDirectoryActiveSessionCount() {
       current = false;
       unsubscribeChanged();
     };
-  }, [activeScreen, appState, connected, directoryKey, generation, manager]);
+  }, [appState, connected, directoryKey, generation, manager]);
 
-  return count;
+  return <ActiveSessionCountContext.Provider value={count}>{children}</ActiveSessionCountContext.Provider>;
+}
+
+export function useRegisteredDirectoryActiveSessionCount() {
+  return useContext(ActiveSessionCountContext);
 }

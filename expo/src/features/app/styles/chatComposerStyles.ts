@@ -198,6 +198,9 @@ export function createChatComposerStyles(theme: VisualTheme) {
   chatFooterSettingsRow: {
     marginTop: 2,
     flexDirection: "row",
+    flexWrap: "wrap",
+    columnGap: 8,
+    rowGap: 2,
     alignItems: "center",
     justifyContent: "space-between",
     paddingHorizontal: 2,
@@ -209,20 +212,16 @@ export function createChatComposerStyles(theme: VisualTheme) {
     justifyContent: "flex-start",
     gap: 8,
   },
+  chatFooterStatusRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginLeft: "auto",
+  },
   chatFooterSettingsText: {
     fontSize: theme.typography.small.fontSize,
     color: theme.tones.neutral.foreground,
     textDecorationLine: "underline",
-  },
-  chatThreadStatusCenter: {
-    position: "absolute",
-    left: 84,
-    right: 84,
-    alignItems: "center",
-  },
-  chatThreadStatusText: {
-    color: theme.colors.textMuted,
-    fontSize: theme.typography.caption.fontSize,
   },
   chatStatusSummaryText: {
     fontSize: theme.typography.caption.fontSize,
