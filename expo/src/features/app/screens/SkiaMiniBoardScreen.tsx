@@ -15,7 +15,6 @@ import {
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import Svg, { Path as SvgPath } from "react-native-svg";
 import {
   Canvas,
   ClipOp,
@@ -60,7 +59,7 @@ import {
   type SkiaMiniChatSession,
 } from "../hooks/useSkiaMiniChatSessions";
 import { useOrchestratorActivities, type OrchestratorActivity } from "../hooks/useOrchestratorActivities";
-import { useRegisteredDirectoryActiveSessionCount } from "../hooks/useRegisteredDirectoryActiveSessionCount";
+import { RunningSessionCount } from "../components/RunningSessionCount";
 import type { VoiceOrchestrator } from "../components/VoiceOrchestratorIcon";
 import { SkiaBoardActivityStatus, activityStatusText } from "../components/SkiaBoardActivityStatus";
 import { DIRECTORY_MARKER_COLORS } from "../theme/directoryMarkerColors";
@@ -795,7 +794,6 @@ export function SkiaMiniBoardScreen({
   }, [activeScreen]);
   const { runnerUrl, runnerToken, sanitizeTextForTts, handleAssistantAudioButtonPress } = useChatScreen();
   const { activities, orchestrators, selectedId } = useOrchestratorActivities(runnerUrl, runnerToken, true);
-  const runningSessionCount = useRegisteredDirectoryActiveSessionCount();
   const voiceUnreadCount = hasVoicePlayback && !voiceOpen
     ? orchestrators.reduce((sum, item) => sum + (item.id === selectedId ? 0 : item.unreadCount || 0), 0) : 0;
   const { registeredDirectories } = useConversation();
@@ -2188,16 +2186,7 @@ export function SkiaMiniBoardScreen({
           </View>
           <View pointerEvents="box-none" style={screenStyles.usageSafeArea} testID="skia-board-usage-safe-area">
             <View style={screenStyles.usagePill} testID="skia-board-usage-pill">
-              <View style={screenStyles.usageSessionRow}>
-                <Svg width={13} height={13} viewBox="0 0 11 11" fill="none">
-                  <SvgPath d={BOARD_FOOTER_ICON_PATHS.subagent} stroke={theme.tones.neutral.foreground}
-                    strokeWidth={1.2} strokeLinecap="round" strokeLinejoin="round" />
-                </Svg>
-                <Text style={screenStyles.usageCount} testID="skia-board-running-session-count"
-                  accessibilityLabel={`実行中のセッション ${runningSessionCount ?? "不明"}件`}>
-                  {runningSessionCount ?? "--"}
-                </Text>
-              </View>
+              <RunningSessionCount />
               <CodexStatusSummaryMenu compact />
             </View>
           </View>
@@ -2376,17 +2365,6 @@ function createScreenStyles(theme: VisualTheme) {
       paddingVertical: 3,
       borderRadius: 16,
       backgroundColor: theme.colors.floatingSurface,
-    },
-    usageSessionRow: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 5,
-    },
-    usageCount: {
-      color: theme.tones.neutral.foreground,
-      fontSize: theme.typography.caption.fontSize,
-      lineHeight: 16,
-      fontWeight: "700",
     },
     menuBackdrop: {
       flex: 1,

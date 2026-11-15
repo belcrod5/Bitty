@@ -1826,18 +1826,18 @@ test("centers the three-row usage and original tools on one bottom anchor", asyn
     paddingVertical: 3,
   });
   expect(screen.getByTestId("codex-status-summary-menu").props.accessibilityLabel).toBe("true");
-  expect(screen.getByTestId("skia-board-running-session-count").props.children).toBe(0);
+  expect(screen.getByTestId("running-session-count").props.children).toBe(0);
   expect(screen.queryByTestId("skia-board-status-pill")).toBeNull();
 });
 
 test("shows the live session count from the shared active-session hook", async () => {
   mockRunningSessionCount = 3;
   const screen = await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
-  expect(screen.getByTestId("skia-board-running-session-count").props.children).toBe(3);
+  expect(screen.getByTestId("running-session-count").props.children).toBe(3);
   expect(screen.getByLabelText("実行中のセッション 3件")).toBeTruthy();
   mockRunningSessionCount = null;
   await screen.rerender(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
-  expect(screen.getByTestId("skia-board-running-session-count").props.children).toBe("--");
+  expect(screen.getByTestId("running-session-count").props.children).toBe("--");
 });
 
 test("renders the four retained vector activities and an ASCII subagent count", async () => {

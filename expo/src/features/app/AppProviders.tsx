@@ -40,6 +40,7 @@ import {
   type ChatScreenContextValue,
 } from "./contexts/ChatScreenContext";
 import { CodexSchedulesProvider } from "../codexSchedules/CodexSchedulesContext";
+import { RegisteredDirectoryActiveSessionCountProvider } from "./hooks/useRegisteredDirectoryActiveSessionCount";
 import { SkiaBoardProvider } from "./contexts/SkiaBoardContext";
 
 type AppProvidersProps = {
@@ -81,7 +82,9 @@ export function AppProviders({
                     <ChatVisualProvider value={chatVisual}>
                       <ChatScreenProvider value={chatScreen}>
                         <CodexSchedulesProvider runnerUrl={appSettings.runnerUrl} runnerToken={appSettings.runnerToken}>
-                          <SkiaBoardProvider>{children}</SkiaBoardProvider>
+                          <RegisteredDirectoryActiveSessionCountProvider>
+                            <SkiaBoardProvider>{children}</SkiaBoardProvider>
+                          </RegisteredDirectoryActiveSessionCountProvider>
                         </CodexSchedulesProvider>
                       </ChatScreenProvider>
                     </ChatVisualProvider>
