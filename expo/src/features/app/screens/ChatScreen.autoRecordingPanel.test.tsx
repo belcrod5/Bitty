@@ -57,6 +57,7 @@ let mockPanelSessionId = "session-1";
 let mockPanelSessionMaterialized: boolean | undefined = true;
 let mockSelectedLlmSessionMaterialized = true;
 let mockScheduledThreadIds = new Set<string>();
+let mockSkiaBoardSessionIds = new Set<string>();
 jest.mock("../../codexSchedules/CodexSchedulesContext", () => ({
   useCodexSchedules: () => ({ scheduledThreadIds: mockScheduledThreadIds }),
 }));
@@ -245,7 +246,7 @@ jest.mock("../hooks/useWorkspaceFileMutations", () => ({
 jest.mock("../contexts/SkiaBoardContext", () => ({
   useSkiaBoard: () => ({
     addSession: mockAddSkiaBoardSession,
-    hasSession: () => false,
+    hasSession: (sessionId: string) => mockSkiaBoardSessionIds.has(sessionId),
     addFile: mockAddSkiaBoardFile,
     removeFile: mockRemoveSkiaBoardFile,
     hasFile: mockHasSkiaBoardFile,
@@ -504,6 +505,7 @@ describe("ChatScreen voice input", () => {
   beforeEach(() => {
     mockRunningSessionCount = 3;
     mockScheduledThreadIds = new Set();
+    mockSkiaBoardSessionIds = new Set();
     mockUseActualStreamingStt = false;
     mockUseActualLegendList = false;
     mockActualLegendListRef = null;
@@ -790,6 +792,41 @@ describe("ChatScreen voice input", () => {
     mockPanelBackendId = "claude";
     await screen.rerender(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
     expect(screen.queryByLabelText("スケジュール実行予定あり")).toBeNull();
+    await screen.unmount();
+  });
+
+  it.each([false, true])("reflects board placement independently of the clock (popup=%s)", async (popup) => {
+    const props = popup ? { mode: "mini_board_popup" as const, panelId: "panel-a" } : {};
+    mockScheduledThreadIds = new Set(["session-1"]);
+    const screen = await render(<ChatScreen {...props} />);
+    expect(screen.queryByLabelText("Skiaボードに配置済み")).toBeNull();
+
+    mockSkiaBoardSessionIds = new Set(["session-1"]);
+    await screen.rerender(<ChatScreen {...props} />);
+    expect(screen.getByLabelText("Skiaボードに配置済み")).toBeTruthy();
+    expect(within(screen.getByTestId("chat-header")).getAllByText(/^(time-outline|grid-outline)$/)
+      .map((icon) => icon.props.children)).toEqual(popup ? ["time-outline", "grid-outline"] : ["grid-outline"]);
+
+    mockSkiaBoardSessionIds = new Set();
+    await screen.rerender(<ChatScreen {...props} />);
+    expect(screen.queryByLabelText("Skiaボードに配置済み")).toBeNull();
+    expect(Boolean(screen.queryByLabelText("スケジュール実行予定あり"))).toBe(popup);
+    await screen.unmount();
+  });
+
+  it("uses the displayed popup session for board placement and follows session changes", async () => {
+    mockPanelSessionId = "popup-session";
+    mockSkiaBoardSessionIds = new Set(["session-1"]);
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    expect(screen.queryByLabelText("Skiaボードに配置済み")).toBeNull();
+
+    mockSkiaBoardSessionIds = new Set(["popup-session"]);
+    await screen.rerender(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    expect(screen.getByLabelText("Skiaボードに配置済み")).toBeTruthy();
+
+    mockPanelSessionId = "other-session";
+    await screen.rerender(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    expect(screen.queryByLabelText("Skiaボードに配置済み")).toBeNull();
     await screen.unmount();
   });
 

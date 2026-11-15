@@ -267,6 +267,7 @@ export function ChatScreen({
     clearSessionDeepLinkJumpTarget,
   } = useChatScreen();
   const {
+    hasSession: hasSkiaBoardSession,
     addFile: addSkiaBoardFile,
     removeFile: removeSkiaBoardFile,
     hasFile: hasSkiaBoardFile,
@@ -2017,6 +2018,11 @@ export function ChatScreen({
               {hasScheduledExecution ? (
                 <View style={styles.chatDirectoryHeaderNoteButton} accessible accessibilityLabel="スケジュール実行予定あり">
                   <Ionicons name="time-outline" size={15} color={theme.colors.controlAccent} />
+                </View>
+              ) : null}
+              {hasSkiaBoardSession(selectedSessionIdForView) ? (
+                <View style={styles.chatDirectoryHeaderNoteButton} accessible accessibilityLabel="Skiaボードに配置済み">
+                  <Ionicons name="grid-outline" size={15} color={theme.colors.controlAccent} />
                 </View>
               ) : null}
               {sessionNoteForView ? (
