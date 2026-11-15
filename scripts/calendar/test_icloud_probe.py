@@ -118,6 +118,11 @@ class ProbeTests(unittest.TestCase):
                 self.probe.request(probe.START_URL, "PROPFIND", "", 0)
             self.assertNotIn("secret-for-test", str(error.exception))
             self.assertNotIn("test@example.invalid", str(error.exception))
+            if status == 401:
+                self.assertIn("HTTP 401: 認証に失敗", str(error.exception))
+            elif status == 403:
+                self.assertIn("HTTP 403: iCloudがアクセスを拒否", str(error.exception))
+                self.assertNotIn("パスワード", str(error.exception))
 
     def test_failed_principal_property_is_not_used(self):
         self.responses = [FakeResponse(multistatus(response("/", '<d:current-user-principal><d:href>https://evil.invalid/</d:href></d:current-user-principal>', "404 Not Found")))]
@@ -146,10 +151,33 @@ class ProbeTests(unittest.TestCase):
     def test_noninteractive_input_fails_before_reading_credentials(self):
         with patch.object(probe.sys, "argv", ["icloud_probe.py"]), \
                 patch.object(probe.sys.stdin, "isatty", return_value=False), \
-                patch.object(probe.getpass, "getpass") as password, \
+                patch("builtins.input") as credentials, \
                 contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(probe.main(), 1)
-            password.assert_not_called()
+            credentials.assert_not_called()
+
+    def test_main_removes_password_whitespace_and_preserves_hyphens(self):
+        for password in ("abcd-efgh-ijkl-mnop", " \tabcd- efgh\u3000-ijkl-\u00a0mnop \t"):
+            with self.subTest(password=password), \
+                    patch.object(probe.sys, "argv", ["icloud_probe.py"]), \
+                    patch.object(probe.sys.stdin, "isatty", return_value=True), \
+                    patch("builtins.input", side_effect=[" test@example.invalid ", password]) as credentials, \
+                    patch.object(probe, "ICloudProbe") as client, \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                client.return_value.run.return_value = []
+                self.assertEqual(probe.main(), 0)
+                client.assert_called_once_with("test@example.invalid", "abcd-efgh-ijkl-mnop")
+                self.assertIn("表示されます", credentials.call_args_list[1].args[0])
+                self.assertNotIn("abcd", output.getvalue())
+
+    def test_whitespace_only_password_is_rejected_before_network(self):
+        with patch.object(probe.sys, "argv", ["icloud_probe.py"]), \
+                patch.object(probe.sys.stdin, "isatty", return_value=True), \
+                patch("builtins.input", side_effect=["test@example.invalid", " \t\u3000\u00a0"]), \
+                patch.object(probe, "ICloudProbe") as client, \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(probe.main(), 1)
+            client.assert_not_called()
 
 
 if __name__ == "__main__":

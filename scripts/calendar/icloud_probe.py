@@ -4,12 +4,10 @@
 import argparse
 import base64
 from datetime import datetime, timedelta, timezone
-import getpass
 import http.client
 import json
 import ssl
 import sys
-import warnings
 from urllib.parse import urljoin, urlsplit
 import xml.etree.ElementTree as ET
 
@@ -77,8 +75,10 @@ class ICloudProbe:
                         raise ProbeError("転送先がありません。")
                     url = safe_url(url, location)
                     continue
-                if response.status in (401, 403):
-                    raise ProbeError("認証に失敗しました。Apple Accountとアプリ用パスワードを確認してください。")
+                if response.status == 401:
+                    raise ProbeError("HTTP 401: 認証に失敗しました。Apple Accountとアプリ用パスワードを確認してください。")
+                if response.status == 403:
+                    raise ProbeError("HTTP 403: iCloudがアクセスを拒否しました。アカウントのアクセス権限を確認してください。")
                 if response.status != 207:
                     raise ProbeError(f"iCloudがHTTP {response.status}を返しました。")
                 data = response.read(MAX_BYTES + 1)
@@ -154,9 +154,7 @@ def main():
         if not sys.stdin.isatty():
             raise ProbeError("認証情報は対話ターミナルで入力してください。")
         account = input("Apple Account: ").strip()
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", getpass.GetPassWarning)
-            password = getpass.getpass("アプリ用パスワード（非表示）: ").strip()
+        password = "".join(input("アプリ用パスワード（表示されます）: ").split())
         if not account or ":" in account or not password:
             raise ProbeError("Apple Accountとアプリ用パスワードを入力してください。")
         start = datetime.now(timezone.utc).replace(microsecond=0)
@@ -171,7 +169,7 @@ def main():
         return 0
     except ProbeError as error:
         print(f"検証失敗: {error}", file=sys.stderr)
-    except (EOFError, KeyboardInterrupt, getpass.GetPassWarning):
+    except (EOFError, KeyboardInterrupt):
         print("検証を中止しました（認証情報は保存していません）。", file=sys.stderr)
     return 1
 
