@@ -8,6 +8,7 @@ import { createAgentService } from "../src/agent/agent-service.mjs";
 import { createScheduledCodexTurnStarter } from "../src/codex-scheduled-turn.mjs";
 import { operationStore, sessionStore } from "./agent-service-fixtures.mjs";
 
+import { RUNNER_AUTHENTICATION } from "../src/runner-login-http.mjs";
 import { createCodexScheduleHttpHandler } from "../src/codex-schedule-http.mjs";
 import {
   CODEX_SCHEDULE_DEFINITIONS_MAX_BYTES,
@@ -62,6 +63,13 @@ async function makeHarness(options = {}) {
   const definitionsPath = path.join(directory, "codex_schedules.json");
   const runtimePath = path.join(directory, "codex_schedule_runtime.json");
   const currentClock = options.clock || clock();
+  if (options.initialSchedules) {
+    const schedules = options.initialSchedules.map((item) => {
+      const { cwd, modelRef, reasoningEffort, prompt, ...rest } = item;
+      return { ...rest, action: item.action || { kind: "llm", cwd, modelRef, reasoningEffort, prompt, threadId: null } };
+    });
+    await fs.writeFile(definitionsPath, JSON.stringify({ version: 2, revision: 0, schedules, updatedAt: currentClock.now().toISOString() }));
+  }
   const timers = [];
   const service = createCodexScheduleService({
     definitionsPath,
@@ -90,6 +98,7 @@ async function makeHarness(options = {}) {
     clearTimer: options.clearTimer || ((timer) => { timer.cleared = true; }),
     fileSystem: options.fileSystem,
   });
+  if (options.initialSchedules) await service.snapshot();
   return { directory, definitionsPath, runtimePath, currentClock, timers, service };
 }
 
@@ -360,12 +369,10 @@ test("real HTTP handler maps oversized PUT, POST, and PATCH to 400 without poiso
     const responses = [];
     const handler = createCodexScheduleHttpHandler({
       service,
-      runnerToken: "secret",
-      parseAuthToken: (req) => req.auth,
       readJsonBody: async (req) => req.body,
       json: (_res, status, payload) => responses.push({ status, payload }),
     });
-    await handler({ method, auth: "secret", body, headers }, {}, pathname);
+    await handler({ method, body, headers, [RUNNER_AUTHENTICATION]: { sessionId: "test-session", ownerSubjectId: "test-owner" } }, {}, pathname);
     return responses[0];
   }
 
@@ -587,12 +594,10 @@ test("matching revisions with a stale definition hash fail closed", async (t) =>
   const responses = [];
   const handler = createCodexScheduleHttpHandler({
     service: restarted,
-    runnerToken: "secret",
-    parseAuthToken: () => "secret",
     readJsonBody: async () => ({}),
     json: (_res, status, payload) => responses.push({ status, payload }),
   });
-  await handler({ method: "GET" }, {}, "/codex-schedules");
+  await handler({ method: "GET", [RUNNER_AUTHENTICATION]: { sessionId: "test-session", ownerSubjectId: "test-owner" } }, {}, "/codex-schedules");
   assert.equal(responses[0].status, 503);
   assert.equal(responses[0].payload.error, "codex_schedule_store_unavailable");
 });
@@ -957,8 +962,8 @@ test("voice schedule schema validates IDs and rejects directory/model overrides 
       schedules: [{ ...base, action: { ...action, ...patch } }] }));
   }
   assert.equal((await harness.service.snapshot()).revision, 0);
-  const saved = await harness.service.replaceSchedules({ baseRevision: 0, schedules: [{ ...base, action }] });
-  assert.deepEqual(saved.schedules[0].action, action);
+  await assert.rejects(harness.service.replaceSchedules({ baseRevision: 0, schedules: [{ ...base, action }] }),
+    { code: "orchestrator_schedule_api_required" });
   assert.notEqual(codexScheduleDefinitionHash({ ...base, action }),
     codexScheduleDefinitionHash({ ...base, action: { ...action, orchestratorId: ID_B } }));
 });
@@ -968,6 +973,7 @@ test("voice schedules preserve the native approval cancellation signal", async (
   const request = { method: "item/commandExecution/requestApproval", threadId: "child", turnId: "child-turn" };
   let forwarded;
   const harness = await makeHarness({
+    initialSchedules: [definition({ action: { kind: "voice", orchestratorId: "main", prompt: "check" } })],
     voiceContextService: {
       open: async () => ({ logicalConversationId: ID_B }),
       start: async (_message, _notify, onApproval, hooks) => {
@@ -981,9 +987,6 @@ test("voice schedules preserve the native approval cancellation signal", async (
     },
   });
   t.after(() => fs.rm(harness.directory, { recursive: true, force: true }));
-  const { cwd, modelRef, reasoningEffort, prompt, ...base } = definition();
-  await harness.service.replaceSchedules({ baseRevision: 0, schedules: [{ ...base,
-    action: { kind: "voice", orchestratorId: "main", prompt: "check" } }] });
   harness.currentClock.set("2026-08-14T00:00:00.000Z");
   await harness.service.evaluate();
   const dispatch = (await harness.service.snapshot()).schedules[0].lastDispatch;
@@ -995,20 +998,17 @@ test("voice schedules preserve the native approval cancellation signal", async (
 });
 
 
-test("saved voice references do not block unrelated LLM edits or stopping a deleted target", async (t) => {
-  const harness = await makeHarness();
+test("saved voice references allow unrelated LLM edits and disabling a deleted target", async (t) => {
+  const voice = definition({ id: ID_B, action: { kind: "voice", orchestratorId: ID_B, prompt: "Check" } });
+  const harness = await makeHarness({ initialSchedules: [definition(), voice] });
   t.after(() => fs.rm(harness.directory, { recursive: true, force: true }));
-  const { cwd: _cwd, modelRef: _model, reasoningEffort: _effort, prompt: _prompt, ...base } = definition();
-  const voice = { ...base, id: ID_B, name: "Deleted target",
-    action: { kind: "voice", orchestratorId: ID_B, prompt: "Check" } };
-  const saved = await harness.service.replaceSchedules({ baseRevision: 0, schedules: [definition(), voice] });
+  const saved = await harness.service.snapshot();
   const definitions = saved.schedules.map(({ nextOccurrenceAt: _next, lastDispatch: _last, ...schedule }) => schedule);
-  await harness.service.replaceSchedules({ baseRevision: 1,
+  await harness.service.replaceSchedules({ baseRevision: 0,
     schedules: definitions.map((schedule) => schedule.id === ID_A ? { ...schedule, name: "Updated LLM" } : schedule) });
-  await harness.service.patchSchedule(ID_B, { baseRevision: 2, patch: { enabled: false } });
-  const snapshot = await harness.service.snapshot();
-  assert.equal(snapshot.schedules[0].name, "Updated LLM");
-  assert.equal(snapshot.schedules[1].enabled, false);
+  await harness.service.patchSchedule(ID_B, { baseRevision: 1, patch: { enabled: false } });
+  assert.equal((await harness.service.snapshot()).schedules[1].enabled, false);
+  assert.equal((await harness.service.snapshot()).schedules[0].name, "Updated LLM");
 });
 
 
@@ -1128,12 +1128,11 @@ test("existing-chat saves reject cwd mismatches atomically and dispatch rechecks
   }
   let response;
   const handler = createCodexScheduleHttpHandler({
-    service: harness.service, runnerToken: "secret",
-    parseAuthToken: () => "secret",
+    service: harness.service,
     readJsonBody: async () => ({ baseRevision: 1, patch: { threadId: sessionRef.nativeSessionId } }),
     json: (_res, status, payload) => { response = { status, payload }; },
   });
-  await handler({ method: "PATCH" }, {}, `/codex-schedules/${id}`);
+  await handler({ method: "PATCH", [RUNNER_AUTHENTICATION]: { sessionId: "test-session", ownerSubjectId: "test-owner" } }, {}, `/codex-schedules/${id}`);
   assert.equal(response.status, 400);
   assert.equal(response.payload.error, "invalid_codex_schedules");
   assert.ok(response.payload.message.includes(canonicalParent));
@@ -1180,6 +1179,7 @@ test("LLM, script and voice failures after start update dispatch and notify exac
     const failures = [];
     let onFailed;
     const harness = await makeHarness({
+      initialSchedules: kind === "voice" ? [definition({ action: { kind, orchestratorId: "main", prompt: "check" } })] : undefined,
       startScheduledCodexTurn: async (options) => { onFailed = options.onFailed; return { threadId: "thread-1", turnId: "turn-1" }; },
       startShellScript: async (_path, options) => { onFailed = options.onFailed; return { jobId: "job-1" }; },
       voiceContextService: {
@@ -1194,7 +1194,7 @@ test("LLM, script and voice failures after start update dispatch and notify exac
       ? { kind, cwd: process.cwd(), scriptPath: `${process.cwd()}/check.sh` }
       : { kind, orchestratorId: "main", prompt: "check" };
     const { cwd, modelRef, reasoningEffort, prompt, ...base } = definition();
-    await harness.service.replaceSchedules({ baseRevision: 0, schedules: [{ ...base, action }] });
+    if (kind !== "voice") await harness.service.replaceSchedules({ baseRevision: 0, schedules: [{ ...base, action }] });
     harness.currentClock.set("2026-08-14T00:00:00.000Z");
     await harness.service.evaluate();
     const startedDispatch = (await harness.service.snapshot()).schedules[0].lastDispatch;
@@ -1277,6 +1277,7 @@ test("immediate script and voice failures retain their start IDs", async (t) => 
   for (const kind of ["script", "voice"]) {
     const failures = [];
     const harness = await makeHarness({
+      initialSchedules: kind === "voice" ? [definition({ action: { kind, orchestratorId: "main", prompt: "check" } })] : undefined,
       startShellScript: async (_path, { onFailed }) => {
         onFailed(error, { jobId: "job-immediate" });
         return { jobId: "job-immediate" };
@@ -1291,7 +1292,7 @@ test("immediate script and voice failures retain their start IDs", async (t) => 
     const { cwd, modelRef, reasoningEffort, prompt, ...base } = definition();
     const action = kind === "script" ? { kind, cwd: process.cwd(), scriptPath: `${process.cwd()}/check.sh` }
       : { kind, orchestratorId: "main", prompt: "check" };
-    await harness.service.replaceSchedules({ baseRevision: 0, schedules: [{ ...base, action }] });
+    if (kind !== "voice") await harness.service.replaceSchedules({ baseRevision: 0, schedules: [{ ...base, action }] });
     harness.currentClock.set("2026-08-14T00:00:00.000Z");
     await harness.service.evaluate();
     await waitFor(() => failures.length === 1);
@@ -1320,4 +1321,270 @@ test("thread summary excludes action bodies and follows runtime recurrence witho
   const next = await harness.service.summary();
   assert.equal(next.scheduledThreads[0].nextOccurrenceAt, "2026-08-15T00:00:00.000Z");
   assert.equal((await harness.service.snapshot()).revision, 1);
+});
+
+
+test("owner periodic configuration is a disabled singleton default and saves independently without losing other schedules", async (t) => {
+  const owners = [{ id: "main", name: "😀".repeat(80) }, { id: ID_B, name: "Other" }];
+  const f = await makeHarness({ voiceContextService: { list: async () => ({ orchestrators: owners }) } });
+  t.after(() => fs.rm(f.directory, { recursive: true, force: true }));
+  const initial = await f.service.getOrchestratorSchedule("main");
+  assert.equal(initial.settings.enabled, false); assert.equal(initial.settings.trigger.minutes, 60);
+  assert.deepEqual((await f.service.snapshot()).schedules, []);
+  const draft = { ...initial.settings, prompt: "Propose one useful next step", systemInstruction: "Keep proposals short", trigger: { kind: "interval", minutes: 45 } };
+  const disabled = await f.service.saveOrchestratorSchedule("main", { baseRevision: 0, settings: draft });
+  assert.equal(disabled.settings.enabled, false); assert.deepEqual(disabled.settings, draft);
+  const id = (await f.service.snapshot()).schedules[0].id;
+  const active = await f.service.saveOrchestratorSchedule("main", { baseRevision: disabled.revision, settings: { ...draft, enabled: true } });
+  assert.ok(active.nextOccurrenceAt); assert.equal((await f.service.snapshot()).schedules[0].id, id);
+  const other = await f.service.getOrchestratorSchedule(ID_B);
+  await f.service.saveOrchestratorSchedule(ID_B, { baseRevision: other.revision, settings: { ...other.settings, prompt: "Other owner's prompt" } });
+  assert.deepEqual((await f.service.getOrchestratorSchedule("main")).settings, active.settings);
+  const before = await fs.readFile(f.definitionsPath, "utf8");
+  await assert.rejects(f.service.saveOrchestratorSchedule("main", { baseRevision: 0, settings: draft }), CodexScheduleRevisionConflictError);
+  await assert.rejects(f.service.getOrchestratorSchedule(ID_A), { code: "orchestrator_not_found" });
+  await assert.rejects(f.service.saveOrchestratorSchedule("main", { baseRevision: 3, settings: { ...draft, orchestratorId: ID_B } }), /not supported/);
+  assert.equal(await fs.readFile(f.definitionsPath, "utf8"), before);
+  const latest = await f.service.getOrchestratorSchedule("main");
+  await f.service.saveOrchestratorSchedule("main", { baseRevision: latest.revision, settings: { ...latest.settings, enabled: false } });
+  assert.equal((await f.service.snapshot()).schedules.length, 2);
+  assert.equal((await f.service.getOrchestratorSchedule("main")).settings.prompt, draft.prompt);
+});
+
+test("owner save preserves calendar timing while consolidating legacy timers only on explicit save", async (t) => {
+  const legacy = [definition({ id: ID_A, rrule: "FREQ=MONTHLY", action: { kind: "voice", orchestratorId: "main", prompt: "Monthly prompt" } }),
+    definition({ id: ID_B, action: { kind: "voice", orchestratorId: "main", prompt: "Second prompt" } })];
+  const f = await makeHarness({ initialSchedules: legacy, voiceContextService: { list: async () => ({ orchestrators: [{ id: "main", name: "Main" }] }) } });
+  t.after(() => fs.rm(f.directory, { recursive: true, force: true }));
+  const before = await f.service.snapshot();
+  const config = await f.service.getOrchestratorSchedule("main");
+  assert.equal(config.legacyEnabledCount, 1); assert.equal(config.settings.trigger.rrule, "FREQ=MONTHLY");
+  const saved = await f.service.saveOrchestratorSchedule("main", { baseRevision: config.revision, settings: config.settings });
+  const records = (await f.service.snapshot()).schedules;
+  assert.equal(records.length, 2); assert.equal(records.filter((item) => item.enabled).length, 1);
+  for (const item of before.schedules) assert.deepEqual(records.find((record) => record.id === item.id).action, item.action);
+  assert.equal(saved.legacyScheduleCount, 1); assert.equal(saved.legacyEnabledCount, 0);
+  assert.deepEqual(saved.settings.trigger, config.settings.trigger);
+  await f.service.saveOrchestratorSchedule("main", { baseRevision: saved.revision, settings: { ...saved.settings, enabled: false } });
+  const stopped = await f.service.getOrchestratorSchedule("main");
+  assert.equal(stopped.settings.prompt, config.settings.prompt); assert.equal(stopped.settings.enabled, false);
+  await assert.rejects(f.service.patchSchedule(ID_B, { baseRevision: stopped.revision, patch: { enabled: true } }),
+    { code: "orchestrator_schedule_api_required" });
+});
+
+
+test("owner saves reuse existing IDs at capacity and reject new-owner ID collisions", async (t) => {
+  const options = { voiceContextService: { list: async () => ({ orchestrators: [{ id: "main", name: "Main" }] }) } };
+  const f = await makeHarness(options); t.after(() => fs.rm(f.directory, { recursive: true, force: true }));
+  const settings = (await f.service.getOrchestratorSchedule("main")).settings;
+  await f.service.saveOrchestratorSchedule("main", { baseRevision: 0, settings });
+  const canonicalId = (await f.service.snapshot()).schedules[0].id;
+  const collision = await makeHarness({ ...options, initialSchedules: [definition({ id: canonicalId })] });
+  t.after(() => fs.rm(collision.directory, { recursive: true, force: true }));
+  await collision.service.snapshot();
+  const before = await fs.readFile(collision.definitionsPath, "utf8");
+  await assert.rejects(collision.service.saveOrchestratorSchedule("main", { baseRevision: 0, settings }), /already used/);
+  assert.equal(await fs.readFile(collision.definitionsPath, "utf8"), before);
+  const full = await makeHarness({ ...options, initialSchedules: Array.from({ length: 100 }, (_, index) => definition({
+    id: `${String(index + 1).padStart(8, "0")}-1111-4111-8111-111111111111`,
+    action: { kind: "voice", orchestratorId: "main", prompt: `Retain ${index}` } })) });
+  t.after(() => fs.rm(full.directory, { recursive: true, force: true }));
+  const original = await full.service.snapshot();
+  const saved = await full.service.saveOrchestratorSchedule("main", { baseRevision: 0, settings });
+  const after = await full.service.snapshot();
+  assert.equal(after.schedules.length, 100);
+  assert.equal(after.schedules[0].id, original.schedules[0].id);
+  assert.equal(saved.legacyScheduleCount, 99);
+  assert.equal(after.schedules.filter(item => item.enabled).length, 0);
+  for (const item of original.schedules.slice(1)) assert.deepEqual(after.schedules.find(next => next.id === item.id).action, item.action);
+});
+
+
+test("a definitively deleted owner stops all recurring timers without affecting other schedules or repeated notifications", async (t) => {
+  const notifications = [];
+  const f = await makeHarness({ initialSchedules: [
+    definition({ id: ID_A, rrule: "FREQ=MINUTELY;INTERVAL=15", action: { kind: "voice", orchestratorId: ID_B, prompt: "Old one" } }),
+    definition({ id: ID_B, rrule: "FREQ=MINUTELY;INTERVAL=30", action: { kind: "voice", orchestratorId: ID_B, prompt: "Old two" } }),
+    definition({ id: "33333333-3333-4333-8333-333333333333", startLocal: "2026-08-15T09:00:00" }),
+  ], voiceContextService: {
+    open: async () => { throw Object.assign(new Error("Missing owner"), { code: "not_found" }); },
+    list: async () => ({ orchestrators: [{ id: "main", name: "Main" }] }),
+  }, onExecutionFailed: (value) => notifications.push(value) });
+  t.after(() => fs.rm(f.directory, { recursive: true, force: true }));
+  const before = (await f.service.snapshot()).schedules[2];
+  f.currentClock.set("2026-08-14T00:00:00.000Z"); await f.service.evaluate();
+  const snapshot = await f.service.snapshot();
+  assert.ok(snapshot.schedules.slice(0, 2).every((item) => !item.enabled && item.nextOccurrenceAt === null));
+  assert.equal(snapshot.schedules[0].lastDispatch.status, "skipped");
+  assert.equal(snapshot.schedules[0].lastDispatch.errorCode, "orchestrator_removed");
+  assert.deepEqual(snapshot.schedules[2], before); assert.deepEqual(notifications, []);
+  f.currentClock.set("2026-08-14T01:00:00.000Z"); await f.service.evaluate();
+  assert.deepEqual(await f.service.snapshot(), snapshot);
+});
+
+test("native or transient not_found failures never disable an existing owner's periodic timer", async (t) => {
+  const failures = [];
+  const f = await makeHarness({ initialSchedules: [definition({ rrule: "FREQ=MINUTELY;INTERVAL=15",
+    action: { kind: "voice", orchestratorId: "main", prompt: "Retain" } })], voiceContextService: {
+    open: async () => { throw Object.assign(new Error("Native resource missing"), { code: "not_found" }); },
+    list: async () => ({ orchestrators: [{ id: "main", name: "Main" }] }),
+  }, onExecutionFailed: (value) => failures.push(value) });
+  t.after(() => fs.rm(f.directory, { recursive: true, force: true }));
+  await f.service.snapshot();
+  f.currentClock.set("2026-08-14T00:00:00.000Z"); await f.service.evaluate();
+  const saved = (await f.service.snapshot()).schedules[0];
+  assert.equal(saved.enabled, true); assert.equal(saved.lastDispatch.status, "failed"); assert.equal(failures.length, 1);
+});
+
+test("calendar owner settings round-trip every supported recurrence without becoming an interval", async (t) => {
+  for (const rrule of [null, "FREQ=DAILY", "FREQ=WEEKLY", "FREQ=MONTHLY", "FREQ=YEARLY"]) {
+    const f = await makeHarness({ voiceContextService: { list: async () => ({ orchestrators: [{ id: "main" }] }) } });
+    t.after(() => fs.rm(f.directory, { recursive: true, force: true }));
+    const trigger = { kind: "calendar", startLocal: "2026-08-14T09:00:00", timeZone: "Asia/Tokyo", rrule };
+    const initial = (await f.service.getOrchestratorSchedule("main")).settings;
+    const saved = await f.service.saveOrchestratorSchedule("main", { baseRevision: 0, settings: { ...initial, enabled: true, trigger } });
+    assert.deepEqual(saved.settings.trigger, trigger);
+    assert.equal(saved.nextOccurrenceAt, "2026-08-14T00:00:00.000Z");
+    const noOp = await f.service.saveOrchestratorSchedule("main", { baseRevision: saved.revision, settings: saved.settings });
+    assert.equal(noOp.revision, saved.revision); assert.deepEqual(noOp, saved);
+    const edited = await f.service.saveOrchestratorSchedule("main", { baseRevision: noOp.revision, settings: { ...noOp.settings, prompt: "Updated only prompt" } });
+    assert.deepEqual(edited.settings.trigger, trigger); assert.equal(edited.nextOccurrenceAt, saved.nextOccurrenceAt);
+    const disabled = await f.service.saveOrchestratorSchedule("main", { baseRevision: edited.revision, settings: { ...edited.settings, enabled: false } });
+    assert.deepEqual(disabled.settings.trigger, trigger); assert.equal(disabled.nextOccurrenceAt, null);
+    f.currentClock.set("2026-09-01T00:00:00.000Z");
+    const laterEdit = await f.service.saveOrchestratorSchedule("main", { baseRevision: disabled.revision, settings: { ...disabled.settings, prompt: "Still disabled" } });
+    assert.deepEqual(laterEdit.settings.trigger, trigger);
+    if (rrule === null) await assert.rejects(f.service.saveOrchestratorSchedule("main", { baseRevision: laterEdit.revision, settings: { ...laterEdit.settings, enabled: true } }), /one-time start must be in the future/);
+  }
+});
+
+test("owner trigger rejects mixed and malformed schedules atomically instead of defaulting to sixty minutes", async (t) => {
+  const f = await makeHarness({ voiceContextService: { list: async () => ({ orchestrators: [{ id: "main" }] }) } });
+  t.after(() => fs.rm(f.directory, { recursive: true, force: true }));
+  const initial = await f.service.getOrchestratorSchedule("main");
+  const before = await fs.readFile(f.definitionsPath, "utf8");
+  const calendar = { kind: "calendar", startLocal: "2026-08-14T09:00:00", timeZone: "Asia/Tokyo", rrule: "FREQ=DAILY" };
+  for (const trigger of [undefined, { kind: "interval", minutes: 60, ...calendar }, { kind: "interval", minutes: 60, time: "09:00" },
+    { kind: "interval", minutes: 0 }, { kind: "interval", minutes: 10081 }, { kind: "interval", minutes: "60" },
+    { ...calendar, minutes: 60 }, { ...calendar, rrule: "FREQ=MINUTELY;INTERVAL=60" },
+    { ...calendar, timeZone: "bad/zone" }, { ...calendar, startLocal: "2026-02-30T09:00:00" }]) {
+    await assert.rejects(f.service.saveOrchestratorSchedule("main", { baseRevision: 0, settings: { ...initial.settings, trigger } }));
+    assert.equal(await fs.readFile(f.definitionsPath, "utf8"), before);
+  }
+  await assert.rejects(f.service.saveOrchestratorSchedule("main", { baseRevision: 0, settings: { ...initial.settings, intervalMinutes: 60 } }), /not supported/);
+});
+
+test("generic CRUD rejects duplicate or repurposed owner schedules while unchanged bulk snapshots remain supported", async (t) => {
+  const f = await makeHarness({ voiceContextService: { list: async () => ({ orchestrators: [{ id: "main" }] }) } });
+  t.after(() => fs.rm(f.directory, { recursive: true, force: true }));
+  const initial = await f.service.getOrchestratorSchedule("main");
+  await f.service.saveOrchestratorSchedule("main", { baseRevision: 0, settings: initial.settings });
+  const snapshot = await f.service.snapshot();
+  const { nextOccurrenceAt, lastDispatch, ...voice } = snapshot.schedules[0];
+  const { id, ...input } = voice;
+  const llm = { kind: "llm", cwd: process.cwd(), modelRef: "openai-codex/gpt-5.6", reasoningEffort: "high", prompt: "Check", threadId: null };
+  const before = await fs.readFile(f.definitionsPath, "utf8");
+  for (const mutate of [
+    () => f.service.createSchedule({ baseRevision: 1, schedule: input }, ID_B),
+    () => f.service.patchSchedule(id, { baseRevision: 1, patch: { action: llm } }),
+    () => f.service.replaceSchedules({ baseRevision: 1, schedules: [] }),
+    () => f.service.replaceSchedules({ baseRevision: 1, schedules: [{ ...voice, action: llm }] }),
+  ]) {
+    await assert.rejects(mutate(), (error) => error.code === "orchestrator_schedule_api_required" && /update the existing/.test(error.message));
+    assert.equal(await fs.readFile(f.definitionsPath, "utf8"), before);
+  }
+  await f.service.replaceSchedules({ baseRevision: 1, schedules: [voice, definition({ id: ID_B })] });
+  await assert.rejects(f.service.patchSchedule(ID_B, { baseRevision: 2, patch: { action: voice.action } }), { code: "orchestrator_schedule_api_required" });
+});
+
+test("owner display and save use the same active legacy source including its interval anchor", async (t) => {
+  const options = { voiceContextService: { list: async () => ({ orchestrators: [{ id: "main" }] }) } };
+  const seed = await makeHarness(options); t.after(() => fs.rm(seed.directory, { recursive: true, force: true }));
+  const initial = (await seed.service.getOrchestratorSchedule("main")).settings;
+  await seed.service.saveOrchestratorSchedule("main", { baseRevision: 0, settings: initial });
+  const { nextOccurrenceAt, lastDispatch, ...canonical } = (await seed.service.snapshot()).schedules[0];
+  const legacy = definition({ enabled: true, startLocal: "2026-08-13T00:15:00", timeZone: "UTC", rrule: "FREQ=MINUTELY;INTERVAL=60",
+    action: { kind: "voice", orchestratorId: "main", prompt: "Active legacy prompt" } });
+  const f = await makeHarness({ ...options, initialSchedules: [canonical, legacy] });
+  t.after(() => fs.rm(f.directory, { recursive: true, force: true }));
+  const read = await f.service.getOrchestratorSchedule("main");
+  assert.equal(read.settings.prompt, legacy.action.prompt); assert.equal(read.nextOccurrenceAt, "2026-08-13T00:15:00.000Z");
+  const saved = await f.service.saveOrchestratorSchedule("main", { baseRevision: read.revision, settings: read.settings });
+  assert.equal(saved.settings.prompt, legacy.action.prompt); assert.equal(saved.nextOccurrenceAt, read.nextOccurrenceAt);
+  assert.equal((await f.service.snapshot()).schedules[0].id, legacy.id);
+  assert.equal((await f.service.snapshot()).schedules[0].startLocal, legacy.startLocal);
+});
+
+test("HTTP exposes the shared owner calendar contract and accepts compatible generic voice writes", async (t) => {
+  const f = await makeHarness({ voiceContextService: { list: async () => ({ orchestrators: [{ id: "main" }] }) } });
+  t.after(() => fs.rm(f.directory, { recursive: true, force: true }));
+  const initial = await f.service.getOrchestratorSchedule("main");
+  let body; let response;
+  const handler = createCodexScheduleHttpHandler({ service: f.service,
+    readJsonBody: async () => body, json: (_res, status, payload) => { response = { status, payload }; } });
+  const auth = { [RUNNER_AUTHENTICATION]: { sessionId: "test-session", ownerSubjectId: "test-owner" } };
+  const trigger = { kind: "calendar", startLocal: "2026-08-14T09:00:00", timeZone: "Asia/Tokyo", rrule: "FREQ=DAILY" };
+  body = { baseRevision: 0, settings: { ...initial.settings, enabled: true, trigger } };
+  await handler({ ...auth, method: "PUT" }, {}, "/orchestrators/main/schedule");
+  assert.equal(response.status, 200); assert.deepEqual(response.payload.settings.trigger, trigger);
+  assert.equal(response.payload.nextOccurrenceAt, "2026-08-14T00:00:00.000Z");
+  body = { baseRevision: 1, settings: { ...body.settings, trigger: { ...trigger, minutes: 60 } } };
+  await handler({ ...auth, method: "PUT" }, {}, "/orchestrators/main/schedule");
+  assert.equal(response.status, 400); assert.equal(response.payload.error, "invalid_codex_schedules");
+  assert.match(response.payload.message, /minutes is not supported/);
+  body = { baseRevision: 1, patch: { enabled: false } };
+  const id = (await f.service.snapshot()).schedules[0].id;
+  await handler({ ...auth, method: "PATCH" }, {}, `/codex-schedules/${id}`);
+  assert.equal(response.status, 200);
+  assert.equal(response.payload.schedule.id, id);
+  assert.equal((await f.service.getOrchestratorSchedule("main")).settings.enabled, false);
+});
+
+test("legacy PATCH and owner PUT reuse the selected ID and keep disabled settings visible", async (t) => {
+  const options = { voiceContextService: { list: async () => ({ orchestrators: [{ id: "main" }] }) } };
+  const seed = await makeHarness(options); t.after(() => fs.rm(seed.directory, { recursive: true, force: true }));
+  const initial = (await seed.service.getOrchestratorSchedule("main")).settings;
+  await seed.service.saveOrchestratorSchedule("main", { baseRevision: 0, settings: initial });
+  const { nextOccurrenceAt, lastDispatch, ...dormant } = (await seed.service.snapshot()).schedules[0];
+  const active = definition({ action: { kind: "voice", orchestratorId: "main", prompt: "Active daily prompt" } });
+  const f = await makeHarness({ ...options, initialSchedules: [dormant, active] });
+  t.after(() => fs.rm(f.directory, { recursive: true, force: true }));
+  const disabled = await f.service.patchSchedule(ID_A, { baseRevision: 0, patch: { enabled: false, prompt: "Edited while disabling" } });
+  assert.equal(disabled.schedule.id, ID_A);
+  const read = await f.service.getOrchestratorSchedule("main");
+  assert.equal(read.settings.enabled, false); assert.equal(read.settings.prompt, "Edited while disabling");
+  assert.deepEqual(read.settings.trigger, { kind: "calendar", startLocal: active.startLocal, timeZone: active.timeZone, rrule: active.rrule });
+  assert.equal(read.legacyScheduleCount, 1);
+  const saved = await f.service.saveOrchestratorSchedule("main", { baseRevision: read.revision, settings: { ...read.settings, enabled: true } });
+  const snapshot = await f.service.snapshot();
+  assert.equal(snapshot.schedules[0].id, ID_A); assert.equal(snapshot.schedules.length, 2);
+  assert.deepEqual(snapshot.schedules.find(item => item.id === dormant.id).action, dormant.action);
+  assert.equal(saved.settings.prompt, read.settings.prompt); assert.equal(saved.nextOccurrenceAt, "2026-08-14T00:00:00.000Z");
+});
+
+test("legacy creation is idempotent for a new owner and deleting it returns disabled defaults", async (t) => {
+  const f = await makeHarness({ voiceContextService: { list: async () => ({ orchestrators: [{ id: "main" }] }) } });
+  t.after(() => fs.rm(f.directory, { recursive: true, force: true }));
+  const { id, cwd, modelRef, reasoningEffort, prompt, ...base } = definition();
+  const input = { baseRevision: 0, schedule: { ...base, action: { kind: "voice", orchestratorId: "main", prompt: "New owner prompt" } } };
+  const created = await f.service.createSchedule(input, ID_A);
+  assert.equal(created.schedule.id, ID_A); assert.equal(created.created, true);
+  const retried = await f.service.createSchedule(input, ID_A);
+  assert.equal(retried.created, false); assert.equal(retried.revision, created.revision);
+  const read = await f.service.getOrchestratorSchedule("main");
+  const saved = await f.service.saveOrchestratorSchedule("main", { baseRevision: read.revision, settings: read.settings });
+  assert.equal(saved.revision, read.revision); assert.equal((await f.service.snapshot()).schedules[0].id, ID_A);
+  await f.service.deleteSchedule(ID_A, { baseRevision: saved.revision });
+  assert.equal((await f.service.getOrchestratorSchedule("main")).settings.enabled, false);
+  assert.equal((await f.service.snapshot()).schedules.length, 0);
+});
+
+test("enabling a removed owner fails atomically while disabling retained schedules remains possible", async (t) => {
+  const f = await makeHarness({ initialSchedules: [definition({ enabled: false, action: { kind: "voice", orchestratorId: "main", prompt: "Retain" } })],
+    voiceContextService: { list: async () => ({ orchestrators: [] }) } });
+  t.after(() => fs.rm(f.directory, { recursive: true, force: true }));
+  const before = await f.service.snapshot();
+  await assert.rejects(f.service.patchSchedule(ID_A, { baseRevision: 0, patch: { enabled: true } }), { code: "orchestrator_not_found" });
+  assert.deepEqual(await f.service.snapshot(), before);
+  assert.equal((await f.service.patchSchedule(ID_A, { baseRevision: 0, patch: { enabled: false } })).updated, false);
 });

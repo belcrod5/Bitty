@@ -149,6 +149,7 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
       && (pair.orchestratorId === "main" || UUID.test(pair.orchestratorId))
       && (!ownerId || pair.orchestratorId === ownerId) && UUID.test(pair.logicalConversationId)
       && UUID.test(pair.clientOperationId) && typeof pair.user === "string" && typeof pair.assistant === "string"
+      && (pair.source === undefined || pair.source === "scheduled")
       && Number.isFinite(Date.parse(pair.completedAt));
   }
   try {
@@ -378,7 +379,7 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
   }
   // Reuse retained completion events, never a second durable conversation store.
   function historical(pair, value = state) {
-    return validPair(pair) && pair.pairSeq <= value.processedThrough
+    return validPair(pair) && pair.source !== "scheduled" && pair.pairSeq <= value.processedThrough
       && Date.parse(pair.completedAt) >= now() - bounds.pendingAge
       && !value.gaps.some((gap) => pair.pairSeq >= gap.from && pair.pairSeq <= gap.through)
       && !value.excluded.some((entry) => entry.pairSeq === pair.pairSeq || entry.operationId === pair.clientOperationId)
@@ -417,7 +418,7 @@ export async function openOrchestratorLearning({ workspace, memoryConversationId
         gap(next, next.observedThrough + 1, pair.pairSeq - 1, "source_unavailable");
         const excluded = next.excluded.find((entry) => entry.operationId === pair.clientOperationId);
         if (excluded) excluded.pairSeq = pair.pairSeq;
-        if (!excluded?.forgotten) next.pending.push(pair);
+        if (!excluded?.forgotten && pair.source !== "scheduled") next.pending.push(pair);
         next.observedThrough = pair.pairSeq;
         const use = next.uses.find((entry) => entry.operationId === pair.clientOperationId); if (use) use.pairSeq = pair.pairSeq;
       }

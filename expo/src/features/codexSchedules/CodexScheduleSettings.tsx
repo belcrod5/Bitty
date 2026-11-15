@@ -1,4 +1,3 @@
-import { getVoiceOrchestrators } from "../app/utils/voiceOrchestratorClient";
 import { randomUUID } from "expo-crypto";
 import { useMemo, useState } from "react";
 import {
@@ -14,7 +13,6 @@ import {
 } from "react-native";
 
 import { AppModal } from "../app/components/AppModal";
-import { useRunnerWebSocketManager } from "../runnerWs/RunnerWebSocketContext";
 import type { ReasoningEffort } from "../app/utils/settingsParsers";
 import { useVisualTheme } from "../app/theme/VisualThemeContext";
 import { createStylesByTheme, type VisualTheme } from "../app/theme/visualThemes";
@@ -72,7 +70,8 @@ function savedShape(schedules: readonly CodexSchedule[]) {
 function scheduleSubtitle(schedule: CodexSchedule) {
   if (!schedule.enabled) return "停止中";
   if (schedule.nextOccurrenceAt) {
-    const repeat = CODEX_SCHEDULE_REPEAT_OPTIONS.find((option) => option.value === codexScheduleRruleToRepeat(schedule.rrule))?.label;
+    const repeat = schedule.rrule?.startsWith("FREQ=MINUTELY;") ? `${schedule.rrule.split("INTERVAL=")[1]}分ごと`
+      : CODEX_SCHEDULE_REPEAT_OPTIONS.find((option) => option.value === codexScheduleRruleToRepeat(schedule.rrule))?.label;
     const next = new Intl.DateTimeFormat(undefined, {
       month: "numeric",
       day: "numeric",
@@ -80,8 +79,9 @@ function scheduleSubtitle(schedule: CodexSchedule) {
       minute: "2-digit",
       timeZone: schedule.timeZone,
     }).format(new Date(schedule.nextOccurrenceAt));
-    return `${repeat}・次回 ${next}`;
+    return `${repeat}・次回 ${next}${schedule.lastDispatch?.status === "skipped" ? "・前回スキップ" : ""}`;
   }
+  if (schedule.lastDispatch?.status === "skipped") return "スキップ";
   if (schedule.lastDispatch?.status === "failed" || schedule.lastDispatch?.status === "failed_uncertain_after_restart") {
     return "発火失敗";
   }
@@ -90,10 +90,7 @@ function scheduleSubtitle(schedule: CodexSchedule) {
 
 export function CodexScheduleSettings(props: Props) {
   const { theme, themeId } = useVisualTheme();
-  const manager = useRunnerWebSocketManager();
   const { refresh, save: saveSchedules } = useCodexSchedules();
-  const [orchestrators, setOrchestrators] = useState<{ id: string; name: string }[] | null>(null);
-  const [orchestratorError, setOrchestratorError] = useState("");
   const styles = stylesByTheme[themeId];
   const [visible, setVisible] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -106,22 +103,9 @@ export function CodexScheduleSettings(props: Props) {
   const editingSchedule = schedules.find((schedule) => schedule.id === editingId) || null;
   const dirty = useMemo(() => savedShape(schedules) !== savedShape(savedSchedules), [savedSchedules, schedules]);
 
-  const loadOrchestrators = async () => {
-    setOrchestrators(null);
-    setOrchestratorError("");
-    try {
-      await manager.connect();
-      const list = await getVoiceOrchestrators(manager);
-      setOrchestrators(list.orchestrators);
-    } catch (error) {
-      setOrchestratorError(error instanceof Error ? error.message : String(error));
-    }
-  };
-
   const load = async () => {
     setLoading(true);
     setLoadError("");
-    void loadOrchestrators();
     try {
       const snapshot = await refresh();
       setRevision(snapshot.revision);
@@ -153,7 +137,7 @@ export function CodexScheduleSettings(props: Props) {
   const save = async () => {
     try {
       if (schedules.length > 100) throw new Error("スケジュールは100件までです。");
-      const definitions = schedules.map((schedule) => parseCodexScheduleDefinition(codexScheduleDefinitionOnly(schedule)));
+      const definitions = schedules.filter((schedule) => schedule.action.kind !== "voice").map((schedule) => parseCodexScheduleDefinition(codexScheduleDefinitionOnly(schedule)));
       const now = Date.now();
       if (definitions.some((schedule) => schedule.enabled && schedule.rrule === null &&
         dateFromCodexScheduleStartLocal(schedule.startLocal).getTime() <= now)) {
@@ -223,8 +207,8 @@ export function CodexScheduleSettings(props: Props) {
           ) : null}
           {!loading && !loadError ? (
             <ScrollView contentContainerStyle={styles.content}>
-              {schedules.length === 0 ? <Text style={styles.empty}>スケジュールはありません。</Text> : null}
-              {schedules.map((schedule) => (
+              {!schedules.some((schedule) => schedule.action.kind !== "voice") ? <Text style={styles.empty}>スケジュールはありません。</Text> : null}
+              {schedules.filter((schedule) => schedule.action.kind !== "voice").map((schedule) => (
                 <TouchableOpacity
                   accessibilityRole="button"
                   accessibilityLabel={`${schedule.name || "名称未入力"}を編集`}
@@ -259,10 +243,6 @@ export function CodexScheduleSettings(props: Props) {
           ) : null}
           <CodexScheduleEditor
             schedule={editingSchedule}
-            orchestrators={orchestrators}
-            orchestratorError={orchestratorError}
-            onReloadOrchestrators={() => void loadOrchestrators()}
-            currentCwd={props.currentCwd}
             directories={props.directories}
             modelOptions={props.modelOptions}
             thinkOptions={props.thinkOptions}

@@ -11,7 +11,7 @@ import { AnswerLearningDetails } from "./AnswerLearningDetails";
 
 export type VoiceConversationMessage = {
   role: "user" | "assistant" | "system"; text: string; clientOperationId: string;
-  at?: string; outputTokens?: number; sessionSwitched?: boolean;
+  at?: string; outputTokens?: number; sessionSwitched?: boolean; source?: "scheduled";
   speakerName?: string; orchestratorId?: string; orchestrator?: VoiceOrchestrator; trace?: VoiceTurnTraceData; streaming?: boolean;
 };
 
@@ -40,7 +40,7 @@ export function VoiceConversationMessages({ messages, orchestratorId, learningPa
       <View style={{ flexShrink: 1, padding: 12, borderRadius: 12,
         backgroundColor: user ? theme.colors.accent : theme.colors.surfaceMuted }}>
         <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 8, marginBottom: 4 }}>
-          <Text style={{ color: textColor, fontSize: 11 }}>{message.speakerName || (user ? "あなた" : "AI")}</Text>
+          <Text style={{ color: textColor, fontSize: 11 }}>{message.source === "scheduled" ? user ? "定期実行" : "AI（定期実行）" : message.speakerName || (user ? "あなた" : "AI")}</Text>
           {time || tokenLabel ? <Text style={{ color: textColor, fontSize: 11 }}>
             {[time, tokenLabel].filter(Boolean).join("  ")}</Text> : null}
         </View>

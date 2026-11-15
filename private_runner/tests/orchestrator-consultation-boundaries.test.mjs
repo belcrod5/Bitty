@@ -305,11 +305,12 @@ test("production scopes reuse owner resources, isolate normal history, persist p
   await ownerTurn(service, "main", "room-2", key, { additionalInstructions: "CONSULTATION_SECOND" });
   const parents = regularParents(rpc.calls);
   assert.ok(parents.every(({ params }) => params.approvalPolicy === "on-request"));
-  const firstInstruction = parents.find(({ params }) => params.developerInstructions.includes("CONSULTATION_FIRST"));
-  const secondInstruction = parents.find(({ params }) => params.developerInstructions.includes("CONSULTATION_SECOND"));
-  assert.ok(firstInstruction); assert.ok(secondInstruction);
-  assert.equal(firstInstruction.method, "thread/start", "ephemeral checklist preflight does not own the interactive parent");
-  assert.doesNotMatch(secondInstruction.params.developerInstructions, /CONSULTATION_FIRST/);
+  const dialogue = rpc.calls.filter(({ method, params }) => method === "turn/start" && params.additionalContext?.["bitty.turn"]);
+  const firstInstruction = dialogue.find(({ params }) => params.input[0].text === "room-1");
+  const secondInstruction = dialogue.find(({ params }) => params.input[0].text === "room-2");
+  assert.equal(JSON.parse(firstInstruction.params.additionalContext["bitty.turn"].value).instructions, "CONSULTATION_FIRST");
+  assert.equal(JSON.parse(secondInstruction.params.additionalContext["bitty.turn"].value).instructions, "CONSULTATION_SECOND");
+  assert.ok(parents.every(({ params }) => !params.developerInstructions.includes("CONSULTATION_")));
   assert.ok(parents.filter(({ params }) => params.developerInstructions.includes("新しい親セッションでは"))
     .every(({ params }) => !params.developerInstructions.includes("CONSULTATION_")));
   const workspace = await fs.realpath(path.join(rootDir, "workspace"));
@@ -604,7 +605,7 @@ test("a reset-confirmed operation resumes the original durable instruction snaps
   await controller.confirmReset(room.id, "continue");
   await waitFor(async () => (await controller.get(room.id)).turns === 1);
   assert.equal((await controller.get(room.id)).steps[0].runId, pending.id);
-  assert.match(regularParents(rpc.calls).at(-1).params.developerInstructions, /ORIGINAL_CONSULTATION_TEMPLATE/);
+  assert.match(rpc.calls.filter(({ method, params }) => method === "turn/start" && params.additionalContext?.["bitty.turn"]).at(-1).params.additionalContext["bitty.turn"].value, /ORIGINAL_CONSULTATION_TEMPLATE/);
 });
 
 test("recovery fails closed for a corrupted finite limit and introductions persist outside room snapshots", { timeout: 20000 }, async (t) => {
@@ -1085,8 +1086,11 @@ test("handoff prioritizes the addressed unread participant, stays silent, then r
   const runtimeParents = rpc.calls.filter(({method}) => ["thread/start", "thread/resume"].includes(method));
   const interactive = runtimeParents.filter(({params}) => !params.ephemeral && params.approvalPolicy === "on-request");
   const helpers = runtimeParents.filter(({params}) => params.ephemeral);
-  assert.ok(interactive.some(({params}) => params.developerInstructions.includes("consultation.handoff")));
-  assert.ok(interactive.some(({params}) => !params.developerInstructions.includes("consultation.handoff")));
+  const dialogueContexts = rpc.calls.filter(({method, params}) => method === "turn/start" && params.additionalContext?.["bitty.turn"])
+    .map(({params}) => params.additionalContext["bitty.turn"].value);
+  assert.ok(dialogueContexts.some((context) => context.includes("consultation.handoff")));
+  assert.ok(dialogueContexts.some((context) => !context.includes("consultation.handoff")));
+  assert.ok(interactive.every(({params}) => !params.developerInstructions.includes("consultation.handoff")));
   assert.ok(interactive.every(({params}) => !params.permissions && !params.sandbox && !params.config.features && !params.config.mcp_servers),
     "ordinary orchestration and consultations inherit normal Codex capabilities");
   assert.ok(helpers.length > 0 && helpers.every(({params}) => params.config.web_search === "disabled" && params.config.features.shell_tool === false));

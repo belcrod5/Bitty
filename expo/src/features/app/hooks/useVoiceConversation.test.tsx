@@ -107,18 +107,19 @@ test("new input keeps the last measurement through acknowledgement and replaces 
   expect(result.current.contextStats?.contextUsagePercent).toBe(55);
 });
 
-test("loads persisted voice history through Runner", async () => {
+test("loads persisted voice history through Runner with scheduled provenance", async () => {
   const request = mockManager.request.getMockImplementation();
   mockManager.request.mockImplementation((message: { op: string }) => message.op === "voice.history"
     ? Promise.resolve({ op: "voice.history.result", payload: { logicalConversationId: conversationId,
-      messages: [{ role: "user", text: "以前の発話", clientOperationId: operationId, at: "2026-09-27T03:04:05.000Z" },
-        { role: "assistant", text: "以前の返答", clientOperationId: operationId }] } })
+      messages: [{ role: "user", text: "以前の発話", clientOperationId: operationId, source: "scheduled", at: "2026-09-27T03:04:05.000Z" },
+        { role: "assistant", text: "以前の返答", clientOperationId: operationId, source: "scheduled" }] } })
     : request?.(message));
   const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
   await waitFor(() => expect(result.current.ready).toBe(true));
   await act(async () => { await result.current.refreshHistory(); });
   expect(result.current.history.map(({ text }) => text)).toEqual(["以前の発話", "以前の返答"]);
   expect(result.current.taskChecklistOverview).toBeNull();
+  expect(result.current.history.map(({ source }) => source)).toEqual(["scheduled", "scheduled"]);
   expect(result.current.history.map(({ at }) => at)).toEqual(["2026-09-27T03:04:05.000Z", undefined]);
 });
 

@@ -20,16 +20,20 @@ export function createCodexScheduleHttpHandler({
   json,
 }) {
   return async function handleCodexSchedules(req, res, pathname) {
+    const ownerMatch = /^\/orchestrators\/([^/]+)\/schedule$/.exec(pathname);
     const summary = pathname === "/codex-schedules/summary";
     const collection = pathname === "/codex-schedules";
     const rawMemberId = pathname.startsWith("/codex-schedules/")
       ? pathname.slice("/codex-schedules/".length)
       : null;
     const member = !summary && rawMemberId !== null && rawMemberId !== "" && !rawMemberId.includes("/");
-    if (!collection && !member && !summary) return false;
+    if (!collection && !member && !summary && !ownerMatch) return false;
 
     if (!requireRunnerAuthentication(req, res, json)) return true;
 
+    if (ownerMatch && !["GET", "PUT"].includes(req.method)) {
+      json(res, 405, { error: "method_not_allowed" }); return true;
+    }
     if ((summary && req.method !== "GET") || (collection && !["GET", "PUT", "POST"].includes(req.method)) ||
       (member && !["PATCH", "DELETE"].includes(req.method))) {
       json(res, 405, { error: "method_not_allowed" });
@@ -51,6 +55,12 @@ export function createCodexScheduleHttpHandler({
     }
 
     try {
+      if (ownerMatch) {
+        const ownerId = decodeURIComponent(ownerMatch[1]);
+        const result = req.method === "GET" ? await service.getOrchestratorSchedule(ownerId)
+          : await service.saveOrchestratorSchedule(ownerId, await readJsonBody(req, 128 * 1024));
+        json(res, 200, { ok: true, ...result }); return true;
+      }
       if (summary) {
         json(res, 200, { ok: true, ...await service.summary() });
         return true;
@@ -105,6 +115,10 @@ export function createCodexScheduleHttpHandler({
           id: error.id,
           revision: error.revision,
         });
+      } else if (error?.code === "orchestrator_schedule_api_required") {
+        json(res, 400, { error: "invalid_codex_schedules", message: message(error) });
+      } else if (error?.code === "orchestrator_not_found") {
+        json(res, ownerMatch ? 404 : 400, { error: ownerMatch ? "orchestrator_not_found" : "invalid_codex_schedules", message: message(error) });
       } else if (error instanceof CodexScheduleNotFoundError) {
         json(res, 404, { error: "codex_schedule_not_found" });
       } else if (error instanceof CodexScheduleStoreUnavailableError) {

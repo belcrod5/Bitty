@@ -188,6 +188,7 @@ export async function openVoiceMemoryStore({ workspace, conversationId, previous
         let pair = JSON.parse(row);
         if (!Number.isSafeInteger(pair?.pairSeq) || pair.pairSeq < 1 || segmentName(pair.pairSeq) !== name
           || typeof pair.user !== "string" || typeof pair.assistant !== "string"
+          || pair.source !== undefined && pair.source !== "scheduled"
           || ["userAt", "assistantAt"].some((key) => Object.hasOwn(pair, key)
             && (typeof pair[key] !== "string" || !Number.isFinite(Date.parse(pair[key]))))
           || (loaded.length && pair.pairSeq !== loaded.at(-1).pairSeq + 1)) {

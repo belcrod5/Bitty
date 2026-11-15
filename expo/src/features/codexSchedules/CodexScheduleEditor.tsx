@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Alert,
   Platform,
@@ -33,10 +33,6 @@ import {
 
 type Props = {
   schedule: CodexSchedule | null;
-  orchestrators?: readonly { id: string; name: string }[] | null;
-  orchestratorError?: string;
-  onReloadOrchestrators?: () => void;
-  currentCwd?: string;
   directories: readonly { path: string; displayName: string }[];
   modelOptions: readonly { value: string; label: string }[];
   thinkOptions: readonly ReasoningEffort[];
@@ -60,10 +56,6 @@ function combineTime(current: Date, selected: Date) {
 
 export function CodexScheduleEditor({
   schedule,
-  orchestrators = null,
-  orchestratorError = "",
-  onReloadOrchestrators,
-  currentCwd = "",
   directories,
   modelOptions,
   thinkOptions,
@@ -80,13 +72,17 @@ export function CodexScheduleEditor({
     () => schedule ? dateFromCodexScheduleStartLocal(schedule.startLocal) : new Date(),
     [schedule],
   );
-  if (!schedule) return null;
+  const [intervalText, setIntervalText] = useState("60");
+  useEffect(() => {
+    setIntervalText(schedule?.rrule?.startsWith("FREQ=MINUTELY;") ? schedule.rrule.split("INTERVAL=")[1] : "60");
+  }, [schedule?.id, schedule?.rrule]);
+  if (!schedule || schedule.action.kind === "voice") return null;
 
   const update = (patch: Partial<CodexSchedule>) => onChange({ ...schedule, ...patch });
   const updateLlmAction = (patch: Partial<Extract<CodexScheduleAction, { kind: "llm" }>>) => {
     if (schedule.action.kind === "llm") update({ action: { ...schedule.action, ...patch } });
   };
-  const cwd = schedule.action.kind === "voice" ? currentCwd || directories[0]?.path || "" : schedule.action.cwd;
+  const cwd = schedule.action.cwd;
   const cwdOptions = [
     ...directories.map((directory) => ({ value: directory.path, label: directory.displayName || directory.path })),
     ...(!directories.some((directory) => directory.path === cwd) && cwd
@@ -94,7 +90,6 @@ export function CodexScheduleEditor({
       : []),
   ];
   const llmAction = schedule.action.kind === "llm" ? schedule.action : null;
-  const voiceAction = schedule.action.kind === "voice" ? schedule.action : null;
   const promptAction = schedule.action.kind === "script" ? null : schedule.action;
   const scriptAction = schedule.action.kind === "script" ? schedule.action : null;
   const models = [
@@ -111,12 +106,14 @@ export function CodexScheduleEditor({
       : []),
   ];
 
-  const orchestratorOptions = [
-    ...(orchestrators || []).map((item) => ({ value: item.id, label: item.name })),
-    ...(voiceAction?.orchestratorId && !(orchestrators || []).some((item) => item.id === voiceAction.orchestratorId)
-      ? [{ value: voiceAction.orchestratorId, label: orchestrators === null ? "登録先の確認待ち" : "削除済みオーケストレーター" }] : []),
-  ];
-  const finish = onClose;
+  const validInterval = /^[1-9]\d{0,4}$/.test(intervalText) && Number(intervalText) <= 10080;
+  const finish = () => {
+    if (codexScheduleRruleToRepeat(schedule.rrule) === "interval" && !validInterval) {
+      Alert.alert("実行間隔を確認してください", "1〜10,080分の整数を入力してください。");
+      return;
+    }
+    onClose();
+  };
 
   return (
     <AppModal visible animationType="slide" presentationStyle="fullScreen" onRequestClose={finish}>
@@ -137,7 +134,7 @@ export function CodexScheduleEditor({
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>基本</Text>
             <View style={styles.switchRow}>
-              <Text style={styles.label}>有効</Text>
+              <Text style={styles.label}>このスケジュールを有効にする</Text>
               <Switch accessibilityLabel="スケジュールを有効にする" value={schedule.enabled} onValueChange={(enabled) => update({ enabled })} />
             </View>
             <TextInput accessibilityLabel="スケジュール名" style={styles.input} value={schedule.name} maxLength={100} onChangeText={(name) => update({ name })} placeholder="名前" />
@@ -169,6 +166,18 @@ export function CodexScheduleEditor({
               selectedValue={codexScheduleRruleToRepeat(schedule.rrule)}
               onSelect={(repeat) => update({ rrule: codexScheduleRepeatToRrule(repeat as CodexScheduleRepeat) })}
             />
+            {codexScheduleRruleToRepeat(schedule.rrule) === "interval" ? <>
+              <Text style={styles.label}>実行間隔（分）</Text>
+              <TextInput accessibilityLabel="実行間隔（分）" style={styles.input} keyboardType="number-pad"
+                value={intervalText} maxLength={5}
+                onChangeText={(value) => {
+                  setIntervalText(value);
+                  if (/^[1-9]\d{0,4}$/.test(value) && Number(value) <= 10080) {
+                    update({ rrule: `FREQ=MINUTELY;INTERVAL=${Number(value)}` });
+                  }
+                }} />
+              <Text style={styles.count}>1〜10,080分。60分＝1時間。経過時間で繰り返します。</Text>
+            </> : null}
             <Text style={styles.timeZone}>{schedule.timeZone}</Text>
             <TouchableOpacity
               accessibilityRole="button"
@@ -185,12 +194,10 @@ export function CodexScheduleEditor({
             <Text style={styles.label}>実行種別</Text>
             <OptionSelectField
               title="実行種別"
-              options={[{ value: "llm", label: "LLM" }, { value: "voice", label: "オーケストレーター" }, { value: "script", label: "実行ファイル" }]}
+              options={[{ value: "llm", label: "LLM" }, { value: "script", label: "実行ファイル" }]}
               selectedValue={schedule.action.kind}
               onSelect={(kind) => update({
-                action: kind === "voice"
-                  ? { kind: "voice", orchestratorId: orchestrators?.[0]?.id || "", prompt: promptAction?.prompt || "" }
-                  : kind === "script"
+                action: kind === "script"
                   ? { kind: "script", cwd, scriptPath: "" }
                   : {
                     kind: "llm",
@@ -202,74 +209,54 @@ export function CodexScheduleEditor({
                   },
               })}
             />
-            {voiceAction ? (
-              <>
-                <Text style={styles.label}>オーケストレーター</Text>
-                {orchestrators === null ? <Text style={styles.count}>
-                  {orchestratorError || "オーケストレーターを読込中…"}
-                </Text> : null}
-                {orchestratorError && onReloadOrchestrators ? (
-                  <TouchableOpacity accessibilityRole="button" accessibilityLabel="オーケストレーターを再読込"
-                    onPress={onReloadOrchestrators} style={styles.secondaryButton}>
-                    <Text style={styles.secondaryText}>再読込</Text>
-                  </TouchableOpacity>
-                ) : null}
-                <OptionSelectField title="オーケストレーター" options={orchestratorOptions}
-                  selectedValue={voiceAction.orchestratorId}
-                  onSelect={(orchestratorId) => update({ action: { ...voiceAction, orchestratorId } })} />
-              </>
-            ) : (
-              <>
-                <Text style={styles.label}>ディレクトリ</Text>
-                <OptionSelectField
-                  title="ディレクトリ"
-                  options={cwdOptions}
-                  selectedValue={cwd}
-                  onSelect={(cwd) => {
-                    if (schedule.action.kind !== "voice") update({ action: schedule.action.kind === "script"
-                      ? { ...schedule.action, cwd, scriptPath: "" } : { ...schedule.action, cwd } });
-                  }}
-                />
-                {llmAction ? (
-                  <>
-                    <Text style={styles.label}>実行先</Text>
-                    <OptionSelectField
-                      title="実行先"
-                      options={threadOptions}
-                      selectedValue={llmAction.threadId || ""}
-                      onSelect={(threadId) => updateLlmAction({ threadId: threadId || null })}
-                    />
-                    <Text style={styles.label}>モデル</Text>
-                    <OptionSelectField title="モデル" options={models} selectedValue={llmAction.modelRef} onSelect={(modelRef) => updateLlmAction({ modelRef })} />
-                    <Text style={styles.label}>思考レベル</Text>
-                    <OptionSelectField
-                      title="思考レベル"
-                      options={thinkOptions.map((effort) => ({ value: effort, label: effort }))}
-                      selectedValue={llmAction.reasoningEffort}
-                      onSelect={(reasoningEffort) => updateLlmAction({ reasoningEffort: reasoningEffort as ReasoningEffort })}
-                    />
-                  </>
-                ) : (
-                  <>
-                    <Text style={styles.label}>ファイル</Text>
-                    <RunnerFilePicker
-                      title="実行ファイル"
-                      accessibilityLabel="実行ファイル"
-                      closeAccessibilityLabel="実行ファイル選択を閉じる"
-                      runnerUrl={runnerUrl}
-                      runnerToken={runnerToken}
-                      rootPath={cwd}
-                      rootDisplayName={cwd}
-                      value={scriptAction?.scriptPath || ""}
-                      placeholder=".sh ファイルを選択"
-                      fileFilter={isShellScript}
-                      fileAccessibilityLabel={(entry) => `${entry.name}を選択`}
-                      onSelect={(scriptPath) => scriptAction && update({ action: { ...scriptAction, scriptPath } })}
-                    />
-                  </>
-                )}
-              </>
-            )}
+              <Text style={styles.label}>ディレクトリ</Text>
+              <OptionSelectField
+                title="ディレクトリ"
+                options={cwdOptions}
+                selectedValue={cwd}
+                onSelect={(cwd) => {
+                  if (schedule.action.kind !== "voice") update({ action: schedule.action.kind === "script"
+                    ? { ...schedule.action, cwd, scriptPath: "" } : { ...schedule.action, cwd } });
+                }}
+              />
+              {llmAction ? (
+                <>
+                  <Text style={styles.label}>実行先</Text>
+                  <OptionSelectField
+                    title="実行先"
+                    options={threadOptions}
+                    selectedValue={llmAction.threadId || ""}
+                    onSelect={(threadId) => updateLlmAction({ threadId: threadId || null })}
+                  />
+                  <Text style={styles.label}>モデル</Text>
+                  <OptionSelectField title="モデル" options={models} selectedValue={llmAction.modelRef} onSelect={(modelRef) => updateLlmAction({ modelRef })} />
+                  <Text style={styles.label}>思考レベル</Text>
+                  <OptionSelectField
+                    title="思考レベル"
+                    options={thinkOptions.map((effort) => ({ value: effort, label: effort }))}
+                    selectedValue={llmAction.reasoningEffort}
+                    onSelect={(reasoningEffort) => updateLlmAction({ reasoningEffort: reasoningEffort as ReasoningEffort })}
+                  />
+                </>
+              ) : (
+                <>
+                  <Text style={styles.label}>ファイル</Text>
+                  <RunnerFilePicker
+                    title="実行ファイル"
+                    accessibilityLabel="実行ファイル"
+                    closeAccessibilityLabel="実行ファイル選択を閉じる"
+                    runnerUrl={runnerUrl}
+                    runnerToken={runnerToken}
+                    rootPath={cwd}
+                    rootDisplayName={cwd}
+                    value={scriptAction?.scriptPath || ""}
+                    placeholder=".sh ファイルを選択"
+                    fileFilter={isShellScript}
+                    fileAccessibilityLabel={(entry) => `${entry.name}を選択`}
+                    onSelect={(scriptPath) => scriptAction && update({ action: { ...scriptAction, scriptPath } })}
+                  />
+                </>
+              )}
           </View>
 
           {promptAction ? (

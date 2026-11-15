@@ -61,7 +61,7 @@ const mockVoice = {
   },
   error: "",
   contextStats: { contextUsagePercent: 31 as number | null, unsummarizedMessageCount: 8, memoryCharacterCount: 55 },
-  history: [] as { role: "user" | "assistant"; text: string; clientOperationId: string; at?: string; completedOrdinal?: number; sessionSwitched?: boolean }[],
+  history: [] as { role: "user" | "assistant"; text: string; clientOperationId: string; at?: string; completedOrdinal?: number; sessionSwitched?: boolean; source?: "scheduled" }[],
   historyError: "",
   taskChecklist: { status: "present", markdown: "# 最優先\n\n- [ ] 確認する" } as
     { status: "present"; markdown: string } | { status: "missing" | "unavailable" } | null,
@@ -1543,4 +1543,20 @@ test("metadata revalidation does not refresh history, while an unread-count even
       unreadCounts: [{ id: "main", unreadCount: 1, learningUnreadCount: 0 }] },
   })));
   expect(mockVoice.refreshHistory).toHaveBeenCalledTimes(1);
+});
+
+
+test("history identifies scheduled triggers and proposals separately from the user's own messages", async () => {
+  mockVoice.history = [
+    { role: "user", text: "Consider the next step", clientOperationId: "scheduled", source: "scheduled" },
+    { role: "assistant", text: "A useful proposal", clientOperationId: "scheduled", source: "scheduled" },
+    { role: "user", text: "Please explain", clientOperationId: "user" },
+  ];
+  mockVoice.reply = { text: "", operationId: "" };
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await fireEvent.press(screen.getByTestId("voice-orchestrator-floating"));
+  const history = within(screen.getByTestId("voice-history-messages"));
+  expect(history.getByText("定期実行")).toBeTruthy();
+  expect(history.getByText("AI（定期実行）")).toBeTruthy();
+  expect(history.getByText("あなた")).toBeTruthy();
 });

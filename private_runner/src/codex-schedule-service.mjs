@@ -23,6 +23,7 @@ const EFFORTS = new Set(["low", "medium", "high", "xhigh", "max", "ultra"]);
 const DISPATCH_STATUSES = new Set([
   "claimed",
   "fired",
+  "skipped",
   "failed",
   "failed_uncertain_after_restart",
 ]);
@@ -131,7 +132,8 @@ export function codexScheduleDefinitionHash(definition) {
   if (action.kind === "script") {
     canonical.action = { kind: "script", cwd: action.cwd, scriptPath: action.scriptPath };
   } else if (action.kind === "voice") {
-    canonical.action = { kind: "voice", orchestratorId: action.orchestratorId, prompt: action.prompt };
+    canonical.action = { kind: "voice", orchestratorId: action.orchestratorId, prompt: action.prompt,
+      ...(action.systemInstruction ? { systemInstruction: action.systemInstruction } : {}) };
   } else {
     canonical.cwd = action.cwd;
     canonical.modelRef = action.modelRef;
@@ -142,6 +144,11 @@ export function codexScheduleDefinitionHash(definition) {
     if (threadId) canonical.threadId = threadId;
   }
   return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
+}
+
+function orchestratorScheduleId(orchestratorId) {
+  const hash = createHash("sha256").update(`orchestrator-periodic:${orchestratorId}`).digest("hex");
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-5${hash.slice(13, 16)}-8${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
 }
 
 function normalizeAction(value, index, parseCodexOptions, strictStoredFields, legacy) {
@@ -160,14 +167,17 @@ function normalizeAction(value, index, parseCodexOptions, strictStoredFields, le
   }
   const kind = requireString(value.kind, `${label}.action.kind`).trim();
   if (kind === "voice") {
-    onlyKeys(value, new Set(["kind", "orchestratorId", "prompt"]), `${label}.action`);
+    onlyKeys(value, new Set(["kind", "orchestratorId", "prompt", "systemInstruction"]), `${label}.action`);
     const orchestratorId = requireString(value.orchestratorId, `${label}.action.orchestratorId`).trim();
     if (orchestratorId !== "main" && !CODEX_SCHEDULE_UUID_PATTERN.test(orchestratorId)) {
       throw new Error(`${label}.action.orchestratorId is invalid`);
     }
     const prompt = requireString(value.prompt, `${label}.action.prompt`).trim();
     if (!prompt || prompt.length > MAX_PROMPT_CHARS) throw new Error(`${label}.action.prompt is invalid`);
-    return { kind, orchestratorId, prompt };
+    if (value.systemInstruction !== undefined && (typeof value.systemInstruction !== "string"
+      || value.systemInstruction.length > 4000)) throw new Error(`${label}.action.systemInstruction is invalid`);
+    const systemInstruction = value.systemInstruction?.trim();
+    return { kind, orchestratorId, prompt, ...(systemInstruction ? { systemInstruction } : {}) };
   }
   const cwd = requireString(value.cwd, `${label}.action.cwd`).trim();
   if (!cwd || cwd.length > 2048) throw new Error(`${label}.action.cwd is invalid`);
@@ -218,7 +228,7 @@ function normalizeAction(value, index, parseCodexOptions, strictStoredFields, le
 function normalizeDefinition(raw, index, parseCodexOptions, strictStoredFields = false, legacy = false) {
   const value = requireObject(raw, `schedules[${index}]`);
   const legacyShape = legacy || (!strictStoredFields && value.action === undefined);
-  if (strictStoredFields) {
+  if (strictStoredFields || value.action?.kind === "voice") {
     onlyKeys(value, legacyShape ? LEGACY_DEFINITION_KEYS : DEFINITION_KEYS, `schedules[${index}]`);
   }
   const id = requireString(value.id, `schedules[${index}].id`).trim();
@@ -684,7 +694,7 @@ export function createCodexScheduleService({
     });
   }
 
-  async function finishDispatch(claim, result, failure) {
+  async function finishDispatch(claim, result, failure, skipped = false) {
     return await serialize(async () => {
       const runtime = runtimeStore.runtimes[claim.definition.id];
       const dispatch = runtime?.lastDispatch;
@@ -692,7 +702,7 @@ export function createCodexScheduleService({
         dispatch.definitionHash !== claim.definitionHash ||
         (dispatch.status !== "claimed" && !(failure && dispatch.status === "fired"))) return;
       if (failure) {
-        dispatch.status = "failed";
+        dispatch.status = skipped ? "skipped" : "failed";
         dispatch.errorCode = String(failure.code || "schedule_dispatch_failed").slice(0, 200);
         dispatch.errorMessage = errorMessage(failure).slice(0, MAX_ERROR_CHARS);
         // A native failure can race with recording the successful start.
@@ -792,7 +802,20 @@ export function createCodexScheduleService({
         catch (error) { throw Object.assign(new Error(errorMessage(error)), { code: "cwd_unavailable" }); }
       }
       if (action.kind === "voice") {
-        const opened = await voiceContextService.open(action.orchestratorId);
+        let opened;
+        try { opened = await voiceContextService.open(action.orchestratorId); }
+        catch (error) {
+          if (error?.code !== "not_found") throw error;
+          // Only a definitive owner-registry absence disables its timers. Native/store failures do not.
+          const { orchestrators } = await voiceContextService.list();
+          if (orchestrators.some((item) => item.id === action.orchestratorId)) throw error;
+          await serialize(async () => {
+            const next = definitionsStore.schedules.map((item) => item.action.kind === "voice"
+              && item.action.orchestratorId === action.orchestratorId && item.enabled ? { ...item, enabled: false } : item);
+            if (next.some((item, index) => item !== definitionsStore.schedules[index])) await commitNormalizedDefinitions(next, now());
+          });
+          throw Object.assign(new Error("Deleted orchestrator schedules were disabled; their settings are retained"), { code: "orchestrator_removed" });
+        }
         const clientOperationId = randomUUID();
         const voiceResult = { orchestratorId: action.orchestratorId,
           logicalConversationId: opened.logicalConversationId, clientOperationId };
@@ -804,12 +827,18 @@ export function createCodexScheduleService({
             logicalConversationId: opened.logicalConversationId,
             clientOperationId,
             input: { blocks: [{ type: "text", text: action.prompt }] },
+            ...(action.systemInstruction ? { additionalInstructions: action.systemInstruction } : {}),
           } }, (state) => {
             if (!started) reject(Object.assign(new Error("Voice turn ended before it started"), { code: state.code || "turn_failed" }));
           }, (request, signal) => onVoiceApproval(clientOperationId, action.orchestratorId, request, signal), {
+            source: "scheduled",
             onStarted: () => { result = voiceResult; started = true; resolve(); },
             onFailed: (error) => { if (started) onFailed(error); else reject(error); },
             onSettled: () => { if (!started) reject(new Error("Voice turn ended before it started")); },
+          }).then((state) => {
+            if (!started && state?.status === "confirmation_required") {
+              reject(Object.assign(new Error("Voice reset confirmation is awaiting a decision"), { code: "voice_context_reset_required" }));
+            }
           }).catch(reject);
         });
       } else if (action.kind === "script") {
@@ -850,7 +879,10 @@ export function createCodexScheduleService({
       failure = error instanceof Error ? error : new Error(errorMessage(error));
     }
     if (!claim) return;
-    if (failure) await reportFailure(failure);
+    if (failure && claim.definition.action.kind === "voice"
+      && ["session_busy", "voice_context_reset_required", "orchestrator_removed"].includes(failure.code)) {
+      await finishDispatch(claim, null, failure, true);
+    } else if (failure) await reportFailure(failure);
     else {
       const dispatch = await finishDispatch(claim, result, null);
       if (dispatch?.status === "failed") {
@@ -902,6 +934,110 @@ export function createCodexScheduleService({
       return definition.enabled && definition.action.kind === "llm" && definition.action.threadId && nextOccurrenceAt
         ? [{ threadId: definition.action.threadId, nextOccurrenceAt }] : [];
     }) }));
+  }
+
+  async function requireOrchestrator(id) {
+    if (id !== "main" && !CODEX_SCHEDULE_UUID_PATTERN.test(id)) throw new Error("Invalid orchestrator ID");
+    const owner = (await voiceContextService.list()).orchestrators.find((item) => item.id === id);
+    if (!owner) throw Object.assign(new Error("Orchestrator was not found"), { code: "orchestrator_not_found" });
+    return owner;
+  }
+
+  function orchestratorRecords(id) {
+    const records = definitionsStore.schedules.filter((item) => item.action.kind === "voice" && item.action.orchestratorId === id);
+    const active = records.filter((item) => item.enabled).sort((left, right) =>
+      (runtimeStore.runtimes[left.id]?.nextOccurrenceAt || "~").localeCompare(runtimeStore.runtimes[right.id]?.nextOccurrenceAt || "~"));
+    const source = active[0] || records[0];
+    return { records, legacy: records.filter((item) => item !== source), source };
+  }
+
+  function orchestratorSnapshot(id) {
+    const { legacy, source, records } = orchestratorRecords(id);
+    const interval = source?.rrule?.match(/^FREQ=MINUTELY;INTERVAL=(\d+)$/);
+    const runtime = source && runtimeStore.runtimes[source.id];
+    const trigger = !source || interval ? { kind: "interval", minutes: interval ? Number(interval[1]) : 60 }
+      : { kind: "calendar", startLocal: source.startLocal, timeZone: source.timeZone, rrule: source.rrule };
+    return { orchestratorId: id, revision: definitionsStore.revision,
+      settings: { enabled: records.some((item) => item.enabled), trigger,
+        prompt: source?.action.prompt || "学習した内容と最近の会話から、今やると役立つことを考えて提案してください。",
+        systemInstruction: source?.action.systemInstruction || "" },
+      nextOccurrenceAt: source?.enabled ? runtime?.nextOccurrenceAt || null : null,
+      lastDispatch: clone(runtime?.lastDispatch || null),
+      legacyScheduleCount: legacy.length, legacyEnabledCount: legacy.filter((item) => item.enabled).length };
+  }
+
+  function requireOwnerScheduleApi() {
+    throw Object.assign(new Error("Use list and update the existing orchestrator schedule by its ID, or use orchestrator-get / orchestrator-set (--help). Bulk changes and changing an execution target are not supported."),
+      { code: "orchestrator_schedule_api_required" });
+  }
+
+  async function commitOrchestratorDefinition(definition, at) {
+    const next = definitionsStore.schedules.map((item) => {
+      if (item.id === definition.id) return definition;
+      return item.action.kind === "voice" && item.action.orchestratorId === definition.action.orchestratorId && item.enabled
+        ? { ...item, enabled: false } : item;
+    });
+    const first = next.findIndex((item) => item.action.kind === "voice" && item.action.orchestratorId === definition.action.orchestratorId);
+    const edited = next.findIndex((item) => item.id === definition.id);
+    if (edited < 0) next.push(definition);
+    else if (first !== edited) { next.splice(edited, 1); next.splice(first, 0, definition); }
+    return JSON.stringify(next) === JSON.stringify(definitionsStore.schedules)
+      ? buildSnapshot(definitionsStore.schedules, runtimeStore) : commitNormalizedDefinitions(next, at);
+  }
+
+  async function getOrchestratorSchedule(id) {
+    return serialize(async () => { await requireOrchestrator(id); return orchestratorSnapshot(id); });
+  }
+
+  async function saveOrchestratorSchedule(id, payload) {
+    const result = await serialize(async () => {
+      await requireOrchestrator(id);
+      const body = requireObject(payload, "request");
+      onlyKeys(body, new Set(["baseRevision", "settings"]), "request");
+      if (!Number.isInteger(body.baseRevision) || body.baseRevision < 0) throw new Error("Invalid baseRevision");
+      if (body.baseRevision !== definitionsStore.revision) throw new CodexScheduleRevisionConflictError(definitionsStore.revision);
+      const settings = requireObject(body.settings, "settings");
+      onlyKeys(settings, new Set(["enabled", "trigger", "prompt", "systemInstruction"]), "settings");
+      if (typeof settings.enabled !== "boolean") throw new Error("settings.enabled must be a boolean");
+      const trigger = requireObject(settings.trigger, "settings.trigger");
+      if (trigger.kind === "interval") {
+        onlyKeys(trigger, new Set(["kind", "minutes"]), "settings.trigger");
+        if (!Number.isInteger(trigger.minutes) || trigger.minutes < 1 || trigger.minutes > 10080) {
+          throw new Error("settings.trigger.minutes must be an integer from 1 to 10080");
+        }
+      } else if (trigger.kind === "calendar") {
+        onlyKeys(trigger, new Set(["kind", "startLocal", "timeZone", "rrule"]), "settings.trigger");
+        parseCodexScheduleStartLocal(trigger.startLocal);
+        validateCodexScheduleTimeZone(trigger.timeZone);
+        if (normalizeCodexScheduleRrule(trigger.rrule)?.startsWith("FREQ=MINUTELY;")) {
+          throw new Error("calendar trigger cannot use an interval rrule; use kind=interval with minutes");
+        }
+      } else throw new Error("settings.trigger.kind must be interval or calendar");
+      if (typeof settings.systemInstruction !== "string" || settings.systemInstruction.length > 4000) throw new Error("Invalid periodic instructions");
+      const { source } = orchestratorRecords(id);
+      const scheduleId = source?.id || orchestratorScheduleId(id);
+      const collision = definitionsStore.schedules.find((item) => item.id === scheduleId);
+      if (collision && (collision.action.kind !== "voice" || collision.action.orchestratorId !== id)) {
+        throw new Error("Periodic schedule ID is already used by another schedule");
+      }
+      if (!source && definitionsStore.schedules.length >= CODEX_SCHEDULE_MAX_COUNT) {
+        throw new Error("スケジュールは100件までです。既存設定は変更されていません。");
+      }
+      const rrule = trigger.kind === "interval" ? `FREQ=MINUTELY;INTERVAL=${trigger.minutes}` : trigger.rrule;
+      const at = now();
+      const keepAnchor = source?.rrule === rrule;
+      const definition = normalizeDefinition({ id: scheduleId, name: source?.name || "オーケストレーターの定期実行",
+        enabled: settings.enabled, rrule,
+        startLocal: trigger.kind === "calendar" ? trigger.startLocal : keepAnchor ? source.startLocal
+          : new Date(Math.ceil((at.getTime() + trigger.minutes * 60_000) / 60_000) * 60_000).toISOString().slice(0, 19),
+        timeZone: trigger.kind === "calendar" ? trigger.timeZone : keepAnchor ? source.timeZone : "UTC",
+        action: { kind: "voice", orchestratorId: id, prompt: settings.prompt, systemInstruction: settings.systemInstruction } },
+        0, parseCodexOptions);
+      await commitOrchestratorDefinition(definition, at);
+      return orchestratorSnapshot(id);
+    });
+    armTimer();
+    return result;
   }
 
   async function commitNormalizedDefinitions(schedules, at) {
@@ -967,6 +1103,8 @@ export function createCodexScheduleService({
         parseCodexOptions,
         validateAction: validateActionTarget,
       });
+      const voices = (items) => items.filter((item) => item.action.kind === "voice").sort((a, b) => a.id.localeCompare(b.id));
+      if (JSON.stringify(voices(schedules)) !== JSON.stringify(voices(definitionsStore.schedules))) requireOwnerScheduleApi();
       return commitNormalizedDefinitions(schedules, now());
     });
     armTimer();
@@ -1012,11 +1150,13 @@ export function createCodexScheduleService({
       if (definitionsStore.schedules.length >= CODEX_SCHEDULE_MAX_COUNT) {
         throw new Error("schedules must contain at most 100 entries");
       }
+      if (schedule.action.kind === "voice") {
+        if (orchestratorRecords(schedule.action.orchestratorId).records.length) requireOwnerScheduleApi();
+        await requireOrchestrator(schedule.action.orchestratorId);
+      }
       await validateActionTarget(schedule);
-      const snapshot = await commitNormalizedDefinitions(
-        [...definitionsStore.schedules, schedule],
-        now(),
-      );
+      const snapshot = schedule.action.kind === "voice" ? await commitOrchestratorDefinition(schedule, now())
+        : await commitNormalizedDefinitions([...definitionsStore.schedules, schedule], now());
       committed = true;
       return {
         created: true,
@@ -1057,8 +1197,9 @@ export function createCodexScheduleService({
       if (patch.action !== undefined && Object.keys(legacyActionPatch).length > 0) {
         throw new Error("patch must use either action or legacy LLM fields");
       }
-      if (Object.keys(legacyActionPatch).length > 0 && current.action.kind !== "llm") {
-        throw new Error("legacy LLM fields cannot patch a script action");
+      if (Object.keys(legacyActionPatch).length > 0 && current.action.kind !== "llm" &&
+        (current.action.kind !== "voice" || Object.keys(legacyActionPatch).some((key) => key !== "prompt"))) {
+        throw new Error("Only prompt can patch an orchestrator action; directory/model/thread fields are LLM-only");
       }
       const normalizedPatch = { ...patch };
       for (const key of Object.keys(legacyActionPatch)) delete normalizedPatch[key];
@@ -1066,7 +1207,12 @@ export function createCodexScheduleService({
         normalizedPatch.action = { ...current.action, ...legacyActionPatch };
       }
       const schedule = normalizeDefinition({ ...current, ...normalizedPatch }, index, parseCodexOptions, true);
-      if (Object.keys(normalizedPatch).every((key) => JSON.stringify(current[key]) === JSON.stringify(schedule[key]))) {
+      if ((current.action.kind === "voice" || schedule.action.kind === "voice") &&
+        (current.action.kind !== schedule.action.kind || current.action.orchestratorId !== schedule.action.orchestratorId)) requireOwnerScheduleApi();
+      const owner = schedule.action.kind === "voice" ? orchestratorRecords(schedule.action.orchestratorId) : null;
+      if (owner && owner.source?.id !== id) requireOwnerScheduleApi();
+      if (Object.keys(normalizedPatch).every((key) => JSON.stringify(current[key]) === JSON.stringify(schedule[key])) &&
+        !owner?.records.some((item) => item.id !== id && item.enabled)) {
         const snapshot = buildSnapshot(definitionsStore.schedules, runtimeStore);
         return {
           updated: false,
@@ -1077,10 +1223,12 @@ export function createCodexScheduleService({
       if (body.baseRevision !== definitionsStore.revision) {
         throw new CodexScheduleRevisionConflictError(definitionsStore.revision);
       }
+      if (schedule.action.kind === "voice" && schedule.enabled) await requireOrchestrator(schedule.action.orchestratorId);
       await validateActionTarget(schedule);
       const schedules = [...definitionsStore.schedules];
       schedules[index] = schedule;
-      const snapshot = await commitNormalizedDefinitions(schedules, now());
+      const snapshot = schedule.action.kind === "voice" ? await commitOrchestratorDefinition(schedule, now())
+        : await commitNormalizedDefinitions(schedules, now());
       committed = true;
       return {
         updated: true,
@@ -1150,6 +1298,8 @@ export function createCodexScheduleService({
     deleteSchedule,
     snapshot,
     summary,
+    getOrchestratorSchedule,
+    saveOrchestratorSchedule,
     whenIdle,
     get activeStartCount() { return activeStarts; },
     get timerArmed() { return Boolean(timer); },

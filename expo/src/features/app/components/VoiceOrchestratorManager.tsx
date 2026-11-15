@@ -11,6 +11,7 @@ import { DEFAULT_TTS_PROVIDER, TTS_PROVIDERS, TTS_PROVIDER_LABELS, type TtsProvi
 import { pickVoiceOrchestratorIcon, supportsVoiceOrchestratorIconPicking } from "../utils/voiceOrchestratorIconPicker";
 import { AppModal } from "./AppModal";
 import { SettingsSelect } from "./SettingsSelect";
+import { OrchestratorScheduleSettings } from "../../codexSchedules/OrchestratorScheduleSettings";
 import { OrchestratorLearningPanel } from "./OrchestratorLearningPanel";
 import { VoiceOrchestratorIcon, type VoiceOrchestrator } from "./VoiceOrchestratorIcon";
 
@@ -38,6 +39,7 @@ export function VoiceOrchestratorManager({ visible, list, onConversationChanged,
   const styles = useAppStyles();
   const { theme } = useVisualTheme();
   const [detailId, setDetailId] = useState<string | null>(null);
+  const [periodicId, setPeriodicId] = useState<string | null>(null);
   const [learningId, setLearningId] = useState<string | null>(null);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [busy, setBusy] = useState(false);
@@ -68,7 +70,7 @@ export function VoiceOrchestratorManager({ visible, list, onConversationChanged,
   }, [manager]);
 
   useEffect(() => {
-    if (!visible) { draftRequestRef.current += 1; setDraftPicker(false); setGeneratingIntroduction(false); setBusy(false); setDetailId(null); setDetail(null); setLearningId(null); setError(""); setVoices([]);
+    if (!visible) { draftRequestRef.current += 1; setDraftPicker(false); setGeneratingIntroduction(false); setBusy(false); setDetailId(null); setDetail(null); setLearningId(null); setPeriodicId(null); setError(""); setVoices([]);
       voiceCatalogRequestRef.current += 1; }
   }, [visible]);
 
@@ -230,7 +232,7 @@ export function VoiceOrchestratorManager({ visible, list, onConversationChanged,
     && { supportsReasoningEffort: true, effortOptions: currentOverviewModel.effortOptions });
 
   const learningOrchestrator = list.orchestrators.find((item) => item.id === learningId);
-  const back = () => draftPicker ? setDraftPicker(false) : learningId ? setLearningId(null) : detailId === null ? onClose() : setDetailId(null);
+  const back = () => periodicId ? setPeriodicId(null) : draftPicker ? setDraftPicker(false) : learningId ? setLearningId(null) : detailId === null ? onClose() : setDetailId(null);
 
   return (
     <AppModal testID="orchestrator-manager-modal" visible={visible} animationType="slide" onRequestClose={back}>
@@ -243,8 +245,10 @@ export function VoiceOrchestratorManager({ visible, list, onConversationChanged,
             style={styles.settingsBackButton} onPress={back}>
             <Text style={styles.settingsBackButtonText}>‹ {draftPicker ? "詳細" : detailId === null && !learningId ? "音声会話" : "オーケストレータ"}</Text>
           </TouchableOpacity>
-          <Text style={styles.settingsTitle}>{draftPicker ? "紹介の下書き" : learningId ? "学習・評価" : detailId === null ? "オーケストレータ" : detailId === "new" ? "追加" : "詳細"}</Text>
-          {draftPicker && detail ? <View testID="orchestrator-introduction-picker" style={styles.settingsSection}>
+          <Text style={styles.settingsTitle}>{periodicId ? "定期実行設定" : draftPicker ? "紹介の下書き" : learningId ? "学習・評価" : detailId === null ? "オーケストレータ" : detailId === "new" ? "追加" : "詳細"}</Text>
+          {periodicId ? <OrchestratorScheduleSettings key={periodicId} orchestratorId={periodicId}
+            orchestratorName={list.orchestrators.find((item) => item.id === periodicId)?.name || periodicId}
+            runnerUrl={runnerBaseUrl || ""} runnerToken={runnerToken || ""} /> : draftPicker && detail ? <View testID="orchestrator-introduction-picker" style={styles.settingsSection}>
             <Text style={styles.settingsFooterText}>生成に使うモデルを選んでください。紹介の保存や本人の通常モデルの変更は行いません。</Text>
             <SettingsSelect icon="chatbubble-ellipses-outline" label="紹介のモデル"
               options={detail.models.map((item) => ({ value: item.modelId, label: item.label }))}
@@ -393,6 +397,10 @@ export function VoiceOrchestratorManager({ visible, list, onConversationChanged,
                 </View>
               </View>
               {detailId !== "new" ? <View style={[styles.settingsGroup, { marginTop: 20 }]}>
+                <TouchableOpacity accessibilityRole="button" accessibilityLabel="定期実行設定を開く"
+                  onPress={() => setPeriodicId(detailId)} style={[styles.settingsRow, styles.settingsRowDivider]}>
+                  <Text style={styles.settingsActionText}>定期実行設定</Text><Text style={styles.settingsRowValue}>›</Text>
+                </TouchableOpacity>
                 <TouchableOpacity accessibilityRole="button" accessibilityLabel="このオーケストレータの学習・評価を開く"
                   onPress={() => setLearningId(detailId)} style={[styles.settingsRow, styles.settingsRowDivider]}>
                   <Text style={styles.settingsActionText}>学習・評価</Text>
@@ -424,7 +432,7 @@ export function VoiceOrchestratorManager({ visible, list, onConversationChanged,
           ) : null}
           {error && (!detailId || !detail) ? <Text style={styles.settingsErrorText}>{error}</Text> : null}
         </KeyboardAwareScrollView>
-        {!draftPicker && detailId !== null && detail ? <View style={{ width: "100%", maxWidth: 760, alignSelf: "center",
+        {!periodicId && !draftPicker && detailId !== null && detail ? <View style={{ width: "100%", maxWidth: 760, alignSelf: "center",
           paddingHorizontal: 18, paddingTop: 12, paddingBottom: 12, gap: 8 }}>
           {error ? <Text accessibilityRole="alert" style={styles.settingsErrorText}>{error}</Text> : null}
           <TouchableOpacity testID="orchestrator-save" accessibilityRole="button" accessibilityLabel="オーケストレータを保存"
