@@ -228,8 +228,7 @@ export function createAppLayoutStyles(theme: VisualTheme) {
     minWidth: 0,
     flexShrink: 1,
   },
-  chatDirectoryHeaderNoteButton: {
-    minWidth: 32,
+  chatDirectoryHeaderIcon: {
     minHeight: 28,
     alignItems: "center",
     justifyContent: "center",
