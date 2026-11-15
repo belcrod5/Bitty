@@ -2652,6 +2652,14 @@ export function createVoiceContextService({ rootDir, createClient, createLegacyC
           || includeBackground && (topicJudgeTask || !await canSwitchParent("", false)));
       });
     },
+    async afterCurrentTurn(onSettled) {
+      return exclusive(async () => {
+        await load();
+        if (!inFlightTask) return false;
+        void inFlightTask.then(onSettled).catch(() => console.warn("[voice] deferred turn callback failed"));
+        return true;
+      });
+    },
     async getMemoryStore() { await exclusive(load); return memoryStore; },
     async sharedResources() {
       await exclusive(load);
