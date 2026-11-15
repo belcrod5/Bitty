@@ -78,6 +78,12 @@ jest.mock("../keyboardController", () => ({
 jest.mock("./AppModal", () => ({
   AppModal: jest.fn(jest.requireActual("./AppModal").AppModal),
 }));
+jest.mock("../../codexSchedules/OrchestratorScheduleSettings", () => ({
+  OrchestratorScheduleSettings: ({ orchestratorId }: { orchestratorId: string }) => {
+    const ReactModule = require("react");
+    return ReactModule.createElement(require("react-native").Text, null, `定期実行パネル: ${orchestratorId}`);
+  },
+}));
 jest.mock("./OrchestratorLearningPanel", () => ({
   OrchestratorLearningPanel: ({ orchestrator }: { orchestrator: { id: string } }) => {
     const ReactModule = require("react");
@@ -413,4 +419,17 @@ test("introduction setup navigates inside the existing native modal and real mod
   expect(mockRequest).toHaveBeenCalledWith({ channel: "agent", op: "voice.orchestrators.introduction.draft",
     payload: { orchestratorId: "other", model: "another-model", effort: "high" } }, { timeoutMs: 75_000 });
   expect(mockRequest.mock.calls.some(([message]) => message.op === "voice.orchestrators.update")).toBe(false);
+});
+
+
+test("orchestrator settings open their own single periodic configuration and return to their details", async () => {
+  const screen = await render(<VoiceOrchestratorManager {...props} />);
+  await fireEvent.press(screen.getByTestId("orchestrator-row-other"));
+  await waitFor(() => screen.getByTestId("orchestrator-name"));
+  await fireEvent.press(screen.getByLabelText("定期実行設定を開く"));
+  expect(screen.getByText("定期実行設定")).toBeTruthy();
+  expect(screen.getByText("定期実行パネル: other")).toBeTruthy();
+  expect(screen.queryByTestId("orchestrator-save")).toBeNull();
+  await act(async () => { jest.mocked(AppModal).mock.lastCall?.[0].onRequestClose?.(); });
+  expect(screen.getByTestId("orchestrator-name")).toHaveProp("value", "調査");
 });

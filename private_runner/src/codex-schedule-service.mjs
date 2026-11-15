@@ -146,6 +146,11 @@ export function codexScheduleDefinitionHash(definition) {
   return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
 }
 
+function orchestratorScheduleId(orchestratorId) {
+  const hash = createHash("sha256").update(`orchestrator-periodic:${orchestratorId}`).digest("hex");
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-5${hash.slice(13, 16)}-8${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
+}
+
 function normalizeAction(value, index, parseCodexOptions, strictStoredFields, legacy) {
   const label = `schedules[${index}]`;
   if (legacy) {
@@ -797,7 +802,20 @@ export function createCodexScheduleService({
         catch (error) { throw Object.assign(new Error(errorMessage(error)), { code: "cwd_unavailable" }); }
       }
       if (action.kind === "voice") {
-        const opened = await voiceContextService.open(action.orchestratorId);
+        let opened;
+        try { opened = await voiceContextService.open(action.orchestratorId); }
+        catch (error) {
+          if (error?.code !== "not_found") throw error;
+          // Only a definitive owner-registry absence disables its timers. Native/store failures do not.
+          const { orchestrators } = await voiceContextService.list();
+          if (orchestrators.some((item) => item.id === action.orchestratorId)) throw error;
+          await serialize(async () => {
+            const next = definitionsStore.schedules.map((item) => item.action.kind === "voice"
+              && item.action.orchestratorId === action.orchestratorId && item.enabled ? { ...item, enabled: false } : item);
+            if (next.some((item, index) => item !== definitionsStore.schedules[index])) await commitNormalizedDefinitions(next, now());
+          });
+          throw Object.assign(new Error("Deleted orchestrator schedules were disabled; their settings are retained"), { code: "orchestrator_removed" });
+        }
         const clientOperationId = randomUUID();
         const voiceResult = { orchestratorId: action.orchestratorId,
           logicalConversationId: opened.logicalConversationId, clientOperationId };
@@ -862,7 +880,7 @@ export function createCodexScheduleService({
     }
     if (!claim) return;
     if (failure && claim.definition.action.kind === "voice"
-      && ["session_busy", "voice_context_reset_required"].includes(failure.code)) {
+      && ["session_busy", "voice_context_reset_required", "orchestrator_removed"].includes(failure.code)) {
       await finishDispatch(claim, null, failure, true);
     } else if (failure) await reportFailure(failure);
     else {
@@ -916,6 +934,81 @@ export function createCodexScheduleService({
       return definition.enabled && definition.action.kind === "llm" && definition.action.threadId && nextOccurrenceAt
         ? [{ threadId: definition.action.threadId, nextOccurrenceAt }] : [];
     }) }));
+  }
+
+  async function requireOrchestrator(id) {
+    if (id !== "main" && !CODEX_SCHEDULE_UUID_PATTERN.test(id)) throw new Error("Invalid orchestrator ID");
+    const owner = (await voiceContextService.list()).orchestrators.find((item) => item.id === id);
+    if (!owner) throw Object.assign(new Error("Orchestrator was not found"), { code: "orchestrator_not_found" });
+    return owner;
+  }
+
+  function orchestratorSnapshot(id) {
+    const records = definitionsStore.schedules.filter((item) => item.action.kind === "voice" && item.action.orchestratorId === id);
+    const canonical = records.find((item) => item.id === orchestratorScheduleId(id));
+    const legacy = records.filter((item) => item !== canonical);
+    const source = canonical || legacy.find((item) => item.enabled) || legacy[0];
+    const interval = source?.rrule?.match(/^FREQ=MINUTELY;INTERVAL=(\d+)$/);
+    const runtime = source && runtimeStore.runtimes[source.id];
+    const nextOccurrenceAt = records.filter((item) => item.enabled).map((item) => runtimeStore.runtimes[item.id]?.nextOccurrenceAt)
+      .filter(Boolean).sort()[0] || null;
+    return { orchestratorId: id, revision: definitionsStore.revision,
+      settings: { enabled: records.some((item) => item.enabled), intervalMinutes: interval ? Number(interval[1]) : 60,
+        prompt: source?.action.prompt || "学習した内容と最近の会話から、今やると役立つことを考えて提案してください。",
+        systemInstruction: source?.action.systemInstruction || "" },
+      nextOccurrenceAt,
+      lastDispatch: clone(runtime?.lastDispatch || null),
+      legacyScheduleCount: legacy.length, legacyEnabledCount: legacy.filter((item) => item.enabled).length,
+      legacyRecurrence: source && !canonical && !interval
+        ? { startLocal: source.startLocal, timeZone: source.timeZone, rrule: source.rrule } : null };
+  }
+
+  async function getOrchestratorSchedule(id) {
+    return serialize(async () => { await requireOrchestrator(id); return orchestratorSnapshot(id); });
+  }
+
+  async function saveOrchestratorSchedule(id, payload) {
+    const result = await serialize(async () => {
+      await requireOrchestrator(id);
+      const body = requireObject(payload, "request");
+      onlyKeys(body, new Set(["baseRevision", "settings"]), "request");
+      if (!Number.isInteger(body.baseRevision) || body.baseRevision < 0) throw new Error("Invalid baseRevision");
+      if (body.baseRevision !== definitionsStore.revision) throw new CodexScheduleRevisionConflictError(definitionsStore.revision);
+      const settings = requireObject(body.settings, "settings");
+      onlyKeys(settings, new Set(["enabled", "intervalMinutes", "prompt", "systemInstruction"]), "settings");
+      if (typeof settings.enabled !== "boolean" || !Number.isInteger(settings.intervalMinutes)
+        || settings.intervalMinutes < 1 || settings.intervalMinutes > 10080) throw new Error("Invalid periodic settings");
+      if (typeof settings.systemInstruction !== "string" || settings.systemInstruction.length > 4000) throw new Error("Invalid periodic instructions");
+      const scheduleId = orchestratorScheduleId(id);
+      const canonical = definitionsStore.schedules.find((item) => item.id === scheduleId);
+      if (canonical && (canonical.action.kind !== "voice" || canonical.action.orchestratorId !== id)) {
+        throw new Error("Periodic schedule ID is already used by another schedule");
+      }
+      if (!canonical && definitionsStore.schedules.length >= CODEX_SCHEDULE_MAX_COUNT) {
+        throw new Error("スケジュールは100件までです。既存設定は変更されていません。");
+      }
+      const records = definitionsStore.schedules.filter((item) => item.action.kind === "voice" && item.action.orchestratorId === id);
+      const source = canonical || records.find((item) => item.enabled) || records[0];
+      const rrule = `FREQ=MINUTELY;INTERVAL=${settings.intervalMinutes}`;
+      const at = now();
+      const keepAnchor = source?.rrule === rrule;
+      const definition = normalizeDefinition({ id: scheduleId, name: canonical?.name || "オーケストレーターの定期実行",
+        enabled: settings.enabled, rrule,
+        startLocal: keepAnchor ? source.startLocal
+          : new Date(Math.ceil((at.getTime() + settings.intervalMinutes * 60_000) / 60_000) * 60_000).toISOString().slice(0, 19),
+        timeZone: keepAnchor ? source.timeZone : "UTC",
+        action: { kind: "voice", orchestratorId: id, prompt: settings.prompt, systemInstruction: settings.systemInstruction } },
+        0, parseCodexOptions);
+      const next = definitionsStore.schedules.map((item) => {
+        if (item.id === scheduleId) return definition;
+        return item.action.kind === "voice" && item.action.orchestratorId === id && item.enabled ? { ...item, enabled: false } : item;
+      });
+      if (!canonical) next.push(definition);
+      if (JSON.stringify(next) !== JSON.stringify(definitionsStore.schedules)) await commitNormalizedDefinitions(next, at);
+      return orchestratorSnapshot(id);
+    });
+    armTimer();
+    return result;
   }
 
   async function commitNormalizedDefinitions(schedules, at) {
@@ -1164,6 +1257,8 @@ export function createCodexScheduleService({
     deleteSchedule,
     snapshot,
     summary,
+    getOrchestratorSchedule,
+    saveOrchestratorSchedule,
     whenIdle,
     get activeStartCount() { return activeStarts; },
     get timerArmed() { return Boolean(timer); },

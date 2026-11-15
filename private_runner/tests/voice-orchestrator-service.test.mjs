@@ -776,7 +776,7 @@ test("busy voice schedule occurrences skip without interrupting, retrying or fai
   assert.equal(codex.calls.some((call) => call.method === "turn/start" && call.params.input[0].text.endsWith("\nscheduled request")), false);
 });
 
-test("deleted voice schedule targets fail without falling back to main", async (t) => {
+test("deleted voice schedule targets stop without falling back to main or repeated failure notifications", async (t) => {
   const { service } = await fixture(t);
   const item = await service.create("削除対象");
   const { scheduler } = await scheduledFixture(t, service, item.id);
@@ -788,8 +788,9 @@ test("deleted voice schedule targets fail without falling back to main", async (
     schedules: definitions.map((definition) => ({ ...definition, name: "改名した予定" })) });
   await scheduler.evaluate();
   const dispatch = (await scheduler.snapshot()).schedules[0].lastDispatch;
-  assert.equal(dispatch.status, "failed");
-  assert.equal(dispatch.errorCode, "not_found");
+  assert.equal(dispatch.status, "skipped");
+  assert.equal(dispatch.errorCode, "orchestrator_removed");
+  assert.equal((await scheduler.snapshot()).schedules[0].enabled, false);
   assert.equal((await service.history("main")).messages.length, 0);
   const failed = await scheduler.snapshot();
   await scheduler.replaceSchedules({ baseRevision: failed.revision,

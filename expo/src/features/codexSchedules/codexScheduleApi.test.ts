@@ -1,4 +1,6 @@
 import {
+  getOrchestratorSchedule,
+  putOrchestratorSchedule,
   getCodexSchedules,
   getCodexScheduleSummary,
   putCodexSchedules,
@@ -91,4 +93,18 @@ test("an older Runner without summary support retains marker compatibility", asy
   } as Response).mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ ok: true, revision: 1, schedules: [schedule] }) } as Response);
   expect((await getCodexScheduleSummary({ runnerUrl: "http://runner", runnerToken: "token" })).scheduledThreads)
     .toEqual([{ threadId: "thread-current", nextOccurrenceAt: schedule.nextOccurrenceAt }]);
+});
+
+
+test("orchestrator periodic requests use the fixed owner endpoint and revision without schedule IDs or add operations", async () => {
+  const settings = { enabled: false, intervalMinutes: 45, prompt: "Consider a useful step", systemInstruction: "Keep it concise" };
+  const response = { ok: true, orchestratorId: "main", revision: 4, settings, nextOccurrenceAt: null,
+    lastDispatch: null, legacyScheduleCount: 0, legacyEnabledCount: 0, legacyRecurrence: null };
+  const fetchMock = jest.spyOn(global, "fetch").mockResolvedValue({ ok: true, status: 200, json: async () => response } as Response);
+  expect((await getOrchestratorSchedule({ runnerUrl: "http://runner", runnerToken: "token" }, "main")).settings).toEqual(settings);
+  await putOrchestratorSchedule({ runnerUrl: "http://runner", runnerToken: "token" }, "main", 3, settings);
+  expect(fetchMock.mock.calls[0][0]).toBe("http://runner/orchestrators/main/schedule");
+  expect(fetchMock.mock.calls[1][1]?.method).toBe("PUT");
+  expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toEqual({ baseRevision: 3, settings });
+  await expect(getOrchestratorSchedule({ runnerUrl: "http://runner", runnerToken: "token" }, "another-owner")).rejects.toThrow("応答が不正");
 });

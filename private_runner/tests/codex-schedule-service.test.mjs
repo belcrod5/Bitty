@@ -1317,3 +1317,111 @@ test("thread summary excludes action bodies and follows runtime recurrence witho
   assert.equal(next.scheduledThreads[0].nextOccurrenceAt, "2026-08-15T00:00:00.000Z");
   assert.equal((await harness.service.snapshot()).revision, 1);
 });
+
+
+test("owner periodic configuration is a disabled singleton default and saves independently without losing other schedules", async (t) => {
+  const owners = [{ id: "main", name: "😀".repeat(80) }, { id: ID_B, name: "Other" }];
+  const f = await makeHarness({ voiceContextService: { list: async () => ({ orchestrators: owners }) } });
+  t.after(() => fs.rm(f.directory, { recursive: true, force: true }));
+  const initial = await f.service.getOrchestratorSchedule("main");
+  assert.equal(initial.settings.enabled, false); assert.equal(initial.settings.intervalMinutes, 60);
+  assert.deepEqual((await f.service.snapshot()).schedules, []);
+  const draft = { ...initial.settings, prompt: "Propose one useful next step", systemInstruction: "Keep proposals short", intervalMinutes: 45 };
+  const disabled = await f.service.saveOrchestratorSchedule("main", { baseRevision: 0, settings: draft });
+  assert.equal(disabled.settings.enabled, false); assert.deepEqual(disabled.settings, draft);
+  const id = (await f.service.snapshot()).schedules[0].id;
+  const active = await f.service.saveOrchestratorSchedule("main", { baseRevision: disabled.revision, settings: { ...draft, enabled: true } });
+  assert.ok(active.nextOccurrenceAt); assert.equal((await f.service.snapshot()).schedules[0].id, id);
+  const other = await f.service.getOrchestratorSchedule(ID_B);
+  await f.service.saveOrchestratorSchedule(ID_B, { baseRevision: other.revision, settings: { ...other.settings, prompt: "Other owner's prompt" } });
+  assert.deepEqual((await f.service.getOrchestratorSchedule("main")).settings, active.settings);
+  const before = await fs.readFile(f.definitionsPath, "utf8");
+  await assert.rejects(f.service.saveOrchestratorSchedule("main", { baseRevision: 0, settings: draft }), CodexScheduleRevisionConflictError);
+  await assert.rejects(f.service.getOrchestratorSchedule(ID_A), { code: "orchestrator_not_found" });
+  await assert.rejects(f.service.saveOrchestratorSchedule("main", { baseRevision: 3, settings: { ...draft, orchestratorId: ID_B } }), /not supported/);
+  assert.equal(await fs.readFile(f.definitionsPath, "utf8"), before);
+  const latest = await f.service.getOrchestratorSchedule("main");
+  await f.service.saveOrchestratorSchedule("main", { baseRevision: latest.revision, settings: { ...latest.settings, enabled: false } });
+  assert.equal((await f.service.snapshot()).schedules.length, 2);
+  assert.equal((await f.service.getOrchestratorSchedule("main")).settings.prompt, draft.prompt);
+});
+
+test("owner save consolidates legacy timers atomically, retains their definitions and reveals old calendar timing", async (t) => {
+  const f = await makeHarness({ voiceContextService: { list: async () => ({ orchestrators: [{ id: "main", name: "Main" }] }) } });
+  t.after(() => fs.rm(f.directory, { recursive: true, force: true }));
+  const legacy = [definition({ id: ID_A, rrule: "FREQ=MONTHLY", action: { kind: "voice", orchestratorId: "main", prompt: "Monthly prompt" } }),
+    definition({ id: ID_B, action: { kind: "voice", orchestratorId: "main", prompt: "Second prompt" } })];
+  await f.service.replaceSchedules({ baseRevision: 0, schedules: legacy });
+  const before = await f.service.snapshot();
+  const config = await f.service.getOrchestratorSchedule("main");
+  assert.equal(config.legacyEnabledCount, 2); assert.equal(config.legacyRecurrence.rrule, "FREQ=MONTHLY");
+  const saved = await f.service.saveOrchestratorSchedule("main", { baseRevision: config.revision, settings: { ...config.settings, intervalMinutes: 15 } });
+  const records = (await f.service.snapshot()).schedules;
+  assert.equal(records.length, 3); assert.equal(records.filter((item) => item.enabled).length, 1);
+  for (const item of before.schedules) assert.deepEqual(records.find((record) => record.id === item.id).action, item.action);
+  assert.equal(saved.legacyScheduleCount, 2); assert.equal(saved.legacyEnabledCount, 0); assert.equal(saved.legacyRecurrence, null);
+  await f.service.saveOrchestratorSchedule("main", { baseRevision: saved.revision, settings: { ...saved.settings, enabled: false } });
+  const stopped = await f.service.getOrchestratorSchedule("main");
+  assert.equal(stopped.settings.prompt, config.settings.prompt); assert.equal(stopped.settings.enabled, false);
+  const rev = (await f.service.snapshot()).revision;
+  await f.service.patchSchedule(ID_B, { baseRevision: rev, patch: { enabled: true } });
+  const legacyActive = await f.service.getOrchestratorSchedule("main");
+  assert.equal(legacyActive.settings.enabled, true); assert.ok(legacyActive.nextOccurrenceAt);
+});
+
+test("periodic configuration cannot silently discard old schedules when the store is full or canonical ID collides", async (t) => {
+  const options = { voiceContextService: { list: async () => ({ orchestrators: [{ id: "main", name: "Main" }] }) } };
+  const f = await makeHarness(options); t.after(() => fs.rm(f.directory, { recursive: true, force: true }));
+  const settings = (await f.service.getOrchestratorSchedule("main")).settings;
+  await f.service.saveOrchestratorSchedule("main", { baseRevision: 0, settings });
+  const canonicalId = (await f.service.snapshot()).schedules[0].id;
+  await f.service.replaceSchedules({ baseRevision: 1, schedules: [definition({ id: canonicalId })] });
+  const before = await fs.readFile(f.definitionsPath, "utf8");
+  await assert.rejects(f.service.saveOrchestratorSchedule("main", { baseRevision: 2, settings }), /already used/);
+  assert.equal(await fs.readFile(f.definitionsPath, "utf8"), before);
+  const full = await makeHarness(options); t.after(() => fs.rm(full.directory, { recursive: true, force: true }));
+  await full.service.replaceSchedules({ baseRevision: 0, schedules: Array.from({ length: 100 }, (_, index) => definition({
+    id: `${String(index + 1).padStart(8, "0")}-1111-4111-8111-111111111111`,
+    action: { kind: "voice", orchestratorId: "main", prompt: `Retain ${index}` } })) });
+  const original = await fs.readFile(full.definitionsPath, "utf8");
+  await assert.rejects(full.service.saveOrchestratorSchedule("main", { baseRevision: 1, settings }), /100件/);
+  assert.equal(await fs.readFile(full.definitionsPath, "utf8"), original);
+});
+
+
+test("a definitively deleted owner stops all recurring timers without affecting other schedules or repeated notifications", async (t) => {
+  const notifications = [];
+  const f = await makeHarness({ voiceContextService: {
+    open: async () => { throw Object.assign(new Error("Missing owner"), { code: "not_found" }); },
+    list: async () => ({ orchestrators: [{ id: "main", name: "Main" }] }),
+  }, onExecutionFailed: (value) => notifications.push(value) });
+  t.after(() => fs.rm(f.directory, { recursive: true, force: true }));
+  await f.service.replaceSchedules({ baseRevision: 0, schedules: [
+    definition({ id: ID_A, rrule: "FREQ=MINUTELY;INTERVAL=15", action: { kind: "voice", orchestratorId: ID_B, prompt: "Old one" } }),
+    definition({ id: ID_B, rrule: "FREQ=MINUTELY;INTERVAL=30", action: { kind: "voice", orchestratorId: ID_B, prompt: "Old two" } }),
+    definition({ id: "33333333-3333-4333-8333-333333333333", startLocal: "2026-08-15T09:00:00" }),
+  ] });
+  const before = (await f.service.snapshot()).schedules[2];
+  f.currentClock.set("2026-08-14T00:00:00.000Z"); await f.service.evaluate();
+  const snapshot = await f.service.snapshot();
+  assert.ok(snapshot.schedules.slice(0, 2).every((item) => !item.enabled && item.nextOccurrenceAt === null));
+  assert.equal(snapshot.schedules[0].lastDispatch.status, "skipped");
+  assert.equal(snapshot.schedules[0].lastDispatch.errorCode, "orchestrator_removed");
+  assert.deepEqual(snapshot.schedules[2], before); assert.deepEqual(notifications, []);
+  f.currentClock.set("2026-08-14T01:00:00.000Z"); await f.service.evaluate();
+  assert.deepEqual(await f.service.snapshot(), snapshot);
+});
+
+test("native or transient not_found failures never disable an existing owner's periodic timer", async (t) => {
+  const failures = [];
+  const f = await makeHarness({ voiceContextService: {
+    open: async () => { throw Object.assign(new Error("Native resource missing"), { code: "not_found" }); },
+    list: async () => ({ orchestrators: [{ id: "main", name: "Main" }] }),
+  }, onExecutionFailed: (value) => failures.push(value) });
+  t.after(() => fs.rm(f.directory, { recursive: true, force: true }));
+  await f.service.replaceSchedules({ baseRevision: 0, schedules: [definition({ rrule: "FREQ=MINUTELY;INTERVAL=15",
+    action: { kind: "voice", orchestratorId: "main", prompt: "Retain" } })] });
+  f.currentClock.set("2026-08-14T00:00:00.000Z"); await f.service.evaluate();
+  const saved = (await f.service.snapshot()).schedules[0];
+  assert.equal(saved.enabled, true); assert.equal(saved.lastDispatch.status, "failed"); assert.equal(failures.length, 1);
+});

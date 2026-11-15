@@ -211,3 +211,22 @@ test("summary endpoint uses the domain read model without loading full schedule 
   await h.handler({ method: "GET", auth: "bad" }, {}, "/codex-schedules/summary");
   assert.equal(h.responses.pop().status, 401);
 });
+
+
+test("orchestrator periodic GET and PUT fix the owner, use auth and return revision conflicts", async () => {
+  const calls = [];
+  const f = harness({ body: { baseRevision: 2, settings: { enabled: true } }, service: {
+    getOrchestratorSchedule: async (id) => { calls.push(id); return { orchestratorId: id, revision: 2 }; },
+    saveOrchestratorSchedule: async (id, body) => { calls.push([id, body]); throw new CodexScheduleRevisionConflictError(3); },
+  } });
+  await f.handler({ method: "GET" }, {}, "/orchestrators/main/schedule");
+  assert.equal(f.responses.pop().status, 401); assert.deepEqual(calls, []);
+  const auth = { [RUNNER_AUTHENTICATION]: { sessionId: "test", ownerSubjectId: "owner" } };
+  await f.handler({ ...auth, method: "GET" }, {}, "/orchestrators/main/schedule");
+  assert.deepEqual(f.responses.pop(), { status: 200, payload: { ok: true, orchestratorId: "main", revision: 2 } });
+  await f.handler({ ...auth, method: "PUT" }, {}, "/orchestrators/main/schedule");
+  assert.deepEqual(calls[1], ["main", { baseRevision: 2, settings: { enabled: true } }]);
+  assert.equal(f.responses.pop().status, 409);
+  await f.handler({ ...auth, method: "POST" }, {}, "/orchestrators/main/schedule");
+  assert.equal(f.responses.pop().status, 405);
+});

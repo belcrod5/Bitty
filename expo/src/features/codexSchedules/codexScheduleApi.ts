@@ -1,4 +1,7 @@
 import {
+  parseOrchestratorScheduleSnapshot,
+  type OrchestratorPeriodicSettings,
+  type OrchestratorScheduleSnapshot,
   codexScheduleDefinitionOnly,
   codexScheduleSummary,
   parseCodexScheduleSnapshot,
@@ -85,4 +88,17 @@ export async function getCodexScheduleSummary(auth: Auth): Promise<CodexSchedule
     throw new CodexScheduleApiError("Runnerから不正な応答を受信しました。", 200, "invalid_response");
   }
   return { scheduledThreads: value.scheduledThreads.map(({ threadId, nextOccurrenceAt }) => ({ threadId, nextOccurrenceAt })) };
+}
+
+
+export function getOrchestratorSchedule(auth: Auth, orchestratorId: string): Promise<OrchestratorScheduleSnapshot> {
+  return request(auth, undefined, `/orchestrators/${encodeURIComponent(orchestratorId)}/schedule`)
+    .then((value) => parseOrchestratorScheduleSnapshot(value, orchestratorId));
+}
+
+export function putOrchestratorSchedule(auth: Auth, orchestratorId: string, baseRevision: number,
+  settings: OrchestratorPeriodicSettings): Promise<OrchestratorScheduleSnapshot> {
+  return request(auth, { method: "PUT", body: JSON.stringify({ baseRevision, settings }) },
+    `/orchestrators/${encodeURIComponent(orchestratorId)}/schedule`)
+    .then((value) => parseOrchestratorScheduleSnapshot(value, orchestratorId));
 }

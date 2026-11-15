@@ -313,3 +313,36 @@ export function codexScheduleSummary(snapshot: CodexScheduleSnapshot): CodexSche
     && schedule.action.threadId && schedule.nextOccurrenceAt
     ? [{ threadId: schedule.action.threadId, nextOccurrenceAt: schedule.nextOccurrenceAt }] : []) };
 }
+
+
+export type OrchestratorPeriodicSettings = { enabled: boolean; intervalMinutes: number; prompt: string; systemInstruction: string };
+export type OrchestratorScheduleSnapshot = {
+  orchestratorId: string; revision: number; settings: OrchestratorPeriodicSettings;
+  nextOccurrenceAt: string | null; lastDispatch: CodexScheduleDispatch | null;
+  legacyScheduleCount: number; legacyEnabledCount: number;
+  legacyRecurrence: { startLocal: string; timeZone: string; rrule: CodexScheduleRrule } | null;
+};
+
+export function parseOrchestratorScheduleSnapshot(raw: unknown, orchestratorId: string): OrchestratorScheduleSnapshot {
+  const value = object(raw, "orchestrator schedule");
+  const settings = object(value.settings, "periodic settings");
+  if (value.ok !== true || value.orchestratorId !== orchestratorId || !Number.isInteger(value.revision) || Number(value.revision) < 0
+    || typeof settings.enabled !== "boolean" || !Number.isInteger(settings.intervalMinutes)
+    || Number(settings.intervalMinutes) < 1 || Number(settings.intervalMinutes) > 10080
+    || typeof settings.prompt !== "string" || !settings.prompt.trim() || settings.prompt.length > 24000
+    || typeof settings.systemInstruction !== "string" || settings.systemInstruction.length > 4000
+    || !Number.isInteger(value.legacyScheduleCount) || Number(value.legacyScheduleCount) < 0
+    || !Number.isInteger(value.legacyEnabledCount) || Number(value.legacyEnabledCount) < 0
+    || Number(value.legacyEnabledCount) > Number(value.legacyScheduleCount)) throw new Error("定期実行設定の応答が不正です。");
+  let legacyRecurrence: OrchestratorScheduleSnapshot["legacyRecurrence"] = null;
+  if (value.legacyRecurrence !== null) {
+    const legacy = object(value.legacyRecurrence, "legacy recurrence");
+    if (typeof legacy.timeZone !== "string" || (legacy.rrule !== null && typeof legacy.rrule !== "string")) throw new Error("旧日程の応答が不正です。");
+    legacyRecurrence = { startLocal: startLocal(legacy.startLocal), timeZone: legacy.timeZone, rrule: legacy.rrule as CodexScheduleRrule };
+  }
+  return { orchestratorId, revision: Number(value.revision), settings: { enabled: settings.enabled,
+    intervalMinutes: Number(settings.intervalMinutes), prompt: settings.prompt, systemInstruction: settings.systemInstruction },
+    nextOccurrenceAt: value.nextOccurrenceAt === null ? null : iso(value.nextOccurrenceAt, "nextOccurrenceAt"),
+    lastDispatch: parseDispatch(value.lastDispatch), legacyScheduleCount: Number(value.legacyScheduleCount),
+    legacyEnabledCount: Number(value.legacyEnabledCount), legacyRecurrence };
+}
