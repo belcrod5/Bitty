@@ -52,7 +52,7 @@ export function createScheduledCodexTurnStarter({
         runId: run.runId,
         requestId,
         decision: "result",
-        result: dynamicToolResponse({ id: requestId, method: input.method, params: input.params }),
+        result: await dynamicToolResponse({ id: requestId, method: input.method, params: input.params }),
       }, { ...context, actionConsumerId });
     };
 

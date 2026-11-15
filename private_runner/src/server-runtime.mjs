@@ -38,7 +38,10 @@ import { installRunnerWebSocketUpgradeHandler } from "./runner-websocket-upgrade
 import { loadLocalRunnerTls, resolveLocalRunnerTlsConfig } from "./local-runner-tls.mjs";
 import { createApnsClient, maskApnsToken } from "./apns-client.mjs";
 import { createPushDeviceStore } from "./push-device-store.mjs";
-import { calendarConversationDynamicTools } from "./calendar-tool-service.mjs";
+import { calendarConversationDynamicTools, createCalendarToolDispatcher } from "./calendar-tool-service.mjs";
+import { createICloudCalendarService } from "./icloud-calendar-service.mjs";
+import { createICloudCalendarClient } from "./icloud-calendar-client.mjs";
+import { createICloudCalendarHttpHandler } from "./icloud-calendar-http.mjs";
 import { removeLegacyLocationStore } from "./remove-legacy-location-store.mjs";
 import { createCalendarRelayService } from "./calendar-relay-service.mjs";
 import { createPushSummarizer } from "./push-summarizer.mjs";
@@ -1550,6 +1553,12 @@ const runnerLoginService = createRunnerLoginService({
 });
 if (!RUNNER_SKIP_SERVER_START) await runnerLoginService.initialize();
 const runnerLoginHttp = createRunnerLoginHttp({ service: runnerLoginService, location: createRunnerLoginLocation() });
+const iCloudCalendarService = createICloudCalendarService({
+  directory: path.join(WORKSPACE_ROOT, "private_runner/logs/icloud-calendar"),
+  ownerSubjectId: () => runnerLoginService.ownerSubjectId,
+  clientFactory: createICloudCalendarClient,
+});
+const dispatchCalendarTool = createCalendarToolDispatcher({ cloudService: iCloudCalendarService });
 let controlListener = null;
 
 let agentService;
@@ -1570,7 +1579,7 @@ const orchestratorActivity = createOrchestratorActivity({ broadcast: (payload) =
   }
 }, log: RUNNER_LOG_REQUESTS ? (message) => console.log(message) : null });
 const agentRuntime = createPrivateRunnerAgentRuntime({
-  claudeBinary: AGENT_CLAUDE_BINARY, ownerSubjectId: runnerLoginService.ownerSubjectId, dynamicTools: calendarConversationDynamicTools(),
+  claudeBinary: AGENT_CLAUDE_BINARY, ownerSubjectId: runnerLoginService.ownerSubjectId, dynamicTools: calendarConversationDynamicTools(), handleDynamicTool: dispatchCalendarTool,
   stores: {
     bindSession: bindAgentSession, getSessionBinding: getAgentSessionBinding, getSessionMode: getAgentSessionMode,
     acquireSessionLease: acquireAgentSessionLease, settleSessionLease: settleAgentSessionLease,
@@ -5078,6 +5087,7 @@ function broadcastVoiceChecklistChanged({ orchestratorId, logicalConversationId 
 }
 
 const voiceContextService = createVoiceOrchestratorService({
+  handleCalendarTool: dispatchCalendarTool,
   rootDir: path.join(WORKSPACE_ROOT, "private_runner/logs/voice_context/v1"),
   createClient: (options) => createCodexRpcClient(options),
   createLegacyClient: (options) => legacyOrchestratorRuntime.createClient(options),
@@ -5262,12 +5272,22 @@ async function runRunnerInitiatedTurn({
   request,
 }) {
   const client = createCodexRpcClient({ signal });
-  // A resumed thread can retain old dynamic calendar tools. Runner-initiated turns
-  // have no device owner, so acknowledge those calls with a fixed result instead
-  // of leaving the app-server request hanging (and without retaining its contents).
-  const removeServerRequestHandler = client.addServerRequestHandler(runnerInitiatedCalendarResponse);
+  // Cloud calendars execute on Runner; unconfigured device tools receive an
+  // explicit unavailable response when a runner-initiated turn has no owner.
+  let identity;
+  let identityReadyResolve;
+  const identityReady = new Promise((resolve) => { identityReadyResolve = resolve; });
+  const removeServerRequestHandler = client.addServerRequestHandler(async (toolRequest) => {
+    if (toolRequest?.method !== "item/tool/call") return undefined;
+    if (!toolRequest.params?.threadId || !toolRequest.params?.turnId) return runnerInitiatedCalendarResponse(toolRequest, signal);
+    await identityReady;
+    if (signal?.aborted || !identity || !codexTurnEventMatches(toolRequest.params, identity)) return undefined;
+    return runnerInitiatedCalendarResponse(toolRequest, signal);
+  });
   try {
-    const result = await executeCodexTurn({ client, clientName, onTurnStarted, ...request });
+    const result = await executeCodexTurn({ client, clientName, ...request, onTurnStarted: (started) => {
+      identity = started; identityReadyResolve(); onTurnStarted?.(started);
+    } });
     void turnCompletionNotifier.notifyTurnCompleted({
       backendId: "codex",
       threadId: result.threadId,
@@ -5278,6 +5298,7 @@ async function runRunnerInitiatedTurn({
     });
     return result;
   } finally {
+    identityReadyResolve();
     removeServerRequestHandler();
     client.close(1000, "turn_done");
   }
@@ -5409,6 +5430,7 @@ const skiaBoardHttpHandler = createSkiaBoardHttpHandler({
   json,
   activity: orchestratorActivity,
 });
+const iCloudCalendarHttpHandler = createICloudCalendarHttpHandler({ service: iCloudCalendarService, readJsonBody, json });
 const googleCloudHttpHandler = createGoogleCloudHttpHandler({
   readJsonBody,
   json,
@@ -5469,7 +5491,7 @@ async function runCodexQueuedTurn(turn) {
               runId: run.runId,
               requestId,
               decision: "result",
-              result: runnerInitiatedCalendarResponse({
+              result: await runnerInitiatedCalendarResponse({
                 id: requestId,
                 method: input.method,
                 params: input.params,
@@ -5920,6 +5942,7 @@ const handleRunnerRequest = async (req, res) => {
     console.log(`[request] ${req.method} ${pathname} from ${req.socket.remoteAddress || "unknown"}`);
   }
 
+  if (await iCloudCalendarHttpHandler(req, res, pathname)) return;
   if (await googleCloudHttpHandler(req, res, pathname)) return;
   if (await sttSettingsHttpHandler(req, res, pathname)) return;
   if (await sttCorrectionHttpHandler(req, res, pathname)) return;
@@ -8527,6 +8550,7 @@ function sendCodexRelayRpcToClient(relay, ws, text, seq, options = {}) {
 }
 
 const calendarRelayService = createCalendarRelayService({
+  dispatchTool: dispatchCalendarTool,
   WebSocket,
   sendRelayControl,
   sendRunnerWsEnvelope,
@@ -10351,6 +10375,7 @@ export const __TESTING__ = {
   broadcastConsultationChanged,
   broadcastConsultationProgress,
   broadcastConsultationSpeech,
+  iCloudCalendarService,
   googleCloudService,
   broadcastVoiceChecklistChanged,
   listLlmDirectories,

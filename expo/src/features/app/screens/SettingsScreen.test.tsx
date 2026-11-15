@@ -8,6 +8,13 @@ jest.mock("../keyboardController", () => ({
 import { SettingsScreen } from "./SettingsScreen";
 import { VisualThemeProvider } from "../theme/VisualThemeContext";
 
+jest.mock("./ICloudCalendarSettingsScreen", () => ({
+  ICloudCalendarSettingsScreen: ({ onBack }: { onBack: () => void }) => {
+    const { Text, TouchableOpacity } = require("react-native");
+    return <TouchableOpacity accessibilityRole="button" accessibilityLabel="設定に戻る" onPress={onBack}><Text>iCloud認証画面</Text></TouchableOpacity>;
+  },
+}));
+
 jest.mock("../components/CodexAccountSettings", () => ({ CodexAccountSettings: () => null }));
 jest.mock("../components/GoogleCloudSettings", () => ({ GoogleCloudSettings: () => null }));
 jest.mock("../components/RunnerLoginSettings", () => ({
@@ -254,4 +261,14 @@ test("mobile lightweight audio switch changes the saved preference", async () =>
   const screen = await render(<SettingsScreen />);
   await fireEvent(screen.getByLabelText("モバイル通信中は軽量音声"), "valueChange", true);
   expect(mockSettings.toggleLightweightTtsOnCellular).toHaveBeenCalledWith(true);
+});
+
+
+test("opens a separate iCloud authentication screen and returns to settings", async () => {
+  const screen = await render(<SettingsScreen />);
+  await fireEvent.press(screen.getByLabelText("iCloudを認証"));
+  expect(screen.getByText("iCloud認証画面")).toBeTruthy();
+  expect(screen.queryByText("アプリ情報")).toBeNull();
+  await fireEvent.press(screen.getByLabelText("設定に戻る"));
+  expect(screen.getByText("アプリ情報")).toBeTruthy();
 });

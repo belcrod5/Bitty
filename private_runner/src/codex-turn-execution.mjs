@@ -278,6 +278,7 @@ export function createCodexBackend({
   getStatus,
   listModels,
   dynamicTools = null,
+  handleDynamicTool,
   developerInstructions = "",
   generateActionId = () => `codex_action_${randomUUID()}`,
   clientName = "private-runner-agent",
@@ -366,6 +367,8 @@ export function createCodexBackend({
       hasMeasuredOutputTokens: false,
       hasCurrentTurnItem: false,
     };
+    let identityReadyResolve;
+    const identityReady = new Promise((resolve) => { identityReadyResolve = resolve; });
     const resumesExistingThread = Boolean(state.threadId);
     const priorThreadOutputTokens = state.threadId
       ? knownThreadOutputTokens.get(state.threadId)
@@ -540,18 +543,29 @@ export function createCodexBackend({
         });
       }
       if (String(request?.method || "") === "item/tool/call" && dynamicTools) {
-        const requestId = generateActionId();
-        return new Promise((resolve) => {
-          const action = {
-            resolve,
-            announced: false,
-            kind: "dynamic_tool",
-            decisions: ["result"],
-            title: String(request?.params?.tool || "Tool call"),
-            request,
-          };
-          state.actionById.set(requestId, action);
-          announceAction(requestId, action);
+        const forwardToClient = () => {
+          if (signal?.aborted) return undefined;
+          const requestId = generateActionId();
+          return new Promise((resolve) => {
+            const action = {
+              resolve,
+              announced: false,
+              kind: "dynamic_tool",
+              decisions: ["result"],
+              title: String(request?.params?.tool || "Tool call"),
+              request,
+            };
+            state.actionById.set(requestId, action);
+            announceAction(requestId, action);
+          });
+        };
+        if (!handleDynamicTool) return forwardToClient();
+        const actual = getCodexTurnEventIdentity(request.params);
+        if (!actual.threadId || !actual.turnId) return undefined;
+        return identityReady.then(async () => {
+          if (signal?.aborted || !codexTurnEventMatches(request.params, state)) return undefined;
+          const handled = await handleDynamicTool(request, signal);
+          return handled ?? forwardToClient();
         });
       }
       if (!String(request?.method || "").endsWith("requestApproval")) {
@@ -596,6 +610,7 @@ export function createCodexBackend({
       state.threadId = started.threadId;
       if (!resumesExistingThread) state.outputTokenBaseline = 0;
       state.turnId = started.turnId;
+      identityReadyResolve();
       completion?.expect?.({ threadId: state.threadId, turnId: state.turnId });
       emit("turn.started", { nativeTurnId: state.turnId });
       // turnId確定後はliveの通知が直接applyされるため、bufferedのflushはawaitを
@@ -635,6 +650,7 @@ export function createCodexBackend({
       }
       throw error;
     } finally {
+      identityReadyResolve();
       for (const action of state.actionById.values()) {
         if (action.kind === "user_input") {
           action.finish({ answers: {} }, "cancelled");

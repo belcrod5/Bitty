@@ -9,6 +9,7 @@ export function createCalendarRelayService({
   sendRunnerWsEnvelope,
   isEnvelopeClient,
   sendRpcToClient,
+  dispatchTool,
 }) {
   const rpcIdKey = (id) => typeof id === "number" && Number.isFinite(id)
     ? `n:${id}`
@@ -38,10 +39,11 @@ export function createCalendarRelayService({
       retryable: false,
     },
   });
-  const runnerInitiatedResponse = (request) => {
+  const runnerInitiatedResponse = (request, signal) => {
     const tool = toolName(request);
     if (!tool) return { success: false, contentItems: [] };
-    return { success: true, contentItems: [{ type: "inputText", text: JSON.stringify(error(/_(create|update|delete)_event$/.test(tool) ? "foreground_required" : "device_unavailable")) }] };
+    const fallback = { success: true, contentItems: [{ type: "inputText", text: JSON.stringify(error(/_(create|update|delete)_event$/.test(tool) ? "foreground_required" : "device_unavailable")) }] };
+    return dispatchTool ? Promise.resolve(dispatchTool(request, signal)).then((value) => value ?? fallback) : fallback;
   };
   const rememberClosed = (relay, id) => {
     const key = rpcIdKey(id);
@@ -56,7 +58,7 @@ export function createCalendarRelayService({
   };
   const sendCancel = (request, reason) => {
     const owner = request.owner;
-    if (!owner?.ws) return;
+    if (request.cloud || !owner?.ws) return;
     const payload = {
       appServerRequestId: typeof request.id === "number" ? { type: "number", value: request.id } : { type: "string", value: request.id },
       turnId: request.turnId, requestId: request.requestId, reason,
@@ -70,22 +72,27 @@ export function createCalendarRelayService({
   const terminate = (relay, request, reason) => {
     if (!request || request.done) return;
     request.done = true;
+    request.controller?.abort();
     clearTimeout(request.timer);
     relay.calendarRequests.delete(rpcIdKey(request.id));
     rememberClosed(relay, request.id);
     if (reason === "timeout" || reason === "interrupt") sendCancel(request, reason);
     const write = /_(create|update|delete)_event$/.test(request.tool);
-    sendResponse(relay, request, error(reason === "owner_disconnect" ? (write ? "result_unknown" : "device_unavailable") : (reason === "interrupt" ? "request_cancelled" : (write ? "result_unknown" : "device_unavailable"))));
+    sendResponse(relay, request, error(request.cloud ? "request_cancelled" : reason === "no_owner" ? (write ? "foreground_required" : "device_unavailable") : reason === "owner_disconnect" ? (write ? "result_unknown" : "device_unavailable") : (reason === "interrupt" ? "request_cancelled" : (write ? "result_unknown" : "device_unavailable"))));
   };
   const setTurnOwner = (relay, owner) => { relay.calendarOwner = owner || null; };
   const terminateOwnerRequests = (relay, ws, reason = "owner_disconnect") => {
     if (relay.calendarOwner?.ws !== ws) return false;
-    for (const request of Array.from(relay.calendarRequests?.values?.() || [])) terminate(relay, request, reason);
+    for (const request of Array.from(relay.calendarRequests?.values?.() || [])) {
+      if (!request.cloud) terminate(relay, request, reason);
+    }
     relay.calendarOwner = null;
     return true;
   };
   const cleanupRelayState = (relay) => {
-    for (const request of relay.calendarRequests?.values?.() || []) clearTimeout(request.timer);
+    for (const request of relay.calendarRequests?.values?.() || []) {
+      request.done = true; request.controller?.abort(); clearTimeout(request.timer);
+    }
     relay.calendarRequests?.clear?.();
     relay.calendarClosedRpcIds?.clear?.();
   };
@@ -98,10 +105,13 @@ export function createCalendarRelayService({
       sendResponse(relay, { id: payload?.id }, error("invalid_arguments"));
       return true;
     }
-    if (!owner?.ws || !relay.clients.has(owner.ws)) {
-      sendResponse(relay, { id: payload?.id }, error(
-        /_(create|update|delete)_event$/.test(tool) ? "foreground_required" : "device_unavailable"
-      ));
+    const threadId = String(payload?.params?.threadId || "");
+    const turnId = String(payload?.params?.turnId || "");
+    const expectedThread = String(relay.threadId || owner?.threadId || "");
+    const expectedTurn = String(owner?.turnId || relay.currentTurnId || "");
+    if (!threadId || !turnId || !expectedThread || threadId !== expectedThread
+      || (expectedTurn ? turnId !== expectedTurn : !relay.turnStarted || relay.turnCompleted)) {
+      sendResponse(relay, { id: payload.id }, error("invalid_arguments"));
       return true;
     }
     if (relay.calendarRequests.has(requestKey)) {
@@ -109,35 +119,50 @@ export function createCalendarRelayService({
       return true;
     }
     relay.calendarClosedRpcIds?.delete?.(requestKey);
-    const turnId = String(payload?.params?.turnId || owner.turnId || "");
     const request = {
       id: payload.id,
       requestId: calendarToolRequestId([
-        String(payload?.params?.threadId || owner.threadId || ""),
+        String(payload?.params?.threadId || owner?.threadId || ""),
         turnId,
         String(payload?.params?.callId || ""),
         tool,
       ]),
       tool,
-      owner: { ...owner, turnId },
+      owner: owner ? { ...owner, turnId } : null,
+      cloud: Boolean(dispatchTool),
+      controller: new AbortController(),
       turnId,
       done: false,
       timer: null,
     };
-    request.timer = setTimeout(
-      () => terminate(relay, request, "timeout"),
-      /_(create|update|delete)_event$/.test(tool) ? 125_000 : 30_000
-    );
+    request.timer = setTimeout(() => terminate(relay, request, "timeout"), 30_000);
     relay.calendarRequests.set(requestKey, request);
-    sendRpcToClient(relay, owner.ws, String(rawData), undefined, {
-      operationId: owner.operationId,
-      sessionId: owner.sessionId,
-    });
+    const device = () => {
+      request.cloud = false;
+      if (!owner?.ws || !relay.clients.has(owner.ws)) { terminate(relay, request, "no_owner"); return; }
+      clearTimeout(request.timer);
+      request.timer = setTimeout(() => terminate(relay, request, "timeout"),
+        /_(create|update|delete)_event$/.test(tool) ? 125_000 : 30_000);
+      sendRpcToClient(relay, owner.ws, String(rawData), undefined, {
+        operationId: owner.operationId, sessionId: owner.sessionId,
+      });
+    };
+    if (!dispatchTool) device();
+    else void Promise.resolve().then(() => dispatchTool(payload, request.controller.signal)).then((result) => {
+      if (request.done) return;
+      if (result == null) { device(); return; }
+      request.done = true; clearTimeout(request.timer);
+      relay.calendarRequests.delete(requestKey); rememberClosed(relay, request.id);
+      if (relay.upstreamOpen && relay.upstreamWs?.readyState === WebSocket.OPEN) {
+        relay.upstreamWs.send(JSON.stringify({ id: request.id, result }));
+      }
+    }).catch(() => { if (!request.done) terminate(relay, request, "interrupt"); });
     return true;
   };
   const handleClientResponse = (relay, payload, rawData, isBinary, client) => {
     const request = relay.calendarRequests?.get?.(rpcIdKey(payload?.id));
     if (request) {
+      if (request.cloud) return true;
       const owner = request.owner;
       const ownerMatches = owner?.ws === client.ws
         && owner.operationId === client.operationId

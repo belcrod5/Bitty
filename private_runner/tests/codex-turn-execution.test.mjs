@@ -59,7 +59,7 @@ function fakeClient(notifications = [{ method: "turn/completed", params: {} }]) 
   };
 }
 
-function startCodexActionRun({ method, decision, dynamicTools = null, requestParams }) {
+function startCodexActionRun({ method, decision, dynamicTools = null, requestParams, handleDynamicTool }) {
   const client = fakeClient([]);
   let finishTurn;
   const completion = new Promise((resolve) => { finishTurn = resolve; });
@@ -92,6 +92,7 @@ function startCodexActionRun({ method, decision, dynamicTools = null, requestPar
     listSessions: async () => ({ sessions: [] }),
     readHistory: async () => ({ items: [] }),
     dynamicTools,
+    handleDynamicTool,
     generateActionId: () => "action-1",
   });
   const events = [];
@@ -1103,4 +1104,33 @@ test("turn completion cannot suppress the native idle change that updates list a
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal((await snapshots.at(-1)).sessions[0].isActive, undefined);
   send("turn/completed", { threadId: "thread-new", turnId: "turn-1" }); finish(); await run;
+});
+
+
+test("Agent executes cloud dynamic tools upstream without requesting an iPhone action", async () => {
+  const response = { success: true, contentItems: [{ type: "inputText", text: '{"ok":true,"data":{"calendars":[]}}' }] };
+  const run = startCodexActionRun({ method: "item/tool/call", dynamicTools: calendarConversationDynamicTools(),
+    requestParams: { namespace: "calendar", tool: "calendar_list_calendars", arguments: {}, threadId: "thread-new", turnId: "turn-1" },
+    handleDynamicTool: async (request, signal) => {
+      assert.equal(request.params.tool, "calendar_list_calendars");
+      assert.equal(signal.aborted, false);
+      return response;
+    } });
+  await run.turn;
+  assert.deepEqual(run.nativeResponse(), response);
+  assert.equal(run.events.some((event) => event.type === "action.requested"), false);
+});
+
+
+test("Agent cloud tools reject missing, foreign and stale identity before touching credentials", async () => {
+  let calls = 0;
+  for (const identity of [{}, { threadId: "thread-new" }, { threadId: "foreign", turnId: "turn-1" }, { threadId: "thread-new", turnId: "old-turn" }]) {
+    const run = startCodexActionRun({ method: "item/tool/call", dynamicTools: calendarConversationDynamicTools(),
+      requestParams: { namespace: "calendar", tool: "calendar_list_calendars", arguments: {}, ...identity },
+      handleDynamicTool: async () => { calls++; return { success: true, contentItems: [] }; } });
+    await run.turn;
+    assert.equal(run.nativeResponse(), undefined);
+    assert.equal(run.events.some((event) => event.type === "action.requested"), false);
+  }
+  assert.equal(calls, 0);
 });

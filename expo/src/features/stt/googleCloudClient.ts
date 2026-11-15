@@ -1,5 +1,5 @@
 import type { StreamingSttUsage } from "./streamingSttClient";
-import { runnerSettingsRequest } from "./runnerSettingsRequest";
+import { runnerSettingsRequest } from "../app/utils/runnerSettingsRequest";
 
 export type GoogleSttRegion = "us" | "asia-northeast1";
 export type GoogleSttModel = "chirp_3" | "long" | "short";
