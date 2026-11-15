@@ -804,8 +804,8 @@ describe("ChatScreen voice input", () => {
     mockSkiaBoardSessionIds = new Set(["session-1"]);
     await screen.rerender(<ChatScreen {...props} />);
     expect(screen.getByLabelText("Skiaボードに配置済み")).toBeTruthy();
-    expect(within(screen.getByTestId("chat-header")).getAllByText(/^(time-outline|grid-outline)$/)
-      .map((icon) => icon.props.children)).toEqual(popup ? ["time-outline", "grid-outline"] : ["grid-outline"]);
+    expect(within(screen.getByTestId("chat-header")).getAllByText(/^(time-outline|square-outline)$/)
+      .map((icon) => icon.props.children)).toEqual(popup ? ["time-outline", "square-outline"] : ["square-outline"]);
 
     mockSkiaBoardSessionIds = new Set();
     await screen.rerender(<ChatScreen {...props} />);

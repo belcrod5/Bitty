@@ -2022,7 +2022,7 @@ export function ChatScreen({
               ) : null}
               {hasSkiaBoardSession(selectedSessionIdForView) ? (
                 <View style={styles.chatDirectoryHeaderIcon} accessible accessibilityLabel="Skiaボードに配置済み">
-                  <Ionicons name="grid-outline" size={15} color={theme.colors.controlAccent} />
+                  <Ionicons name="square-outline" size={15} color={theme.colors.controlAccent} />
                 </View>
               ) : null}
               {sessionNoteForView ? (
