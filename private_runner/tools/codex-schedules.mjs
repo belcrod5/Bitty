@@ -10,6 +10,12 @@ const RUNNER_ERROR_CODES = new Set([
   "invalid_codex_schedules",
   "orchestrator_not_found",
   "orchestrator_schedule_api_required",
+  "orchestrator_schedule_not_configured",
+  "orchestrator_run_not_found",
+  "orchestrator_run_pending",
+  "orchestrator_run_stopped",
+  "operation_conflict",
+  "not_found",
   "invalid_codex_schedule_id",
   "idempotency_key_required",
   "invalid_idempotency_key",
@@ -161,8 +167,8 @@ async function parseInput(filePath) {
 
 function parseArguments(argv) {
   const command = argv[0];
-  if (!command || !["list", "create", "update", "delete", "orchestrator-get", "orchestrator-set"].includes(command)) {
-    fail("invalid_cli_usage", "Use list, create, update, delete, orchestrator-get, or orchestrator-set; --help shows input formats");
+  if (!command || !["list", "create", "update", "delete", "orchestrator-get", "orchestrator-set", "orchestrator-run", "orchestrator-run-status"].includes(command)) {
+    fail("invalid_cli_usage", "Use list, create, update, delete, orchestrator-get, orchestrator-set, orchestrator-run, or orchestrator-run-status; --help shows input formats");
   }
   let filePath = null;
   const positional = [];
@@ -180,23 +186,27 @@ function parseArguments(argv) {
   } else if (command === "create") {
     if (positional.length) fail("invalid_cli_usage", "create does not accept a schedule ID");
   } else if (command.startsWith("orchestrator-")) {
-    if (positional.length !== 1 || (positional[0] !== "main" && !UUID_PATTERN.test(positional[0]))) {
+    if (positional.length !== (command === "orchestrator-run-status" ? 2 : 1) || (positional[0] !== "main" && !UUID_PATTERN.test(positional[0]))) {
       fail("invalid_cli_usage", `${command} requires main or one orchestrator UUID`);
     }
-    if (command === "orchestrator-get" && filePath) fail("invalid_cli_usage", "orchestrator-get does not accept input");
+    if (command === "orchestrator-run-status" && !UUID_PATTERN.test(positional[1])) fail("invalid_cli_usage", "orchestrator-run-status requires a request UUID");
+    if (["orchestrator-get", "orchestrator-run-status"].includes(command) && filePath) fail("invalid_cli_usage", `${command} does not accept input`);
   } else if (positional.length !== 1 || !UUID_PATTERN.test(positional[0])) {
     fail("invalid_cli_usage", `${command} requires one UUID schedule ID`);
   }
-  return { command, filePath, id: positional[0] || null };
+  return { command, filePath, id: positional[0] || null, statusRequestId: positional[1] || null };
 }
 
-async function requestRunner({ command, id, input, requestId }) {
+async function requestRunner({ command, id, statusRequestId, input, requestId }) {
   const { socketPath, tokenPath } = await loadRunnerConfig();
   const token = await readToken(tokenPath);
   const memberPath = id ? `/${encodeURIComponent(id)}` : "";
   const owner = command.startsWith("orchestrator-");
-  const endpoint = owner ? `/orchestrators/${encodeURIComponent(id)}/schedule` : `/codex-schedules${memberPath}`;
-  const method = { list: "GET", create: "POST", update: "PATCH", delete: "DELETE", "orchestrator-get": "GET", "orchestrator-set": "PUT" }[command];
+  const runPath = command === "orchestrator-run" ? "/run"
+    : command === "orchestrator-run-status" ? `/run/${encodeURIComponent(statusRequestId)}` : "";
+  const endpoint = owner ? `/orchestrators/${encodeURIComponent(id)}/schedule${runPath}` : `/codex-schedules${memberPath}`;
+  const method = { list: "GET", create: "POST", update: "PATCH", delete: "DELETE", "orchestrator-get": "GET", "orchestrator-set": "PUT",
+    "orchestrator-run": "POST", "orchestrator-run-status": "GET" }[command];
   const headers = { Authorization: `Bearer ${token}` };
   let body;
   if (method !== "GET") {
@@ -256,6 +266,9 @@ async function requestRunner({ command, id, input, requestId }) {
     if (payload.error === "orchestrator_schedule_api_required") {
       safePayload.message = "Use orchestrator-get <orchestratorId> then orchestrator-set <orchestratorId> --file <JSON>; --help shows the settings schema.";
     }
+    if (payload.error === "not_found" && response.status === 404) {
+      safePayload.message = "Runner does not provide this API; check the checkout/version used to start it.";
+    }
     if (requestId) safePayload.requestId = requestId;
     process.stderr.write(`${JSON.stringify(safePayload)}\n`);
     process.exitCode = 2;
@@ -279,20 +292,29 @@ Calendar rrule: null (once), FREQ=DAILY, FREQ=WEEKLY, FREQ=MONTHLY, FREQ=YEARLY.
 Interval: 1..10080 minutes. Never mix interval and calendar fields. Preserve trigger when toggling enabled.
 One setting per orchestrator. Existing generic voice updates preserve the schedule ID and share owner validation; create only when the owner has no setting. To disable, update enabled; generic delete removes the saved setting.
 After saving, orchestrator-get again and report the returned trigger and nextOccurrenceAt.
+Run saved settings once: orchestrator-run <ownerId> --file <JSON>, JSON: {"baseRevision":0,"requestId":"UUID"}
+Read the latest revision first. requestId is generated if omitted; retain it for retries.
+Check the result: orchestrator-run-status <ownerId> <requestId>. queued/accepted/running/started are not completed.
+An active conversation queues ONE run after that turn; other busy or confirmation states are skipped.
+If queued, finish the current response/turn. Do not wait or poll for completion within that same orchestrator turn.
+The result follows as a separate scheduled turn; use run-status later or from a different agent.
+Run uses the captured saved prompt/instructions even when periodic execution is disabled; enabled/next time/revision are unchanged.
+configurationRevision identifies the captured settings. Read orchestrator-get for the current next scheduled time.
+Queued requests are memory-only and are not retried after Runner restart. Unknown results must not be retried with a new UUID automatically.
 Use a mode-600 JSON file. On revision_conflict reload and preserve concurrent edits.
 `);
       return;
     }
     const args = parseArguments(process.argv.slice(2));
-    if (args.command === "list" || args.command === "orchestrator-get") {
+    if (["list", "orchestrator-get", "orchestrator-run-status"].includes(args.command)) {
       if (!process.stdin.isTTY && (await readStdin()).trim()) {
-        fail("invalid_cli_usage", "list does not accept stdin");
+        fail("invalid_cli_usage", `${args.command} does not accept stdin`);
       }
       await requestRunner(args);
       return;
     }
     const input = await parseInput(args.filePath);
-    if (args.command === "create") {
+    if (args.command === "create" || args.command === "orchestrator-run") {
       if (input.requestId === undefined) {
         requestId = randomUUID();
       } else if (typeof input.requestId === "string" && UUID_PATTERN.test(input.requestId)) {
@@ -301,7 +323,8 @@ Use a mode-600 JSON file. On revision_conflict reload and preserve concurrent ed
         fail("invalid_input", "requestId must be a UUID");
       }
       if (!UUID_PATTERN.test(requestId)) fail("invalid_input", "Could not create a valid requestId");
-      const { requestId: _requestId, ...body } = input;
+      const { requestId: _requestId, ...fields } = input;
+      const body = args.command === "create" ? fields : { ...fields, requestId };
       await requestRunner({ ...args, input: body, requestId });
       return;
     }

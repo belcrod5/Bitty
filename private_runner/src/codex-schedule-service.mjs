@@ -428,6 +428,8 @@ export function createCodexScheduleService({
   let definitionsStore = null;
   let runtimeStore = null;
   let mutationQueue = Promise.resolve();
+  const manualRuns = new Map();
+  let manualStopped = false;
   let timer = null;
   const queuedIds = [];
   const queuedIdSet = new Set();
@@ -760,6 +762,16 @@ export function createCodexScheduleService({
     });
   }
 
+  function startScheduledVoiceTurn(action, opened, clientOperationId, notify, hooks) {
+    return voiceContextService.start({ operationId: clientOperationId, payload: {
+      orchestratorId: action.orchestratorId, backendId: "codex",
+      logicalConversationId: opened.logicalConversationId, clientOperationId,
+      input: { blocks: [{ type: "text", text: action.prompt }] },
+      ...(action.systemInstruction ? { additionalInstructions: action.systemInstruction } : {}),
+    } }, notify, (request, signal) => onVoiceApproval(clientOperationId, action.orchestratorId, request, signal),
+    { ...hooks, source: "scheduled" });
+  }
+
   async function runQueued(id) {
     let claim = null;
     let result = null;
@@ -821,17 +833,9 @@ export function createCodexScheduleService({
           logicalConversationId: opened.logicalConversationId, clientOperationId };
         await new Promise((resolve, reject) => {
           let started = false;
-          void voiceContextService.start({ operationId: clientOperationId, payload: {
-            orchestratorId: action.orchestratorId,
-            backendId: "codex",
-            logicalConversationId: opened.logicalConversationId,
-            clientOperationId,
-            input: { blocks: [{ type: "text", text: action.prompt }] },
-            ...(action.systemInstruction ? { additionalInstructions: action.systemInstruction } : {}),
-          } }, (state) => {
+          void startScheduledVoiceTurn(action, opened, clientOperationId, (state) => {
             if (!started) reject(Object.assign(new Error("Voice turn ended before it started"), { code: state.code || "turn_failed" }));
-          }, (request, signal) => onVoiceApproval(clientOperationId, action.orchestratorId, request, signal), {
-            source: "scheduled",
+          }, {
             onStarted: () => { result = voiceResult; started = true; resolve(); },
             onFailed: (error) => { if (started) onFailed(error); else reject(error); },
             onSettled: () => { if (!started) reject(new Error("Voice turn ended before it started")); },
@@ -987,6 +991,129 @@ export function createCodexScheduleService({
 
   async function getOrchestratorSchedule(id) {
     return serialize(async () => { await requireOrchestrator(id); return orchestratorSnapshot(id); });
+  }
+
+  function manualState(entry, state) {
+    if (state.status === "confirmation_required") {
+      manualFailure(entry, { code: "voice_context_reset_required", message: "Voice reset confirmation is awaiting a user decision" });
+      return;
+    }
+    const status = state.status === "preflight_failed" ? "failed" : state.status;
+    if (status === "accepted" && !["queued", "accepted"].includes(entry.result.status)) return;
+    if (status === "running" && !["queued", "accepted", "running"].includes(entry.result.status)) return;
+    if (status === "started" && !["queued", "accepted", "running", "started"].includes(entry.result.status)) return;
+    entry.result = { ...entry.result, status,
+      ...(state.logicalConversationId ? { logicalConversationId: state.logicalConversationId } : {}),
+      ...(typeof state.text === "string" ? { text: state.text } : {}),
+      ...(state.code ? { errorCode: state.code } : {}) };
+  }
+
+  function manualFailure(entry, error) {
+    entry.result = { ...entry.result,
+      status: ["session_busy", "voice_context_reset_required"].includes(error.code) ? "skipped" : "failed",
+      errorCode: String(error.code || "schedule_dispatch_failed").slice(0, 200),
+      errorMessage: errorMessage(error).slice(0, MAX_ERROR_CHARS) };
+  }
+
+  async function refreshManualRun(entry) {
+    const opened = await voiceContextService.open(entry.result.orchestratorId);
+    const state = await voiceContextService.status(entry.result.orchestratorId, opened.logicalConversationId, entry.result.requestId);
+    if (state.source !== "scheduled") throw Object.assign(new Error("Request ID belongs to a user turn"), { code: "operation_conflict" });
+    manualState(entry, state);
+    return clone(entry.result);
+  }
+
+  async function dispatchManualRun(entry) {
+    if (manualStopped || entry.result.status !== "queued" || manualRuns.get(entry.result.orchestratorId) !== entry) return clone(entry.result);
+    try {
+      await requireOrchestrator(entry.result.orchestratorId);
+      const opened = await voiceContextService.open(entry.result.orchestratorId);
+      entry.result.logicalConversationId = opened.logicalConversationId;
+      if (manualStopped || entry.result.status !== "queued" || manualRuns.get(entry.result.orchestratorId) !== entry) return clone(entry.result);
+      const state = await startScheduledVoiceTurn(entry.definition.action, opened, entry.result.requestId,
+        (state) => manualState(entry, state), {
+          onAccepted: () => manualState(entry, { status: "accepted" }),
+          onStarted: () => manualState(entry, { status: "started" }),
+          onFailed: (error) => manualFailure(entry, error),
+          onSettled: () => { void refreshManualRun(entry).catch((error) => manualFailure(entry, error)); },
+        });
+      manualState(entry, state);
+    } catch (error) { manualFailure(entry, error); if (error.code === "operation_conflict") throw error; }
+    return clone(entry.result);
+  }
+
+  async function runOrchestratorSchedule(id, payload) {
+    const entry = await serialize(async () => {
+      await requireOrchestrator(id);
+      const body = requireObject(payload, "request");
+      onlyKeys(body, new Set(["baseRevision", "requestId"]), "request");
+      if (!Number.isInteger(body.baseRevision) || body.baseRevision < 0) throw new Error("Invalid baseRevision");
+      if (typeof body.requestId !== "string" || !CODEX_SCHEDULE_UUID_PATTERN.test(body.requestId)) throw new Error("requestId must be a UUID");
+      const previous = manualRuns.get(id);
+      if (previous?.result.requestId === body.requestId) {
+        if (previous.requestedRevision !== body.baseRevision) throw Object.assign(new Error("Request ID was already used with a different revision"), { code: "operation_conflict" });
+        if (previous.result.errorCode === "operation_conflict") throw Object.assign(new Error("Request ID belongs to another operation"), { code: "operation_conflict" });
+        return { replay: previous };
+      }
+      if (previous && ["queued", "accepted", "running", "started"].includes(previous.result.status)) {
+        throw Object.assign(new Error("An immediate run is already pending; check its status first"), { code: "orchestrator_run_pending" });
+      }
+      if (manualStopped) throw Object.assign(new Error("Scheduler is stopped"), { code: "orchestrator_run_stopped" });
+      if (body.baseRevision !== definitionsStore.revision) throw new CodexScheduleRevisionConflictError(definitionsStore.revision);
+      const { source } = orchestratorRecords(id);
+      if (!source) throw Object.assign(new Error("Save the orchestrator schedule before running it"), { code: "orchestrator_schedule_not_configured" });
+      for (const [owner, run] of manualRuns) {
+        if (!["queued", "accepted", "running", "started"].includes(run.result.status) && !definitionsStore.schedules.some((item) =>
+          item.action.kind === "voice" && item.action.orchestratorId === owner)) manualRuns.delete(owner);
+      }
+      const next = { definition: clone(source), requestedRevision: body.baseRevision, result: { orchestratorId: id, requestId: body.requestId,
+        clientOperationId: body.requestId, scheduleId: source.id, configurationRevision: definitionsStore.revision,
+        status: "queued" } };
+      manualRuns.set(id, next);
+      return next;
+    });
+    if (entry.replay) {
+      if (["accepted", "running", "started"].includes(entry.replay.result.status)) {
+        return refreshManualRun(entry.replay).catch(() => clone(entry.replay.result));
+      }
+      return clone(entry.replay.result);
+    }
+    try {
+      const opened = await voiceContextService.open(id);
+      try {
+        const state = await voiceContextService.status(id, opened.logicalConversationId, entry.result.requestId);
+        if (state.source !== "scheduled") throw Object.assign(new Error("Request ID belongs to a user turn"), { code: "operation_conflict" });
+        entry.result = { orchestratorId: id, requestId: entry.result.requestId, clientOperationId: entry.result.requestId,
+          status: "queued", recovered: true };
+        manualState(entry, state);
+        return clone(entry.result);
+      } catch (error) { if (error.code !== "not_found") throw error; }
+      const queued = await voiceContextService.afterCurrentTurn(id,
+        () => dispatchManualRun(entry).catch((error) => manualFailure(entry, error)));
+      if (queued && entry.result.status === "queued") entry.result.queueReason = "current_turn";
+      return queued ? clone(entry.result) : await dispatchManualRun(entry);
+    } catch (error) {
+      manualFailure(entry, error);
+      if (error.code === "operation_conflict") throw error;
+      return clone(entry.result);
+    }
+  }
+
+  async function getOrchestratorScheduleRun(id, requestId) {
+    if (!CODEX_SCHEDULE_UUID_PATTERN.test(String(requestId || ""))) throw new Error("requestId must be a UUID");
+    await serialize(async () => { await requireOrchestrator(id); });
+    const entry = manualRuns.get(id);
+    if (entry?.result.requestId === requestId) {
+      if (["accepted", "running", "started"].includes(entry.result.status)) return refreshManualRun(entry);
+      return clone(entry.result);
+    }
+    const recovered = { result: { orchestratorId: id, requestId, clientOperationId: requestId, status: "queued", recovered: true } };
+    try { return await refreshManualRun(recovered); }
+    catch (error) {
+      if (error.code === "not_found") throw Object.assign(new Error("Run is unknown or was queued before a Runner restart; it was not retried automatically"),
+        { code: "orchestrator_run_not_found" });
+      throw error;
+    }
   }
 
   async function saveOrchestratorSchedule(id, payload) {
@@ -1268,6 +1395,7 @@ export function createCodexScheduleService({
   }
 
   async function start() {
+    manualStopped = false;
     await serialize(async () => {
       let changed = false;
       for (const runtime of Object.values(runtimeStore.runtimes)) {
@@ -1285,6 +1413,11 @@ export function createCodexScheduleService({
   }
 
   function stop() {
+    manualStopped = true;
+    for (const entry of manualRuns.values()) if (entry.result.status === "queued") {
+      entry.result = { ...entry.result, status: "unknown", errorCode: "scheduler_stopped",
+        errorMessage: "Queued run was not started and will not be retried automatically" };
+    }
     clearArmedTimer();
   }
 
@@ -1300,6 +1433,8 @@ export function createCodexScheduleService({
     summary,
     getOrchestratorSchedule,
     saveOrchestratorSchedule,
+    runOrchestratorSchedule,
+    getOrchestratorScheduleRun,
     whenIdle,
     get activeStartCount() { return activeStarts; },
     get timerArmed() { return Boolean(timer); },

@@ -8,7 +8,7 @@ import {
   CodexScheduleStoreUnavailableError,
 } from "./codex-schedule-service.mjs";
 
-const DELETE_BODY_MAX_BYTES = 16 * 1024;
+const COMMAND_BODY_MAX_BYTES = 16 * 1024;
 
 function message(error) {
   return String(error instanceof Error ? error.message : error || "unknown error");
@@ -21,15 +21,20 @@ export function createCodexScheduleHttpHandler({
 }) {
   return async function handleCodexSchedules(req, res, pathname) {
     const ownerMatch = /^\/orchestrators\/([^/]+)\/schedule$/.exec(pathname);
+    const runMatch = /^\/orchestrators\/([^/]+)\/schedule\/run(?:\/([^/]+))?$/.exec(pathname);
     const summary = pathname === "/codex-schedules/summary";
     const collection = pathname === "/codex-schedules";
     const rawMemberId = pathname.startsWith("/codex-schedules/")
       ? pathname.slice("/codex-schedules/".length)
       : null;
     const member = !summary && rawMemberId !== null && rawMemberId !== "" && !rawMemberId.includes("/");
-    if (!collection && !member && !summary && !ownerMatch) return false;
+    if (!collection && !member && !summary && !ownerMatch && !runMatch) return false;
 
     if (!requireRunnerAuthentication(req, res, json)) return true;
+
+    if (runMatch && req.method !== (runMatch[2] ? "GET" : "POST")) {
+      json(res, 405, { error: "method_not_allowed" }); return true;
+    }
 
     if (ownerMatch && !["GET", "PUT"].includes(req.method)) {
       json(res, 405, { error: "method_not_allowed" }); return true;
@@ -55,6 +60,13 @@ export function createCodexScheduleHttpHandler({
     }
 
     try {
+      if (runMatch) {
+        const ownerId = decodeURIComponent(runMatch[1]);
+        const result = runMatch[2]
+          ? await service.getOrchestratorScheduleRun(ownerId, decodeURIComponent(runMatch[2]))
+          : await service.runOrchestratorSchedule(ownerId, await readJsonBody(req, COMMAND_BODY_MAX_BYTES));
+        json(res, ["queued", "accepted", "running", "started"].includes(result.status) ? 202 : 200, { ok: true, ...result }); return true;
+      }
       if (ownerMatch) {
         const ownerId = decodeURIComponent(ownerMatch[1]);
         const result = req.method === "GET" ? await service.getOrchestratorSchedule(ownerId)
@@ -103,7 +115,7 @@ export function createCodexScheduleHttpHandler({
       }
       const result = await service.deleteSchedule(
         id,
-        await readJsonBody(req, DELETE_BODY_MAX_BYTES),
+        await readJsonBody(req, COMMAND_BODY_MAX_BYTES),
       );
       json(res, 200, { ok: true, ...result });
     } catch (error) {
@@ -117,8 +129,14 @@ export function createCodexScheduleHttpHandler({
         });
       } else if (error?.code === "orchestrator_schedule_api_required") {
         json(res, 400, { error: "invalid_codex_schedules", message: message(error) });
+      } else if (["orchestrator_run_pending", "operation_conflict"].includes(error?.code)) {
+        json(res, 409, { error: error.code, message: message(error) });
+      } else if (error?.code === "orchestrator_run_stopped") {
+        json(res, 503, { error: error.code, message: message(error) });
+      } else if (["orchestrator_schedule_not_configured", "orchestrator_run_not_found"].includes(error?.code)) {
+        json(res, 404, { error: error.code, message: message(error) });
       } else if (error?.code === "orchestrator_not_found") {
-        json(res, ownerMatch ? 404 : 400, { error: ownerMatch ? "orchestrator_not_found" : "invalid_codex_schedules", message: message(error) });
+        json(res, ownerMatch || runMatch ? 404 : 400, { error: ownerMatch || runMatch ? "orchestrator_not_found" : "invalid_codex_schedules", message: message(error) });
       } else if (error instanceof CodexScheduleNotFoundError) {
         json(res, 404, { error: "codex_schedule_not_found" });
       } else if (error instanceof CodexScheduleStoreUnavailableError) {

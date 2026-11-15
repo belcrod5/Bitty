@@ -1851,3 +1851,58 @@ test("disabled schedules do not run and re-enabling does not accumulate missed i
   await waitFor(async () => (await service.history("main")).messages.some((row) => row.text === "reply:scheduled request"));
   assert.equal(codex.calls.filter(({ method, params }) => method === "turn/start" && params.input[0].text.endsWith("\nscheduled request")).length, 1);
 });
+
+for (const scoped of [false, true]) test(`manual scheduled run waits for the ${scoped ? "scoped" : "ordinary"} foreground turn and retains periodic claim state`, async (t) => {
+  const { service, codex } = await fixture(t, { hold: true });
+  const key = scoped ? randomUUID() : undefined;
+  const opened = await service.open("main", key);
+  const foreground = await turn(service, "main", opened.logicalConversationId, "configure and verify", undefined, key);
+  await waitFor(() => codex.releases.length > 0);
+  const { scheduler } = await scheduledFixture(t, service, "main", "FREQ=MINUTELY;INTERVAL=15");
+  const requestId = randomUUID();
+  const queued = await scheduler.runOrchestratorSchedule("main", { baseRevision: 0, requestId });
+  assert.equal(queued.status, "queued");
+  assert.equal(codex.calls.filter(({ method, params }) => method === "turn/start" && params.input?.[0]?.text.endsWith("\nscheduled request")).length, 0);
+  await scheduler.evaluate();
+  const periodic = await scheduler.snapshot();
+  assert.equal(periodic.schedules[0].lastDispatch.status, "skipped");
+  assert.equal(periodic.schedules[0].nextOccurrenceAt, "2026-09-02T00:15:00.000Z");
+  codex.releases.shift()(); await foreground.finished;
+  await waitFor(() => codex.releases.length > 0);
+  const started = await scheduler.getOrchestratorScheduleRun("main", requestId);
+  assert.ok(["accepted", "running", "started"].includes(started.status));
+  codex.releases.shift()();
+  await waitFor(async () => (await scheduler.getOrchestratorScheduleRun("main", requestId)).status === "completed");
+  assert.deepEqual(await scheduler.snapshot(), periodic);
+  const rows = (await service.history("main")).messages;
+  assert.equal(rows.filter((row) => row.source === "scheduled").length, 2);
+  const replay = await scheduler.runOrchestratorSchedule("main", { baseRevision: 0, requestId });
+  assert.equal(replay.status, "completed");
+  assert.equal(codex.calls.filter(({ method, params }) => method === "turn/start" && params.input?.[0]?.text.endsWith("\nscheduled request")).length, 1);
+});
+
+for (const interruption of [false, true]) test(`foreground settlement callback observes ${interruption ? "interruption" : "completion"} once without holding the voice lock`, async (t) => {
+  const { service, codex } = await fixture(t, { hold: true });
+  const opened = await service.open("main");
+  const current = await turn(service, "main", opened.logicalConversationId, "foreground work");
+  await waitFor(() => codex.releases.length > 0);
+  let called = 0;
+  assert.equal(await service.afterCurrentTurn("main", async () => {
+    called++; await service.open("main");
+  }), true);
+  if (interruption) await service.interrupt("main", opened.logicalConversationId, current.operationId);
+  else codex.releases.shift()();
+  await current.finished; await waitFor(() => called === 1);
+  assert.equal(await service.afterCurrentTurn("main", () => { called++; }), false);
+});
+
+test("foreground settlement callback also fires after native start failure", async (t) => {
+  const { service } = await fixture(t, { failTurn: true });
+  const opened = await service.open("main");
+  const current = await turn(service, "main", opened.logicalConversationId, "failing foreground work");
+  let called = 0;
+  assert.equal(await service.afterCurrentTurn("main", async () => { called++; await service.open("main"); }), true);
+  assert.equal((await current.finished).status, "preflight_failed");
+  await waitFor(() => called === 1);
+  assert.equal(await service.afterCurrentTurn("main", () => { called++; }), false);
+});

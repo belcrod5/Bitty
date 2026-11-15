@@ -533,6 +533,10 @@ export function createVoiceOrchestratorService({ rootDir, createClient, createLe
       for (const service of await ownerContexts(idOf(id))) if (await service.isBusy()) return true;
       return false;
     }); },
+    async afterCurrentTurn(id, onSettled) { return exclusive(async () => { await load();
+      for (const service of await ownerContexts(idOf(id))) if (await service.afterCurrentTurn(onSettled)) return true;
+      return false;
+    }); },
     async open(id, conversationKey) { return withCounts(id, await (await context(idOf(id), conversationKey)).open()); },
     async status(id, conversationId, operationId, conversationKey) {
       return withCounts(id, await (await context(idOf(id), conversationKey)).status(conversationId, operationId));
@@ -550,12 +554,6 @@ export function createVoiceOrchestratorService({ rootDir, createClient, createLe
         await load();
         const service = await loadedContext(id, key);
         const orchestrator = registry.orchestrators.find((item) => item.id === id);
-        if (hooks?.source === "scheduled") {
-          if (introductionDrafts.has(id)) throw failure("Orchestrator is busy", "session_busy");
-          for (const context of await ownerContexts(id)) {
-            if (await context.isBusy()) throw failure("Orchestrator is busy", "session_busy");
-          }
-        }
         const operationId = message.payload?.clientOperationId;
         const reservation = `${id}:${operationId}`;
         // A completion must finish its durable observation before a recovery scan advances the high water.
@@ -563,6 +561,12 @@ export function createVoiceOrchestratorService({ rootDir, createClient, createLe
         if (operationOwners.has(operationId) && (operationOwners.get(operationId) !== id
           || operationScopes.get(operationId) !== key)) {
           throw failure("Voice operation ID belongs to another conversation", "operation_conflict");
+        }
+        if (hooks?.source === "scheduled" && !operationOwners.has(operationId)) {
+          if (introductionDrafts.has(id)) throw failure("Orchestrator is busy", "session_busy");
+          for (const context of await ownerContexts(id)) {
+            if (await context.isBusy()) throw failure("Orchestrator is busy", "session_busy");
+          }
         }
         if (!operationOwners.has(operationId)) await assertOwnerIdle(id, service);
         const memoryStore = await service.getMemoryStore();
