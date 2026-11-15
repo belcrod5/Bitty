@@ -116,9 +116,9 @@ export function createCodexScheduleHttpHandler({
           revision: error.revision,
         });
       } else if (error?.code === "orchestrator_schedule_api_required") {
-        json(res, 400, { error: error.code, message: message(error) });
+        json(res, 400, { error: "invalid_codex_schedules", message: message(error) });
       } else if (error?.code === "orchestrator_not_found") {
-        json(res, 404, { error: "orchestrator_not_found" });
+        json(res, ownerMatch ? 404 : 400, { error: ownerMatch ? "orchestrator_not_found" : "invalid_codex_schedules", message: message(error) });
       } else if (error instanceof CodexScheduleNotFoundError) {
         json(res, 404, { error: "codex_schedule_not_found" });
       } else if (error instanceof CodexScheduleStoreUnavailableError) {

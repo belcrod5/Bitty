@@ -998,7 +998,7 @@ test("voice schedules preserve the native approval cancellation signal", async (
 });
 
 
-test("saved voice references do not block unrelated LLM edits but generic voice edits require owner settings", async (t) => {
+test("saved voice references allow unrelated LLM edits and disabling a deleted target", async (t) => {
   const voice = definition({ id: ID_B, action: { kind: "voice", orchestratorId: ID_B, prompt: "Check" } });
   const harness = await makeHarness({ initialSchedules: [definition(), voice] });
   t.after(() => fs.rm(harness.directory, { recursive: true, force: true }));
@@ -1006,8 +1006,8 @@ test("saved voice references do not block unrelated LLM edits but generic voice 
   const definitions = saved.schedules.map(({ nextOccurrenceAt: _next, lastDispatch: _last, ...schedule }) => schedule);
   await harness.service.replaceSchedules({ baseRevision: 0,
     schedules: definitions.map((schedule) => schedule.id === ID_A ? { ...schedule, name: "Updated LLM" } : schedule) });
-  await assert.rejects(harness.service.patchSchedule(ID_B, { baseRevision: 1, patch: { enabled: false } }),
-    { code: "orchestrator_schedule_api_required" });
+  await harness.service.patchSchedule(ID_B, { baseRevision: 1, patch: { enabled: false } });
+  assert.equal((await harness.service.snapshot()).schedules[1].enabled, false);
   assert.equal((await harness.service.snapshot()).schedules[0].name, "Updated LLM");
 });
 
@@ -1358,12 +1358,12 @@ test("owner save preserves calendar timing while consolidating legacy timers onl
   t.after(() => fs.rm(f.directory, { recursive: true, force: true }));
   const before = await f.service.snapshot();
   const config = await f.service.getOrchestratorSchedule("main");
-  assert.equal(config.legacyEnabledCount, 2); assert.equal(config.settings.trigger.rrule, "FREQ=MONTHLY");
+  assert.equal(config.legacyEnabledCount, 1); assert.equal(config.settings.trigger.rrule, "FREQ=MONTHLY");
   const saved = await f.service.saveOrchestratorSchedule("main", { baseRevision: config.revision, settings: config.settings });
   const records = (await f.service.snapshot()).schedules;
-  assert.equal(records.length, 3); assert.equal(records.filter((item) => item.enabled).length, 1);
+  assert.equal(records.length, 2); assert.equal(records.filter((item) => item.enabled).length, 1);
   for (const item of before.schedules) assert.deepEqual(records.find((record) => record.id === item.id).action, item.action);
-  assert.equal(saved.legacyScheduleCount, 2); assert.equal(saved.legacyEnabledCount, 0);
+  assert.equal(saved.legacyScheduleCount, 1); assert.equal(saved.legacyEnabledCount, 0);
   assert.deepEqual(saved.settings.trigger, config.settings.trigger);
   await f.service.saveOrchestratorSchedule("main", { baseRevision: saved.revision, settings: { ...saved.settings, enabled: false } });
   const stopped = await f.service.getOrchestratorSchedule("main");
@@ -1373,7 +1373,7 @@ test("owner save preserves calendar timing while consolidating legacy timers onl
 });
 
 
-test("periodic configuration cannot silently discard old schedules when the store is full or canonical ID collides", async (t) => {
+test("owner saves reuse existing IDs at capacity and reject new-owner ID collisions", async (t) => {
   const options = { voiceContextService: { list: async () => ({ orchestrators: [{ id: "main", name: "Main" }] }) } };
   const f = await makeHarness(options); t.after(() => fs.rm(f.directory, { recursive: true, force: true }));
   const settings = (await f.service.getOrchestratorSchedule("main")).settings;
@@ -1389,9 +1389,14 @@ test("periodic configuration cannot silently discard old schedules when the stor
     id: `${String(index + 1).padStart(8, "0")}-1111-4111-8111-111111111111`,
     action: { kind: "voice", orchestratorId: "main", prompt: `Retain ${index}` } })) });
   t.after(() => fs.rm(full.directory, { recursive: true, force: true }));
-  await full.service.snapshot(); const original = await fs.readFile(full.definitionsPath, "utf8");
-  await assert.rejects(full.service.saveOrchestratorSchedule("main", { baseRevision: 0, settings }), /100件/);
-  assert.equal(await fs.readFile(full.definitionsPath, "utf8"), original);
+  const original = await full.service.snapshot();
+  const saved = await full.service.saveOrchestratorSchedule("main", { baseRevision: 0, settings });
+  const after = await full.service.snapshot();
+  assert.equal(after.schedules.length, 100);
+  assert.equal(after.schedules[0].id, original.schedules[0].id);
+  assert.equal(saved.legacyScheduleCount, 99);
+  assert.equal(after.schedules.filter(item => item.enabled).length, 0);
+  for (const item of original.schedules.slice(1)) assert.deepEqual(after.schedules.find(next => next.id === item.id).action, item.action);
 });
 
 
@@ -1469,7 +1474,7 @@ test("owner trigger rejects mixed and malformed schedules atomically instead of 
   await assert.rejects(f.service.saveOrchestratorSchedule("main", { baseRevision: 0, settings: { ...initial.settings, intervalMinutes: 60 } }), /not supported/);
 });
 
-test("generic CRUD cannot mutate or repurpose owner schedules while unchanged bulk snapshots remain supported", async (t) => {
+test("generic CRUD rejects duplicate or repurposed owner schedules while unchanged bulk snapshots remain supported", async (t) => {
   const f = await makeHarness({ voiceContextService: { list: async () => ({ orchestrators: [{ id: "main" }] }) } });
   t.after(() => fs.rm(f.directory, { recursive: true, force: true }));
   const initial = await f.service.getOrchestratorSchedule("main");
@@ -1481,13 +1486,11 @@ test("generic CRUD cannot mutate or repurpose owner schedules while unchanged bu
   const before = await fs.readFile(f.definitionsPath, "utf8");
   for (const mutate of [
     () => f.service.createSchedule({ baseRevision: 1, schedule: input }, ID_B),
-    () => f.service.patchSchedule(id, { baseRevision: 1, patch: { enabled: true } }),
     () => f.service.patchSchedule(id, { baseRevision: 1, patch: { action: llm } }),
-    () => f.service.deleteSchedule(id, { baseRevision: 1 }),
     () => f.service.replaceSchedules({ baseRevision: 1, schedules: [] }),
     () => f.service.replaceSchedules({ baseRevision: 1, schedules: [{ ...voice, action: llm }] }),
   ]) {
-    await assert.rejects(mutate(), (error) => error.code === "orchestrator_schedule_api_required" && /orchestrator-get/.test(error.message));
+    await assert.rejects(mutate(), (error) => error.code === "orchestrator_schedule_api_required" && /update the existing/.test(error.message));
     assert.equal(await fs.readFile(f.definitionsPath, "utf8"), before);
   }
   await f.service.replaceSchedules({ baseRevision: 1, schedules: [voice, definition({ id: ID_B })] });
@@ -1508,10 +1511,11 @@ test("owner display and save use the same active legacy source including its int
   assert.equal(read.settings.prompt, legacy.action.prompt); assert.equal(read.nextOccurrenceAt, "2026-08-13T00:15:00.000Z");
   const saved = await f.service.saveOrchestratorSchedule("main", { baseRevision: read.revision, settings: read.settings });
   assert.equal(saved.settings.prompt, legacy.action.prompt); assert.equal(saved.nextOccurrenceAt, read.nextOccurrenceAt);
-  assert.equal((await f.service.snapshot()).schedules.find((item) => item.id === canonical.id).startLocal, legacy.startLocal);
+  assert.equal((await f.service.snapshot()).schedules[0].id, legacy.id);
+  assert.equal((await f.service.snapshot()).schedules[0].startLocal, legacy.startLocal);
 });
 
-test("HTTP exposes the shared owner calendar contract and rejects mixed triggers or generic voice writes", async (t) => {
+test("HTTP exposes the shared owner calendar contract and accepts compatible generic voice writes", async (t) => {
   const f = await makeHarness({ voiceContextService: { list: async () => ({ orchestrators: [{ id: "main" }] }) } });
   t.after(() => fs.rm(f.directory, { recursive: true, force: true }));
   const initial = await f.service.getOrchestratorSchedule("main");
@@ -1531,7 +1535,56 @@ test("HTTP exposes the shared owner calendar contract and rejects mixed triggers
   body = { baseRevision: 1, patch: { enabled: false } };
   const id = (await f.service.snapshot()).schedules[0].id;
   await handler({ ...auth, method: "PATCH" }, {}, `/codex-schedules/${id}`);
-  assert.equal(response.status, 400); assert.equal(response.payload.error, "orchestrator_schedule_api_required");
-  assert.match(response.payload.message, /orchestrator-set/);
-  assert.equal((await f.service.getOrchestratorSchedule("main")).settings.enabled, true);
+  assert.equal(response.status, 200);
+  assert.equal(response.payload.schedule.id, id);
+  assert.equal((await f.service.getOrchestratorSchedule("main")).settings.enabled, false);
+});
+
+test("legacy PATCH and owner PUT reuse the selected ID and keep disabled settings visible", async (t) => {
+  const options = { voiceContextService: { list: async () => ({ orchestrators: [{ id: "main" }] }) } };
+  const seed = await makeHarness(options); t.after(() => fs.rm(seed.directory, { recursive: true, force: true }));
+  const initial = (await seed.service.getOrchestratorSchedule("main")).settings;
+  await seed.service.saveOrchestratorSchedule("main", { baseRevision: 0, settings: initial });
+  const { nextOccurrenceAt, lastDispatch, ...dormant } = (await seed.service.snapshot()).schedules[0];
+  const active = definition({ action: { kind: "voice", orchestratorId: "main", prompt: "Active daily prompt" } });
+  const f = await makeHarness({ ...options, initialSchedules: [dormant, active] });
+  t.after(() => fs.rm(f.directory, { recursive: true, force: true }));
+  const disabled = await f.service.patchSchedule(ID_A, { baseRevision: 0, patch: { enabled: false, prompt: "Edited while disabling" } });
+  assert.equal(disabled.schedule.id, ID_A);
+  const read = await f.service.getOrchestratorSchedule("main");
+  assert.equal(read.settings.enabled, false); assert.equal(read.settings.prompt, "Edited while disabling");
+  assert.deepEqual(read.settings.trigger, { kind: "calendar", startLocal: active.startLocal, timeZone: active.timeZone, rrule: active.rrule });
+  assert.equal(read.legacyScheduleCount, 1);
+  const saved = await f.service.saveOrchestratorSchedule("main", { baseRevision: read.revision, settings: { ...read.settings, enabled: true } });
+  const snapshot = await f.service.snapshot();
+  assert.equal(snapshot.schedules[0].id, ID_A); assert.equal(snapshot.schedules.length, 2);
+  assert.deepEqual(snapshot.schedules.find(item => item.id === dormant.id).action, dormant.action);
+  assert.equal(saved.settings.prompt, read.settings.prompt); assert.equal(saved.nextOccurrenceAt, "2026-08-14T00:00:00.000Z");
+});
+
+test("legacy creation is idempotent for a new owner and deleting it returns disabled defaults", async (t) => {
+  const f = await makeHarness({ voiceContextService: { list: async () => ({ orchestrators: [{ id: "main" }] }) } });
+  t.after(() => fs.rm(f.directory, { recursive: true, force: true }));
+  const { id, cwd, modelRef, reasoningEffort, prompt, ...base } = definition();
+  const input = { baseRevision: 0, schedule: { ...base, action: { kind: "voice", orchestratorId: "main", prompt: "New owner prompt" } } };
+  const created = await f.service.createSchedule(input, ID_A);
+  assert.equal(created.schedule.id, ID_A); assert.equal(created.created, true);
+  const retried = await f.service.createSchedule(input, ID_A);
+  assert.equal(retried.created, false); assert.equal(retried.revision, created.revision);
+  const read = await f.service.getOrchestratorSchedule("main");
+  const saved = await f.service.saveOrchestratorSchedule("main", { baseRevision: read.revision, settings: read.settings });
+  assert.equal(saved.revision, read.revision); assert.equal((await f.service.snapshot()).schedules[0].id, ID_A);
+  await f.service.deleteSchedule(ID_A, { baseRevision: saved.revision });
+  assert.equal((await f.service.getOrchestratorSchedule("main")).settings.enabled, false);
+  assert.equal((await f.service.snapshot()).schedules.length, 0);
+});
+
+test("enabling a removed owner fails atomically while disabling retained schedules remains possible", async (t) => {
+  const f = await makeHarness({ initialSchedules: [definition({ enabled: false, action: { kind: "voice", orchestratorId: "main", prompt: "Retain" } })],
+    voiceContextService: { list: async () => ({ orchestrators: [] }) } });
+  t.after(() => fs.rm(f.directory, { recursive: true, force: true }));
+  const before = await f.service.snapshot();
+  await assert.rejects(f.service.patchSchedule(ID_A, { baseRevision: 0, patch: { enabled: true } }), { code: "orchestrator_not_found" });
+  assert.deepEqual(await f.service.snapshot(), before);
+  assert.equal((await f.service.patchSchedule(ID_A, { baseRevision: 0, patch: { enabled: false } })).updated, false);
 });

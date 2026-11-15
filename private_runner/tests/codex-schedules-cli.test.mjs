@@ -8,6 +8,9 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createAgentService } from "../src/agent/agent-service.mjs";
 import { operationStore, sessionStore } from "./agent-service-fixtures.mjs";
+import { createCodexScheduleService } from "../src/codex-schedule-service.mjs";
+import { createCodexScheduleHttpHandler } from "../src/codex-schedule-http.mjs";
+import { createRunnerLoginHttp } from "../src/runner-login-http.mjs";
 
 const ID = "11111111-1111-4111-8111-111111111111";
 const SOURCE_CLI = path.resolve(
@@ -485,7 +488,7 @@ test("owner CLI uses the same GET/PUT endpoint as UI and help explains interval 
   }
 });
 
-test("legacy caller receives owner-command guidance even when prompt overlaps server error message", async (t) => {
+test("CLI accepts the earlier owner-only API error even when prompt overlaps its guidance", async (t) => {
   const listener = await listen(async (req, res) => {
     await readBody(req); res.statusCode = 400; res.setHeader("Content-Type", "application/json");
     res.end(JSON.stringify({ error: "orchestrator_schedule_api_required", message: "定期実行は専用設定を使ってください orchestrator-get" }));
@@ -495,4 +498,83 @@ test("legacy caller receives owner-command guidance even when prompt overlaps se
   const result = await runCli(f.cli, ["create"], { input: JSON.stringify({ baseRevision: 1, schedule: { action: { kind: "voice", prompt: "定期実行" } } }) });
   assert.equal(result.code, 2); assert.equal(JSON.parse(result.stderr).error, "orchestrator_schedule_api_required");
   assert.match(JSON.parse(result.stderr).message, /orchestrator-get.*orchestrator-set/);
+});
+
+test("deployed legacy CLI updates and restores orchestrator timing through authenticated HTTP and UDS", async (t) => {
+  const cli = await makeCliRoot(t, "RUNNER_TOKEN_FILE=private_runner/secrets/token\n");
+  await fs.copyFile(new URL("./fixtures/codex-schedules-cli-legacy.mjs", import.meta.url), cli.cli);
+  const ownerId = "22222222-2222-4222-8222-222222222222";
+  const definitionsPath = path.join(cli.root, "private_runner/logs/schedules.json");
+  const original = { id: ID, name: "Morning check", enabled: true, startLocal: "2026-08-14T09:00:00", timeZone: "Asia/Tokyo", rrule: "FREQ=DAILY",
+    action: { kind: "voice", orchestratorId: "main", prompt: "Original prompt" } };
+  const other = { ...original, id: ownerId, action: { ...original.action, orchestratorId: ownerId } };
+  await fs.writeFile(definitionsPath, JSON.stringify({ version: 2, revision: 0, schedules: [original, other], updatedAt: "2026-08-13T00:00:00.000Z" }));
+  let dispatchAttempts = 0;
+  const service = createCodexScheduleService({ definitionsPath, runtimePath: path.join(cli.root, "private_runner/logs/runtime.json"),
+    voiceContextService: { list: async () => ({ orchestrators: [{ id: "main" }, { id: ownerId }] }),
+      open: async () => { dispatchAttempts++; throw new Error("No dispatch should be attempted"); } },
+    parseCodexOptions: () => { throw new Error("Voice uses owner model settings"); },
+    now: () => new Date("2026-08-13T00:00:00.000Z"), scheduleTimer: () => ({ unref() {} }), clearTimer() {} });
+  const handler = createCodexScheduleHttpHandler({ service, readJsonBody: readBody,
+    json: (res, status, body) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(body)); } });
+  const login = createRunnerLoginHttp({ service: { authenticate: async (token, { local }) => {
+    assert.equal(token, "test-runner-token"); assert.equal(local, true);
+    return { local, ownerSubjectId: "fixture-owner", sessionId: "fixture-session" };
+  } } });
+  const listener = await listen(login.wrap(async (req, res) => handler(req, res, new URL(req.url, "http://runner.local").pathname), { local: true }));
+  t.after(listener.close);
+  await fs.appendFile(path.join(cli.root, "private_runner/.env"), `RUNNER_CONTROL_SOCKET=${listener.socketPath}\n`);
+  const call = async (args, input) => {
+    const file = path.join(cli.root, "request.json");
+    if (input) await fs.writeFile(file, JSON.stringify(input), { mode: 0o600 });
+    try { return await runCli(cli.cli, input ? [...args, "--file", file] : args); }
+    finally { if (input) await fs.rm(file); }
+  };
+  const list = async () => {
+    const result = await call(["list"]); assert.equal(result.code, 0, result.stderr);
+    return JSON.parse(result.stdout);
+  };
+  const before = await list();
+  const preservedOther = before.schedules.find(item => item.id === ownerId);
+  const patch = async (patch) => {
+    const before = await list();
+    const result = await call(["update", ID], { baseRevision: before.revision, patch });
+    assert.equal(result.code, 0, result.stderr);
+    const after = await list();
+    assert.equal(after.schedules.length, 2);
+    assert.deepEqual(after.schedules.find(item => item.id === ownerId), preservedOther);
+    assert.equal(after.schedules.find(item => item.action.orchestratorId === "main").id, ID);
+    return { result: JSON.parse(result.stdout), owner: await service.getOrchestratorSchedule("main"), snapshot: after };
+  };
+  const noOp = await patch({ enabled: true });
+  assert.equal(noOp.result.updated, false); assert.equal(noOp.snapshot.revision, before.revision);
+  const disabled = await patch({ enabled: false });
+  assert.equal(disabled.owner.settings.enabled, false); assert.equal(disabled.owner.settings.trigger.startLocal, original.startLocal);
+  const interval = await patch({ rrule: "FREQ=MINUTELY;INTERVAL=45", prompt: "Temporary interval prompt" });
+  assert.deepEqual(interval.owner.settings.trigger, { kind: "interval", minutes: 45 });
+  assert.equal(interval.owner.settings.prompt, "Temporary interval prompt"); assert.equal(interval.owner.nextOccurrenceAt, null);
+  const calendar = await patch({ enabled: true, rrule: "FREQ=DAILY", startLocal: "2026-08-14T10:00:00" });
+  assert.equal(calendar.owner.settings.trigger.startLocal, "2026-08-14T10:00:00");
+  assert.equal(calendar.owner.nextOccurrenceAt, "2026-08-14T01:00:00.000Z");
+  const restored = await patch({ enabled: original.enabled, startLocal: original.startLocal, rrule: original.rrule, action: original.action });
+  assert.deepEqual(restored.snapshot.schedules.find(item => item.id === ID), before.schedules.find(item => item.id === ID));
+  assert.equal(restored.owner.settings.trigger.startLocal, original.startLocal);
+  assert.equal(restored.owner.nextOccurrenceAt, "2026-08-14T00:00:00.000Z");
+  for (const input of [
+    { baseRevision: restored.snapshot.revision, patch: { action: { ...original.action, orchestratorId: ownerId } } },
+    { baseRevision: restored.snapshot.revision, patch: { rrule: "FREQ=DAILY", minutes: 60 } },
+    { baseRevision: restored.snapshot.revision, patch: { cwd: "/bad" } },
+  ]) {
+    const result = await call(["update", ID], input);
+    assert.equal(result.code, 2); assert.equal(JSON.parse(result.stderr).error, "invalid_codex_schedules");
+    assert.doesNotMatch(result.stderr, /unknown error response/);
+  }
+  const { id, ...duplicate } = original;
+  const duplicateResult = await call(["create"], { baseRevision: restored.snapshot.revision, requestId: "33333333-3333-4333-8333-333333333333", schedule: duplicate });
+  assert.equal(duplicateResult.code, 2); assert.equal(JSON.parse(duplicateResult.stderr).error, "invalid_codex_schedules");
+  assert.match(JSON.parse(duplicateResult.stderr).message, /update the existing/);
+  const missingResult = await call(["create"], { baseRevision: restored.snapshot.revision, requestId: "44444444-4444-4444-8444-444444444444",
+    schedule: { ...duplicate, action: { ...duplicate.action, orchestratorId: "55555555-5555-4555-8555-555555555555" } } });
+  assert.equal(missingResult.code, 2); assert.equal(JSON.parse(missingResult.stderr).error, "invalid_codex_schedules");
+  assert.deepEqual((await list()).schedules, restored.snapshot.schedules); assert.equal(dispatchAttempts, 0);
 });

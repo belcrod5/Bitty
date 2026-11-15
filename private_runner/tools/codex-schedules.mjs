@@ -277,7 +277,7 @@ For every day at 09:00 Japan time replace trigger with:
 {"kind":"calendar","startLocal":"2026-11-16T09:00:00","timeZone":"Asia/Tokyo","rrule":"FREQ=DAILY"}
 Calendar rrule: null (once), FREQ=DAILY, FREQ=WEEKLY, FREQ=MONTHLY, FREQ=YEARLY.
 Interval: 1..10080 minutes. Never mix interval and calendar fields. Preserve trigger when toggling enabled.
-One setting per orchestrator. Do not create/update/delete voice actions through generic CRUD.
+One setting per orchestrator. Existing generic voice updates preserve the schedule ID and share owner validation; create only when the owner has no setting. To disable, update enabled; generic delete removes the saved setting.
 After saving, orchestrator-get again and report the returned trigger and nextOccurrenceAt.
 Use a mode-600 JSON file. On revision_conflict reload and preserve concurrent edits.
 `);

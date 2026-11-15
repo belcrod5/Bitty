@@ -945,12 +945,10 @@ export function createCodexScheduleService({
 
   function orchestratorRecords(id) {
     const records = definitionsStore.schedules.filter((item) => item.action.kind === "voice" && item.action.orchestratorId === id);
-    const canonical = records.find((item) => item.id === orchestratorScheduleId(id));
-    const legacy = records.filter((item) => item !== canonical);
     const active = records.filter((item) => item.enabled).sort((left, right) =>
       (runtimeStore.runtimes[left.id]?.nextOccurrenceAt || "~").localeCompare(runtimeStore.runtimes[right.id]?.nextOccurrenceAt || "~"));
-    const source = active[0] || canonical || legacy[0];
-    return { records, canonical, legacy, source };
+    const source = active[0] || records[0];
+    return { records, legacy: records.filter((item) => item !== source), source };
   }
 
   function orchestratorSnapshot(id) {
@@ -969,8 +967,22 @@ export function createCodexScheduleService({
   }
 
   function requireOwnerScheduleApi() {
-    throw Object.assign(new Error("オーケストレーターの定期実行は専用設定を使ってください。node private_runner/tools/codex-schedules.mjs orchestrator-get <orchestratorId> / orchestrator-set <orchestratorId> --file <JSON>（--helpで設定形式を確認）"),
+    throw Object.assign(new Error("Use list and update the existing orchestrator schedule by its ID, or use orchestrator-get / orchestrator-set (--help). Bulk changes and changing an execution target are not supported."),
       { code: "orchestrator_schedule_api_required" });
+  }
+
+  async function commitOrchestratorDefinition(definition, at) {
+    const next = definitionsStore.schedules.map((item) => {
+      if (item.id === definition.id) return definition;
+      return item.action.kind === "voice" && item.action.orchestratorId === definition.action.orchestratorId && item.enabled
+        ? { ...item, enabled: false } : item;
+    });
+    const first = next.findIndex((item) => item.action.kind === "voice" && item.action.orchestratorId === definition.action.orchestratorId);
+    const edited = next.findIndex((item) => item.id === definition.id);
+    if (edited < 0) next.push(definition);
+    else if (first !== edited) { next.splice(edited, 1); next.splice(first, 0, definition); }
+    return JSON.stringify(next) === JSON.stringify(definitionsStore.schedules)
+      ? buildSnapshot(definitionsStore.schedules, runtimeStore) : commitNormalizedDefinitions(next, at);
   }
 
   async function getOrchestratorSchedule(id) {
@@ -1002,31 +1014,26 @@ export function createCodexScheduleService({
         }
       } else throw new Error("settings.trigger.kind must be interval or calendar");
       if (typeof settings.systemInstruction !== "string" || settings.systemInstruction.length > 4000) throw new Error("Invalid periodic instructions");
-      const scheduleId = orchestratorScheduleId(id);
-      const { canonical, source } = orchestratorRecords(id);
+      const { source } = orchestratorRecords(id);
+      const scheduleId = source?.id || orchestratorScheduleId(id);
       const collision = definitionsStore.schedules.find((item) => item.id === scheduleId);
       if (collision && (collision.action.kind !== "voice" || collision.action.orchestratorId !== id)) {
         throw new Error("Periodic schedule ID is already used by another schedule");
       }
-      if (!canonical && definitionsStore.schedules.length >= CODEX_SCHEDULE_MAX_COUNT) {
+      if (!source && definitionsStore.schedules.length >= CODEX_SCHEDULE_MAX_COUNT) {
         throw new Error("スケジュールは100件までです。既存設定は変更されていません。");
       }
       const rrule = trigger.kind === "interval" ? `FREQ=MINUTELY;INTERVAL=${trigger.minutes}` : trigger.rrule;
       const at = now();
       const keepAnchor = source?.rrule === rrule;
-      const definition = normalizeDefinition({ id: scheduleId, name: canonical?.name || "オーケストレーターの定期実行",
+      const definition = normalizeDefinition({ id: scheduleId, name: source?.name || "オーケストレーターの定期実行",
         enabled: settings.enabled, rrule,
         startLocal: trigger.kind === "calendar" ? trigger.startLocal : keepAnchor ? source.startLocal
           : new Date(Math.ceil((at.getTime() + trigger.minutes * 60_000) / 60_000) * 60_000).toISOString().slice(0, 19),
         timeZone: trigger.kind === "calendar" ? trigger.timeZone : keepAnchor ? source.timeZone : "UTC",
         action: { kind: "voice", orchestratorId: id, prompt: settings.prompt, systemInstruction: settings.systemInstruction } },
         0, parseCodexOptions);
-      const next = definitionsStore.schedules.map((item) => {
-        if (item.id === scheduleId) return definition;
-        return item.action.kind === "voice" && item.action.orchestratorId === id && item.enabled ? { ...item, enabled: false } : item;
-      });
-      if (!canonical) next.push(definition);
-      if (JSON.stringify(next) !== JSON.stringify(definitionsStore.schedules)) await commitNormalizedDefinitions(next, at);
+      await commitOrchestratorDefinition(definition, at);
       return orchestratorSnapshot(id);
     });
     armTimer();
@@ -1125,7 +1132,6 @@ export function createCodexScheduleService({
         true,
         input.action === undefined,
       );
-      if (schedule.action.kind === "voice") requireOwnerScheduleApi();
       const existing = definitionsStore.schedules.find((item) => item.id === idempotencyKey);
       if (existing) {
         if (JSON.stringify(existing) === JSON.stringify(schedule)) {
@@ -1144,11 +1150,13 @@ export function createCodexScheduleService({
       if (definitionsStore.schedules.length >= CODEX_SCHEDULE_MAX_COUNT) {
         throw new Error("schedules must contain at most 100 entries");
       }
+      if (schedule.action.kind === "voice") {
+        if (orchestratorRecords(schedule.action.orchestratorId).records.length) requireOwnerScheduleApi();
+        await requireOrchestrator(schedule.action.orchestratorId);
+      }
       await validateActionTarget(schedule);
-      const snapshot = await commitNormalizedDefinitions(
-        [...definitionsStore.schedules, schedule],
-        now(),
-      );
+      const snapshot = schedule.action.kind === "voice" ? await commitOrchestratorDefinition(schedule, now())
+        : await commitNormalizedDefinitions([...definitionsStore.schedules, schedule], now());
       committed = true;
       return {
         created: true,
@@ -1189,8 +1197,9 @@ export function createCodexScheduleService({
       if (patch.action !== undefined && Object.keys(legacyActionPatch).length > 0) {
         throw new Error("patch must use either action or legacy LLM fields");
       }
-      if (Object.keys(legacyActionPatch).length > 0 && current.action.kind !== "llm") {
-        throw new Error("legacy LLM fields cannot patch a script action");
+      if (Object.keys(legacyActionPatch).length > 0 && current.action.kind !== "llm" &&
+        (current.action.kind !== "voice" || Object.keys(legacyActionPatch).some((key) => key !== "prompt"))) {
+        throw new Error("Only prompt can patch an orchestrator action; directory/model/thread fields are LLM-only");
       }
       const normalizedPatch = { ...patch };
       for (const key of Object.keys(legacyActionPatch)) delete normalizedPatch[key];
@@ -1198,8 +1207,12 @@ export function createCodexScheduleService({
         normalizedPatch.action = { ...current.action, ...legacyActionPatch };
       }
       const schedule = normalizeDefinition({ ...current, ...normalizedPatch }, index, parseCodexOptions, true);
-      if (current.action.kind === "voice" || schedule.action.kind === "voice") requireOwnerScheduleApi();
-      if (Object.keys(normalizedPatch).every((key) => JSON.stringify(current[key]) === JSON.stringify(schedule[key]))) {
+      if ((current.action.kind === "voice" || schedule.action.kind === "voice") &&
+        (current.action.kind !== schedule.action.kind || current.action.orchestratorId !== schedule.action.orchestratorId)) requireOwnerScheduleApi();
+      const owner = schedule.action.kind === "voice" ? orchestratorRecords(schedule.action.orchestratorId) : null;
+      if (owner && owner.source?.id !== id) requireOwnerScheduleApi();
+      if (Object.keys(normalizedPatch).every((key) => JSON.stringify(current[key]) === JSON.stringify(schedule[key])) &&
+        !owner?.records.some((item) => item.id !== id && item.enabled)) {
         const snapshot = buildSnapshot(definitionsStore.schedules, runtimeStore);
         return {
           updated: false,
@@ -1210,10 +1223,12 @@ export function createCodexScheduleService({
       if (body.baseRevision !== definitionsStore.revision) {
         throw new CodexScheduleRevisionConflictError(definitionsStore.revision);
       }
+      if (schedule.action.kind === "voice" && schedule.enabled) await requireOrchestrator(schedule.action.orchestratorId);
       await validateActionTarget(schedule);
       const schedules = [...definitionsStore.schedules];
       schedules[index] = schedule;
-      const snapshot = await commitNormalizedDefinitions(schedules, now());
+      const snapshot = schedule.action.kind === "voice" ? await commitOrchestratorDefinition(schedule, now())
+        : await commitNormalizedDefinitions(schedules, now());
       committed = true;
       return {
         updated: true,
@@ -1243,7 +1258,6 @@ export function createCodexScheduleService({
       if (body.baseRevision !== definitionsStore.revision) {
         throw new CodexScheduleRevisionConflictError(definitionsStore.revision);
       }
-      if (definitionsStore.schedules[index].action.kind === "voice") requireOwnerScheduleApi();
       const schedules = definitionsStore.schedules.filter((schedule) => schedule.id !== id);
       const snapshot = await commitNormalizedDefinitions(schedules, now());
       return { deleted: true, id, revision: snapshot.revision };
