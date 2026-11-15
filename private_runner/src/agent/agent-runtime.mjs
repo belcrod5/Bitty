@@ -39,6 +39,7 @@ export function createPrivateRunnerAgentRuntime({
   claudeBinary,
   ownerSubjectId,
   dynamicTools,
+  handleDynamicTool,
   stores,
   createCodexClient,
   listCodexModels,
@@ -122,6 +123,7 @@ export function createPrivateRunnerAgentRuntime({
       };
     },
     dynamicTools,
+    handleDynamicTool,
     developerInstructions: CONVERSATION_HISTORY_TOOL_INSTRUCTIONS,
     async listSessions({ cwd, limit, cursor, includeSubagents, parentSessionRefs }) {
       const page = await listSessions(cwd, { source: "all", limit, cursor, includeSubagents, parentSessionRefs });

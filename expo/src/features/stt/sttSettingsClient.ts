@@ -1,4 +1,4 @@
-import { runnerSettingsRequest } from "./runnerSettingsRequest";
+import { runnerSettingsRequest } from "../app/utils/runnerSettingsRequest";
 
 export type SttProvider = "google" | "macos";
 export type SttCorrectionSettings = { model: string; effort: string };

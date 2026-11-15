@@ -113,3 +113,14 @@ test("pre-executing timeout cancels confirmation and never calls EventKit", asyn
   await expect(pending).resolves.toMatchObject({ error: { code: "request_cancelled" } });
   expect(mockCreate).not.toHaveBeenCalled();
 });
+
+
+test("stale cloud calendar IDs never reach native permissions, lookup or writes", async () => {
+  const handler = createCalendarToolHandler({ confirmWrite: jest.fn() });
+  for (const arguments_ of [{ calendarId: "icloud:calendar:old" }, { eventId: "icloud:event:old" }, { calendarIds: ["icloud:calendar:old"] }]) {
+    await expect(handler.handle({ ...call, arguments: arguments_ })).resolves.toMatchObject({ error: { code: "calendar_not_found" } });
+  }
+  expect(mockPermission).not.toHaveBeenCalled();
+  expect(mockCreate).not.toHaveBeenCalled();
+  expect(mockGet).not.toHaveBeenCalled();
+});

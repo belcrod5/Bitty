@@ -19,6 +19,8 @@ process.env.LLM_JOB_EVENT_MAX = "100";
 
 const { __TESTING__ } = await import("../src/server-runtime.mjs");
 mockRunnerLogin(__TESTING__);
+// This suite tests device routing; never inspect the user's stored cloud credentials.
+__TESTING__.iCloudCalendarService.status = async () => ({ configured: false, enabled: false, account: "", testedAt: null });
 
 test.after(async () => {
   await new Promise((resolve) => setTimeout(resolve, 50));
@@ -1807,7 +1809,7 @@ test("reverse request replies preserve a completed turn's same-id reservation an
   }
 });
 
-test("calendar requests stay with their owner and are excluded from replayable events", () => {
+test("calendar requests stay with their owner and are excluded from replayable events", async () => {
   const relay = createRelayForRunnerWsTest();
   const owner = createEnvelopeClientForRunnerWsTest();
   const observer = createEnvelopeClientForRunnerWsTest();
@@ -1824,6 +1826,7 @@ test("calendar requests stay with their owner and are excluded from replayable e
     false,
     { endpoint: "/runner-ws", remote: "test" }
   );
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(relay.calendarRequests.size, 1);
   assert.equal(observer.sent.length, 0);
   assert.equal(relay.eventLog.length, 0);
@@ -1928,14 +1931,14 @@ test("owner disconnect and turn interrupt terminate a calendar request exactly o
   }
 });
 
-test("queued turns with retained calendar tools receive fixed errors without echoing tool arguments", () => {
-  const read = __TESTING__.runnerInitiatedCalendarResponse({
+test("queued turns with retained calendar tools receive fixed errors without echoing tool arguments", async () => {
+  const read = await __TESTING__.runnerInitiatedCalendarResponse({
     method: "item/tool/call",
-    params: { tool: "calendar_search_events", arguments: { start: "private-start", end: "private-end" } },
+    params: { namespace: "calendar", threadId: "thread", turnId: "turn", tool: "calendar_search_events", arguments: { start: "private-start", end: "private-end" } },
   });
-  const write = __TESTING__.runnerInitiatedCalendarResponse({
+  const write = await __TESTING__.runnerInitiatedCalendarResponse({
     method: "item/tool/call",
-    params: { tool: "calendar_create_event", arguments: { title: "private-title" } },
+    params: { namespace: "calendar", threadId: "thread", turnId: "turn", tool: "calendar_create_event", arguments: { title: "private-title" } },
   });
   assert.equal(JSON.parse(read.contentItems[0].text).error.code, "device_unavailable");
   assert.equal(JSON.parse(write.contentItems[0].text).error.code, "foreground_required");

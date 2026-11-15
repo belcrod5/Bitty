@@ -311,6 +311,7 @@ async function fixture(t, options = {}) {
     await fs.rm(temp, { recursive: true, force: true });
   });
   const service = createVoiceContextService({ rootDir, createClient: codex.createClient,
+    handleCalendarTool: options.handleCalendarTool,
     managedSessions: options.managedSessions, taskChecklistPath: options.taskChecklistPath,
     onChecklistChanged: options.onChecklistChanged, hasOutstandingActivity: options.hasOutstandingActivity,
     onDurablePair: options.onDurablePair, learningContext: options.learningContext });
@@ -5238,4 +5239,24 @@ test("scheduled native input retains provenance and recovers a lost acknowledgem
     assert.deepEqual(history.map((row) => row.source), ["scheduled", "scheduled"]);
     assert.equal(codex.calls.filter(({ method, params }) => method === "turn/start" && params.input[0].text.includes("consider useful work")).length, 1);
   });
+});
+
+
+test("scheduled and consultation-style voice turns use the upstream cloud handler without device hooks", async (t) => {
+  for (const source of ["scheduled", "user"]) {
+    const calls = [], deviceCalls = [];
+    const { service, conversation, codex } = await fixture(t, { nativeRequests: [{ method: "item/tool/call",
+      namespace: "calendar", tool: "calendar_search_events", callId: "cloud-read", arguments: {}, threadId: "root", turnId: "root" }],
+      handleCalendarTool: async (request, signal) => {
+        calls.push(request); assert.equal(signal.aborted, false);
+        return { success: true, contentItems: [{ type: "inputText", text: '{"ok":true,"data":{"events":[]}}' }] };
+      } });
+    const hooks = { source, ...(source === "user" ? { onCalendarToolCall: async () => { deviceCalls.push("device"); } } : {}) };
+    assert.equal((await complete(service, conversation, "予定を確認", randomUUID(), async () => "decline", hooks)).result.status, "completed");
+    assert.equal(calls.length, 1);
+    assert.deepEqual(deviceCalls, []);
+    const registered = codex.calls.find(({ method, params }) => method === "thread/start" && params.dynamicTools)?.params.dynamicTools;
+    assert.ok(registered.some((namespace) => namespace.name === "calendar"));
+    assert.equal(JSON.parse(codex.calls.find(({ method }) => method === "native/result").result.contentItems[0].text).ok, true);
+  }
 });

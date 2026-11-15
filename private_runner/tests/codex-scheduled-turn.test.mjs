@@ -80,7 +80,7 @@ test("scheduled turns execute dynamic tools without claiming approvals", async (
   const start = createScheduledCodexTurnStarter({
     agentService: service,
     subjectId: "owner",
-    dynamicToolResponse: (request) => ({ handled: request.method }),
+    dynamicToolResponse: async (request) => { await new Promise((resolve) => setImmediate(resolve)); return { handled: request.method }; },
   });
 
   await start({
@@ -88,6 +88,7 @@ test("scheduled turns execute dynamic tools without claiming approvals", async (
     cwd: "/work/project",
     clientOperationId: "schedule:2",
   });
+  await new Promise((resolve) => setImmediate(resolve));
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.deepEqual(calls.map(([kind]) => kind), ["claim", "respond"]);

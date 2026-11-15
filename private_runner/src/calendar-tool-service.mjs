@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { ICLOUD_MESSAGES } from "./icloud-calendar-service.mjs";
 
 export const CALENDAR_DYNAMIC_TOOLS_CONTRACT = "calendar-dynamic-tools-v2";
 export const CALENDAR_DYNAMIC_TOOLS_NAMESPACE = "calendar";
@@ -16,7 +17,7 @@ export function calendarConversationDynamicTools() {
   });
   const object = { type: "object", additionalProperties: false };
   const tools = [
-    tool("calendar_list_calendars", "端末の予定表一覧を取得する", object),
+    tool("calendar_list_calendars", "設定済みカレンダーの一覧を取得する", object),
     tool("calendar_search_events", "指定期間の予定を検索する", {
       ...object,
       required: ["start", "end"],
@@ -53,7 +54,7 @@ export function calendarConversationDynamicTools() {
   return [{
     type: "namespace",
     name: CALENDAR_DYNAMIC_TOOLS_NAMESPACE,
-    description: "iOSカレンダーの予定を読み取り、確認後に変更するツール",
+    description: "カレンダーの予定を読み取るツール。iCloud接続中は読み取り専用、それ以外の変更は端末で確認する",
     tools,
   }];
 }
@@ -63,4 +64,31 @@ export function calendarToolRequestId(values) {
     const bytes = Buffer.from(String(value), "utf8");
     return `${bytes.length}:${bytes.toString("utf8")}`;
   }).join(""), "utf8").digest("hex");
+}
+
+// A null response means this is still a device calendar request. Cloud failures
+// always return a tool result, so callers cannot fall back to another data source.
+export function createCalendarToolDispatcher({ cloudService }) {
+  return async (request, signal) => {
+    const tool = request?.params?.tool;
+    if (request?.method !== "item/tool/call" || !/^calendar_(list_calendars|search_events|get_event|create_event|update_event|delete_event)$/.test(tool)) return null;
+    const result = (value) => ({ success: true, contentItems: [{ type: "inputText", text: JSON.stringify(value) }] });
+    try {
+      if (request.params.namespace !== CALENDAR_DYNAMIC_TOOLS_NAMESPACE) throw Object.assign(new Error(), { code: "invalid_arguments" });
+      if (typeof request.params.threadId !== "string" || !request.params.threadId.trim()
+        || typeof request.params.turnId !== "string" || !request.params.turnId.trim()) throw Object.assign(new Error(), { code: "invalid_arguments" });
+      if (signal?.aborted) throw Object.assign(new Error(), { code: "request_cancelled" });
+      const status = await cloudService.status();
+      const input = request.params.arguments;
+      const cloudIds = [input?.calendarId, input?.eventId, ...(Array.isArray(input?.calendarIds) ? input.calendarIds : [])]
+        .some((id) => typeof id === "string" && id.startsWith("icloud:"));
+      if (!status.enabled && !cloudIds) return null;
+      if (!status.enabled) throw Object.assign(new Error(), { code: "icloud_not_connected" });
+      const data = await cloudService.execute(tool, input, signal);
+      return result({ ok: true, data });
+    } catch (failure) {
+      const code = Object.hasOwn(ICLOUD_MESSAGES, failure?.code) ? failure.code : "icloud_connection_failed";
+      return result({ ok: false, error: { code, message: ICLOUD_MESSAGES[code], retryable: false } });
+    }
+  };
 }

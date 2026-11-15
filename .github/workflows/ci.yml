@@ -35,6 +35,10 @@ jobs:
         working-directory: expo
         run: npx jest --runInBand --silent src/features/app/components/RunnerLoginSettings.test.tsx src/features/app/hooks/useRunnerSessionLifecycle.test.tsx src/features/app/screens/RunnerLoginScreen.test.tsx src/features/app/screens/SettingsScreen.test.tsx src/features/app/screens/CloudflareTunnelMonitorScreen.test.tsx src/features/app/utils/runnerLogin.test.ts src/features/app/utils/secureRunnerCredentials.test.ts src/features/app/utils/cloudflareAccessFetch.test.ts src/features/app/ttsAudio.test.ts
 
+      - name: Test iCloud settings and native calendar boundary
+        working-directory: expo
+        run: npx jest --runInBand --silent src/features/app/screens/ICloudCalendarSettingsScreen.test.tsx src/features/calendar/icloudCalendarClient.test.ts src/features/calendar/calendarToolHandler.test.ts src/features/app/utils/runnerSettingsRequest.test.ts
+
       - name: Install private runner dependencies
         working-directory: private_runner
         run: npm ci
@@ -44,6 +48,9 @@ jobs:
 
       - name: Test orchestrator runtime permissions
         run: node --test private_runner/tests/codex-app-server-client.test.mjs private_runner/tests/voice-orchestrator-service.test.mjs
+
+      - name: Test cloud calendar parsing and execution
+        run: node --test private_runner/tests/icloud-calendar-client.test.mjs private_runner/tests/icloud-calendar-service.test.mjs private_runner/tests/icloud-calendar-http.test.mjs private_runner/tests/calendar-cloud-routing.test.mjs private_runner/tests/codex-turn-execution.test.mjs private_runner/tests/codex-scheduled-turn.test.mjs private_runner/tests/voice-context-service.test.mjs private_runner/tests/voice-request-bridge.test.mjs private_runner/tests/runner-ws-multiplex.test.mjs
 
       - name: Check shell scripts
         run: |
