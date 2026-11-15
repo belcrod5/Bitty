@@ -13,7 +13,6 @@ import { usePendingVoiceNavigationController } from "../hooks/usePendingVoiceNav
 let mockRunningSessionCount: number | null = 0;
 let mockActiveScreen = "skia_board";
 let mockUnreadCount = 0;
-const mockLogSessionDiag = jest.fn();
 const mockMeasureInWindow = jest.fn((callback: (x: number, y: number, width: number, height: number) => void) => {
   callback(50, 80, 800, 1000);
 });
@@ -349,7 +348,6 @@ jest.mock("../contexts/ChatScreenContext", () => ({
 }));
 jest.mock("../contexts/ConversationContext", () => ({
   useConversation: () => ({
-    logSessionDiag: mockLogSessionDiag,
     markSessionReadManually: mockMarkSessionRead,
     markSessionUnread: mockMarkSessionUnread,
     registeredDirectories: [{ path: "/workspace", displayName: "Workspace" }],
@@ -479,7 +477,6 @@ jest.mock("../hooks/useSkiaMiniChatSessions", () => ({
 }));
 
 beforeEach(() => {
-  mockLogSessionDiag.mockClear();
   mockBoardVoiceManager = { ...mockBoardVoiceManager };
   (globalThis as Record<string, unknown>).__skiaBoardFrameCallback = null;
   mockDirectorySyncPhase = "idle";
@@ -589,12 +586,6 @@ test("activity pushes retain card badges and a static status without adding card
     instanceId: "server", revision: 3, activities: [],
   } }));
   expect(screen.queryByTestId("skia-board-activity-indicator")).toBeNull();
-  const commits = mockLogSessionDiag.mock.calls.filter(([event]) => event === "orchestrator_activity_board_commit");
-  expect(commits.some(([, data]) => data.activityCount === 2 && data.cardCount === 1
-    && data.globalBadgeCount === 1 && data.targets[0].matchingCardCount === 1)).toBe(true);
-  expect(commits.at(-1)?.[1]).toMatchObject({ activityCount: 0, cardCount: 0, cleared: false, revision: 3 });
-  expect(JSON.stringify(commits)).not.toContain("session-1");
-  expect(JSON.stringify(commits)).not.toContain("読み込み中");
   expect(mockSessions).toHaveLength(1);
 });
 

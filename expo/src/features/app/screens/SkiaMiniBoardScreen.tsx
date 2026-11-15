@@ -59,7 +59,7 @@ import {
   type SkiaMiniBoardItem,
   type SkiaMiniChatSession,
 } from "../hooks/useSkiaMiniChatSessions";
-import { activityTargetDiagnostic, useOrchestratorActivities, type OrchestratorActivity } from "../hooks/useOrchestratorActivities";
+import { useOrchestratorActivities, type OrchestratorActivity } from "../hooks/useOrchestratorActivities";
 import { useRegisteredDirectoryActiveSessionCount } from "../hooks/useRegisteredDirectoryActiveSessionCount";
 import type { VoiceOrchestrator } from "../components/VoiceOrchestratorIcon";
 import { SkiaBoardActivityStatus, activityStatusText } from "../components/SkiaBoardActivityStatus";
@@ -794,13 +794,11 @@ export function SkiaMiniBoardScreen({
     if (activeScreen !== "skia_board") { setVoiceOpen(false); setConsultationOpen(false); }
   }, [activeScreen]);
   const { runnerUrl, runnerToken, sanitizeTextForTts, handleAssistantAudioButtonPress } = useChatScreen();
-  const { activities, orchestrators, selectedId, activitySnapshot } = useOrchestratorActivities(runnerUrl, runnerToken, true);
+  const { activities, orchestrators, selectedId } = useOrchestratorActivities(runnerUrl, runnerToken, true);
   const runningSessionCount = useRegisteredDirectoryActiveSessionCount();
   const voiceUnreadCount = hasVoicePlayback && !voiceOpen
     ? orchestrators.reduce((sum, item) => sum + (item.id === selectedId ? 0 : item.unreadCount || 0), 0) : 0;
-  const { registeredDirectories, logSessionDiag } = useConversation();
-  const activityDiagnosticLogger = useRef(logSessionDiag);
-  activityDiagnosticLogger.current = logSessionDiag;
+  const { registeredDirectories } = useConversation();
   const {
     directorySync,
     items,
@@ -843,26 +841,6 @@ export function SkiaMiniBoardScreen({
     }
     return placement;
   }, [activities, items, orchestrators]);
-  const hadActivityPlacement = useRef(false);
-  useEffect(() => {
-    if (!activities.length && !hadActivityPlacement.current) return;
-    hadActivityPlacement.current = activities.length > 0;
-    try { activityDiagnosticLogger.current("orchestrator_activity_board_commit", {
-      ...activitySnapshot, cleared: activitySnapshot === null,
-      activityCount: activities.length, cardCount: activityPlacement.cards.size,
-      globalBadgeCount: activityPlacement.global.length, activeScreen, voiceOpen,
-      targets: activities.filter((activity) => activity.sessionRef).slice(0, 8).map((activity) => ({
-        ...activityTargetDiagnostic(activity),
-        matchingCardCount: items.filter((item) => item.kind === "session"
-          && item.backendId === activity.sessionRef!.backendId
-          && item.sessionId === activity.sessionRef!.nativeSessionId).length,
-      })),
-    }, { throttleMs: 0 }); } catch { /* Diagnostics cannot change board rendering. */ }
-  }, [activities, activityPlacement, activitySnapshot, items, activeScreen, voiceOpen]);
-  useEffect(() => () => {
-    try { activityDiagnosticLogger.current("orchestrator_activity_board_unmounted", {}, { throttleMs: 0 }); }
-    catch { /* Diagnostics cannot change cleanup. */ }
-  }, []);
   useEffect(() => {
     const icons = new Set([
       ...activityPlacement.global,
