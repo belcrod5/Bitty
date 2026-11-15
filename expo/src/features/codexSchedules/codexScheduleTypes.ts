@@ -130,9 +130,9 @@ function startLocal(value: unknown) {
   if (typeof value !== "string" || value !== value.trim()) throw new Error("startLocal is invalid");
   const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):00$/.exec(value);
   if (!match) throw new Error("startLocal is invalid");
-  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), Number(match[4]), Number(match[5]));
-  if (date.getFullYear() !== Number(match[1]) || date.getMonth() !== Number(match[2]) - 1 ||
-    date.getDate() !== Number(match[3]) || date.getHours() !== Number(match[4]) || date.getMinutes() !== Number(match[5])) {
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), Number(match[4]), Number(match[5])));
+  if (date.getUTCFullYear() !== Number(match[1]) || date.getUTCMonth() !== Number(match[2]) - 1 ||
+    date.getUTCDate() !== Number(match[3]) || date.getUTCHours() !== Number(match[4]) || date.getUTCMinutes() !== Number(match[5])) {
     throw new Error("startLocal is invalid");
   }
   return value;
@@ -315,34 +315,45 @@ export function codexScheduleSummary(snapshot: CodexScheduleSnapshot): CodexSche
 }
 
 
-export type OrchestratorPeriodicSettings = { enabled: boolean; intervalMinutes: number; prompt: string; systemInstruction: string };
+export type OrchestratorScheduleTrigger = { kind: "interval"; minutes: number } | {
+  kind: "calendar"; startLocal: string; timeZone: string;
+  rrule: Exclude<CodexScheduleRrule, `FREQ=MINUTELY;INTERVAL=${number}`>;
+};
+export type OrchestratorPeriodicSettings = { enabled: boolean; trigger: OrchestratorScheduleTrigger; prompt: string; systemInstruction: string };
 export type OrchestratorScheduleSnapshot = {
   orchestratorId: string; revision: number; settings: OrchestratorPeriodicSettings;
   nextOccurrenceAt: string | null; lastDispatch: CodexScheduleDispatch | null;
   legacyScheduleCount: number; legacyEnabledCount: number;
-  legacyRecurrence: { startLocal: string; timeZone: string; rrule: CodexScheduleRrule } | null;
 };
 
 export function parseOrchestratorScheduleSnapshot(raw: unknown, orchestratorId: string): OrchestratorScheduleSnapshot {
   const value = object(raw, "orchestrator schedule");
   const settings = object(value.settings, "periodic settings");
+  exactKeys(settings, ["enabled", "trigger", "prompt", "systemInstruction"], "periodic settings");
   if (value.ok !== true || value.orchestratorId !== orchestratorId || !Number.isInteger(value.revision) || Number(value.revision) < 0
-    || typeof settings.enabled !== "boolean" || !Number.isInteger(settings.intervalMinutes)
-    || Number(settings.intervalMinutes) < 1 || Number(settings.intervalMinutes) > 10080
+    || typeof settings.enabled !== "boolean"
     || typeof settings.prompt !== "string" || !settings.prompt.trim() || settings.prompt.length > 24000
     || typeof settings.systemInstruction !== "string" || settings.systemInstruction.length > 4000
     || !Number.isInteger(value.legacyScheduleCount) || Number(value.legacyScheduleCount) < 0
     || !Number.isInteger(value.legacyEnabledCount) || Number(value.legacyEnabledCount) < 0
     || Number(value.legacyEnabledCount) > Number(value.legacyScheduleCount)) throw new Error("定期実行設定の応答が不正です。");
-  let legacyRecurrence: OrchestratorScheduleSnapshot["legacyRecurrence"] = null;
-  if (value.legacyRecurrence !== null) {
-    const legacy = object(value.legacyRecurrence, "legacy recurrence");
-    if (typeof legacy.timeZone !== "string" || (legacy.rrule !== null && typeof legacy.rrule !== "string")) throw new Error("旧日程の応答が不正です。");
-    legacyRecurrence = { startLocal: startLocal(legacy.startLocal), timeZone: legacy.timeZone, rrule: legacy.rrule as CodexScheduleRrule };
-  }
+  const rawTrigger = object(settings.trigger, "trigger");
+  let trigger: OrchestratorScheduleTrigger;
+  if (rawTrigger.kind === "interval") {
+    exactKeys(rawTrigger, ["kind", "minutes"], "interval trigger");
+    if (!Number.isInteger(rawTrigger.minutes) || Number(rawTrigger.minutes) < 1 || Number(rawTrigger.minutes) > 10080) throw new Error("実行間隔が不正です。");
+    trigger = { kind: "interval", minutes: Number(rawTrigger.minutes) };
+  } else if (rawTrigger.kind === "calendar") {
+    exactKeys(rawTrigger, ["kind", "startLocal", "timeZone", "rrule"], "calendar trigger");
+    const timeZone = text(rawTrigger.timeZone, "timeZone", 100);
+    new Intl.DateTimeFormat("en", { timeZone }).format(new Date());
+    if (![null, "FREQ=DAILY", "FREQ=WEEKLY", "FREQ=MONTHLY", "FREQ=YEARLY"].includes(rawTrigger.rrule as string | null)) throw new Error("繰り返しが不正です。");
+    trigger = { kind: "calendar", startLocal: startLocal(rawTrigger.startLocal), timeZone,
+      rrule: rawTrigger.rrule as Extract<OrchestratorScheduleTrigger, { kind: "calendar" }>["rrule"] };
+  } else throw new Error("実行方式が不正です。");
   return { orchestratorId, revision: Number(value.revision), settings: { enabled: settings.enabled,
-    intervalMinutes: Number(settings.intervalMinutes), prompt: settings.prompt, systemInstruction: settings.systemInstruction },
+    trigger, prompt: settings.prompt, systemInstruction: settings.systemInstruction },
     nextOccurrenceAt: value.nextOccurrenceAt === null ? null : iso(value.nextOccurrenceAt, "nextOccurrenceAt"),
     lastDispatch: parseDispatch(value.lastDispatch), legacyScheduleCount: Number(value.legacyScheduleCount),
-    legacyEnabledCount: Number(value.legacyEnabledCount), legacyRecurrence };
+    legacyEnabledCount: Number(value.legacyEnabledCount) };
 }

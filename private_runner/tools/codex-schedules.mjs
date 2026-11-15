@@ -8,6 +8,8 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3
 const CONFIG_KEYS = ["RUNNER_TOKEN_FILE", "RUNNER_CONTROL_SOCKET"];
 const RUNNER_ERROR_CODES = new Set([
   "invalid_codex_schedules",
+  "orchestrator_not_found",
+  "orchestrator_schedule_api_required",
   "invalid_codex_schedule_id",
   "idempotency_key_required",
   "invalid_idempotency_key",
@@ -159,8 +161,8 @@ async function parseInput(filePath) {
 
 function parseArguments(argv) {
   const command = argv[0];
-  if (!command || !["list", "create", "update", "delete"].includes(command)) {
-    fail("invalid_cli_usage", "Use list, create, update, or delete");
+  if (!command || !["list", "create", "update", "delete", "orchestrator-get", "orchestrator-set"].includes(command)) {
+    fail("invalid_cli_usage", "Use list, create, update, delete, orchestrator-get, or orchestrator-set; --help shows input formats");
   }
   let filePath = null;
   const positional = [];
@@ -177,6 +179,11 @@ function parseArguments(argv) {
     if (filePath || positional.length) fail("invalid_cli_usage", "list does not accept input or an ID");
   } else if (command === "create") {
     if (positional.length) fail("invalid_cli_usage", "create does not accept a schedule ID");
+  } else if (command.startsWith("orchestrator-")) {
+    if (positional.length !== 1 || (positional[0] !== "main" && !UUID_PATTERN.test(positional[0]))) {
+      fail("invalid_cli_usage", `${command} requires main or one orchestrator UUID`);
+    }
+    if (command === "orchestrator-get" && filePath) fail("invalid_cli_usage", "orchestrator-get does not accept input");
   } else if (positional.length !== 1 || !UUID_PATTERN.test(positional[0])) {
     fail("invalid_cli_usage", `${command} requires one UUID schedule ID`);
   }
@@ -187,17 +194,19 @@ async function requestRunner({ command, id, input, requestId }) {
   const { socketPath, tokenPath } = await loadRunnerConfig();
   const token = await readToken(tokenPath);
   const memberPath = id ? `/${encodeURIComponent(id)}` : "";
-  const method = { list: "GET", create: "POST", update: "PATCH", delete: "DELETE" }[command];
+  const owner = command.startsWith("orchestrator-");
+  const endpoint = owner ? `/orchestrators/${encodeURIComponent(id)}/schedule` : `/codex-schedules${memberPath}`;
+  const method = { list: "GET", create: "POST", update: "PATCH", delete: "DELETE", "orchestrator-get": "GET", "orchestrator-set": "PUT" }[command];
   const headers = { Authorization: `Bearer ${token}` };
   let body;
-  if (command !== "list") {
+  if (method !== "GET") {
     headers["Content-Type"] = "application/json";
     body = JSON.stringify(input);
   }
   if (requestId) headers["Idempotency-Key"] = requestId;
   let response;
   try {
-    response = await requestControl(socketPath, `/codex-schedules${memberPath}`, {
+    response = await requestControl(socketPath, endpoint, {
       method,
       headers,
       body,
@@ -244,6 +253,9 @@ async function requestRunner({ command, id, input, requestId }) {
         inputStrings.some((value) => value && payload.message.includes(value));
       if (!containsSensitiveValue) safePayload.message = payload.message;
     }
+    if (payload.error === "orchestrator_schedule_api_required") {
+      safePayload.message = "Use orchestrator-get <orchestratorId> then orchestrator-set <orchestratorId> --file <JSON>; --help shows the settings schema.";
+    }
     if (requestId) safePayload.requestId = requestId;
     process.stderr.write(`${JSON.stringify(safePayload)}\n`);
     process.exitCode = 2;
@@ -256,8 +268,23 @@ async function requestRunner({ command, id, input, requestId }) {
 async function main() {
   let requestId = null;
   try {
+    if (process.argv.length === 3 && process.argv[2] === "--help") {
+      process.stdout.write(`Usage: node private_runner/tools/codex-schedules.mjs list|create|update <id>|delete <id> [--file <JSON>]
+Orchestrator: orchestrator-get <main|owner UUID> / orchestrator-set <main|owner UUID> --file <JSON>
+Read orchestrator-get first; retain its revision as baseRevision. Set JSON:
+{"baseRevision":0,"settings":{"enabled":true,"trigger":{"kind":"interval","minutes":60},"prompt":"Suggest a useful next step","systemInstruction":""}}
+For every day at 09:00 Japan time replace trigger with:
+{"kind":"calendar","startLocal":"2026-11-16T09:00:00","timeZone":"Asia/Tokyo","rrule":"FREQ=DAILY"}
+Calendar rrule: null (once), FREQ=DAILY, FREQ=WEEKLY, FREQ=MONTHLY, FREQ=YEARLY.
+Interval: 1..10080 minutes. Never mix interval and calendar fields. Preserve trigger when toggling enabled.
+One setting per orchestrator. Do not create/update/delete voice actions through generic CRUD.
+After saving, orchestrator-get again and report the returned trigger and nextOccurrenceAt.
+Use a mode-600 JSON file. On revision_conflict reload and preserve concurrent edits.
+`);
+      return;
+    }
     const args = parseArguments(process.argv.slice(2));
-    if (args.command === "list") {
+    if (args.command === "list" || args.command === "orchestrator-get") {
       if (!process.stdin.isTTY && (await readStdin()).trim()) {
         fail("invalid_cli_usage", "list does not accept stdin");
       }

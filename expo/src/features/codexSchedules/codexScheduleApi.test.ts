@@ -97,9 +97,9 @@ test("an older Runner without summary support retains marker compatibility", asy
 
 
 test("orchestrator periodic requests use the fixed owner endpoint and revision without schedule IDs or add operations", async () => {
-  const settings = { enabled: false, intervalMinutes: 45, prompt: "Consider a useful step", systemInstruction: "Keep it concise" };
+  const settings = { enabled: false, trigger: { kind: "interval" as const, minutes: 45 }, prompt: "Consider a useful step", systemInstruction: "Keep it concise" };
   const response = { ok: true, orchestratorId: "main", revision: 4, settings, nextOccurrenceAt: null,
-    lastDispatch: null, legacyScheduleCount: 0, legacyEnabledCount: 0, legacyRecurrence: null };
+    lastDispatch: null, legacyScheduleCount: 0, legacyEnabledCount: 0 };
   const fetchMock = jest.spyOn(global, "fetch").mockResolvedValue({ ok: true, status: 200, json: async () => response } as Response);
   expect((await getOrchestratorSchedule({ runnerUrl: "http://runner", runnerToken: "token" }, "main")).settings).toEqual(settings);
   await putOrchestratorSchedule({ runnerUrl: "http://runner", runnerToken: "token" }, "main", 3, settings);
@@ -107,4 +107,13 @@ test("orchestrator periodic requests use the fixed owner endpoint and revision w
   expect(fetchMock.mock.calls[1][1]?.method).toBe("PUT");
   expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toEqual({ baseRevision: 3, settings });
   await expect(getOrchestratorSchedule({ runnerUrl: "http://runner", runnerToken: "token" }, "another-owner")).rejects.toThrow("応答が不正");
+});
+
+test("owner API preserves calendar wall time and rejects contradictory response fields", async () => {
+  const settings = { enabled: true, trigger: { kind: "calendar", startLocal: "2026-03-08T02:30:00", timeZone: "Asia/Tokyo", rrule: "FREQ=DAILY" }, prompt: "Check", systemInstruction: "" };
+  const response = { ok: true, orchestratorId: "main", revision: 1, settings, nextOccurrenceAt: "2026-11-16T00:00:00.000Z", lastDispatch: null, legacyScheduleCount: 0, legacyEnabledCount: 0 };
+  const fetchMock = jest.spyOn(global, "fetch").mockResolvedValue({ ok: true, status: 200, json: async () => response } as Response);
+  expect((await getOrchestratorSchedule({ runnerUrl: "http://runner", runnerToken: "token" }, "main")).settings).toEqual(settings);
+  fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({ ...response, settings: { ...settings, trigger: { ...settings.trigger, minutes: 60 } } }) } as Response);
+  await expect(getOrchestratorSchedule({ runnerUrl: "http://runner", runnerToken: "token" }, "main")).rejects.toThrow("unknown field");
 });

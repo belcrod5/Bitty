@@ -703,13 +703,14 @@ async function scheduledFixture(t, voice, orchestratorId, rrule = null, onVoiceA
     parseCodexOptions: () => { throw new Error("voice uses its own model settings"); },
     now: () => new Date(current), scheduleTimer: () => ({ unref() {} }), clearTimer() {},
   };
-  const scheduler = createCodexScheduleService(options);
-  await scheduler.replaceSchedules({ baseRevision: 0, schedules: [{
+  await fs.writeFile(options.definitionsPath, JSON.stringify({ version: 2, revision: 0, updatedAt: current.toISOString(), schedules: [{
     id: "11111111-1111-4111-8111-111111111111", name: "定期調査", enabled: true,
     startLocal: "2026-09-02T09:00:00", timeZone: "Asia/Tokyo", rrule,
     action: { kind: "voice", orchestratorId, prompt: "scheduled request",
       ...(extra.systemInstruction ? { systemInstruction: extra.systemInstruction } : {}) },
-  }] });
+  }] }));
+  const scheduler = createCodexScheduleService(options);
+  await scheduler.snapshot();
   current = new Date("2026-09-02T00:00:00.000Z");
   return { scheduler, options, advance: (ms) => { current = new Date(current.getTime() + ms); } };
 }
@@ -783,9 +784,8 @@ test("deleted voice schedule targets stop without falling back to main or repeat
   await service.remove(item.id);
   const saved = await scheduler.snapshot();
   const definitions = saved.schedules.map(({ nextOccurrenceAt: _next, lastDispatch: _last, ...definition }) => definition);
-  // A stale target must not block editing other definitions in the replace-all API.
-  await scheduler.replaceSchedules({ baseRevision: saved.revision,
-    schedules: definitions.map((definition) => ({ ...definition, name: "改名した予定" })) });
+  // Unchanged stale targets must not block normal replace-all saves.
+  await scheduler.replaceSchedules({ baseRevision: saved.revision, schedules: definitions });
   await scheduler.evaluate();
   const dispatch = (await scheduler.snapshot()).schedules[0].lastDispatch;
   assert.equal(dispatch.status, "skipped");
@@ -794,7 +794,7 @@ test("deleted voice schedule targets stop without falling back to main or repeat
   assert.equal((await service.history("main")).messages.length, 0);
   const failed = await scheduler.snapshot();
   await scheduler.replaceSchedules({ baseRevision: failed.revision,
-    schedules: definitions.map((definition) => ({ ...definition, enabled: false })) });
+    schedules: failed.schedules.map(({ nextOccurrenceAt: _next, lastDispatch: _last, ...definition }) => definition) });
   assert.equal((await scheduler.snapshot()).schedules[0].enabled, false);
 });
 
@@ -1838,11 +1838,12 @@ test("scheduled execution never answers or mutates an existing real user reset c
 test("disabled schedules do not run and re-enabling does not accumulate missed intervals", async (t) => {
   const { service, codex } = await fixture(t);
   const { scheduler, advance } = await scheduledFixture(t, service, "main", "FREQ=MINUTELY;INTERVAL=15");
-  await scheduler.patchSchedule("11111111-1111-4111-8111-111111111111", { baseRevision: 1, patch: { enabled: false } });
+  const settings = await scheduler.getOrchestratorSchedule("main");
+  const disabled = await scheduler.saveOrchestratorSchedule("main", { baseRevision: settings.revision, settings: { ...settings.settings, enabled: false } });
   advance(3 * 60 * 60_000);
   await scheduler.evaluate();
   assert.equal(codex.calls.some(({ method }) => method === "turn/start"), false);
-  await scheduler.patchSchedule("11111111-1111-4111-8111-111111111111", { baseRevision: 2, patch: { enabled: true } });
+  await scheduler.saveOrchestratorSchedule("main", { baseRevision: disabled.revision, settings: { ...disabled.settings, enabled: true } });
   await scheduler.evaluate();
   assert.equal(codex.calls.some(({ method }) => method === "turn/start"), false);
   advance(15 * 60_000);

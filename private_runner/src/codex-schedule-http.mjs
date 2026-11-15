@@ -115,6 +115,8 @@ export function createCodexScheduleHttpHandler({
           id: error.id,
           revision: error.revision,
         });
+      } else if (error?.code === "orchestrator_schedule_api_required") {
+        json(res, 400, { error: error.code, message: message(error) });
       } else if (error?.code === "orchestrator_not_found") {
         json(res, 404, { error: "orchestrator_not_found" });
       } else if (error instanceof CodexScheduleNotFoundError) {

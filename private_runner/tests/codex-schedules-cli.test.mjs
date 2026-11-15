@@ -464,3 +464,35 @@ test("unsafe config and broad token permissions fail closed before a request", a
   assert.equal(permissionResult.code, 1);
   assert.equal(JSON.parse(permissionResult.stderr).error, "runner_token_file_invalid");
 });
+
+test("owner CLI uses the same GET/PUT endpoint as UI and help explains interval versus calendar", async (t) => {
+  const requests = [];
+  const listener = await listen(async (req, res) => {
+    requests.push({ method: req.method, url: req.url, body: await readBody(req) });
+    res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify({ ok: true, revision: 2 }));
+  });
+  t.after(listener.close);
+  const f = await makeCliRoot(t, `RUNNER_TOKEN_FILE=private_runner/secrets/token\nRUNNER_CONTROL_SOCKET=${listener.socketPath}\n`);
+  const settings = { enabled: true, trigger: { kind: "calendar", startLocal: "2026-11-16T09:00:00", timeZone: "Asia/Tokyo", rrule: "FREQ=DAILY" }, prompt: "Check", systemInstruction: "" };
+  const file = path.join(f.root, "settings.json"); await fs.writeFile(file, JSON.stringify({ baseRevision: 1, settings }), { mode: 0o600 });
+  assert.equal((await runCli(f.cli, ["orchestrator-get", "main"])).code, 0);
+  assert.equal((await runCli(f.cli, ["orchestrator-set", ID, "--file", file])).code, 0);
+  assert.deepEqual(requests, [{ method: "GET", url: "/orchestrators/main/schedule", body: null },
+    { method: "PUT", url: `/orchestrators/${ID}/schedule`, body: { baseRevision: 1, settings } }]);
+  assert.match((await runCli(f.cli, ["--help"])).stdout, /Never mix interval and calendar fields/);
+  for (const args of [["orchestrator-get", "bad"], ["orchestrator-get", "main", "--file", file], ["orchestrator-set"]]) {
+    assert.equal(JSON.parse((await runCli(f.cli, args)).stderr).error, "invalid_cli_usage");
+  }
+});
+
+test("legacy caller receives owner-command guidance even when prompt overlaps server error message", async (t) => {
+  const listener = await listen(async (req, res) => {
+    await readBody(req); res.statusCode = 400; res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ error: "orchestrator_schedule_api_required", message: "定期実行は専用設定を使ってください orchestrator-get" }));
+  });
+  t.after(listener.close);
+  const f = await makeCliRoot(t, `RUNNER_TOKEN_FILE=private_runner/secrets/token\nRUNNER_CONTROL_SOCKET=${listener.socketPath}\n`);
+  const result = await runCli(f.cli, ["create"], { input: JSON.stringify({ baseRevision: 1, schedule: { action: { kind: "voice", prompt: "定期実行" } } }) });
+  assert.equal(result.code, 2); assert.equal(JSON.parse(result.stderr).error, "orchestrator_schedule_api_required");
+  assert.match(JSON.parse(result.stderr).message, /orchestrator-get.*orchestrator-set/);
+});

@@ -228,7 +228,7 @@ function normalizeAction(value, index, parseCodexOptions, strictStoredFields, le
 function normalizeDefinition(raw, index, parseCodexOptions, strictStoredFields = false, legacy = false) {
   const value = requireObject(raw, `schedules[${index}]`);
   const legacyShape = legacy || (!strictStoredFields && value.action === undefined);
-  if (strictStoredFields) {
+  if (strictStoredFields || value.action?.kind === "voice") {
     onlyKeys(value, legacyShape ? LEGACY_DEFINITION_KEYS : DEFINITION_KEYS, `schedules[${index}]`);
   }
   const id = requireString(value.id, `schedules[${index}].id`).trim();
@@ -943,24 +943,34 @@ export function createCodexScheduleService({
     return owner;
   }
 
-  function orchestratorSnapshot(id) {
+  function orchestratorRecords(id) {
     const records = definitionsStore.schedules.filter((item) => item.action.kind === "voice" && item.action.orchestratorId === id);
     const canonical = records.find((item) => item.id === orchestratorScheduleId(id));
     const legacy = records.filter((item) => item !== canonical);
-    const source = canonical || legacy.find((item) => item.enabled) || legacy[0];
+    const active = records.filter((item) => item.enabled).sort((left, right) =>
+      (runtimeStore.runtimes[left.id]?.nextOccurrenceAt || "~").localeCompare(runtimeStore.runtimes[right.id]?.nextOccurrenceAt || "~"));
+    const source = active[0] || canonical || legacy[0];
+    return { records, canonical, legacy, source };
+  }
+
+  function orchestratorSnapshot(id) {
+    const { legacy, source, records } = orchestratorRecords(id);
     const interval = source?.rrule?.match(/^FREQ=MINUTELY;INTERVAL=(\d+)$/);
     const runtime = source && runtimeStore.runtimes[source.id];
-    const nextOccurrenceAt = records.filter((item) => item.enabled).map((item) => runtimeStore.runtimes[item.id]?.nextOccurrenceAt)
-      .filter(Boolean).sort()[0] || null;
+    const trigger = !source || interval ? { kind: "interval", minutes: interval ? Number(interval[1]) : 60 }
+      : { kind: "calendar", startLocal: source.startLocal, timeZone: source.timeZone, rrule: source.rrule };
     return { orchestratorId: id, revision: definitionsStore.revision,
-      settings: { enabled: records.some((item) => item.enabled), intervalMinutes: interval ? Number(interval[1]) : 60,
+      settings: { enabled: records.some((item) => item.enabled), trigger,
         prompt: source?.action.prompt || "学習した内容と最近の会話から、今やると役立つことを考えて提案してください。",
         systemInstruction: source?.action.systemInstruction || "" },
-      nextOccurrenceAt,
+      nextOccurrenceAt: source?.enabled ? runtime?.nextOccurrenceAt || null : null,
       lastDispatch: clone(runtime?.lastDispatch || null),
-      legacyScheduleCount: legacy.length, legacyEnabledCount: legacy.filter((item) => item.enabled).length,
-      legacyRecurrence: source && !canonical && !interval
-        ? { startLocal: source.startLocal, timeZone: source.timeZone, rrule: source.rrule } : null };
+      legacyScheduleCount: legacy.length, legacyEnabledCount: legacy.filter((item) => item.enabled).length };
+  }
+
+  function requireOwnerScheduleApi() {
+    throw Object.assign(new Error("オーケストレーターの定期実行は専用設定を使ってください。node private_runner/tools/codex-schedules.mjs orchestrator-get <orchestratorId> / orchestrator-set <orchestratorId> --file <JSON>（--helpで設定形式を確認）"),
+      { code: "orchestrator_schedule_api_required" });
   }
 
   async function getOrchestratorSchedule(id) {
@@ -975,28 +985,40 @@ export function createCodexScheduleService({
       if (!Number.isInteger(body.baseRevision) || body.baseRevision < 0) throw new Error("Invalid baseRevision");
       if (body.baseRevision !== definitionsStore.revision) throw new CodexScheduleRevisionConflictError(definitionsStore.revision);
       const settings = requireObject(body.settings, "settings");
-      onlyKeys(settings, new Set(["enabled", "intervalMinutes", "prompt", "systemInstruction"]), "settings");
-      if (typeof settings.enabled !== "boolean" || !Number.isInteger(settings.intervalMinutes)
-        || settings.intervalMinutes < 1 || settings.intervalMinutes > 10080) throw new Error("Invalid periodic settings");
+      onlyKeys(settings, new Set(["enabled", "trigger", "prompt", "systemInstruction"]), "settings");
+      if (typeof settings.enabled !== "boolean") throw new Error("settings.enabled must be a boolean");
+      const trigger = requireObject(settings.trigger, "settings.trigger");
+      if (trigger.kind === "interval") {
+        onlyKeys(trigger, new Set(["kind", "minutes"]), "settings.trigger");
+        if (!Number.isInteger(trigger.minutes) || trigger.minutes < 1 || trigger.minutes > 10080) {
+          throw new Error("settings.trigger.minutes must be an integer from 1 to 10080");
+        }
+      } else if (trigger.kind === "calendar") {
+        onlyKeys(trigger, new Set(["kind", "startLocal", "timeZone", "rrule"]), "settings.trigger");
+        parseCodexScheduleStartLocal(trigger.startLocal);
+        validateCodexScheduleTimeZone(trigger.timeZone);
+        if (normalizeCodexScheduleRrule(trigger.rrule)?.startsWith("FREQ=MINUTELY;")) {
+          throw new Error("calendar trigger cannot use an interval rrule; use kind=interval with minutes");
+        }
+      } else throw new Error("settings.trigger.kind must be interval or calendar");
       if (typeof settings.systemInstruction !== "string" || settings.systemInstruction.length > 4000) throw new Error("Invalid periodic instructions");
       const scheduleId = orchestratorScheduleId(id);
-      const canonical = definitionsStore.schedules.find((item) => item.id === scheduleId);
-      if (canonical && (canonical.action.kind !== "voice" || canonical.action.orchestratorId !== id)) {
+      const { canonical, source } = orchestratorRecords(id);
+      const collision = definitionsStore.schedules.find((item) => item.id === scheduleId);
+      if (collision && (collision.action.kind !== "voice" || collision.action.orchestratorId !== id)) {
         throw new Error("Periodic schedule ID is already used by another schedule");
       }
       if (!canonical && definitionsStore.schedules.length >= CODEX_SCHEDULE_MAX_COUNT) {
         throw new Error("スケジュールは100件までです。既存設定は変更されていません。");
       }
-      const records = definitionsStore.schedules.filter((item) => item.action.kind === "voice" && item.action.orchestratorId === id);
-      const source = canonical || records.find((item) => item.enabled) || records[0];
-      const rrule = `FREQ=MINUTELY;INTERVAL=${settings.intervalMinutes}`;
+      const rrule = trigger.kind === "interval" ? `FREQ=MINUTELY;INTERVAL=${trigger.minutes}` : trigger.rrule;
       const at = now();
       const keepAnchor = source?.rrule === rrule;
       const definition = normalizeDefinition({ id: scheduleId, name: canonical?.name || "オーケストレーターの定期実行",
         enabled: settings.enabled, rrule,
-        startLocal: keepAnchor ? source.startLocal
-          : new Date(Math.ceil((at.getTime() + settings.intervalMinutes * 60_000) / 60_000) * 60_000).toISOString().slice(0, 19),
-        timeZone: keepAnchor ? source.timeZone : "UTC",
+        startLocal: trigger.kind === "calendar" ? trigger.startLocal : keepAnchor ? source.startLocal
+          : new Date(Math.ceil((at.getTime() + trigger.minutes * 60_000) / 60_000) * 60_000).toISOString().slice(0, 19),
+        timeZone: trigger.kind === "calendar" ? trigger.timeZone : keepAnchor ? source.timeZone : "UTC",
         action: { kind: "voice", orchestratorId: id, prompt: settings.prompt, systemInstruction: settings.systemInstruction } },
         0, parseCodexOptions);
       const next = definitionsStore.schedules.map((item) => {
@@ -1074,6 +1096,8 @@ export function createCodexScheduleService({
         parseCodexOptions,
         validateAction: validateActionTarget,
       });
+      const voices = (items) => items.filter((item) => item.action.kind === "voice").sort((a, b) => a.id.localeCompare(b.id));
+      if (JSON.stringify(voices(schedules)) !== JSON.stringify(voices(definitionsStore.schedules))) requireOwnerScheduleApi();
       return commitNormalizedDefinitions(schedules, now());
     });
     armTimer();
@@ -1101,6 +1125,7 @@ export function createCodexScheduleService({
         true,
         input.action === undefined,
       );
+      if (schedule.action.kind === "voice") requireOwnerScheduleApi();
       const existing = definitionsStore.schedules.find((item) => item.id === idempotencyKey);
       if (existing) {
         if (JSON.stringify(existing) === JSON.stringify(schedule)) {
@@ -1173,6 +1198,7 @@ export function createCodexScheduleService({
         normalizedPatch.action = { ...current.action, ...legacyActionPatch };
       }
       const schedule = normalizeDefinition({ ...current, ...normalizedPatch }, index, parseCodexOptions, true);
+      if (current.action.kind === "voice" || schedule.action.kind === "voice") requireOwnerScheduleApi();
       if (Object.keys(normalizedPatch).every((key) => JSON.stringify(current[key]) === JSON.stringify(schedule[key]))) {
         const snapshot = buildSnapshot(definitionsStore.schedules, runtimeStore);
         return {
@@ -1217,6 +1243,7 @@ export function createCodexScheduleService({
       if (body.baseRevision !== definitionsStore.revision) {
         throw new CodexScheduleRevisionConflictError(definitionsStore.revision);
       }
+      if (definitionsStore.schedules[index].action.kind === "voice") requireOwnerScheduleApi();
       const schedules = definitionsStore.schedules.filter((schedule) => schedule.id !== id);
       const snapshot = await commitNormalizedDefinitions(schedules, now());
       return { deleted: true, id, revision: snapshot.revision };
