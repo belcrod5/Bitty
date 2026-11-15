@@ -608,6 +608,27 @@ test("stopping a voice turn interrupts the matching operation and ignores its la
   expect(result.current.reply).toBeNull();
   expect(onCompleted).not.toHaveBeenCalled();
 });
+test("closing an accepted voice turn detaches the frontend without interrupting its backend operation", async () => {
+  const onCompleted = jest.fn();
+  const { result, unmount } = await renderHook(() => useVoiceConversation(onCompleted));
+  await waitFor(() => expect(result.current.ready).toBe(true));
+  let sent!: Promise<void>;
+  await act(async () => { sent = result.current.sendTranscript("continue in background", jest.fn()); });
+  expect(result.current.turnStatus).toBe("accepted");
+  const lateComplete = handlers.get("voice.turn.completed");
+  const rejected = expect(sent).rejects.toThrow("音声画面を閉じました");
+  await unmount();
+  await rejected;
+  expect(mockManager.request.mock.calls.filter(([request]) => request.op === "turn.start")).toHaveLength(1);
+  expect(mockManager.request.mock.calls.some(([request]) => request.op === "voice.turn.interrupt")).toBe(false);
+  expect(handlers.has("voice.turn.completed")).toBe(false);
+  await act(async () => lateComplete?.({
+    channel: "agent", op: "voice.turn.completed",
+    payload: { clientOperationId: operationId, status: "completed", text: "completed in background" },
+  }));
+  expect(onCompleted).not.toHaveBeenCalled();
+});
+
 test("an unknown operation remains interruptible after reopening", async () => {
   mockManager.request.mockImplementation(async ({ op }: { op: string }) => {
     if (op === "voice.open") return { op: "voice.open.result", payload: {

@@ -1041,8 +1041,72 @@ test("history scrolling and downward swipes do not dismiss the panel", async () 
   await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: 80 }); });
   expect(screen.getByTestId("voice-conversation-history")).toBe(panel);
   expect(panel.props.onMockPanelRelease).toBeUndefined();
+  expect(mockOnClose).not.toHaveBeenCalled();
+  expect(mockVoice.interrupt).not.toHaveBeenCalled();
   await screen.unmount();
 });
+
+test.each(["onMockGestureCancel", "onMockGestureFail", "onMockGestureEnd"] as const)(
+  "%s does not dismiss voice for an unsuccessful or short downward swipe", async (finish) => {
+    const screen = await render(<ClosableVoiceScreen />);
+    await act(async () => {
+      const swipe = screen.getByTestId("voice-history-swipe-area");
+      swipe.props.onMockGestureStart();
+      swipe.props[finish]({ translationY: finish === "onMockGestureEnd" ? 40 : 80 });
+    });
+    expect(screen.getByTestId("streaming-stt-footer")).toBeTruthy();
+    expect(screen.queryByTestId("voice-conversation-history")).toBeNull();
+    expect(mockOnClose).not.toHaveBeenCalled();
+    expect(mockVoice.interrupt).not.toHaveBeenCalled();
+    await screen.unmount();
+  },
+);
+
+test("downward dismissal releases native recording without interrupting the backend", async () => {
+  mockUseActualStreamingStt = true;
+  jest.spyOn(require("expo-modules-core"), "requireOptionalNativeModule").mockReturnValue(mockNativeStt);
+  const screen = await render(<ClosableVoiceScreen />);
+  await waitFor(() => expect(mockNativeStt.start).toHaveBeenCalledTimes(1));
+  await act(async () => {
+    mockNativeSttListeners.get("BittyStreamingSttMessage")?.({ data: JSON.stringify({ type: "ready" }) });
+  });
+  await act(async () => {
+    screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: 80 });
+  });
+  expect(mockNativeStt.abort).toHaveBeenCalled();
+  expect(screen.queryByTestId("voice-conversation-screen")).toBeNull();
+  expect(screen.queryByTestId("streaming-stt-footer")).toBeNull();
+  expect(screen.queryByTestId("voice-conversation-backdrop")).toBeNull();
+  expect(mockOnClose).toHaveBeenCalledTimes(1);
+  expect(mockVoice.interrupt).not.toHaveBeenCalled();
+  expect(mockNativeStt.start).toHaveBeenCalledTimes(1);
+});
+
+test.each(["running", "completed"])(
+  "downward dismissal stops frontend speech and ignores late replies for a %s turn", async (status) => {
+    mockVoice.turnStatus = status;
+    const screen = await render(<ClosableVoiceScreen />);
+    await act(async () => { mockOnCompleted?.("読み上げ中", "voice-operation-1"); });
+    const lateReply = mockOnCompleted;
+    const lateJob = mockOnJob;
+    mockStopTtsPlayback.mockClear();
+    mockSynthesizeSpeechStream.mockClear();
+    await act(async () => {
+      screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: 80 });
+    });
+    expect(screen.queryByTestId("voice-conversation-screen")).toBeNull();
+    expect(mockAbort).toHaveBeenCalled();
+    expect(mockStopTtsPlayback).toHaveBeenCalledWith({
+      interruptStream: true, reason: "voice_screen_closed", expectedMessageId: "voice-operation-1",
+    });
+    expect(mockVoice.interrupt).not.toHaveBeenCalled();
+    await act(async () => {
+      lateReply?.("遅れて届いた返答", "late-operation");
+      lateJob?.("late-job", "late-operation");
+    });
+    expect(mockSynthesizeSpeechStream).not.toHaveBeenCalled();
+  },
+);
 
 test("routes privacy-safe STT diagnostics from the voice conversation to the shared log", async () => {
   const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);

@@ -320,13 +320,15 @@ function VoiceConversationSession({
       if (historyExpanded) return;
       if (success && translationY < -50) {
         runOnJS(setHistoryExpanded)(true);
+      } else if (success && translationY > 50) {
+        runOnJS(onClose)();
       } else {
         historyHeight.value = withTiming(0, { duration: reduceMotion === true ? 0 : 200 }, (finished) => {
           if (finished) runOnJS(setHistoryMounted)(false);
         });
       }
     }), [editingTranscript, historyDragActive, historyExpanded, historyHeight, reduceMotion,
-      screenHeight, setHistoryExpanded, streamingStt.correctionPreview?.editing]);
+      onClose, screenHeight, setHistoryExpanded, streamingStt.correctionPreview?.editing]);
 
   const quietAudio = useCallback(async () => {
     await streamingStt.abort();
