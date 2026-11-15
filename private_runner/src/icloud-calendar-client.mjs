@@ -180,11 +180,11 @@ export function createICloudCalendarClient({ account, password, fetchImpl = fetc
     if (base.origin !== target.origin || !target.pathname.startsWith(base.pathname.endsWith("/") ? base.pathname : base.pathname + "/")) throw iCloudError("icloud_response_invalid", 502);
     return { url, document: calendarDocument(data, calendar) };
   });
-  const multiget = async (calendar, urls, range, signal) => {
-    const expand = range ? `<c:expand start="${timestamp(range.start)}" end="${timestamp(range.end)}"/>` : "";
+  const multiget = async (calendar, urls, signal) => {
     const hrefs = urls.map((url) => `<d:href>${new URL(iCloudUrl(calendar.url, url)).pathname.replaceAll("&", "&amp;")}</d:href>`).join("");
-    return resources(await request(calendar.url, "REPORT", `<c:calendar-multiget xmlns:d="${DAV}" xmlns:c="${CAL}"><d:prop><c:calendar-data>${expand}</c:calendar-data></d:prop>${hrefs}</c:calendar-multiget>`, 1, signal), calendar);
+    return resources(await request(calendar.url, "REPORT", `<c:calendar-multiget xmlns:d="${DAV}" xmlns:c="${CAL}"><d:prop><c:calendar-data/></d:prop>${hrefs}</c:calendar-multiget>`, 1, signal), calendar);
   };
+  const query = async (calendar, range, signal) => resources(await request(calendar.url, "REPORT", `<c:calendar-query xmlns:d="${DAV}" xmlns:c="${CAL}"><d:prop><c:calendar-data><c:expand start="${timestamp(range.start)}" end="${timestamp(range.end)}"/></c:calendar-data></d:prop><c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT"><c:time-range start="${timestamp(range.start)}" end="${timestamp(range.end)}"/></c:comp-filter></c:comp-filter></c:filter></c:calendar-query>`, 1, signal), calendar);
   const summaries = (expanded, raw, calendar) => {
     const original = raw.document.getAllSubcomponents("vevent");
     const values = [];
@@ -227,15 +227,15 @@ export function createICloudCalendarClient({ account, password, fetchImpl = fetc
       const selected = input.calendarIds === undefined ? all : all.filter((calendar) => input.calendarIds.includes(calendar.id));
       let events = [], truncated = false;
       for (const calendar of selected) {
-        const data = await request(calendar.url, "REPORT", `<c:calendar-query xmlns:d="${DAV}" xmlns:c="${CAL}"><d:prop><c:calendar-data><c:expand start="${timestamp(range.start)}" end="${timestamp(range.end)}"/></c:calendar-data></d:prop><c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT"><c:time-range start="${timestamp(range.start)}" end="${timestamp(range.end)}"/></c:comp-filter></c:comp-filter></c:filter></c:calendar-query>`, 1, operation);
-        if (data.responses.length > 100) truncated = true;
-        const expanded = resources(data, calendar).map((resource) => ({ resource,
+        const data = await query(calendar, range, operation);
+        if (data.length > 100) truncated = true;
+        const expanded = data.map((resource) => ({ resource,
           first: Math.min(...resource.document.getAllSubcomponents("vevent")
             .filter((component) => component.getFirstPropertyValue("status") !== "CANCELLED")
             .map((component) => sortInstant(eventTime(new ICAL.Event(component).startDate, component, calendar), calendar))),
         })).sort((a, b) => a.first - b.first).slice(0, 100).map((value) => value.resource);
         if (!expanded.length) continue;
-        const raw = await multiget(calendar, expanded.map((item) => item.url), null, operation);
+        const raw = await multiget(calendar, expanded.map((item) => item.url), operation);
         for (const item of expanded) {
           const original = raw.find((value) => value.url === item.url);
           if (!original) throw iCloudError("icloud_response_invalid", 502);
@@ -263,7 +263,7 @@ export function createICloudCalendarClient({ account, password, fetchImpl = fetc
       if (!calendar || typeof identity.resource !== "string" || typeof identity.uid !== "string") throw iCloudError("event_not_found");
       const resource = iCloudUrl(calendar.url, identity.resource), base = new URL(calendar.url), target = new URL(resource);
       if (base.origin !== target.origin || !target.pathname.startsWith(base.pathname.endsWith("/") ? base.pathname : base.pathname + "/")) throw iCloudError("invalid_arguments");
-      const raw = (await multiget(calendar, [resource], null, operation)).find((value) => value.url === resource);
+      const raw = (await multiget(calendar, [resource], operation)).find((value) => value.url === resource);
       if (!raw) throw iCloudError("event_not_found");
       const components = raw.document.getAllSubcomponents("vevent").filter((item) => item.getFirstPropertyValue("uid") === identity.uid);
       const recurring = components.some((item) => item.hasProperty("rrule") || item.hasProperty("rdate") || item.hasProperty("recurrence-id"));
@@ -273,7 +273,7 @@ export function createICloudCalendarClient({ account, password, fetchImpl = fetc
         const instant = new Date(input.instanceStart);
         if (!Number.isFinite(+instant) || !/^(?:\d{4}-\d{2}-\d{2}|.*(?:Z|[+-]\d\d:\d\d))$/.test(input.instanceStart)) throw iCloudError("invalid_arguments");
         const range = { start: new Date(+instant - 36 * 3600000), end: new Date(+instant + 36 * 3600000) };
-        expanded = (await multiget(calendar, [resource], range, operation)).find((value) => value.url === resource);
+        expanded = (await query(calendar, range, operation)).find((value) => value.url === resource);
         if (!expanded) throw iCloudError("event_not_found");
       }
       const event = summaries(expanded, raw, calendar).find((value) => decodeId(value.id, "event").uid === identity.uid

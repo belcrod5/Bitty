@@ -67,8 +67,37 @@ test("server-expanded recurrence retains original timezone and distinguishes rea
   f.responses.push(document(data(calendarUrl + "repeat.ics", raw)), document(data(calendarUrl + "repeat.ics", expanded)));
   const detail = await f.client.getEvent({ eventId: result.events[1].id, instanceStart: "2026-11-16T11:00:00+09:00", detached: true });
   assert.equal(detail.event.title, "Moved");
+  assert.ok(f.requests[5].body.includes("<c:calendar-multiget"));
+  assert.ok(!f.requests[5].body.includes("<c:expand"));
+  assert.ok(f.requests[6].body.includes("<c:calendar-query"));
+  assert.ok(f.requests[6].body.includes("<c:expand"));
   f.responses.push(document(data(calendarUrl + "repeat.ics", raw)));
   await assert.rejects(f.client.getEvent({ eventId: result.events[1].id }), { code: "invalid_arguments" });
+});
+
+test("recurring detail uses the same query expansion as search and selects the requested resource and instance", async () => {
+  const requests = [];
+  const master = ics(event("repeat", ":20200101T001500Z", ":20200101T011500Z", "RRULE:FREQ=DAILY\r\nSUMMARY:Daily\r\n"));
+  const expanded = ics(event("repeat", ":20261117T001500Z", ":20261117T011500Z", "RECURRENCE-ID:20261117T001500Z\r\nSUMMARY:Requested\r\n"),
+    event("repeat", ":20261118T001500Z", ":20261118T011500Z", "RECURRENCE-ID:20261118T001500Z\r\nSUMMARY:Next\r\n"));
+  const f = fixture();
+  const report = (_url, options) => {
+    requests.push(options.body);
+    // A provider returning the original RRULE for multiget cannot satisfy expansion.
+    // Only calendar-query returns the instances that both read operations consume.
+    return new Response(options.body.includes("<c:calendar-query")
+      ? document(data(calendarUrl + "other.ics", ics(event("other", ":20261117T001500Z", ":20261117T011500Z"))), data(calendarUrl + "repeat.ics", expanded))
+      : document(data(calendarUrl + "other.ics", ics(event("other", ":20261117T001500Z", ":20261117T011500Z"))), data(calendarUrl + "repeat.ics", master)), { status: 207 });
+  };
+  f.responses.push(report, report, report, report);
+  const found = await f.client.searchEvents({ start: "2026-11-16T00:00:00Z", end: "2026-11-19T00:00:00Z" });
+  const selected = found.events.find((value) => value.title === "Requested");
+  const detail = await f.client.getEvent({ eventId: selected.id, instanceStart: "2026-11-17T09:15:00+09:00", detached: false });
+  assert.equal(detail.event.title, "Requested");
+  assert.equal(detail.event.start, "2026-11-17T00:15:00.000Z");
+  assert.equal(detail.event.id, selected.id);
+  assert.equal(requests.filter((body) => body.includes("<c:calendar-query")).length, 2);
+  assert.ok(requests.filter((body) => body.includes("<c:calendar-multiget")).every((body) => !body.includes("<c:expand")));
 });
 
 test("all-day dates remain dates and sort at calendar-local midnight, including timezone range boundaries", async () => {
