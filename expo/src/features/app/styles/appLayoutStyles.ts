@@ -219,7 +219,7 @@ export function createAppLayoutStyles(theme: VisualTheme) {
   chatDirectoryHeaderPrimaryRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
+    gap: 4,
   },
   chatDirectoryHeaderDirectoryButton: {
     flexDirection: "row",
@@ -228,8 +228,7 @@ export function createAppLayoutStyles(theme: VisualTheme) {
     minWidth: 0,
     flexShrink: 1,
   },
-  chatDirectoryHeaderNoteButton: {
-    minWidth: 32,
+  chatDirectoryHeaderIcon: {
     minHeight: 28,
     alignItems: "center",
     justifyContent: "center",
