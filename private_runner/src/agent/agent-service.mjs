@@ -139,6 +139,7 @@ export function createAgentService({
   isSubagentSession = () => false,
   listRawActiveSessions = () => [],
   getRegisteredDirectoryPaths = async () => [],
+  getAdditionalActiveSessionCount = () => 0,
   log = console,
 } = {}) {
   const registry = new Map();
@@ -1906,7 +1907,6 @@ export function createAgentService({
       if (registeredPaths.length > 0 && cwds.length === 0) {
         throw agentError("turn_rejected", "registered directories could not be resolved");
       }
-      if (cwds.length === 0) return { count: 0 };
       const allowedCwds = new Set(cwds);
       const activeSessions = new Set();
       for (const run of runs.values()) {
@@ -1923,7 +1923,7 @@ export function createAgentService({
         if (session.isSubagent || session.parentSessionRef || !allowedCwds.has(session.canonicalCwd)) continue;
         activeSessions.add(sessionKey(session.sessionRef));
       }
-      return { count: activeSessions.size };
+      return { count: activeSessions.size + getAdditionalActiveSessionCount({ subjectId }) };
     },
     async validateAppControlTarget(target, context = {}) {
       const sessionRef = normalizeAgentSessionRef(target.sessionRef);

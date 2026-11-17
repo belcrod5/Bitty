@@ -1346,6 +1346,11 @@ const turnCompletionNotifier = createTurnCompletionNotifier({
   getVoiceUnreadCount: (id) => id ? voiceContextService.unreadState(id) : voiceContextService.unreadCount(),
   getVoiceReplyUnread: (id, conversationId, ordinal) => voiceContextService.replyUnread(id, conversationId, ordinal),
   getNormalUnreadCount: async (directories) => (await countUnreadSessions(directories)).unreadCount,
+  broadcastVoice: (payload) => {
+    for (const client of runnerWsActiveClients) sendRunnerWsEnvelope(client, {
+      channel: "agent", op: "voice.turn.completed.notification", payload,
+    });
+  },
   broadcast: (payload) => {
     // ターン完了はSkiaボードの自動カード追加(ingest)の主トリガでもある。
     // relay/スケジュール/agent runの3経路がここに収束する。失敗はingest側で握る。
@@ -1612,6 +1617,8 @@ const agentRuntime = createPrivateRunnerAgentRuntime({
   runEventObservers: [approvalPushService.onRunEvent, turnCompletionNotifier.onAgentRunEvent],
   activity: orchestratorActivity,
   onActiveSessionsChanged: broadcastActiveSessionsChanged,
+  getAdditionalActiveSessionCount: ({ subjectId }) => subjectId === agentOwnerSubjectId
+    ? voiceContextService.activeSessionCount() : 0,
   onSessionChildrenChanged: broadcastSessionChildrenChanged,
   listRawActiveSessions: () => [...codexWsRelaysById.values()].flatMap((relay) => {
     const lease = relay.agentLease;
@@ -5098,6 +5105,7 @@ const voiceContextService = createVoiceOrchestratorService({
   defaultTtsProvider: TTS_PROVIDER,
   onChecklistChanged: broadcastVoiceChecklistChanged,
   onLearningUnreadChanged: broadcastVoiceUnreadState,
+  onActiveSessionsChanged: broadcastActiveSessionsChanged,
   onCompleted: (result, orchestratorName) => {
     void broadcastVoiceUnreadState();
     void turnCompletionNotifier.notifyVoiceCompleted({ orchestratorId: result.orchestratorId,

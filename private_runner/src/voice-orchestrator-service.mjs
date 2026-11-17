@@ -45,7 +45,8 @@ function validateIcon(icon) {
 }
 
 export function createVoiceOrchestratorService({ rootDir, createClient, createLegacyClient, getAgentService, subjectId,
-  handleCalendarTool, onCompleted, onChecklistChanged, onLearningUnreadChanged, disposeRuntime, activity, defaultTtsProvider = "aivisspeech" }) {
+  handleCalendarTool, onCompleted, onChecklistChanged, onLearningUnreadChanged, onActiveSessionsChanged,
+  disposeRuntime, activity, defaultTtsProvider = "aivisspeech" }) {
   const root = path.resolve(rootDir);
   const registryFile = path.join(root, "orchestrators.json");
   const orchestratorRoot = path.join(root, "orchestrators");
@@ -528,6 +529,9 @@ export function createVoiceOrchestratorService({ rootDir, createClient, createLe
         return target.respondToChecklistCompletion(sourceHash, version, decision);
       });
     },
+    activeSessionCount() {
+      return reservations.size;
+    },
     async isBusy(id) { return exclusive(async () => { await load();
       if (introductionDrafts.has(idOf(id))) return true;
       for (const service of await ownerContexts(idOf(id))) if (await service.isBusy()) return true;
@@ -576,7 +580,6 @@ export function createVoiceOrchestratorService({ rootDir, createClient, createLe
         }
         const { orchestratorId, conversationKey, ...payload } = message.payload;
         return withCounts(id, await service.start({ ...message, payload }, (result) => {
-          reservations.delete(reservation);
           const settled = { ...result, orchestratorId: id, ...(key ? { conversationKey: key } : {}) };
           void withCounts(id, settled).catch(() => settled).then(notify)
             .catch(() => console.warn("[voice] client completion delivery failed"));
@@ -589,10 +592,13 @@ export function createVoiceOrchestratorService({ rootDir, createClient, createLe
           operationOwners.set(operationId, id);
           operationScopes.set(operationId, key);
           reservations.add(reservation);
+          try { onActiveSessionsChanged?.(); } catch {}
           hooks?.onAccepted?.({ ttsProvider: orchestrator.ttsProvider || defaultTtsProvider,
             voiceId: orchestrator.voiceId || "" });
         }, onNativeRoot: ({ threadId, client }) => activity?.registerRoot({ threadId, client, orchestratorId: id }), onSettled: () => {
-          reservations.delete(reservation);
+          if (reservations.delete(reservation)) {
+            try { onActiveSessionsChanged?.(); } catch {}
+          }
           hooks?.onSettled?.();
         } }));
       });

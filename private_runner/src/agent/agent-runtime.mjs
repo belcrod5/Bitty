@@ -64,6 +64,7 @@ export function createPrivateRunnerAgentRuntime({
   onSessionChildrenChanged,
   listRawActiveSessions,
   getRegisteredDirectoryPaths,
+  getAdditionalActiveSessionCount,
   log = console,
 }) {
   if (typeof listSessionsForDirectories !== "function") {
@@ -240,6 +241,7 @@ export function createPrivateRunnerAgentRuntime({
     onActiveSessionsChanged,
     listRawActiveSessions,
     getRegisteredDirectoryPaths,
+    getAdditionalActiveSessionCount,
     isSubagentSession: (sessionRef, cwd) => {
       if (sessionRef.backendId === "claude") return /^agent-/.test(sessionRef.nativeSessionId);
       const entry = selectCachedSession?.(sessionRef.nativeSessionId, { directory: cwd })

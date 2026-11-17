@@ -8,6 +8,7 @@ import {
 
 function createHarness(overrides = {}) {
   const broadcasts = [];
+  const voiceBroadcasts = [];
   const sends = [];
   const removals = [];
   const warnings = [];
@@ -43,13 +44,14 @@ function createHarness(overrides = {}) {
       return { canonicalCwd: "/work/project-a" };
     }),
     broadcast(payload) { broadcasts.push(payload); },
+    broadcastVoice(payload) { voiceBroadcasts.push(payload); },
     log: {
       log(message) { logs.push(String(message)); },
       warn(message) { warnings.push(String(message)); },
     },
     now: overrides.now || Date.now,
   });
-  return { notifier, broadcasts, sends, removals, warnings, logs, bindingCalls };
+  return { notifier, broadcasts, voiceBroadcasts, sends, removals, warnings, logs, bindingCalls };
 }
 
 test("voice completion pushes a logical orchestrator target with combined badge", async () => {
@@ -80,6 +82,21 @@ test("voice completion suppresses Push when that exact reply was read", async ()
   await read.notifier.notifyVoiceCompleted({ orchestratorId: "main", logicalConversationId: "logical-1",
     clientOperationId: "operation-1", completedOrdinal: 1, text: "answer" });
   assert.equal(read.sends.length, 0);
+  assert.equal(read.voiceBroadcasts.length, 1);
+});
+
+test("voice live completion is deduplicated independently of Push availability and retains its logical target", async () => {
+  const harness = createHarness({ pushEnabled: false });
+  const event = { orchestratorId: "main", logicalConversationId: "logical", clientOperationId: "one",
+    completedOrdinal: 1, text: "" };
+  await harness.notifier.notifyVoiceCompleted(event);
+  await harness.notifier.notifyVoiceCompleted(event);
+  assert.deepEqual(harness.voiceBroadcasts, [{ orchestratorId: "main", logicalConversationId: "logical",
+    clientOperationId: "one", completedOrdinal: 1 }]);
+  assert.deepEqual(harness.broadcasts, []);
+  assert.deepEqual(harness.sends, []);
+  await harness.notifier.notifyVoiceCompleted({ ...event, clientOperationId: "two", completedOrdinal: 2 });
+  assert.equal(harness.voiceBroadcasts.length, 2);
 });
 
 test("voice Push rechecks the exact reply after summary without losing another unread reply", async () => {
@@ -94,6 +111,7 @@ test("voice Push rechecks the exact reply after summary without losing another u
   });
   const first = harness.notifier.notifyVoiceCompleted({ orchestratorId: "main", logicalConversationId: "logical",
     clientOperationId: "one", completedOrdinal: 1, text: "first" });
+  assert.equal(harness.voiceBroadcasts.length, 1);
   await new Promise((resolve) => setImmediate(resolve));
   readThrough = 1;
   release();

@@ -134,6 +134,7 @@ async function fixture(t, options) {
   return { rootDir, codex, service: createVoiceOrchestratorService({ rootDir,
     createClient: codex.createClient, getAgentService: options?.getAgentService,
     subjectId: "voice-owner", onCompleted: options?.onCompleted,
+    onActiveSessionsChanged: options?.onActiveSessionsChanged,
     onChecklistChanged: options?.onChecklistChanged, activity: options?.activity }) };
 }
 
@@ -367,6 +368,49 @@ test("completed turns notify once even if client delivery fails or the operation
   assert.equal((await service.start(message, () => { deliveries += 1; }, async () => "decline")).status, "completed");
   assert.equal(completions.length, 1);
   assert.equal(deliveries, 1);
+});
+
+for (const outcome of ["completed", "interrupted", "failed"]) {
+  test(`active orchestrator count releases exactly once after ${outcome}, including operation replay`, async (t) => {
+    const counts = [];
+    let service;
+    const fixtureResult = await fixture(t, { hold: outcome !== "failed", failTurn: outcome === "failed",
+      onActiveSessionsChanged: () => { counts.push(service.activeSessionCount()); } });
+    service = fixtureResult.service;
+    const { codex } = fixtureResult;
+    const opened = await service.open("main");
+    assert.equal(service.activeSessionCount(), 0);
+    const current = await turn(service, "main", opened.logicalConversationId, "count this turn");
+    assert.equal(counts[0], 1);
+    if (outcome !== "failed") {
+      await waitFor(() => codex.releases.length > 0);
+      assert.equal(service.activeSessionCount(), 1);
+      await turn(service, "main", opened.logicalConversationId, "count this turn", current.operationId);
+      assert.deepEqual(counts, [1]);
+      if (outcome === "interrupted") await service.interrupt("main", opened.logicalConversationId, current.operationId);
+      else codex.releases.shift()();
+    }
+    await current.finished;
+    await waitFor(() => service.activeSessionCount() === 0);
+    assert.deepEqual(counts, [1, 0]);
+    await turn(service, "main", opened.logicalConversationId, "count this turn", current.operationId);
+    assert.deepEqual(counts, [1, 0]);
+  });
+}
+
+test("active counts include separate orchestrators without counting tools or background history work", async (t) => {
+  const { service, codex } = await fixture(t, { hold: true });
+  const other = await service.create("Other");
+  const first = await turn(service, "main", (await service.open("main")).logicalConversationId, "one");
+  const second = await turn(service, other.id, (await service.open(other.id)).logicalConversationId, "two");
+  await waitFor(() => codex.releases.length === 2);
+  assert.equal(service.activeSessionCount(), 2);
+  codex.releases.shift()();
+  await first.finished;
+  await waitFor(() => service.activeSessionCount() === 1);
+  codex.releases.shift()();
+  await second.finished;
+  await waitFor(() => service.activeSessionCount() === 0);
 });
 
 test("completion observer failure does not interrupt client delivery or unread state", async (t) => {

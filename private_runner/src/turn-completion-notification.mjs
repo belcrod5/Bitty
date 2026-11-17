@@ -33,6 +33,7 @@ export function createTurnCompletionNotifier({
   getNormalUnreadCount,
   getAgentSessionBinding,
   broadcast,
+  broadcastVoice,
   log = console,
   now = Date.now,
 }) {
@@ -161,8 +162,12 @@ export function createTurnCompletionNotifier({
 
   async function notifyVoiceCompleted({ orchestratorId, orchestratorName, logicalConversationId,
     clientOperationId, completedOrdinal, text }) {
-    if (!pushEnabled || !apnsClient || !pushSummarizer) return;
     const key = JSON.stringify(["voice", orchestratorId, logicalConversationId, clientOperationId]);
+    if (rememberTurn(broadcastedAtByTurn, key, Number(now()))) {
+      try { broadcastVoice?.({ orchestratorId, logicalConversationId, clientOperationId, completedOrdinal }); }
+      catch (error) { log.warn(`[push] voice completion broadcast failed: ${errorMessage(error)}`); }
+    }
+    if (!pushEnabled || !apnsClient || !pushSummarizer) return;
     if (!rememberTurn(pushedAtByTurn, key, Number(now()))) return;
     const devices = await pushDeviceStore.listDevices();
     if (!devices.length || !(await getVoiceReplyUnread(orchestratorId, logicalConversationId, completedOrdinal)).unread) return;

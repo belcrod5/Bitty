@@ -84,6 +84,38 @@ test("socket opt-in synchronizes metadata once, retains legacy lists and resends
 });
 
 
+test("shared count includes orchestrators and live voice completion reaches every connected client once", async () => {
+  const originalCount = __TESTING__.voiceContextService.activeSessionCount;
+  let active = 2;
+  __TESTING__.voiceContextService.activeSessionCount = () => active;
+  const board = connect();
+  const chat = connect();
+  let resumed;
+  try {
+    assert.equal((await board.request("sessions.active-count")).payload.count, 2);
+    assert.equal((await chat.request("sessions.active-count")).payload.count, 2);
+    const event = { orchestratorId: "main", logicalConversationId: "logical-broadcast",
+      clientOperationId: "live-voice-operation", completedOrdinal: 1, text: "" };
+    await __TESTING__.turnCompletionNotifier.notifyVoiceCompleted(event);
+    await __TESTING__.turnCompletionNotifier.notifyVoiceCompleted(event);
+    for (const client of [board, chat]) {
+      const notifications = client.sent.filter((message) => message.op === "voice.turn.completed.notification");
+      assert.equal(notifications.length, 1);
+      assert.equal(notifications[0].channel, "agent");
+      assert.equal(notifications[0].payload.clientOperationId, event.clientOperationId);
+      assert.equal(client.sent.some((message) => message.op === "turn_completed_notification"), false);
+    }
+    active = 0;
+    assert.equal((await board.request("sessions.active-count")).payload.count, 0);
+    resumed = connect();
+    await resumed.request("voice.orchestrators.list");
+    assert.equal(resumed.sent.some((message) => message.op === "voice.turn.completed.notification"), false);
+  } finally {
+    __TESTING__.voiceContextService.activeSessionCount = originalCount;
+    board.socket.close(); chat.socket.close(); resumed?.socket.close();
+  }
+});
+
 test("directory identity projection avoids the explorer payload and preserves invalid-path errors", async () => {
   const directory = path.join(temp, "identity-directory");
   await fs.mkdir(directory);

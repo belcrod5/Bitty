@@ -199,6 +199,13 @@ export function useSessionNotificationLifecycleController({
   ]);
 
   useEffect(() => runnerWebSocketManager.subscribe?.(
+    { channel: "agent", op: "voice.turn.completed.notification" },
+    () => {
+      if (AppState.currentState === "active") playUiSfx("reply");
+    }
+  ), [playUiSfx, runnerWebSocketManager]);
+
+  useEffect(() => runnerWebSocketManager.subscribe?.(
     { channel: "llm", op: "turn_completed_notification" },
     (message) => {
       if (AppState.currentState !== "active") return;
