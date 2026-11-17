@@ -240,7 +240,8 @@ function VoiceConversationSession({
       ?.some((item) => item.id === orchestrator.id)) void voice.refreshHistory();
   }), [appActive, historyExpanded, manager, orchestrator.id, paused, voice.refreshHistory]);
   useEffect(() => {
-    if (!appActive || paused || !voice.ready) return;
+    if (!appActive || paused || !voice.ready || !mountedRef.current
+      || transitioningRef.current || footerDismissing.value) return;
     const historyOrdinal = historyExpanded
       ? voice.history.reduce((max, message) => Math.max(max, message.completedOrdinal || 0), 0) : 0;
     const ordinal = Math.max(historyOrdinal, voice.reply?.completedOrdinal || 0);
@@ -252,7 +253,7 @@ function VoiceConversationSession({
       if (response.op === "voice.read.result") void dismissReadVoiceNotifications(
         orchestrator.id, voice.logicalConversationId, ordinal).catch(() => undefined);
     }).catch(() => undefined);
-  }, [appActive, historyExpanded, manager, orchestrator.id, paused, voice.history,
+  }, [appActive, footerDismissing, historyExpanded, manager, orchestrator.id, paused, transitioning, voice.history,
     voice.logicalConversationId, voice.ready, voice.reply?.completedOrdinal]);
   useLayoutEffect(() => {
     historyAtBottomRef.current = true;
@@ -332,14 +333,14 @@ function VoiceConversationSession({
         footerOffset.value = Math.max(0, translationY);
       }
     })
-    .onFinalize(({ translationY }, success) => {
+    .onFinalize(({ translationY, velocityY = 0 }, success) => {
       if (!historyDragActive.value) return;
       historyDragActive.value = false;
       if (historyExpanded || footerDismissing.value) return;
       if (success && translationY < -50) {
         footerOffset.value = 0;
         runOnJS(setHistoryExpanded)(true);
-      } else if (success && translationY > 50) {
+      } else if (success && (translationY > 50 || (translationY > 0 && velocityY > 800))) {
         footerDismissing.value = true;
         runOnJS(beginSwipeDismissal)();
         footerOffset.value = withTiming(Math.max(footerOffset.value, footerDismissDistance.value),
