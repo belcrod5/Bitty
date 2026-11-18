@@ -1140,6 +1140,29 @@ test("active count uses registered canonical directories and ignores caller scop
   await assert.rejects(service.countActiveSessions({}, {}), /authenticated subject/);
 });
 
+test("shared active count adds owner executions independently of registered directories", async () => {
+  let directories = ["/workspace"];
+  let additional = 1;
+  const backend = listBackend("codex", { sessions: [] });
+  backend.listActiveSessions = () => [
+    { sessionRef: { backendId: "codex", nativeSessionId: "delegate" }, canonicalCwd: "/workspace" },
+    { sessionRef: { backendId: "codex", nativeSessionId: "child" }, canonicalCwd: "/workspace",
+      parentSessionRef: { backendId: "codex", nativeSessionId: "delegate" } },
+  ];
+  const service = createAgentService({ backends: [backend], operationStore: operationStore(), sessionStore: sessionStore(),
+    resolveCanonicalCwd: async (cwd) => cwd,
+    getRegisteredDirectoryPaths: async () => directories,
+    getAdditionalActiveSessionCount: ({ subjectId }) => subjectId === "owner" ? additional : 0,
+  });
+  assert.deepEqual(await service.countActiveSessions({}, { subjectId: "owner" }), { count: 2 });
+  directories = [];
+  assert.deepEqual(await service.countActiveSessions({}, { subjectId: "owner" }), { count: 1 });
+  assert.deepEqual(await service.countActiveSessions({}, { subjectId: "other" }), { count: 0 });
+  additional = 0;
+  assert.deepEqual(await service.countActiveSessions({}, { subjectId: "owner" }), { count: 0 });
+  await assert.rejects(service.countActiveSessions({}, {}), /authenticated subject/);
+});
+
 test("active count WebSocket reads legacy relative directories from persisted client state", async (t) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "agent-active-count-"));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));

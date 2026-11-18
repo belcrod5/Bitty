@@ -184,6 +184,29 @@ describe("useSessionNotificationLifecycleController", () => {
     expect(playUiSfx).toHaveBeenCalledTimes(1);
   });
 
+  it("uses the normal reply sound for live orchestrator completion without a mounted voice UI or normal-session read", async () => {
+    const { result } = await renderController();
+    const markRead = jest.fn();
+    result.current.markSessionReadAsyncRef.current = markRead;
+    await act(async () => {
+      messageHandlers.get("voice.turn.completed.notification")?.({ channel: "agent",
+        op: "voice.turn.completed.notification", payload: { orchestratorId: "main",
+          logicalConversationId: "voice-conversation", clientOperationId: "operation", completedOrdinal: 1 } });
+    });
+    expect(playUiSfx).toHaveBeenCalledTimes(1);
+    expect(playUiSfx).toHaveBeenCalledWith("reply");
+    expect(markRead).not.toHaveBeenCalled();
+    await act(async () => {
+      messageHandlers.get("voice.unread.changed")?.({ channel: "agent", op: "voice.unread.changed",
+        payload: { unreadCounts: [{ id: "main", unreadCount: 0 }] } });
+      runnerConnectionState = "reconnecting";
+      runnerSnapshotListener?.();
+      runnerConnectionState = "ready";
+      runnerSnapshotListener?.();
+    });
+    expect(playUiSfx).toHaveBeenCalledTimes(1);
+  });
+
   it("refreshes unread counts for text-free completions outside the visible chat", async () => {
     const { result } = await renderController();
     await waitFor(() => expect(mockSyncUnread).toHaveBeenCalledTimes(1));
@@ -210,6 +233,8 @@ describe("useSessionNotificationLifecycleController", () => {
         channel: "llm", op: "turn_completed_notification", sessionId: "popup-session",
         payload: { backendId: "codex", directory: "/repo" },
       });
+      messageHandlers.get("voice.turn.completed.notification")?.({ channel: "agent",
+        op: "voice.turn.completed.notification", payload: { orchestratorId: "main" } });
       result.current.handleForegroundSessionCompletion({ backendId: "codex", sessionId: "popup-session", directory: "/repo" });
     });
     expect(mockSyncUnread).toHaveBeenCalledTimes(1);

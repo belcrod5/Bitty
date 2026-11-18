@@ -4,7 +4,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { randomUUID } from "expo-crypto";
 import { AppState, Platform, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
-import Reanimated, { FadeIn, FadeOut, runOnJS, useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
+import Reanimated, { cancelAnimation, FadeIn, FadeOut, runOnJS, useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
 import { useControlledStreamingStt } from "../../appControl/useControlledStreamingStt";
 import { getVoiceControl } from "../../appControl/voiceControl";
 import { StreamingSttFooter, type StreamingSttFooterHandle } from "../components/StreamingSttFooter";
@@ -160,12 +160,17 @@ function VoiceConversationSession({
   const historyHeight = useSharedValue(historyExpanded ? screenHeight : 0);
   const historyDragActive = useSharedValue(false);
   const historyStyle = useAnimatedStyle(() => ({ height: historyHeight.value }));
+  const footerOffset = useSharedValue(0);
+  const footerDismissing = useSharedValue(false);
+  const footerDismissDistance = useSharedValue(screenHeight);
+  const footerStyle = useAnimatedStyle(() => ({ transform: [{ translateY: footerOffset.value }] }));
   const [initialStartPending, setInitialStartPending] = useState(!initialControlSignal);
   const [synthesisStarting, setSynthesisStarting] = useState(false);
   const [synthesisRequestSettled, setSynthesisRequestSettled] = useState(false);
   const [transitioning, setTransitioning] = useState(false);
   const [appActive, setAppActive] = useState(AppState.currentState === "active");
   const footerRef = useRef<StreamingSttFooterHandle>(null);
+  const footerInsetRef = useRef<View>(null);
   const historyScrollRef = useRef<ScrollView>(null);
   const historyAtBottomRef = useRef(true);
   const mountedRef = useRef(true);
@@ -235,7 +240,8 @@ function VoiceConversationSession({
       ?.some((item) => item.id === orchestrator.id)) void voice.refreshHistory();
   }), [appActive, historyExpanded, manager, orchestrator.id, paused, voice.refreshHistory]);
   useEffect(() => {
-    if (!appActive || paused || !voice.ready) return;
+    if (!appActive || paused || !voice.ready || !mountedRef.current
+      || transitioningRef.current || footerDismissing.value) return;
     const historyOrdinal = historyExpanded
       ? voice.history.reduce((max, message) => Math.max(max, message.completedOrdinal || 0), 0) : 0;
     const ordinal = Math.max(historyOrdinal, voice.reply?.completedOrdinal || 0);
@@ -247,7 +253,7 @@ function VoiceConversationSession({
       if (response.op === "voice.read.result") void dismissReadVoiceNotifications(
         orchestrator.id, voice.logicalConversationId, ordinal).catch(() => undefined);
     }).catch(() => undefined);
-  }, [appActive, historyExpanded, manager, orchestrator.id, paused, voice.history,
+  }, [appActive, footerDismissing, historyExpanded, manager, orchestrator.id, paused, transitioning, voice.history,
     voice.logicalConversationId, voice.ready, voice.reply?.completedOrdinal]);
   useLayoutEffect(() => {
     historyAtBottomRef.current = true;
@@ -300,33 +306,56 @@ function VoiceConversationSession({
       replyLoading, turnStatus: voice.turnStatus, playbackActive,
     }, { throttleMs: 0 });
   }, [streamingStt.phase, canStart, paused, transitioning, voice.ready, replyLoading, voice.turnStatus, playbackActive]);
+  const beginSwipeDismissal = useCallback(() => {
+    transitioningRef.current = true;
+    setTransitioning(true);
+  }, []);
+  const finishSwipeDismissal = useCallback(() => {
+    if (!mountedRef.current) return;
+    mountedRef.current = false;
+    onClose();
+  }, [onClose]);
   const footerSwipe = useMemo(() => Gesture.Pan()
-    .enabled(!editingTranscript && !streamingStt.correctionPreview?.editing)
+    .enabled(!transitioning && !editingTranscript && !streamingStt.correctionPreview?.editing)
     .activeOffsetY([-24, 24])
     .failOffsetX([-32, 32])
     .onStart(() => {
-      if (!historyExpanded) {
+      if (!historyExpanded && !footerDismissing.value) {
+        cancelAnimation(footerOffset);
         historyDragActive.value = true;
         historyHeight.value = 0;
         runOnJS(setHistoryMounted)(true);
       }
     })
     .onUpdate(({ translationY }) => {
-      if (!historyExpanded) historyHeight.value = Math.min(screenHeight, Math.max(0, -translationY));
+      if (!historyExpanded && historyDragActive.value && !footerDismissing.value) {
+        historyHeight.value = Math.min(screenHeight, Math.max(0, -translationY));
+        footerOffset.value = Math.max(0, translationY);
+      }
     })
-    .onFinalize(({ translationY }, success) => {
+    .onFinalize(({ translationY, velocityY = 0 }, success) => {
       if (!historyDragActive.value) return;
       historyDragActive.value = false;
-      if (historyExpanded) return;
+      if (historyExpanded || footerDismissing.value) return;
       if (success && translationY < -50) {
+        footerOffset.value = 0;
         runOnJS(setHistoryExpanded)(true);
+      } else if (success && (translationY > 50 || (translationY > 0 && velocityY > 800))) {
+        footerDismissing.value = true;
+        runOnJS(beginSwipeDismissal)();
+        footerOffset.value = withTiming(Math.max(footerOffset.value, footerDismissDistance.value),
+          { duration: reduceMotion === true ? 0 : 200 }, (finished) => {
+            if (finished) runOnJS(finishSwipeDismissal)();
+          });
       } else {
+        footerOffset.value = withTiming(0, { duration: reduceMotion === true ? 0 : 200 });
         historyHeight.value = withTiming(0, { duration: reduceMotion === true ? 0 : 200 }, (finished) => {
           if (finished) runOnJS(setHistoryMounted)(false);
         });
       }
-    }), [editingTranscript, historyDragActive, historyExpanded, historyHeight, reduceMotion,
-      screenHeight, setHistoryExpanded, streamingStt.correctionPreview?.editing]);
+    }), [beginSwipeDismissal, editingTranscript, finishSwipeDismissal, footerDismissDistance,
+      footerDismissing, footerOffset, historyDragActive, historyExpanded, historyHeight, reduceMotion,
+      screenHeight, setHistoryExpanded, streamingStt.correctionPreview?.editing, transitioning]);
 
   const quietAudio = useCallback(async () => {
     await streamingStt.abort();
@@ -396,6 +425,7 @@ function VoiceConversationSession({
 
   useEffect(() => () => {
     mountedRef.current = false;
+    cancelAnimation(footerOffset);
     void streamingStt.abort();
     if (voicePlaybackMessageIdRef.current) {
       void stopTtsPlayback({
@@ -404,7 +434,7 @@ function VoiceConversationSession({
         expectedMessageId: voicePlaybackMessageIdRef.current,
       });
     }
-  }, [stopTtsPlayback, streamingStt.abort]);
+  }, [footerOffset, stopTtsPlayback, streamingStt.abort]);
 
   const cancelSpeaking = useCallback(() => {
     const messageId = voicePlaybackMessageIdRef.current;
@@ -456,8 +486,8 @@ function VoiceConversationSession({
         testID="voice-conversation-transition"
         entering={voicePanelFadeIn}
         exiting={voicePanelFadeOut}
-        pointerEvents="box-none"
-        style={{ flex: 1, width: "100%" }}
+        pointerEvents={transitioning ? "none" : "box-none"}
+        style={[{ flex: 1, width: "100%" }, footerStyle]}
       >
         <SafeAreaView testID="voice-conversation-screen" pointerEvents="box-none" style={{ flex: 1 }}>
           <View testID="voice-conversation-content" pointerEvents="box-none"
@@ -627,6 +657,15 @@ function VoiceConversationSession({
               </Reanimated.View>
             ) : null}
             <View testID="voice-footer-inset"
+              ref={footerInsetRef}
+              onLayout={() => {
+                if (historyDragActive.value || footerDismissing.value || footerOffset.value !== 0) return;
+                footerInsetRef.current?.measureInWindow((_x, y) => {
+                  if (!historyDragActive.value && !footerDismissing.value && footerOffset.value === 0) {
+                    footerDismissDistance.value = Math.max(0, screenHeight - y);
+                  }
+                });
+              }}
               style={{ paddingLeft: historyExpanded ? 20 : 12, paddingRight: 20, paddingBottom: 20 }}>
               <GestureDetector gesture={footerSwipe}>
                 <View testID="voice-history-swipe-area">
