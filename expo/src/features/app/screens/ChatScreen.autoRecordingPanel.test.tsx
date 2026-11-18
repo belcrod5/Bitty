@@ -525,6 +525,7 @@ describe("ChatScreen voice input", () => {
     mockChatSessionSubagentProps.current = null;
     mockGitDiffPanelProps.current = null;
     mockRunnerWsConnectionStatusProps.current = null;
+    mockPanelServiceTier = "default";
     mockPanelBackendId = "codex";
     mockPanelSessionId = "session-1";
     mockPanelSessionMaterialized = true;
@@ -1749,5 +1750,30 @@ test("chat footer shows a compact speed switch with an emphasized active bolt", 
   mockPanelServiceTier = "default";
   await screen.unmount();
 });
+
+  test.each(["standard", "cyberpunk"] as const)("Fast mode subtly tints the input in the %s theme and restores it when off", async (themeId) => {
+    const chat = () => (
+      <VisualThemeProvider themeId={themeId} onSelectTheme={jest.fn()}>
+        <ChatScreen panelId="speed-panel" />
+      </VisualThemeProvider>
+    );
+    const screen = await render(chat());
+    const inputBackground = () => StyleSheet.flatten(screen.getByTestId("chat-composer-input-wrapper").props.style).backgroundColor;
+    expect(inputBackground()).toBe(VISUAL_THEMES[themeId].colors.surface);
+    await fireEvent.changeText(screen.getByTestId("chat-composer-input"), "keep this draft");
+
+    mockPanelServiceTier = "fast";
+    await screen.rerender(chat());
+    expect(inputBackground()).toBe(VISUAL_THEMES[themeId].colors.surfaceSelected);
+    expect(screen.getByRole("switch", { name: "Fast mode", checked: true })).toBeTruthy();
+    expect(screen.getByTestId("chat-composer-input").props.value).toBe("keep this draft");
+
+    mockPanelServiceTier = "default";
+    await screen.rerender(chat());
+    expect(inputBackground()).toBe(VISUAL_THEMES[themeId].colors.surface);
+    expect(screen.getByRole("switch", { name: "Fast mode", checked: false })).toBeTruthy();
+    expect(screen.getByTestId("chat-composer-input").props.value).toBe("keep this draft");
+    await screen.unmount();
+  });
 
 });
