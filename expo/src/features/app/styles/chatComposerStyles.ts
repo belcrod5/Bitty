@@ -44,9 +44,6 @@ export function createChatComposerStyles(theme: VisualTheme) {
     paddingHorizontal: 10,
     paddingVertical: 8,
   },
-  chatInputWrapperFast: {
-    backgroundColor: theme.colors.surfaceSelected,
-  },
   chatInput: {
     minHeight: 44,
     maxHeight: 160,

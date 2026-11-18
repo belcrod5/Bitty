@@ -118,7 +118,15 @@ jest.mock("react-native-reanimated", () => {
   const { View } = jest.requireActual("react-native") as typeof import("react-native");
   return {
     __esModule: true,
-    default: { View: (props: Record<string, unknown>) => ReactModule.createElement(View, props) },
+    default: { View: (props: Record<string, unknown>) => ReactModule.createElement(View, props),
+      createAnimatedComponent: (Component: unknown) => Component },
+    useSharedValue: (initial: number) => ReactModule.useRef({ value: initial }).current,
+    useAnimatedStyle: (callback: () => unknown) => callback(),
+    withTiming: (value: number) => value,
+    withRepeat: (value: number) => value,
+    cancelAnimation: jest.fn(),
+    Easing: { sin: jest.fn(), inOut: (value: unknown) => value },
+    ReduceMotion: { Never: "never" },
     FadeIn: { duration: (duration: number) => ({ type: "fade-in", duration }) },
     FadeOut: { duration: (duration: number) => ({ type: "fade-out", duration }) },
   };
@@ -1751,7 +1759,7 @@ test("chat footer shows a compact speed switch with an emphasized active bolt", 
   await screen.unmount();
 });
 
-  test.each(["standard", "cyberpunk"] as const)("Fast mode subtly tints the input in the %s theme and restores it when off", async (themeId) => {
+  test.each(["standard", "cyberpunk"] as const)("Fast mode highlights only its bolt in the %s theme and preserves the input", async (themeId) => {
     const chat = () => (
       <VisualThemeProvider themeId={themeId} onSelectTheme={jest.fn()}>
         <ChatScreen panelId="speed-panel" />
@@ -1764,7 +1772,9 @@ test("chat footer shows a compact speed switch with an emphasized active bolt", 
 
     mockPanelServiceTier = "fast";
     await screen.rerender(chat());
-    expect(inputBackground()).toBe(VISUAL_THEMES[themeId].colors.surfaceSelected);
+    expect(inputBackground()).toBe(VISUAL_THEMES[themeId].colors.surface);
+    expect(StyleSheet.flatten(screen.getByRole("switch", { name: "Fast mode" }).props.style).backgroundColor)
+      .toBe(VISUAL_THEMES[themeId].tones.warning.background);
     expect(screen.getByRole("switch", { name: "Fast mode", checked: true })).toBeTruthy();
     expect(screen.getByTestId("chat-composer-input").props.value).toBe("keep this draft");
 
@@ -1772,6 +1782,8 @@ test("chat footer shows a compact speed switch with an emphasized active bolt", 
     await screen.rerender(chat());
     expect(inputBackground()).toBe(VISUAL_THEMES[themeId].colors.surface);
     expect(screen.getByRole("switch", { name: "Fast mode", checked: false })).toBeTruthy();
+    expect(StyleSheet.flatten(screen.getByRole("switch", { name: "Fast mode" }).props.style).backgroundColor)
+      .toBe("transparent");
     expect(screen.getByTestId("chat-composer-input").props.value).toBe("keep this draft");
     await screen.unmount();
   });

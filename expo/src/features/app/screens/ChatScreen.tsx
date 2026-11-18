@@ -46,6 +46,7 @@ import { useChatScreen } from "../contexts/ChatScreenContext";
 import { useSkiaBoard } from "../contexts/SkiaBoardContext";
 import { ChatContextUsageMenu } from "../components/ChatContextUsageMenu";
 import { RunningSessionCount } from "../components/RunningSessionCount";
+import { FastModeToggle } from "../components/FastModeToggle";
 import { CodexStatusSummaryMenu } from "../components/CodexStatusSummaryMenu";
 import { CommandExecutionRow } from "../components/CommandExecutionRow";
 import { BouncingDotsIndicator } from "../components/BouncingDotsIndicator";
@@ -2472,7 +2473,7 @@ export function ChatScreen({
               />
             </Reanimated.View>
           ) : (
-          <View testID="chat-composer-input-wrapper" style={[styles.chatInputWrapper, fastModeEnabled && styles.chatInputWrapperFast]}>
+          <View testID="chat-composer-input-wrapper" style={styles.chatInputWrapper}>
             <ChatComposerInput
                 inputRef={chatComposerInputRef}
                 value={transcriptForView}
@@ -2577,16 +2578,7 @@ export function ChatScreen({
                 <Text style={styles.chatFooterSettingsText}>{reasoningEffortForView || "-"}</Text>
               </TouchableOpacity>
             </View> : null}
-            {fastModeSupported ? <TouchableOpacity
-              onPress={toggleFastMode}
-              accessibilityRole="switch"
-              accessibilityLabel="Fast mode"
-              accessibilityState={{ checked: fastModeEnabled }}
-              hitSlop={8}
-            >
-              <Ionicons name={fastModeEnabled ? "flash" : "flash-outline"} size={14}
-                color={fastModeEnabled ? theme.colors.accent : theme.colors.textMuted} />
-            </TouchableOpacity> : null}
+            {fastModeSupported ? <FastModeToggle enabled={fastModeEnabled} onPress={toggleFastMode} /> : null}
           </View>
           <View style={styles.chatFooterStatusRow}>
             <RunningSessionCount />
