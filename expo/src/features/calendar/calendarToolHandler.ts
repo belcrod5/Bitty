@@ -159,6 +159,9 @@ export function createCalendarToolHandler(options: CalendarToolHandlerOptions) {
 
   const handle = async (call: CalendarToolCall): Promise<CalendarToolResult<unknown>> => {
     if (call.namespace !== CALENDAR_DYNAMIC_TOOLS_NAMESPACE) return calendarError("invalid_arguments");
+    const input = call.arguments as Record<string, unknown> | null;
+    const ids = [input?.calendarId, input?.eventId, ...(Array.isArray(input?.calendarIds) ? input.calendarIds : [])];
+    if (ids.some((id) => typeof id === "string" && id.startsWith("icloud:"))) return calendarError("calendar_not_found");
     const serialized = canonical(call.arguments);
     if (serialized === null) return calendarError("invalid_arguments");
     const requestId = await hash(lengthPrefix([call.threadId, call.turnId, call.callId, call.tool]));

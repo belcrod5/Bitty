@@ -39,6 +39,7 @@ export function createPrivateRunnerAgentRuntime({
   claudeBinary,
   ownerSubjectId,
   dynamicTools,
+  handleDynamicTool,
   stores,
   createCodexClient,
   listCodexModels,
@@ -63,6 +64,7 @@ export function createPrivateRunnerAgentRuntime({
   onSessionChildrenChanged,
   listRawActiveSessions,
   getRegisteredDirectoryPaths,
+  getAdditionalActiveSessionCount,
   log = console,
 }) {
   if (typeof listSessionsForDirectories !== "function") {
@@ -122,6 +124,7 @@ export function createPrivateRunnerAgentRuntime({
       };
     },
     dynamicTools,
+    handleDynamicTool,
     developerInstructions: CONVERSATION_HISTORY_TOOL_INSTRUCTIONS,
     async listSessions({ cwd, limit, cursor, includeSubagents, parentSessionRefs }) {
       const page = await listSessions(cwd, { source: "all", limit, cursor, includeSubagents, parentSessionRefs });
@@ -238,6 +241,7 @@ export function createPrivateRunnerAgentRuntime({
     onActiveSessionsChanged,
     listRawActiveSessions,
     getRegisteredDirectoryPaths,
+    getAdditionalActiveSessionCount,
     isSubagentSession: (sessionRef, cwd) => {
       if (sessionRef.backendId === "claude") return /^agent-/.test(sessionRef.nativeSessionId);
       const entry = selectCachedSession?.(sessionRef.nativeSessionId, { directory: cwd })

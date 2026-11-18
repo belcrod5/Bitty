@@ -793,9 +793,9 @@ export function SkiaMiniBoardScreen({
     if (activeScreen !== "skia_board") { setVoiceOpen(false); setConsultationOpen(false); }
   }, [activeScreen]);
   const { runnerUrl, runnerToken, sanitizeTextForTts, handleAssistantAudioButtonPress } = useChatScreen();
-  const { activities, orchestrators, selectedId } = useOrchestratorActivities(runnerUrl, runnerToken, true);
+  const { activities, orchestrators } = useOrchestratorActivities(runnerUrl, runnerToken, true);
   const voiceUnreadCount = hasVoicePlayback && !voiceOpen
-    ? orchestrators.reduce((sum, item) => sum + (item.id === selectedId ? 0 : item.unreadCount || 0), 0) : 0;
+    ? orchestrators.reduce((sum, item) => sum + (item.unreadCount || 0), 0) : 0;
   const { registeredDirectories } = useConversation();
   const {
     directorySync,

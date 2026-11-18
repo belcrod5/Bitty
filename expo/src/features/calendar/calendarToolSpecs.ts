@@ -120,7 +120,7 @@ function tool(name: CalendarToolName, description: string, parameters: Record<st
 
 export function calendarDynamicTools(mode: "conversation" | "schedule" = "conversation") {
   const tools = [
-    tool("calendar_list_calendars", "端末の予定表一覧を取得する", inputSchema),
+    tool("calendar_list_calendars", "設定済みカレンダーの一覧を取得する", inputSchema),
     tool("calendar_search_events", "指定期間の予定を検索する", {
       ...inputSchema,
       required: ["start", "end"],
@@ -150,7 +150,7 @@ export function calendarDynamicTools(mode: "conversation" | "schedule" = "conver
   return [{
     type: "namespace" as const,
     name: CALENDAR_DYNAMIC_TOOLS_NAMESPACE,
-    description: "iOSカレンダーの予定を読み取り、確認後に変更するツール",
+    description: "カレンダーの予定を読み取るツール。iCloud接続中は読み取り専用、それ以外の変更は端末で確認する",
     tools: mode === "schedule" ? tools.slice(0, 3) : tools,
   }];
 }

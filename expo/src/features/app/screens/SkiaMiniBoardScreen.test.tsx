@@ -645,16 +645,16 @@ test("shared voice navigation waits for popup cleanup on an already open board",
     selectedId: "main",
   } }));
   expect(screen.getByTestId("skia-board-voice-unread")).toBeTruthy();
-  expect(screen.getByText("2")).toBeTruthy();
+  expect(within(screen.getByTestId("skia-board-voice-unread")).getByText("3")).toBeTruthy();
   await act(async () => resolveOld({ op: "voice.orchestrators.list.result", payload: {
     orchestrators: [{ id: "main", name: "メイン", unreadCount: 1 }], selectedId: "main",
   } }));
-  expect(screen.getByText("2")).toBeTruthy();
+  expect(within(screen.getByTestId("skia-board-voice-unread")).getByText("3")).toBeTruthy();
   await act(async () => mockBoardVoiceHandlers.get("voice.unread.changed")?.({ payload: {
     orchestrators: [{ id: "main", name: "メイン", unreadCount: 1 }, { id: "other", name: "調査", unreadCount: 2 }],
     selectedId: "other",
   } }));
-  expect(screen.getByText("1")).toBeTruthy();
+  expect(within(screen.getByTestId("skia-board-voice-unread")).getByText("3")).toBeTruthy();
   await act(async () => setPendingVoiceOrchestratorId("other"));
   expect(requestPopupClose).toHaveBeenCalledTimes(1);
   expect(screen.queryByTestId("voice-conversation-screen")).toBeNull();
@@ -686,6 +686,39 @@ test("overlays voice input while keeping the board mounted", async () => {
   await fireEvent.press(screen.getByTestId("voice-conversation-screen"));
   expect(screen.queryByTestId("voice-conversation-screen")).toBeNull();
   expect(screen.getByTestId("skia-board-usage-pill")).toBeTruthy();
+});
+
+test("the hidden microphone counts selected-orchestrator completions until a read notification clears them", async () => {
+  const screen = await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()}
+    openSessionHistoryPopup={jest.fn()} voicePlayback={{
+      synthesizeSpeechStream: jest.fn(async () => undefined), stopTtsPlayback: jest.fn(async () => undefined),
+      isTtsPlaybackActive: false, ttsUiStatus: "idle",
+    }} />);
+  await waitFor(() => expect(mockBoardVoiceHandlers.has("voice.unread.changed")).toBe(true));
+  await act(async () => mockBoardVoiceHandlers.get("voice.unread.changed")?.({ payload: {
+    etag: "metadata-1", selectedId: "main", orchestrators: [
+      { id: "main", name: "メイン", unreadCount: 0, learningUnreadCount: 0 },
+      { id: "other", name: "調査", unreadCount: 0, learningUnreadCount: 0 },
+    ],
+  } }));
+  await fireEvent.press(screen.getByTestId("skia-board-voice-conversation"));
+  await fireEvent.press(screen.getByTestId("voice-conversation-screen"));
+  const emitCounts = async (main: number, other: number) => act(async () =>
+    mockBoardVoiceHandlers.get("voice.unread.changed")?.({ payload: {
+      etag: "metadata-1", notModified: true, unreadCounts: [
+        { id: "main", unreadCount: main, learningUnreadCount: 0 },
+        { id: "other", unreadCount: other, learningUnreadCount: 0 },
+      ],
+    } }));
+  await emitCounts(1, 0);
+  expect(screen.queryByTestId("voice-conversation-screen")).toBeNull();
+  expect(within(screen.getByTestId("skia-board-voice-unread")).getByText("1")).toBeTruthy();
+  await emitCounts(1, 2);
+  expect(within(screen.getByTestId("skia-board-voice-unread")).getByText("3")).toBeTruthy();
+  await emitCounts(0, 2);
+  expect(within(screen.getByTestId("skia-board-voice-unread")).getByText("2")).toBeTruthy();
+  await emitCounts(0, 0);
+  expect(screen.queryByTestId("skia-board-voice-unread")).toBeNull();
 });
 
 test("persists viewport reset through the local viewport owner", async () => {

@@ -11,6 +11,7 @@ import { BUILD_STAMP } from "../buildStamp";
 import { useAppStyles } from "../styles";
 import { KeyboardAvoidingView } from "../keyboardController";
 import { SettingsSelect } from "../components/SettingsSelect";
+import { ICloudCalendarSettingsScreen } from "./ICloudCalendarSettingsScreen";
 import { RunnerLoginSettings } from "../components/RunnerLoginSettings";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { VISUAL_THEME_OPTIONS } from "../theme/visualThemes";
@@ -19,6 +20,7 @@ export function SettingsScreen() {
   const styles = useAppStyles();
   const { themeId, selectTheme } = useVisualTheme();
   const { openSkiaBoardScreen, openDrawer, openCloudflareTunnelMonitorScreen } = useAppShell();
+  const [iCloudOpen, setICloudOpen] = useState(false);
   const [buildStampCopied, setBuildStampCopied] = useState(false);
   const buildStampCopiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -32,6 +34,8 @@ export function SettingsScreen() {
     if (buildStampCopiedTimerRef.current) clearTimeout(buildStampCopiedTimerRef.current);
     buildStampCopiedTimerRef.current = setTimeout(() => setBuildStampCopied(false), 2000);
   };
+
+  if (iCloudOpen) return <ICloudCalendarSettingsScreen onBack={() => setICloudOpen(false)} />;
 
   return (
     <KeyboardAvoidingView
@@ -80,6 +84,13 @@ export function SettingsScreen() {
         <View style={styles.settingsSectionHeader}><Text style={styles.settingsSectionTitle}>音声入力</Text></View>
         <View style={styles.settingsGroup}><SpeechRecognitionSettings /></View>
       </View>
+      <View style={styles.settingsSection}><View style={styles.settingsGroup}>
+        <TouchableOpacity style={styles.settingsRow} onPress={() => setICloudOpen(true)} accessibilityRole="button" accessibilityLabel="iCloudを認証">
+          <View style={styles.settingsRowLabelWrap}><Text style={styles.settingsRowLabel}>iCloudカレンダー</Text>
+            <Text style={styles.settingsRowDescription}>アプリを閉じている間も予定を読み取る</Text></View>
+          <Text style={styles.settingsActionText}>iCloudを認証 ›</Text>
+        </TouchableOpacity>
+      </View></View>
       <GoogleCloudSettings />
       <CodexAccountSettings />
       <View style={styles.settingsSection}>

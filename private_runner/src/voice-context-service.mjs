@@ -331,7 +331,7 @@ const visibleBytes = (pairs, input, instructions) => bytes(instructions) + bytes
   + pairs.reduce((size, pair) => size + bytes(modelInputText(pair.user, pair.source)) + bytes(pair.assistant), 0);
 
 export function createVoiceContextService({ rootDir, createClient, createLegacyClient, orchestratorId, managedSessions,
-  hasOutstandingActivity, taskChecklistPath, onChecklistChanged, getOrchestratorName, onDurablePair, learningContext, sharedOwner, getAdditionalEventPairs, hasOwnerActivity }) {
+  handleCalendarTool, hasOutstandingActivity, taskChecklistPath, onChecklistChanged, getOrchestratorName, onDurablePair, learningContext, sharedOwner, getAdditionalEventPairs, hasOwnerActivity }) {
   if (orchestratorId !== undefined && orchestratorId !== "main" && !UUID.test(orchestratorId)) throw new TypeError("Invalid orchestrator ID");
   const root = path.resolve(rootDir);
   const workspaceRoot = orchestratorId ? root : path.join(path.dirname(root), "workspaces");
@@ -2340,6 +2340,16 @@ export function createVoiceContextService({ rootDir, createClient, createLegacyC
   }
 
   async function runTurn(clientOperationId, input, turnSeq, notify, onApproval, hooks = {}, signal) {
+    if (handleCalendarTool) {
+      const fallback = hooks.onCalendarToolCall;
+      hooks = { ...hooks, onCalendarToolCall: async (request, requestSignal) => {
+        const handled = await handleCalendarTool(request, requestSignal);
+        if (handled != null) return handled;
+        if (fallback) return fallback(request, requestSignal);
+        return { success: true, contentItems: [{ type: "inputText", text: JSON.stringify({ ok: false,
+          error: { code: "device_unavailable", message: "カレンダー端末に接続できません。", retryable: false } }) }] };
+      } };
+    }
     let stage = "preflight";
     const turnContext = { source: hooks.source === "scheduled" ? "scheduled" : "user",
       ...(hooks.source === "scheduled" || hooks.additionalInstructions ? { instructions:
