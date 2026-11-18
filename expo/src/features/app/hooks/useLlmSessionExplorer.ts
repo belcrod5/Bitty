@@ -50,6 +50,7 @@ export type LlmSessionHistoryEntry = {
   contextUsedPct: number | null;
   modelRef: string;
   reasoningEffort: string;
+  serviceTier?: string;
   threadStatusType?: CodexThreadStatusType;
 };
 
@@ -120,6 +121,7 @@ export type RunnerSessionMessagesResult = RunnerSessionLiveState & {
   updatedAt: string;
   modelRef: string;
   reasoningEffort: string;
+  serviceTier?: string;
   latestToolLabel: string;
   messages: RunnerSessionMessage[];
   contextUsedPct: number | null;
@@ -161,6 +163,7 @@ type RunnerSessionSnapshot = {
   contextUsedPct: number | null;
   modelRef: string;
   reasoningEffort: string;
+  serviceTier?: string;
   latestToolLabel: string;
   lastReadAt: string;
 };
@@ -639,6 +642,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
           updatedAt: messages.at(-1)?.at || "",
           modelRef: String(neutral.modelId || "").trim(),
           reasoningEffort: String(neutral.reasoningEffort || "").trim(),
+          serviceTier: String(neutral.serviceTier || "default").trim(),
           latestToolLabel: "",
           messages,
           // rollout token_count由来のcontext使用率(codex)。無いBackendはnull。

@@ -1494,3 +1494,26 @@ test("failed hello retries and malformed conditional payload requests full metad
   expect((await getAgentBackendStatuses(f.manager))[0].backendId).toBe("codex");
   expect(f.request.mock.calls.at(-1)?.[0].payload).toBeUndefined();
 });
+
+test.each([true, false])("service tier is forwarded only with advertised support (%s)", async (supported) => {
+  const request = jest.fn(async (message: { op: string }) => {
+    if (message.op === "agent.hello") return { channel: "agent", op: "agent.ready", payload: {
+      protocolVersion: 2, backends: [{ backendId: "codex", readiness: { ready: true },
+        capabilities: { model: { serviceTier: supported } } }],
+    } };
+    if (message.op === "turn.start") return { channel: "agent", op: "turn.result", streamId: "speed-run", payload: {
+      runId: "speed-run", outcome: "completed", sessionRef: { backendId: "codex", nativeSessionId: "speed-session" },
+    } };
+    return { channel: "agent", op: "history.read.result", payload: { items: [] } };
+  });
+  const manager = { request, subscribe: () => () => {}, subscribeSnapshot: () => () => {},
+    getSnapshot: () => ({ generation: 1, connectionState: "ready" }),
+  } as unknown as RunnerWebSocketManager;
+  const session = startAgentTurnWithRawFallback({ backendId: "codex", preferNeutralAgent: true,
+    runnerWebSocketManager: manager, wsUrl: "ws://runner.test", traceId: "speed-test",
+    inputText: "hello", cwd: "/workspace", serviceTier: "fast", onApprovalRequest: async () => "decline" as const,
+  }, jest.fn());
+  await session.promise;
+  const sent = request.mock.calls.find(([message]) => message.op === "turn.start")?.[0] as { payload?: Record<string, unknown> };
+  expect(sent.payload?.serviceTier).toBe(supported ? "fast" : undefined);
+});

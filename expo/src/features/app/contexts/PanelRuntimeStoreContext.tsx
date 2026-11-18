@@ -18,6 +18,8 @@ export type PanelRuntimeSnapshot = {
   selectedThreadStatusType: string;
   modelRef: string;
   reasoningEffort: string;
+  serviceTier?: string;
+  settingsRevision?: number;
   contextUsedPct: number | null;
   isResponding: boolean;
   runtimeStatus?: string;

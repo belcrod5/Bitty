@@ -71,6 +71,7 @@ type UseCodexReplyRequestOptions<
     backendId: string;
     supportsReasoningEffort?: boolean;
     effortOptions?: readonly ReasoningEffort[];
+    serviceTiers?: readonly string[];
     selectable?: boolean;
   }[];
   modelRef: string;
@@ -199,6 +200,7 @@ type ReplyRequestSessionSnapshot = {
   sessionTitle?: string;
   modelRef?: string;
   reasoningEffort?: ReasoningEffort | string;
+  serviceTier?: string;
   source?: string;
 };
 
@@ -1092,6 +1094,9 @@ export function useCodexReplyRequest<
         model: requestTurnModelRef || undefined,
         // Backendがeffort対応ならresumeでもturn単位で送る。
         effort: requestReasoningEffort || undefined,
+        serviceTier: requestSnapshot?.serviceTier === "fast" || requestSnapshot?.serviceTier === "priority"
+          ? requestModelOption?.serviceTiers?.find((tier) => tier === "fast" || tier === "priority") ?? "default"
+          : "default",
         approvalPolicy: current.codexApprovalPolicy,
         onCalendarToolCall: current.onCalendarToolCall,
         onCalendarRequestCancel: current.onCalendarRequestCancel,

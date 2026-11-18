@@ -1153,6 +1153,7 @@ function startCodexAppServerRawTurn(
       if (model) {
         turnStartParams.model = model;
       }
+      if (options.serviceTier) turnStartParams.serviceTierForTurn = options.serviceTier;
       const effort = String(options.effort || "").trim();
       if (effort === "low" || effort === "medium" || effort === "high" || effort === "xhigh" || effort === "max" || effort === "ultra") {
         turnStartParams.effort = effort;

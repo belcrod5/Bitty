@@ -18,7 +18,7 @@ export function useChatModelSelection(options: {
   selectModel: (selectionKey: string) => void;
   updatePanelSettings: (
     panelId: string,
-    settings: { backendId?: string; modelRef?: string; reasoningEffort?: string },
+    settings: { backendId?: string; modelRef?: string; reasoningEffort?: string; serviceTier?: string },
   ) => void;
   closePicker: (value: null) => void;
 }) {
@@ -83,7 +83,17 @@ export function useChatModelSelection(options: {
     options.closePicker(null);
   };
 
+  const fastServiceTier = modelOptionForView?.serviceTiers?.find((tier) => tier === "fast" || tier === "priority");
+  const fastModeEnabled = Boolean(fastServiceTier && ["fast", "priority"].includes(options.panelSnapshot.serviceTier || ""));
+
   return {
+    fastModeSupported: options.isPanelRuntimeView && Boolean(fastServiceTier),
+    fastModeEnabled,
+    toggleFastMode: () => {
+      if (options.isPanelRuntimeView && fastServiceTier) {
+        options.updatePanelSettings(options.panelId, { serviceTier: fastModeEnabled ? "default" : fastServiceTier });
+      }
+    },
     backendIdForView,
     normalizedModelRefForView,
     modelOptionForView,

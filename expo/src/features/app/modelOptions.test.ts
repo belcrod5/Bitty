@@ -103,3 +103,13 @@ test("blocks only backend changes for locked sessions", () => {
     nextBackendId: "codex",
   })).toBe(false);
 });
+
+test("exposes speed tiers only when the backend supports tier selection", () => {
+  const catalog = [{ modelId: "speed-model", serviceTiers: ["fast"] }];
+  const options = modelOptionsFromStatuses([
+    { backendId: "codex", capabilities: { model: { serviceTier: true, catalog } } },
+    { backendId: "other", capabilities: { model: { catalog } } },
+  ]);
+  expect(options[0].serviceTiers).toEqual(["fast"]);
+  expect(options[1].serviceTiers).toEqual([]);
+});

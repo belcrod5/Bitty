@@ -388,7 +388,7 @@ export function ChatScreen({
     selectableModelOptions, reasoningEffortSupportedForView, effortOptionsForView,
     scheduleModelOptions,
     scheduleModelRef, reasoningEffortForView, selectedModelLabelForView,
-    selectModelForView } = useChatModelSelection({
+    selectModelForView, fastModeSupported, fastModeEnabled, toggleFastMode } = useChatModelSelection({
     isPanelRuntimeView, panelId, panelSnapshot,
     conversationMessageCount: isPanelRuntimeView
       ? miniInheritedSourceMessages.length + miniSourceMessages.length
@@ -2577,6 +2577,16 @@ export function ChatScreen({
                 <Text style={styles.chatFooterSettingsText}>{reasoningEffortForView || "-"}</Text>
               </TouchableOpacity>
             </View> : null}
+            {fastModeSupported ? <TouchableOpacity
+              onPress={toggleFastMode}
+              accessibilityRole="switch"
+              accessibilityLabel="Fast mode"
+              accessibilityState={{ checked: fastModeEnabled }}
+              hitSlop={8}
+            >
+              <Ionicons name={fastModeEnabled ? "flash" : "flash-outline"} size={14}
+                color={fastModeEnabled ? theme.colors.accent : theme.colors.textMuted} />
+            </TouchableOpacity> : null}
           </View>
           <View style={styles.chatFooterStatusRow}>
             <RunningSessionCount />

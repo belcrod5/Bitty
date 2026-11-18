@@ -178,3 +178,14 @@ describe("useSendReplyRequestController rejection feedback", () => {
     expect(args.interruptCodexRelayObserver).not.toHaveBeenCalled();
   });
 });
+
+test("send guard preserves the panel's explicit speed selection", async () => {
+  const args = createArgs(undefined);
+  const { result } = await renderHook(() => useSendReplyRequestController(args));
+  await act(async () => result.current.sendReplyRequestWithSessionGuard("hello", { ...sendOptions,
+    sessionSnapshot: { ...sendOptions.sessionSnapshot, serviceTier: "fast" },
+  }));
+  expect(args.sendReplyRequestFromCodex).toHaveBeenCalledWith("hello", expect.objectContaining({
+    sessionSnapshot: expect.objectContaining({ serviceTier: "fast" }),
+  }));
+});

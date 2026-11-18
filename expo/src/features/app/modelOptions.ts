@@ -49,6 +49,7 @@ export function modelOptionsFromStatuses(statuses: readonly BackendStatus[]): Mo
         effortOptions: model.effortOptions === undefined
           ? parseEffortOptions(capability?.effortOptions)
           : parseEffortOptions(model.effortOptions) ?? [],
+        serviceTiers: capability?.serviceTier === true ? model.serviceTiers ?? [] : [],
         supportsScheduling: status.capabilities?.operations?.schedule === true,
         selectable: true,
       }];

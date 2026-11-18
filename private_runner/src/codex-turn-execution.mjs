@@ -53,6 +53,8 @@ export async function listCodexModelsFromAppServer(createClient, clientName) {
           modelId,
           label: firstNonEmptyString(item?.displayName, modelId),
           effortOptions,
+          serviceTiers: (Array.isArray(item?.serviceTiers) ? item.serviceTiers : [])
+            .map((tier) => String(tier?.id || "").trim()).filter(Boolean),
         });
       }
       cursor = String(page?.nextCursor || "").trim();
@@ -126,6 +128,7 @@ export async function startCodexTurn({
   cwd,
   model = "",
   effort = "",
+  serviceTier = "",
   approvalPolicy = "on-request",
   onThreadResolved,
   onBeforeTurnStart,
@@ -187,6 +190,7 @@ export async function startCodexTurn({
   if (normalizedModel) params.model = normalizedModel;
   const normalizedEffort = String(effort || "").trim().toLowerCase();
   if (VALID_EFFORTS.has(normalizedEffort)) params.effort = normalizedEffort;
+  if (serviceTier) params.serviceTierForTurn = serviceTier;
   onBeforeTurnStart?.({ threadId: activeThreadId });
   const started = await client.request("turn/start", params, 30000);
   const turnId = String(started?.turn?.id || "").trim();
@@ -345,7 +349,7 @@ export function createCodexBackend({
     return { ...session, isActive: true };
   });
 
-  async function startTurn({ runId, sessionRef, cwd, input, model, effort, policyProfileId, signal, resolveSession, emit, trustedInstructions = "" }) {
+  async function startTurn({ runId, sessionRef, cwd, input, model, effort, serviceTier, policyProfileId, signal, resolveSession, emit, trustedInstructions = "" }) {
     if (signal?.aborted) {
       const error = new Error("Codex turn was interrupted before start");
       error.nativeActivity = "not_started";
@@ -596,6 +600,7 @@ export function createCodexBackend({
         cwd,
         model,
         effort,
+        serviceTier,
         approvalPolicy: policyProfileId === "codex-never" ? "never" : "on-request",
         dynamicTools,
         enableUserInput: true,
@@ -767,7 +772,7 @@ export function createCodexBackend({
             ],
           },
           permission: { interactive: true },
-          model: { select: true, effort: true, effortOptions: CODEX_EFFORT_OPTIONS, catalog },
+          model: { select: true, effort: true, serviceTier: true, effortOptions: CODEX_EFFORT_OPTIONS, catalog },
           workspace: { projectCustomizations: true, admission: false },
           operations: { compact: true, schedule: true },
           event: { nativePayload: false },

@@ -328,5 +328,6 @@ export type ReplyRequestSessionSnapshot = {
   sessionTitle?: string;
   modelRef?: string;
   reasoningEffort?: string;
+  serviceTier?: string;
   source?: string;
 };

@@ -65,6 +65,7 @@ export type CodexAppServerTurnOptions = {
   strictThreadResume?: boolean;
   serviceName?: string;
   model?: string;
+  serviceTier?: string;
   effort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
   approvalPolicy?: "never" | "on-request";
   onCalendarToolCall?: (message: unknown) => Promise<import("../../calendar/calendarToolSpecs").CalendarToolResult<unknown>>;

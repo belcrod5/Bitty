@@ -57,6 +57,8 @@ export function buildPanelRuntimeSnapshot(params: {
     }),
     modelRef: normalizeModelRef(patch.modelRef ?? base.modelRef),
     reasoningEffort: String(patch.reasoningEffort ?? base.reasoningEffort ?? "").trim(),
+    serviceTier: String(patch.serviceTier ?? base.serviceTier ?? "").trim() || undefined,
+    settingsRevision: patch.settingsRevision ?? base.settingsRevision,
     contextUsedPct,
     isResponding,
     isHydrating: typeof patch.isHydrating === "boolean" ? patch.isHydrating : Boolean(base.isHydrating),

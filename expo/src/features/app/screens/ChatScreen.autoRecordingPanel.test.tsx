@@ -52,6 +52,8 @@ const mockGitDiffPanelProps: { current: Record<string, any> | null } = { current
 const mockChatSessionSubagentProps: { current: Record<string, any> | null } = { current: null };
 const mockRunnerWsConnectionStatusProps: { current: Record<string, any> | null } = { current: null };
 const mockSetStringAsync = jest.fn(async (_text: string) => {});
+let mockPanelServiceTier = "default";
+const mockUpdatePanelSettings = jest.fn();
 let mockPanelBackendId = "codex";
 let mockPanelSessionId = "session-1";
 let mockPanelSessionMaterialized: boolean | undefined = true;
@@ -272,6 +274,7 @@ jest.mock("../contexts/AppSettingsContext", () => ({
         label: "ChatGPT 5.6 Sol",
         supportsReasoningEffort: true,
         supportsScheduling: true,
+        serviceTiers: ["fast"],
       },
       {
         selectionKey: "claude::sonnet",
@@ -306,6 +309,7 @@ jest.mock("../contexts/PanelRuntimeStoreContext", () => ({
       sessionMaterialized: mockPanelSessionMaterialized,
       modelRef: "gpt-5.6-sol",
       reasoningEffort: "high",
+      serviceTier: mockPanelServiceTier,
       contextUsedPct: 0,
       isResponding: false,
       inheritedConversationMessages: [],
@@ -317,7 +321,7 @@ jest.mock("../contexts/PanelRuntimeStoreContext", () => ({
 jest.mock("../contexts/PanelRuntimeControllerContext", () => ({
   usePanelRuntimeController: () => ({
     startNewPanelSession: jest.fn(),
-    updatePanelSettings: jest.fn(),
+    updatePanelSettings: mockUpdatePanelSettings,
     hydratePanelFromSessionHistory: mockHydratePanelFromSessionHistory,
   }),
 }));
@@ -1729,4 +1733,21 @@ describe("ChatScreen voice input", () => {
     await row.unmount();
     await screen.unmount();
   });
+test("chat footer shows a compact speed switch with an emphasized active bolt", async () => {
+  mockPanelServiceTier = "default";
+  const screen = await render(<ChatScreen panelId="speed-panel" />);
+  expect(screen.getByRole("switch", { name: "Fast mode", checked: false })).toBeTruthy();
+  expect(screen.getByText("flash-outline")).toBeTruthy();
+  await fireEvent.press(screen.getByRole("switch", { name: "Fast mode" }));
+  expect(mockUpdatePanelSettings).toHaveBeenLastCalledWith("speed-panel", { serviceTier: "fast" });
+  mockPanelServiceTier = "fast";
+  await screen.rerender(<ChatScreen panelId="speed-panel" />);
+  expect(screen.getByRole("switch", { name: "Fast mode", checked: true })).toBeTruthy();
+  expect(screen.getByText("flash")).toBeTruthy();
+  await fireEvent.press(screen.getByRole("switch", { name: "Fast mode" }));
+  expect(mockUpdatePanelSettings).toHaveBeenLastCalledWith("speed-panel", { serviceTier: "default" });
+  mockPanelServiceTier = "default";
+  await screen.unmount();
+});
+
 });

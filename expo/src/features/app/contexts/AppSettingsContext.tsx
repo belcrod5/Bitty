@@ -10,6 +10,7 @@ export type ModelOption = {
   modelId: string;
   backendId: LlmBackend;
   supportsReasoningEffort: boolean;
+  serviceTiers?: readonly string[];
   effortOptions?: readonly ReasoningEffort[];
   supportsScheduling?: boolean;
   selectable?: boolean;

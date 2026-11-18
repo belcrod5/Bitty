@@ -647,7 +647,7 @@ describe("applyPanelHydrationSnapshot", () => {
       currentRequestStartedAtMs: null,
     });
 
-    expect(result.target.snapshot).toBe(restored);
+    expect(result.target.snapshot).toEqual(restored);
     expect(result.other).toBe(other);
   });
 
@@ -673,4 +673,29 @@ describe("applyPanelHydrationSnapshot", () => {
     expect(result.other).toBe(other);
   });
 
+});
+
+describe("hydrating panel settings", () => {
+  test.each([
+    [undefined, undefined, undefined, "fast", "fast"],
+    [1, 1, "default", "fast", "fast"],
+    [1, 1, "fast", "default", "default"],
+    [1, 2, "fast", "default", "fast"],
+    [1, 3, "default", "fast", "default"],
+  ])("revision %s→%s, local %s, restored %s resolves to %s", (initialRevision, currentRevision, currentTier, restoredTier, expectedTier) => {
+    const current = { ...panelSnapshot("target", "session", "old"),
+      serviceTier: currentTier, settingsRevision: currentRevision, modelRef: "local-model", reasoningEffort: "high" };
+    const result = applyPanelHydrationSnapshot({
+      entries: { target: { sessionId: "session", snapshot: current } }, panelId: "target", sessionId: "session",
+      snapshot: { ...panelSnapshot("target", "session", "restored"), serviceTier: restoredTier,
+        modelRef: "restored-model", reasoningEffort: "medium" },
+      expectedRequestStartedAtMs: null, currentRequestStartedAtMs: null, expectedSettingsRevision: initialRevision,
+    });
+    expect(result.target.snapshot).toMatchObject({
+      serviceTier: expectedTier, settingsRevision: currentRevision,
+      modelRef: initialRevision === currentRevision ? "restored-model" : "local-model",
+      reasoningEffort: initialRevision === currentRevision ? "medium" : "high",
+    });
+    expect(result.target.snapshot.conversationMessages[0].content).toBe("restored");
+  });
 });

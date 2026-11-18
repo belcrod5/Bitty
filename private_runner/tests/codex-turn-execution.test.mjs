@@ -545,6 +545,7 @@ test("Codex Backend derives every visible model and its efforts from app-server"
             id: "legacy-astra-id",
             model: "gpt-6-astra",
             displayName: "GPT-6 Astra — Upstream",
+            serviceTiers: [{ id: "fast", name: "Fast", description: "Faster" }],
             supportedReasoningEfforts: [
               { reasoningEffort: "LOW" },
               { reasoningEffort: "max" },
@@ -577,8 +578,8 @@ test("Codex Backend derives every visible model and its efforts from app-server"
   const status = await backend.getStatus();
   const listed = await backend.listModels();
   const expected = [
-    { modelId: "gpt-6-astra", label: "GPT-6 Astra — Upstream", effortOptions: ["low", "max", "ultra"] },
-    { modelId: "gpt-5.6-luna", label: "gpt-5.6-luna", effortOptions: ["medium"] },
+    { modelId: "gpt-6-astra", label: "GPT-6 Astra — Upstream", effortOptions: ["low", "max", "ultra"], serviceTiers: ["fast"] },
+    { modelId: "gpt-5.6-luna", label: "gpt-5.6-luna", effortOptions: ["medium"], serviceTiers: [] },
   ];
 
   assert.deepEqual(status.capabilities.model.catalog, expected);
@@ -1134,3 +1135,15 @@ test("Agent cloud tools reject missing, foreign and stale identity before touchi
   }
   assert.equal(calls, 0);
 });
+
+for (const threadId of ["", "existing-fast-thread"]) {
+  for (const serviceTier of ["fast", "default"]) {
+    test(`Codex starts ${threadId ? "resumed" : "new"} turns with explicit ${serviceTier} speed`, async () => {
+      const client = fakeClient();
+      await startCodexTurn({ client, clientName: "speed-test", threadId, inputText: "hello", serviceTier });
+      const params = client.calls.find((call) => call.method === "turn/start").params;
+      assert.equal(params.serviceTierForTurn, serviceTier);
+      assert.equal(params.serviceTier, undefined);
+    });
+  }
+}

@@ -53,10 +53,11 @@ export function createLlmAcpSessionStore(deps = {}) {
   function normalizeAgentSessionSettings(settings) {
     const modelId = String(settings?.modelId || "").trim();
     const reasoningEffort = String(settings?.reasoningEffort || "").trim();
-    if (modelId.length > 256 || reasoningEffort.length > 64) {
+    const serviceTier = String(settings?.serviceTier || "").trim();
+    if (modelId.length > 256 || reasoningEffort.length > 64 || serviceTier.length > 64) {
       throw new TypeError("invalid agent session settings");
     }
-    return { modelId, reasoningEffort };
+    return { modelId, reasoningEffort, serviceTier };
   }
 
   function replaceAgentSessionSettings(binding, settings) {
@@ -64,6 +65,8 @@ export function createLlmAcpSessionStore(deps = {}) {
     else delete binding.modelId;
     if (settings.reasoningEffort) binding.reasoningEffort = settings.reasoningEffort;
     else delete binding.reasoningEffort;
+    if (settings.serviceTier) binding.serviceTier = settings.serviceTier;
+    else delete binding.serviceTier;
   }
 
   async function resolveDirectoryIdentity(rawDirectory) {
@@ -261,6 +264,7 @@ export function createLlmAcpSessionStore(deps = {}) {
         lastReadAt,
         ...(modelId ? { modelId } : {}),
         ...(reasoningEffort ? { reasoningEffort } : {}),
+        ...(value.serviceTier ? { serviceTier: String(value.serviceTier).trim() } : {}),
       });
     }
     for (const value of Array.isArray(parsed?.agentSessionModes) ? parsed.agentSessionModes : []) {
@@ -745,7 +749,8 @@ export function createLlmAcpSessionStore(deps = {}) {
       if (!binding) return { status: "missing" };
       if (
         String(binding.modelId || "") === normalizedSettings.modelId &&
-        String(binding.reasoningEffort || "") === normalizedSettings.reasoningEffort
+        String(binding.reasoningEffort || "") === normalizedSettings.reasoningEffort &&
+        String(binding.serviceTier || "") === normalizedSettings.serviceTier
       ) {
         return { status: "unchanged" };
       }
@@ -886,7 +891,8 @@ export function createLlmAcpSessionStore(deps = {}) {
       if (existingBinding && existingMode) {
         if (!settings || (
           String(existingBinding.modelId || "") === settings.modelId &&
-          String(existingBinding.reasoningEffort || "") === settings.reasoningEffort
+          String(existingBinding.reasoningEffort || "") === settings.reasoningEffort &&
+          String(existingBinding.serviceTier || "") === settings.serviceTier
         )) {
           return { status: "bound", binding: { ...existingBinding }, mode };
         }
@@ -942,7 +948,7 @@ export function createLlmAcpSessionStore(deps = {}) {
       const key = agentSessionKey(backendId, nativeSessionId);
       const existing = agentSessionModes.get(key);
       const binding = agentSessionBindings.get(key);
-      const clearSettings = options.clearSettings === true && Boolean(binding?.modelId || binding?.reasoningEffort);
+      const clearSettings = options.clearSettings === true && Boolean(binding?.modelId || binding?.reasoningEffort || binding?.serviceTier);
       // 同一モードへのhandoffはモード遷移を伴わないno-op。lease保持中(turn/compact
       // 実行中)でも成功にする。leaseガードは「実行中のモード反転」を防ぐためのもの。
       if (existing?.mode === targetMode && !clearSettings) return { status: "unchanged", mode: targetMode };
@@ -963,6 +969,7 @@ export function createLlmAcpSessionStore(deps = {}) {
       if (clearSettings) {
         delete binding.modelId;
         delete binding.reasoningEffort;
+        delete binding.serviceTier;
       }
       try {
         await persistAcpSessionStore();

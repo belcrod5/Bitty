@@ -1455,3 +1455,27 @@ describe("useCodexReplyRequest send acceptance contract", () => {
     }));
   });
 });
+
+describe("chat speed requests", () => {
+  test.each([
+    ["fast", ["fast"], "fast"],
+    ["priority", ["fast"], "fast"],
+    ["default", ["fast"], "default"],
+    [undefined, ["fast"], "default"],
+    ["fast", [], "default"],
+  ])("saved %s with advertised %j sends %s", async (serviceTier, serviceTiers, expected) => {
+    const { options } = createOptions();
+    Object.assign(options, { transcript: "hello", modelRef: "speed-model", modelOptions: [{
+      modelId: "speed-model", backendId: "codex", supportsReasoningEffort: false, serviceTiers,
+    }] });
+    mockStartCodexAppServerTurn.mockImplementationOnce((() => ({
+      promise: Promise.resolve({ threadId: "thread-1", turnId: "turn-1", reply: "done", contextUsage: null }),
+      interrupt: jest.fn(),
+    })) as never);
+    const { result } = await renderHook(() => useCodexReplyRequest(options as never));
+    await act(async () => result.current.sendReplyRequest(undefined, { panelId: "panel-1",
+      sessionSnapshot: { backendId: "codex", threadId: "thread-1", modelRef: "speed-model", serviceTier },
+    }));
+    expect(mockStartCodexAppServerTurn).toHaveBeenCalledWith(expect.objectContaining({ serviceTier: expected }));
+  });
+});

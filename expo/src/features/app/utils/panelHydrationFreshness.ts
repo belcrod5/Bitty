@@ -241,6 +241,7 @@ export function applyPanelHydrationSnapshot(params: {
   snapshot: PanelRuntimeSnapshot;
   expectedRequestStartedAtMs: number | null;
   currentRequestStartedAtMs: number | null;
+  expectedSettingsRevision?: number;
 }) {
   const current = params.entries[params.panelId];
   const currentSessionId = String(current?.snapshot.selectedSessionId || current?.sessionId || "").trim();
@@ -261,7 +262,15 @@ export function applyPanelHydrationSnapshot(params: {
     ...params.entries,
     [params.panelId]: {
       sessionId: params.snapshot.selectedSessionId,
-      snapshot: params.snapshot,
+      snapshot: {
+        ...params.snapshot,
+        ...((current.snapshot.settingsRevision ?? 0) !== (params.expectedSettingsRevision ?? 0) ? {
+          modelRef: current.snapshot.modelRef,
+          reasoningEffort: current.snapshot.reasoningEffort,
+          serviceTier: current.snapshot.serviceTier,
+        } : {}),
+        settingsRevision: current.snapshot.settingsRevision,
+      },
     },
   };
 }
