@@ -24,7 +24,7 @@ export function FastModeToggle({ enabled, onPress }: { enabled: boolean; onPress
     if (enabled && reduceMotion === false) {
       // The live OS hook owns motion preferences; Reanimated caches System at startup.
       opacity.value = withRepeat(
-        withTiming(0.55, { duration: 1500, easing: Easing.inOut(Easing.sin), reduceMotion: ReduceMotion.Never }),
+        withTiming(0.35, { duration: 1500, easing: Easing.inOut(Easing.sin), reduceMotion: ReduceMotion.Never }),
         -1, true, undefined, ReduceMotion.Never,
       );
     }

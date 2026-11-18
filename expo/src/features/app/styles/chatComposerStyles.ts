@@ -44,6 +44,9 @@ export function createChatComposerStyles(theme: VisualTheme) {
     paddingHorizontal: 10,
     paddingVertical: 8,
   },
+  chatInputWrapperFast: {
+    backgroundColor: theme.id === "cyberpunk" ? "#151914" : "#fffdf4",
+  },
   chatInput: {
     minHeight: 44,
     maxHeight: 160,

@@ -2473,7 +2473,7 @@ export function ChatScreen({
               />
             </Reanimated.View>
           ) : (
-          <View testID="chat-composer-input-wrapper" style={styles.chatInputWrapper}>
+          <View testID="chat-composer-input-wrapper" style={[styles.chatInputWrapper, fastModeEnabled && styles.chatInputWrapperFast]}>
             <ChatComposerInput
                 inputRef={chatComposerInputRef}
                 value={transcriptForView}

@@ -55,8 +55,8 @@ test("pulses only when on and cancels/reset on disable and unmount", async () =>
   expect(onPress).toHaveBeenCalledTimes(1);
 
   await screen.rerender(<FastModeToggle enabled onPress={onPress} />);
-  expect(mockWithTiming).toHaveBeenCalledWith(0.55, { duration: 1500, easing: expect.any(Function), reduceMotion: "never" });
-  expect(mockWithRepeat).toHaveBeenLastCalledWith(0.55, -1, true, undefined, "never");
+  expect(mockWithTiming).toHaveBeenCalledWith(0.35, { duration: 1500, easing: expect.any(Function), reduceMotion: "never" });
+  expect(mockWithRepeat).toHaveBeenLastCalledWith(0.35, -1, true, undefined, "never");
   await screen.rerender(<FastModeToggle enabled onPress={jest.fn()} />);
   expect(mockWithRepeat).toHaveBeenCalledTimes(1);
 
@@ -96,7 +96,7 @@ test("animation frames update only shared opacity without React commits", async 
   const commits = onRender.mock.calls.length;
   await act(async () => {
     for (let frame = 0; frame < 120; frame += 1) {
-      const opacity = 0.55 + 0.45 * (frame % 60) / 59;
+      const opacity = 0.35 + 0.65 * (frame % 60) / 59;
       mockValues[0].value = opacity;
       expect(mockIconWorklet?.()).toEqual({ opacity });
     }
