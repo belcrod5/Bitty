@@ -151,6 +151,7 @@ export function CodexAccountSettings() {
           diagnostics.codexAuthProfiles.map((profile, index) => {
             const label = profile.displayName || profile.authId;
             const isCurrent = profile.authId === currentAuthId;
+            const limits = formatCodexAuthRateLimits(profile);
             return (
               <View key={profile.authId} style={[styles.settingsInputRow, index < diagnostics.codexAuthProfiles.length - 1 && styles.settingsRowDivider]}>
                 <Ionicons name={isCurrent ? "checkmark-circle" : "person-circle-outline"} size={22} color={isCurrent ? theme.colors.controlAccent : theme.colors.controlTextPrimary} />
@@ -160,7 +161,12 @@ export function CodexAccountSettings() {
                     {profile.planType || "プラン不明"}・{profile.status || "状態不明"}
                     {isCurrent ? "・使用中" : ""}
                   </Text>
-                  <Text style={styles.settingsRowDescription}>{formatCodexAuthRateLimits(profile) || "利用制限未取得"}</Text>
+                  <Text style={styles.settingsRowDescription}>
+                    {limits.text || "利用制限未取得"}
+                    {limits.weeklyReset ? (
+                      <> | <Text style={limits.weeklyReset.tone === "danger" && { color: theme.tones.danger.foreground }}>{limits.weeklyReset.text}</Text></>
+                    ) : null}
+                  </Text>
                   <View style={styles.settingsButtonRow}>
                     <TouchableOpacity onPress={() => void begin(profile.authId, true)} accessibilityRole="button" accessibilityLabel={`${label}を再認証`}>
                       <Text style={styles.settingsActionText}>再認証</Text>

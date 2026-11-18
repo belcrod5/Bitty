@@ -233,12 +233,15 @@ export function CodexStatusSummaryMenu({
                           <Text style={[styles.chatFooterSelectOptionText, isCurrent && styles.chatFooterSelectOptionTextSelected]}>
                             {isCurrent ? "✓ " : ""}{String(item?.displayName || "").trim() || authId}
                           </Text>
-                          {limits ? (
+                          {limits.text ? (
                             <Text
                               numberOfLines={1}
                               style={[styles.chatStatusAuthOptionLimits, isCurrent && styles.chatFooterSelectOptionTextSelected]}
                             >
-                              {limits}
+                              {limits.text}
+                              {limits.weeklyReset ? (
+                                <> | <Text style={limits.weeklyReset.tone === "danger" && { color: theme.tones.danger.foreground }}>{limits.weeklyReset.text}</Text></>
+                              ) : null}
                             </Text>
                           ) : null}
                         </TouchableOpacity>

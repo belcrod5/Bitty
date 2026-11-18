@@ -9,6 +9,7 @@ const mockSwitchAuthProfile = jest.fn();
 const mockLoadAuthProfiles = jest.fn();
 let mockUsageLimitReached = false;
 let mockStatusText = "5h limit: 75% left\nWeekly limit: 50% left";
+let mockWeeklyResetRemainingMs = (2 * 1440 + 21 * 60 + 24) * 60_000;
 jest.mock("../contexts/ChatDiagnosticsContext", () => ({
   useChatDiagnostics: () => ({
     codexCliStatusText: mockStatusText,
@@ -23,7 +24,7 @@ jest.mock("../contexts/ChatDiagnosticsContext", () => ({
         isCurrent: true,
         rateLimits: [
           { windowDurationMins: 300, usedPercent: 25, resetsAt: String((Date.now() / 1000) + 3600) },
-          { windowDurationMins: 10080, usedPercent: 50, resetsAt: String((Date.now() / 1000) + (2 * 1440 + 21 * 60 + 24) * 60) },
+          { windowDurationMins: 10080, usedPercent: 50, resetsAt: String(Date.now() + mockWeeklyResetRemainingMs) },
         ],
       },
       { authId: "account-2", displayName: "   ", isCurrent: false },
@@ -40,6 +41,7 @@ describe("CodexStatusSummaryMenu", () => {
   beforeEach(() => {
     mockUsageLimitReached = false;
     mockStatusText = "5h limit: 75% left\nWeekly limit: 50% left";
+    mockWeeklyResetRemainingMs = (2 * 1440 + 21 * 60 + 24) * 60_000;
   });
   afterEach(() => jest.restoreAllMocks());
 
@@ -98,7 +100,7 @@ describe("CodexStatusSummaryMenu", () => {
     await waitFor(() => expect(screen.getByText("仕事用")).toBeTruthy());
     await fireEvent.press(screen.getByLabelText("認証アカウントを切り替える"));
     await waitFor(() => expect(screen.getByText("✓ 仕事用")).toBeTruthy());
-    expect(screen.getByText("5h 75% | 週 50% | 2日21:24").props.numberOfLines).toBe(1);
+    expect(screen.getByText("5h 75% | 週 50% | 2日").props.numberOfLines).toBe(1);
     expect(screen.queryByText(/✓ 仕事用 \(/)).toBeNull();
     expect(screen.getByText("/status").parent?.props.style).toEqual(expect.arrayContaining([
       expect.objectContaining({ width: 320 }),
@@ -106,6 +108,28 @@ describe("CodexStatusSummaryMenu", () => {
     await fireEvent.press(screen.getByText("account-2"));
     await waitFor(() => expect(mockSwitchAuthProfile).toHaveBeenCalledWith("account-2"));
     expect(mockLoadAuthProfiles).toHaveBeenCalled();
+  });
+
+  it.each(["standard", "cyberpunk"] as const)("colors only a reset under one day red in %s", async (themeId) => {
+    jest.spyOn(Date, "now").mockReturnValue(Date.UTC(2026, 0, 1));
+    mockWeeklyResetRemainingMs = 86_400_000 - 1;
+    const screen = await render(
+      <VisualThemeProvider themeId={themeId} onSelectTheme={() => undefined}>
+        <CodexStatusSummaryMenu />
+      </VisualThemeProvider>
+    );
+    await fireEvent.press(screen.getByLabelText("利用状況を更新して表示"));
+    await fireEvent.press(screen.getByLabelText("認証アカウントを切り替える"));
+    expect(screen.getByText("1日未")).toHaveStyle({ color: VISUAL_THEMES[themeId].tones.danger.foreground });
+    expect(screen.getByText("5h 75% | 週 50% | 1日未")).not.toHaveStyle({ color: VISUAL_THEMES[themeId].tones.danger.foreground });
+
+    mockWeeklyResetRemainingMs = 86_400_000;
+    await screen.rerender(
+      <VisualThemeProvider themeId={themeId} onSelectTheme={() => undefined}>
+        <CodexStatusSummaryMenu />
+      </VisualThemeProvider>
+    );
+    expect(screen.getByText("1日")).not.toHaveStyle({ color: VISUAL_THEMES[themeId].tones.danger.foreground });
   });
 
   it("shows compact limits on the board and keeps account switching available", async () => {
