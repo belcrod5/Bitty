@@ -203,6 +203,9 @@ jest.mock("../components/CodexStatusSummaryMenu", () => ({
     return ReactModule.createElement(View, { testID: "codex-status-summary-menu" });
   },
 }));
+jest.mock("../hooks/useRegisteredDirectoryActiveSessionCount", () => ({
+  useRegisteredDirectoryActiveSessionCount: () => 3,
+}));
 jest.mock("../keyboardController", () => {
   const ReactModule = jest.requireActual<typeof import("react")>("react");
   const { View } = jest.requireActual("react-native") as typeof import("react-native");
@@ -758,11 +761,15 @@ test("the footer reveals stored messages and closes the history panel", async ()
   expect(within(screen.getByTestId("voice-history-swipe-area")).getByTestId("voice-orchestrator-floating")).toBeTruthy();
   expect(within(screen.getByTestId("streaming-stt-trailing-accessory"))
     .getByTestId("codex-status-summary-menu")).toBeTruthy();
+  expect(within(screen.getByTestId("streaming-stt-trailing-accessory"))
+    .getByLabelText("実行中のセッション 3件")).toBeTruthy();
   expect(StyleSheet.flatten(screen.getByTestId("voice-footer-inset").props.style))
     .toMatchObject({ paddingLeft: 12, paddingRight: 20 });
   expect(StyleSheet.flatten(screen.getByTestId("voice-orchestrator-floating").props.style))
     .toMatchObject({ width: 44, height: 44 });
   await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  expect(within(screen.getByTestId("streaming-stt-trailing-accessory"))
+    .getByLabelText("実行中のセッション 3件")).toBeTruthy();
   expect(StyleSheet.flatten(screen.getByTestId("voice-footer-inset").props.style).paddingLeft).toBe(20);
   expect(mockWithTiming).toHaveBeenCalledWith(expect.any(Number), { duration: 240 }, expect.any(Function));
   await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);

@@ -12,6 +12,7 @@ import { VoiceHistoryBackdrop, getMacVoiceBlurView } from "../components/VoiceHi
 import { VoiceConversationMessages } from "../components/VoiceConversationMessages";
 import { ContextUsageIndicator } from "../components/ContextUsageIndicator";
 import { CodexStatusSummaryMenu } from "../components/CodexStatusSummaryMenu";
+import { RunningSessionCount } from "../components/RunningSessionCount";
 import { VoiceOrchestratorIcon, type VoiceOrchestrator } from "../components/VoiceOrchestratorIcon";
 import { VoiceOrchestratorManager } from "../components/VoiceOrchestratorManager";
 import { VoiceResetConfirmationModal } from "../components/VoiceResetConfirmationModal";
@@ -721,7 +722,13 @@ function VoiceConversationSession({
                         </View>
                       </Pressable>
                     ) : undefined}
-                    trailingAccessory={<CodexStatusSummaryMenu />}
+                    trailingAccessory={(
+                      <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center",
+                        justifyContent: "flex-end", columnGap: 8, rowGap: 2 }}>
+                        <RunningSessionCount />
+                        <CodexStatusSummaryMenu />
+                      </View>
+                    )}
                   />
                 </View>
               </GestureDetector>
