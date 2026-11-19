@@ -1759,7 +1759,7 @@ test("chat footer shows a compact speed switch with an emphasized active bolt", 
   await screen.unmount();
 });
 
-  test.each(["standard", "cyberpunk"] as const)("Fast mode adds a faint warm input tint in the %s theme and preserves the draft", async (themeId) => {
+  test.each(["standard", "cyberpunk"] as const)("Fast mode adds a warm input tint in the %s theme and preserves the draft", async (themeId) => {
     const chat = () => (
       <VisualThemeProvider themeId={themeId} onSelectTheme={jest.fn()}>
         <ChatScreen panelId="speed-panel" />
@@ -1772,7 +1772,7 @@ test("chat footer shows a compact speed switch with an emphasized active bolt", 
 
     mockPanelServiceTier = "fast";
     await screen.rerender(chat());
-    expect(inputBackground()).toBe(themeId === "standard" ? "#fffdf4" : "#151914");
+    expect(inputBackground()).toBe(themeId === "standard" ? "#fff2cc" : "#302c12");
     expect(StyleSheet.flatten(screen.getByRole("switch", { name: "Fast mode" }).props.style).backgroundColor)
       .toBe(VISUAL_THEMES[themeId].tones.warning.background);
     expect(screen.getByRole("switch", { name: "Fast mode", checked: true })).toBeTruthy();
