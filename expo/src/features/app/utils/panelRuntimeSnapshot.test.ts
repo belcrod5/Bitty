@@ -114,3 +114,15 @@ it("projects shared runtime status independently from conversation message conte
   expect(snapshot.runtimeActivityTrail).not.toBe(base.runtimeActivityTrail);
   expect(snapshot.conversationMessages).toHaveLength(1);
 });
+
+it("keeps unknown speed unset for history hydration and preserves explicit off", () => {
+  const unknown = buildPanelRuntimeSnapshot({ panelId: "panel-1", base, isCompactRunning: () => false });
+  expect(unknown.serviceTier).toBeUndefined();
+  const fast = buildPanelRuntimeSnapshot({ panelId: "panel-1", base: unknown,
+    patch: { serviceTier: "fast", settingsRevision: 2 }, isCompactRunning: () => false });
+  const standard = buildPanelRuntimeSnapshot({ panelId: "panel-1", base: fast,
+    patch: { serviceTier: "default" }, isCompactRunning: () => false });
+  expect(fast.serviceTier).toBe("fast");
+  expect(standard.serviceTier).toBe("default");
+  expect(standard.settingsRevision).toBe(2);
+});

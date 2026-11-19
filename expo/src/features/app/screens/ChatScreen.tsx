@@ -46,6 +46,7 @@ import { useChatScreen } from "../contexts/ChatScreenContext";
 import { useSkiaBoard } from "../contexts/SkiaBoardContext";
 import { ChatContextUsageMenu } from "../components/ChatContextUsageMenu";
 import { RunningSessionCount } from "../components/RunningSessionCount";
+import { FastModeToggle } from "../components/FastModeToggle";
 import { CodexStatusSummaryMenu } from "../components/CodexStatusSummaryMenu";
 import { CommandExecutionRow } from "../components/CommandExecutionRow";
 import { BouncingDotsIndicator } from "../components/BouncingDotsIndicator";
@@ -388,7 +389,7 @@ export function ChatScreen({
     selectableModelOptions, reasoningEffortSupportedForView, effortOptionsForView,
     scheduleModelOptions,
     scheduleModelRef, reasoningEffortForView, selectedModelLabelForView,
-    selectModelForView } = useChatModelSelection({
+    selectModelForView, fastModeSupported, fastModeEnabled, toggleFastMode } = useChatModelSelection({
     isPanelRuntimeView, panelId, panelSnapshot,
     conversationMessageCount: isPanelRuntimeView
       ? miniInheritedSourceMessages.length + miniSourceMessages.length
@@ -2472,7 +2473,7 @@ export function ChatScreen({
               />
             </Reanimated.View>
           ) : (
-          <View style={styles.chatInputWrapper}>
+          <View testID="chat-composer-input-wrapper" style={[styles.chatInputWrapper, fastModeEnabled && styles.chatInputWrapperFast]}>
             <ChatComposerInput
                 inputRef={chatComposerInputRef}
                 value={transcriptForView}
@@ -2577,6 +2578,7 @@ export function ChatScreen({
                 <Text style={styles.chatFooterSettingsText}>{reasoningEffortForView || "-"}</Text>
               </TouchableOpacity>
             </View> : null}
+            {fastModeSupported ? <FastModeToggle enabled={fastModeEnabled} onPress={toggleFastMode} /> : null}
           </View>
           <View style={styles.chatFooterStatusRow}>
             <RunningSessionCount />

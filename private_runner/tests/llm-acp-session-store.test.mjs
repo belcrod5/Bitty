@@ -502,10 +502,15 @@ test("persists one session mode and generation-checked lease across restarts", a
   })).status, "recovering");
   assert.equal((await restarted.settleAgentSessionLease(ref, acquired.lease.generation + 1, "released")).status, "stale");
   assert.equal((await restarted.settleAgentSessionLease(ref, acquired.lease.generation, "released")).status, "released");
-  await restarted.setAgentSessionSettings(ref, { modelId: "gpt-5.6-sol", reasoningEffort: "high" });
+  await restarted.setAgentSessionSettings(ref, { modelId: "gpt-5.6-sol", reasoningEffort: "high", serviceTier: "fast" });
+  const restoredSettings = createLlmAcpSessionStore(options("epoch-3"));
+  assert.equal((await restoredSettings.getAgentSessionBinding(ref)).serviceTier, "fast");
+  await restarted.setAgentSessionSettings(ref, { modelId: "gpt-5.6-sol", reasoningEffort: "high", serviceTier: "default" });
+  assert.equal((await restarted.getAgentSessionBinding(ref)).serviceTier, "default");
   assert.equal((await restarted.handoffAgentSessionMode(ref, "raw", { clearSettings: true })).status, "changed");
   assert.equal((await restarted.getAgentSessionBinding(ref)).modelId, undefined);
   assert.equal((await restarted.getAgentSessionBinding(ref)).reasoningEffort, undefined);
+  assert.equal((await restarted.getAgentSessionBinding(ref)).serviceTier, undefined);
 });
 
 test("repairs only an idle same-mode binding from an authoritative native cwd", async (t) => {

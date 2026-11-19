@@ -193,3 +193,31 @@ test("a materialized session can change models within its Provider", async () =>
   expect(closePicker).toHaveBeenCalledWith(null);
   alert.mockRestore();
 });
+
+test("Fast selection is panel-scoped, recognizes priority, and stays hidden without advertised support", async () => {
+  const updatePanelSettings = jest.fn();
+  const { result, rerender } = await renderHook(({ panelSnapshot }: { panelSnapshot: PanelRuntimeSnapshot }) => useChatModelSelection({
+    isPanelRuntimeView: true, panelId: panelSnapshot.panelId, panelSnapshot, conversationMessageCount: 1,
+    llmBackend: "codex", modelRef: "gpt-5.6-sol", reasoningEffort: "medium", selectedModelLabel: "Codex",
+    modelOptions: modelOptions.map((option) => option.backendId === "codex"
+      ? { ...option, serviceTiers: ["fast"] } : option),
+    selectModel: jest.fn(), updatePanelSettings, closePicker: jest.fn(),
+  }), { initialProps: { panelSnapshot: localDraft() } });
+  expect(result.current.fastModeSupported).toBe(true);
+  expect(result.current.fastModeEnabled).toBe(false);
+  await act(async () => result.current.toggleFastMode());
+  expect(updatePanelSettings).toHaveBeenLastCalledWith("drawer-session-popup", { serviceTier: "fast" });
+
+  await rerender({ panelSnapshot: { ...localDraft(), serviceTier: "priority" } });
+  expect(result.current.fastModeEnabled).toBe(true);
+  await act(async () => result.current.toggleFastMode());
+  expect(updatePanelSettings).toHaveBeenLastCalledWith("drawer-session-popup", { serviceTier: "default" });
+
+  await rerender({ panelSnapshot: { ...localDraft(), panelId: "other-panel", serviceTier: "default" } });
+  expect(result.current.fastModeEnabled).toBe(false);
+  await rerender({ panelSnapshot: { ...localDraft(), backendId: "claude", modelRef: "sonnet", serviceTier: "fast" } });
+  expect(result.current.fastModeSupported).toBe(false);
+  const writes = updatePanelSettings.mock.calls.length;
+  await act(async () => result.current.toggleFastMode());
+  expect(updatePanelSettings).toHaveBeenCalledTimes(writes);
+});

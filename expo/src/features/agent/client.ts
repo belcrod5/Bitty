@@ -72,8 +72,9 @@ export type BackendStatus = {
     model?: {
       select?: boolean;
       effort?: boolean;
+      serviceTier?: boolean;
       effortOptions?: string[];
-      catalog?: Array<{ modelId?: string; label?: string; effortOptions?: string[] }>;
+      catalog?: Array<{ modelId?: string; label?: string; effortOptions?: string[]; serviceTiers?: string[] }>;
     };
     workspace?: { admission?: boolean };
     operations?: { compact?: boolean; schedule?: boolean };
@@ -706,6 +707,7 @@ export function startAgentTurnWithRawFallback(
           input: { blocks: [{ type: "text", text: options.inputText }] },
           ...(capabilities.model?.select && options.model ? { model: options.model } : {}),
           ...(capabilities.model?.effort && options.effort ? { effort: options.effort } : {}),
+          ...(capabilities.model?.serviceTier && options.serviceTier ? { serviceTier: options.serviceTier } : {}),
           ...(policyProfileId ? { policyProfileId } : {}),
           clientOperationId,
           subscriptionId: pump.snapshot().subscriptionId,

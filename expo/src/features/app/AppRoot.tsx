@@ -4320,6 +4320,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     sessionTitle?: string;
     modelRef?: string;
     reasoningEffort?: ReasoningEffort | string;
+    serviceTier?: string;
     source?: string;
   };
   type SendReplyOptions = {
@@ -4379,6 +4380,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
       sessionTitle: String(snapshot.selectedSessionTitle || "").trim(),
       modelRef: normalizeModelRef(snapshot.modelRef),
       reasoningEffort: String(snapshot.reasoningEffort || "").trim(),
+      serviceTier: snapshot.serviceTier || "default",
       source: `panel_runtime_snapshot:panel=${panelId}`,
     };
   }
@@ -5119,20 +5121,22 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   }, [createPanelRuntimeSnapshot, invalidatePanelHydration, resolvePanelSnapshotForDisplay]);
   const updatePanelSettings = useCallback((
     panelIdRaw: string,
-    settings: { backendId?: string; modelRef?: string; reasoningEffort?: string }
+    settings: { backendId?: string; modelRef?: string; reasoningEffort?: string; serviceTier?: string }
   ) => {
     const panelId = normalizeRuntimePanelId(panelIdRaw);
     if (!panelId) return;
     const nextModelRef = normalizeModelRef(settings?.modelRef);
     const nextBackendId = String(settings?.backendId || "").trim();
     const nextReasoningEffort = String(settings?.reasoningEffort || "").trim();
-    if (!nextBackendId && !nextModelRef && !nextReasoningEffort) return;
+    if (!nextBackendId && !nextModelRef && !nextReasoningEffort && !settings.serviceTier) return;
     const baseSnapshot = resolvePanelSnapshotForDisplay(panelId);
     const nextSnapshot = createPanelRuntimeSnapshot(panelId, baseSnapshot, {
       panelId,
       backendId: nextBackendId || String(baseSnapshot.backendId || llmBackend).trim() || "codex",
       modelRef: nextModelRef || normalizeModelRef(baseSnapshot.modelRef),
       reasoningEffort: nextReasoningEffort || String(baseSnapshot.reasoningEffort || "").trim(),
+      serviceTier: settings.serviceTier ?? baseSnapshot.serviceTier,
+      settingsRevision: (baseSnapshot.settingsRevision ?? 0) + 1,
     });
     const selectedSessionId = String(nextSnapshot.selectedSessionId || "").trim();
     const syncedPanelIds: string[] = [];
@@ -5157,6 +5161,8 @@ function AppContent({ onReady }: { onReady?: () => void }) {
               backendId: nextSnapshot.backendId,
               modelRef: nextSnapshot.modelRef,
               reasoningEffort: nextSnapshot.reasoningEffort,
+              serviceTier: nextSnapshot.serviceTier,
+              settingsRevision: (entry.snapshot.settingsRevision ?? 0) + 1,
             },
           };
           syncedPanelIds.push(entryPanelId);
@@ -5439,6 +5445,9 @@ function AppContent({ onReady }: { onReady?: () => void }) {
       }, { throttleMs: 0 });
       return "failed" as const;
     }
+    const panelAtHydrationStart = panelRuntimeEntriesByIdRef.current[panelId]?.snapshot;
+    const expectedSettingsRevision = panelAtHydrationStart?.selectedSessionId === sessionId
+      ? panelAtHydrationStart.settingsRevision : undefined;
     const runtimeAtHydrationStart = getConversationRuntimeSnapshot(sessionId);
     const requestStartedAtMsAtHydrationStart = Number(runtimeAtHydrationStart?.request?.startedAtMs) || null;
     const currentHydration = beginPanelHydration(panelId);
@@ -5612,6 +5621,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
         selectedSessionMarkerColor,
         modelRef: panelModelRef,
         reasoningEffort: panelReasoningEffort,
+        serviceTier: restored.serviceTier || "default",
         contextUsedPct,
         isResponding: hydrationConversation.isResponding,
         isHydrating: false,
@@ -5641,6 +5651,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
         snapshot,
         expectedRequestStartedAtMs,
         currentRequestStartedAtMs: Number(getConversationRuntimeSnapshot(snapshot.selectedSessionId)?.request?.startedAtMs) || null,
+        expectedSettingsRevision,
       }));
       if (!runtimeAfterHydration) return "superseded" as const;
       logSessionDiag("panel_runtime_hydrate_done", {

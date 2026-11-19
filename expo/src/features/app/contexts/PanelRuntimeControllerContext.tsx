@@ -6,7 +6,7 @@ export type PanelRuntimeControllerContextValue = {
   setPanelAutoSpeechOpen: (panelId: string, open: boolean) => void;
   updatePanelSettings: (
     panelId: string,
-    settings: { backendId?: string; modelRef?: string; reasoningEffort?: string }
+    settings: { backendId?: string; modelRef?: string; reasoningEffort?: string; serviceTier?: string }
   ) => void;
   startNewPanelSession: (params: {
     panelId: string;

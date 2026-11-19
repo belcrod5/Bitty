@@ -360,6 +360,7 @@ export function createAgentService({
       const settings = await sessionStore.setSettings(sessionRef, {
         modelId: run.model,
         reasoningEffort: run.effort,
+        serviceTier: run.serviceTier,
       });
       if (settings?.status === "missing") {
         throw agentError("session_busy", "session settings could not be stored", { backendId: run.backendId });
@@ -386,7 +387,7 @@ export function createAgentService({
     }
     if (run.sessionResolved) throw agentError("protocol_error", "Backend resolved the session more than once", { backendId: run.backendId });
     const binding = await sessionStore.bind(resolved, run.cwd, "neutral", {
-      settings: { modelId: run.model, reasoningEffort: run.effort },
+      settings: { modelId: run.model, reasoningEffort: run.effort, serviceTier: run.serviceTier },
     });
     if (binding?.status === "cwd_conflict") {
       throw agentError("session_cwd_mismatch", "session cwd does not match", { backendId: run.backendId });
@@ -486,6 +487,8 @@ export function createAgentService({
       // Native metadata remains the legacy/raw fallback when no stored selection exists.
       modelId,
       reasoningEffort,
+      ...(binding?.serviceTier || session?.serviceTier
+        ? { serviceTier: String(binding?.serviceTier || session?.serviceTier).trim() } : {}),
       ...(updatedAt ? { updatedAt } : {}),
       ...(lastReadAt ? { lastReadAt } : {}),
       ...(activeRun ? { isActive: true } : {}),
@@ -726,6 +729,9 @@ export function createAgentService({
     if (options.effort && status?.capabilities?.model?.effort !== true) {
       throw agentError("capability_unsupported", "effort selection is not supported", { backendId: options.backendId });
     }
+    if (options.serviceTier && status?.capabilities?.model?.serviceTier !== true) {
+      throw agentError("capability_unsupported", "service tier selection is not supported", { backendId: options.backendId });
+    }
     const modelCapability = status?.capabilities?.model;
     const modelCatalog = modelCapability?.catalog;
     const selectedModel = options.model && Array.isArray(modelCatalog)
@@ -733,6 +739,10 @@ export function createAgentService({
       : undefined;
     if (options.model && Array.isArray(modelCatalog) && !selectedModel) {
       throw agentError("capability_unsupported", "model value is not supported", { backendId: options.backendId });
+    }
+    if (options.serviceTier && options.serviceTier !== "default" &&
+      !selectedModel?.serviceTiers?.includes(options.serviceTier)) {
+      throw agentError("capability_unsupported", "service tier value is not supported", { backendId: options.backendId });
     }
     const modelEffortOptions = selectedModel?.effortOptions;
     const hasModelEffortOptions = Array.isArray(modelEffortOptions);
@@ -873,6 +883,7 @@ export function createAgentService({
           : "",
         model: request.model,
         effort: request.effort,
+        serviceTier: request.serviceTier,
         settingsPersisted: false,
         lease: preAcquiredLease,
         queuedForCompact,
@@ -1956,6 +1967,8 @@ export function createAgentService({
         // Stored neutral selection follows the same authority rule as session lists.
         modelId: String(binding?.modelId || page?.modelId || "").trim(),
         reasoningEffort: String(binding?.reasoningEffort || page?.reasoningEffort || "").trim(),
+        ...(binding?.serviceTier || page?.serviceTier
+          ? { serviceTier: String(binding?.serviceTier || page?.serviceTier).trim() } : {}),
         sessionRef,
         canonicalCwd,
         activeRun: getActiveRun(sessionRef, context),

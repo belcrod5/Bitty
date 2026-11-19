@@ -82,6 +82,7 @@ export function usePanelNewSessionController({
       selectedThreadStatusType: "idle",
       modelRef: previousSnapshot.modelRef,
       reasoningEffort: previousSnapshot.reasoningEffort,
+      serviceTier: previousSnapshot.serviceTier,
       contextUsedPct: null,
       isResponding: false,
       conversationMessages: [],

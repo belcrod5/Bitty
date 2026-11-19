@@ -160,6 +160,7 @@ describe("fetchRunnerSessionMessages", () => {
       sessionRef: { backendId: "codex", nativeSessionId: "thread-1" },
       canonicalCwd: "/native/workspace",
       items: [{ id: "item-1", role: "assistant", content: [{ type: "text", text: "saved" }], outputTokens: 8 }],
+      serviceTier: "fast",
     });
     const { result } = await renderExplorerHook({
       runnerWebSocketManager: {} as never,
@@ -178,6 +179,7 @@ describe("fetchRunnerSessionMessages", () => {
       cwd: "/native/workspace",
       modelRef: "",
       messages: [{ outputTokens: 8 }],
+      serviceTier: "fast",
     });
   });
 

@@ -52,6 +52,8 @@ const mockGitDiffPanelProps: { current: Record<string, any> | null } = { current
 const mockChatSessionSubagentProps: { current: Record<string, any> | null } = { current: null };
 const mockRunnerWsConnectionStatusProps: { current: Record<string, any> | null } = { current: null };
 const mockSetStringAsync = jest.fn(async (_text: string) => {});
+let mockPanelServiceTier = "default";
+const mockUpdatePanelSettings = jest.fn();
 let mockPanelBackendId = "codex";
 let mockPanelSessionId = "session-1";
 let mockPanelSessionMaterialized: boolean | undefined = true;
@@ -116,7 +118,15 @@ jest.mock("react-native-reanimated", () => {
   const { View } = jest.requireActual("react-native") as typeof import("react-native");
   return {
     __esModule: true,
-    default: { View: (props: Record<string, unknown>) => ReactModule.createElement(View, props) },
+    default: { View: (props: Record<string, unknown>) => ReactModule.createElement(View, props),
+      createAnimatedComponent: (Component: unknown) => Component },
+    useSharedValue: (initial: number) => ReactModule.useRef({ value: initial }).current,
+    useAnimatedStyle: (callback: () => unknown) => callback(),
+    withTiming: (value: number) => value,
+    withRepeat: (value: number) => value,
+    cancelAnimation: jest.fn(),
+    Easing: { sin: jest.fn(), inOut: (value: unknown) => value },
+    ReduceMotion: { Never: "never" },
     FadeIn: { duration: (duration: number) => ({ type: "fade-in", duration }) },
     FadeOut: { duration: (duration: number) => ({ type: "fade-out", duration }) },
   };
@@ -272,6 +282,7 @@ jest.mock("../contexts/AppSettingsContext", () => ({
         label: "ChatGPT 5.6 Sol",
         supportsReasoningEffort: true,
         supportsScheduling: true,
+        serviceTiers: ["fast"],
       },
       {
         selectionKey: "claude::sonnet",
@@ -306,6 +317,7 @@ jest.mock("../contexts/PanelRuntimeStoreContext", () => ({
       sessionMaterialized: mockPanelSessionMaterialized,
       modelRef: "gpt-5.6-sol",
       reasoningEffort: "high",
+      serviceTier: mockPanelServiceTier,
       contextUsedPct: 0,
       isResponding: false,
       inheritedConversationMessages: [],
@@ -317,7 +329,7 @@ jest.mock("../contexts/PanelRuntimeStoreContext", () => ({
 jest.mock("../contexts/PanelRuntimeControllerContext", () => ({
   usePanelRuntimeController: () => ({
     startNewPanelSession: jest.fn(),
-    updatePanelSettings: jest.fn(),
+    updatePanelSettings: mockUpdatePanelSettings,
     hydratePanelFromSessionHistory: mockHydratePanelFromSessionHistory,
   }),
 }));
@@ -521,6 +533,7 @@ describe("ChatScreen voice input", () => {
     mockChatSessionSubagentProps.current = null;
     mockGitDiffPanelProps.current = null;
     mockRunnerWsConnectionStatusProps.current = null;
+    mockPanelServiceTier = "default";
     mockPanelBackendId = "codex";
     mockPanelSessionId = "session-1";
     mockPanelSessionMaterialized = true;
@@ -1729,4 +1742,50 @@ describe("ChatScreen voice input", () => {
     await row.unmount();
     await screen.unmount();
   });
+test("chat footer shows a compact speed switch with an emphasized active bolt", async () => {
+  mockPanelServiceTier = "default";
+  const screen = await render(<ChatScreen panelId="speed-panel" />);
+  expect(screen.getByRole("switch", { name: "Fast mode", checked: false })).toBeTruthy();
+  expect(screen.getByText("flash-outline")).toBeTruthy();
+  await fireEvent.press(screen.getByRole("switch", { name: "Fast mode" }));
+  expect(mockUpdatePanelSettings).toHaveBeenLastCalledWith("speed-panel", { serviceTier: "fast" });
+  mockPanelServiceTier = "fast";
+  await screen.rerender(<ChatScreen panelId="speed-panel" />);
+  expect(screen.getByRole("switch", { name: "Fast mode", checked: true })).toBeTruthy();
+  expect(screen.getByText("flash")).toBeTruthy();
+  await fireEvent.press(screen.getByRole("switch", { name: "Fast mode" }));
+  expect(mockUpdatePanelSettings).toHaveBeenLastCalledWith("speed-panel", { serviceTier: "default" });
+  mockPanelServiceTier = "default";
+  await screen.unmount();
+});
+
+  test.each(["standard", "cyberpunk"] as const)("Fast mode highlights the input in the %s theme and preserves the draft", async (themeId) => {
+    const chat = () => (
+      <VisualThemeProvider themeId={themeId} onSelectTheme={jest.fn()}>
+        <ChatScreen panelId="speed-panel" />
+      </VisualThemeProvider>
+    );
+    const screen = await render(chat());
+    const inputBackground = () => StyleSheet.flatten(screen.getByTestId("chat-composer-input-wrapper").props.style).backgroundColor;
+    expect(inputBackground()).toBe(VISUAL_THEMES[themeId].colors.surface);
+    await fireEvent.changeText(screen.getByTestId("chat-composer-input"), "keep this draft");
+
+    mockPanelServiceTier = "fast";
+    await screen.rerender(chat());
+    expect(inputBackground()).toBe(themeId === "standard" ? "#fff2cc" : VISUAL_THEMES[themeId].colors.surfaceActionSelected);
+    expect(StyleSheet.flatten(screen.getByRole("switch", { name: "Fast mode" }).props.style).backgroundColor)
+      .toBe(VISUAL_THEMES[themeId].tones.warning.background);
+    expect(screen.getByRole("switch", { name: "Fast mode", checked: true })).toBeTruthy();
+    expect(screen.getByTestId("chat-composer-input").props.value).toBe("keep this draft");
+
+    mockPanelServiceTier = "default";
+    await screen.rerender(chat());
+    expect(inputBackground()).toBe(VISUAL_THEMES[themeId].colors.surface);
+    expect(screen.getByRole("switch", { name: "Fast mode", checked: false })).toBeTruthy();
+    expect(StyleSheet.flatten(screen.getByRole("switch", { name: "Fast mode" }).props.style).backgroundColor)
+      .toBe("transparent");
+    expect(screen.getByTestId("chat-composer-input").props.value).toBe("keep this draft");
+    await screen.unmount();
+  });
+
 });

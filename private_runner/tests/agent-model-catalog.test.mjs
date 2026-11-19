@@ -130,3 +130,34 @@ test("Codex model discovery failure leaves Claude aliases and status independent
   ));
   assert.equal(claudeStarts, 1);
 });
+
+test("service tier selection follows backend and per-model capabilities and reaches execution", async () => {
+  const requests = [];
+  const backend = {
+    backendId: "test",
+    getStatus: async () => ({ available: true, readiness: { ready: true }, capabilities: {
+      model: { select: true, serviceTier: true, catalog: [
+        { modelId: "fast-model", serviceTiers: ["fast"] }, { modelId: "standard-model", serviceTiers: [] },
+      ] },
+    } }),
+    resolveSessionCwd: async () => "/workspace",
+    async startTurn(request) {
+      requests.push(request.serviceTier);
+      await request.resolveSession({ backendId: "test", nativeSessionId: `speed-${requests.length}` });
+      request.emit("turn.started", {});
+      return { outcome: "completed" };
+    },
+  };
+  let id = 0;
+  const service = modelService({ backends: [backend], generateRunId: () => `speed-run-${++id}` });
+  for (const [model, serviceTier] of [["fast-model", "fast"], ["standard-model", "default"]]) {
+    await complete(await service.startTurn(startRequest({ model, serviceTier, clientOperationId: `${model}-${serviceTier}` }),
+      { subjectId: "user-1" }));
+  }
+  assert.deepEqual(requests, ["fast", "default"]);
+  await assert.rejects(service.startTurn(startRequest({ model: "standard-model", serviceTier: "fast" }),
+    { subjectId: "user-1" }), (error) => error.code === "capability_unsupported");
+  backend.getStatus = async () => ({ available: true, readiness: { ready: true }, capabilities: { model: {} } });
+  await assert.rejects(service.startTurn(startRequest({ serviceTier: "fast" }), { subjectId: "user-1" }),
+    (error) => error.code === "capability_unsupported");
+});

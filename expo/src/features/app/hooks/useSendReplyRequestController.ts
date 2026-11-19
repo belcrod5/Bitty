@@ -143,6 +143,7 @@ export function useSendReplyRequestController<TSttMeta>({
         sessionTitle: String(forcedSnapshot?.sessionTitle || "").trim() || undefined,
         modelRef: forcedModelRef || undefined,
         reasoningEffort: forcedReasoningEffort || undefined,
+        serviceTier: forcedSnapshot?.serviceTier,
         source: forcedSource || `send_guard_panel_snapshot:panel=${writePanelId}`,
       },
     });

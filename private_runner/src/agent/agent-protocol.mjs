@@ -148,6 +148,7 @@ export function normalizeAgentStartRequest(value) {
   }
   const backendId = sessionRef?.backendId || requiredString(value.backendId, "backendId", 64);
   const cwd = optionalString(value.cwd, "cwd", 4096);
+  const serviceTier = optionalString(value.serviceTier, "serviceTier", 64);
   if (!sessionRef && !cwd) throw agentError("turn_rejected", "cwd is required for a new session");
   return {
     backendId,
@@ -156,6 +157,7 @@ export function normalizeAgentStartRequest(value) {
     input: normalizeAgentInput(value.input),
     model: optionalString(value.model, "model", 256),
     effort: optionalString(value.effort, "effort", 64),
+    ...(serviceTier ? { serviceTier } : {}),
     policyProfileId: optionalString(value.policyProfileId, "policyProfileId", 128),
     clientOperationId: requiredString(value.clientOperationId, "clientOperationId", 256),
   };
