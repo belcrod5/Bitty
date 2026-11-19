@@ -514,6 +514,7 @@ export function useChatDiagnosticsContextValue(
   return useMemo(
     () => ({
       codexCliStatusText: codexCliStatusSnapshot?.statusText || "",
+      codexCliStatusRateLimits: codexCliStatusSnapshot?.rateLimits || [],
       codexUsageLimitReached: codexCliStatusSnapshot?.usageLimitReached || false,
       codexCliStatusFetchedAtMs,
       codexCliStatusLoading,

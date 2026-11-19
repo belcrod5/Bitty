@@ -66,7 +66,10 @@ test("RPC client, raw relay and status endpoint share one typed-failure account 
   assert.match(failed.statusText, /利用上限/);
   const raw = relay("account-a");
   receive(raw, { method: "account/rateLimits/updated", params: {
-    rateLimits: { primary: { usedPercent: 100, windowDurationMins: 300, resetsAt: 4102444800 } } } });
+    rateLimits: {
+      primary: { usedPercent: 100, windowDurationMins: 300, resetsAt: 4102444800 },
+      secondary: { usedPercent: 50, windowDurationMins: 10080, resetsAt: 4102617600 },
+    } } });
   receive(raw, { method: "error", params: { error: { codexErrorInfo: "usageLimitExceeded", message: "same quota" } } });
   await settled("account-a", (state) => state?.statusText.includes("0% left"));
   const stored = JSON.parse(await fs.readFile(path.join(root, "usage.json"), "utf8"));
@@ -81,6 +84,10 @@ test("RPC client, raw relay and status endpoint share one typed-failure account 
     assert.equal(res.status, 200);
     assert.equal(body.usageLimitReached, true);
     assert.equal(body.cached, true);
+    assert.deepEqual(body.rateLimits, [
+      { usedPercent: 100, windowDurationMins: 300, resetsAt: 4102444800 },
+      { usedPercent: 50, windowDurationMins: 10080, resetsAt: 4102617600 },
+    ]);
     assert.equal(JSON.stringify(body).includes("test-access"), false);
   } finally { await new Promise((resolve) => server.close(resolve)); }
 });

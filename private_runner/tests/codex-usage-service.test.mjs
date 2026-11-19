@@ -116,12 +116,16 @@ test("transient rate limits, invalid quotas, other buckets and mismatched accoun
 });
 
 test("sparse window positions and nullable metadata preserve both quota durations", async () => {
-  await fixture(async ({ service }) => {
+  await fixture(async ({ service, options, changed }) => {
     await service.observe("a", { rateLimits: { primary: window(10), secondary: window(30, 9000, 10080) } });
     await service.observe("a", { rateLimits: { primary: window(40, 9000, 10080), secondary: null } });
     const snapshot = await service.snapshot("a");
     assert.match(snapshot.statusText, /5h limit:[^\n]*90% left/);
     assert.match(snapshot.statusText, /Weekly limit:[^\n]*60% left/);
+    const expected = [window(10), window(40, 9000, 10080)];
+    assert.deepEqual(snapshot.rateLimits, expected);
+    assert.deepEqual(changed.at(-1).snapshot.rateLimits, expected);
+    assert.deepEqual((await createCodexUsageService(options).snapshot("a")).rateLimits, expected);
   });
 });
 

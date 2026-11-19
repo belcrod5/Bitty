@@ -220,6 +220,7 @@ export type CodexCliStatusLimitLine = {
 
 export type CodexCliStatusSnapshot = {
   statusText: string;
+  rateLimits?: CodexAuthRateLimit[];
   usageLimitReached?: boolean;
   limitLines: CodexCliStatusLimitLine[];
   fetchedAt: string;

@@ -46,6 +46,7 @@ function parseCodexCliStatusSnapshot(data: unknown): CodexCliStatusSnapshot | nu
     .filter((item: CodexCliStatusLimitLine | null): item is CodexCliStatusLimitLine => Boolean(item));
   return {
     statusText,
+    rateLimits: parseCodexAuthRateLimits(record.rateLimits),
     limitLines,
     fetchedAt: String(record.fetchedAt || new Date().toISOString()),
     usageLimitReached: record.usageLimitReached === true,

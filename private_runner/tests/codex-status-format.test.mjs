@@ -25,6 +25,10 @@ test("formats 5h and weekly windows by duration regardless of primary/secondary 
   assert.deepEqual(result.limitLines.map(({ label }) => label), ["5h limit", "Weekly limit"]);
   assert.match(result.statusText, /5h limit:[^\n]*60% left/);
   assert.match(result.statusText, /Weekly limit:[^\n]*75% left/);
+  assert.deepEqual(result.rateLimits, [
+    { usedPercent: 25, windowDurationMins: 10080, resetsAt: 1_800_000_000 },
+    { usedPercent: 40, windowDurationMins: 300, resetsAt: 1_800_000_000 },
+  ]);
 });
 
 test("formats a weekly window when it is the only top-level window", () => {

@@ -20,18 +20,6 @@ type CodexStatusSummaryMenuProps = {
 
 const STATUS_PREVIEW_WIDTH = 320;
 
-function formatStatusElapsed(statusFetchedAtMs: number, tick: number) {
-  void tick;
-  if (statusFetchedAtMs <= 0) return "未取得";
-  const elapsedMs = Math.max(0, Date.now() - statusFetchedAtMs);
-  const elapsedMin = Math.floor(elapsedMs / 60000);
-  if (elapsedMin <= 0) return "たった今";
-  if (elapsedMin < 60) return `${elapsedMin}分前`;
-  const elapsedHour = Math.floor(elapsedMin / 60);
-  return `${elapsedHour}時間前`;
-}
-
-
 export function CodexStatusSummaryMenu({
   dismissed = false,
   compact = false,
@@ -40,8 +28,8 @@ export function CodexStatusSummaryMenu({
   const { theme } = useVisualTheme();
   const {
     codexCliStatusText: statusText,
+    codexCliStatusRateLimits: statusRateLimits,
     codexUsageLimitReached: usageLimitReached,
-    codexCliStatusFetchedAtMs: statusFetchedAtMs,
     codexCliStatusLoading: statusLoading,
     codexAuthProfileId: authProfileId,
     codexAuthProfiles: authProfiles,
@@ -55,12 +43,12 @@ export function CodexStatusSummaryMenu({
   const [previewOpen, setPreviewOpen] = useState(false);
   const [authSelectOpen, setAuthSelectOpen] = useState(false);
   const [anchor, setAnchor] = useState<AnchorRect>({ x: 0, y: 0, width: 0, height: 0 });
-  const [nowTick, setNowTick] = useState(0);
+  const [nowMs, setNowMs] = useState(Date.now);
 
   useEffect(() => {
     if (compact) return;
     const timer = setInterval(() => {
-      setNowTick((prev) => prev + 1);
+      setNowMs(Date.now());
     }, 30 * 1000);
     return () => clearInterval(timer);
   }, [compact]);
@@ -71,14 +59,13 @@ export function CodexStatusSummaryMenu({
   }, [dismissed]);
 
   const statusFullText = String(statusText || "").trim();
-  const normalizedFetchedAtMs = Number(statusFetchedAtMs || 0);
-  const safeFetchedAtMs = Number.isFinite(normalizedFetchedAtMs) ? normalizedFetchedAtMs : 0;
   const authProfileItems = useMemo(
     () => (Array.isArray(authProfiles) ? authProfiles : []),
     [authProfiles]
   );
   const fiveHourLimit = parseCodexStatusLimit(statusFullText, "5h");
   const weeklyLimit = parseCodexStatusLimit(statusFullText, "Weekly");
+  const weeklyReset = formatCodexAuthRateLimits({ rateLimits: statusRateLimits }, nowMs).weeklyReset;
   const fiveHourPct = fiveHourLimit.remainingPercent ?? "--";
   const weeklyPct = weeklyLimit.remainingPercent ?? "--";
   const currentAuthId = String(authProfileId || "").trim();
@@ -147,6 +134,9 @@ export function CodexStatusSummaryMenu({
       accessibilityLabel={`週間の残り ${weeklyPct}%`}
     >{weeklyPct}%</Text>
   );
+  const usageLimitSummary = usageLimitReached && fiveHourLimit.remainingPercent !== 0 && weeklyLimit.remainingPercent !== 0 ? (
+    <Text style={[styles.chatStatusSummaryText, { color: theme.tones.danger.foreground }]} accessibilityLabel="Codex 利用上限">利用上限</Text>
+  ) : null;
 
   return (
     <>
@@ -158,16 +148,18 @@ export function CodexStatusSummaryMenu({
           accessibilityRole="button"
           accessibilityLabel="利用状況を更新して表示"
         >
-          {usageLimitReached && fiveHourLimit.remainingPercent !== 0 && weeklyLimit.remainingPercent !== 0 ? (
-            <Text style={[styles.chatStatusSummaryText, { color: theme.tones.danger.foreground }]} accessibilityLabel="Codex 利用上限">利用上限</Text>
-          ) : compact ? (
-            <>
+          {compact ? (
+            usageLimitSummary || <>
               {fiveHourSummary}
               {weeklySummary}
             </>
           ) : (
             <Text style={styles.chatStatusSummaryText} numberOfLines={1}>
-              5h {fiveHourSummary} | 週 {weeklySummary} ({formatStatusElapsed(safeFetchedAtMs, nowTick)}){statusLoading ? " 更新中..." : ""}
+              {usageLimitSummary || <>5h {fiveHourSummary} | 週 {weeklySummary}</>}
+              {weeklyReset ? (
+                <> | <Text style={weeklyReset.tone === "danger" && { color: theme.tones.danger.foreground }}>{weeklyReset.text}</Text></>
+              ) : null}
+              {statusLoading ? " 更新中..." : ""}
             </Text>
           )}
         </TouchableOpacity>
