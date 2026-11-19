@@ -38,7 +38,7 @@ function resetAtMs(value: string | undefined): number {
 export function formatCodexAuthRateLimits(
   profile: Pick<CodexAuthProfileEntry, "rateLimits">,
   nowMs = Date.now()
-): string {
+): { text: string; weeklyReset: { text: string; tone: "neutral" | "danger" } | null } {
   const limits = profile.rateLimits || [];
   const fiveHour = limits.find((limit) => limit.windowDurationMins === 300);
   const weekly = limits.find((limit) => limit.windowDurationMins === 10080);
@@ -48,13 +48,11 @@ export function formatCodexAuthRateLimits(
   ].filter(Boolean);
 
   const weeklyResetAtMs = resetAtMs(weekly?.resetsAt);
-  if (Number.isFinite(weeklyResetAtMs)) {
-    const remainingMinutes = Math.ceil(Math.max(0, weeklyResetAtMs - nowMs) / 60_000);
-    const days = Math.floor(remainingMinutes / 1440);
-    const hours = Math.floor((remainingMinutes % 1440) / 60);
-    const minutes = remainingMinutes % 60;
-    parts.push(`${days}日${hours}:${String(minutes).padStart(2, "0")}`);
-  }
-
-  return parts.join(" | ");
+  const days = Math.floor(Math.max(0, weeklyResetAtMs - nowMs) / 86_400_000);
+  return {
+    text: parts.join(" | "),
+    weeklyReset: Number.isFinite(days)
+      ? { text: days < 1 ? "1日未" : `${days}日`, tone: days < 1 ? "danger" : "neutral" }
+      : null,
+  };
 }

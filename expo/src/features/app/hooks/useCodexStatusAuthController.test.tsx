@@ -1,6 +1,9 @@
 import { act, renderHook } from "@testing-library/react-native";
 import { useCodexStatusAuthController } from "./useCodexStatusAuthController";
 import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
+import { useState } from "react";
+import { useChatDiagnosticsContextValue } from "./useAppProviderValues";
+import type { CodexCliStatusSnapshot } from "../types/appTypes";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -26,6 +29,37 @@ function args() {
 const originalFetch = global.fetch;
 beforeEach(() => { global.fetch = jest.fn(); });
 afterEach(() => { global.fetch = originalFetch; });
+
+test.each(["HTTP", "WS"])("carries live reset windows from %s through status parsing and chat context without profiles", async (transport) => {
+  const { inputs, receive } = args();
+  const payload = {
+    ...status("5h limit: 75% left\nWeekly limit: 50% left", "2026-10-10T02:00:00.000Z"),
+    rateLimits: [
+      { usedPercent: 25, windowDurationMins: 300, resetsAt: 1791604800 },
+      { usedPercent: 50, windowDurationMins: 10080, resetsAt: 1791856800 },
+    ],
+  };
+  (global.fetch as jest.Mock).mockResolvedValue(response(payload));
+  const { result } = await renderHook(() => {
+    const [snapshot, setSnapshot] = useState<CodexCliStatusSnapshot | null>(null);
+    const controller = useCodexStatusAuthController({ ...inputs, setCodexCliStatusSnapshot: setSnapshot });
+    const diagnostics = useChatDiagnosticsContextValue({
+      ...controller,
+      codexCliStatusSnapshot: snapshot, codexCliStatusFetchedAtMs: 0, codexCliStatusLoading: false,
+      codexAuthProfilesSnapshot: null, codexAuthProfilesLoading: false, codexAuthSwitching: false, codexAuthSwitchError: "",
+      gitChangedFilesByDirectory: {}, refreshGitChangedFiles: async () => {}, loadCodexAuthProfiles: jest.fn(),
+    });
+    return { controller, diagnostics };
+  });
+  await act(async () => {
+    if (transport === "WS") receive(payload);
+    else await result.current.controller.refreshCodexCliStatusForWidget({ force: true });
+  });
+  expect(result.current.diagnostics.codexCliStatusRateLimits).toEqual(payload.rateLimits.map((limit) => ({ ...limit, resetsAt: String(limit.resetsAt) })));
+  expect(result.current.diagnostics.codexAuthProfiles).toEqual([]);
+  await act(async () => { receive(status("legacy status without reset data", "2026-10-10T02:00:01.000Z")); });
+  expect(result.current.diagnostics.codexCliStatusRateLimits).toEqual([]);
+});
 
 test("shared quota WS updates remain visible in chat/voice and an older HTTP response cannot overwrite them", async () => {
   const { inputs, receive } = args();

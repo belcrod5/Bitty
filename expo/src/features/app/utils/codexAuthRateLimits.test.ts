@@ -47,7 +47,36 @@ describe("Codex auth account helpers", () => {
         { windowDurationMins: 10080, usedPercent: 50, resetsAt: String(weeklyResetSeconds) },
         { windowDurationMins: 300, usedPercent: 25, resetsAt: String((nowMs / 1000) + 3600) },
       ],
-    }, nowMs)).toBe("5h 75% | 週 50% | 2日21:24");
+    }, nowMs)).toEqual({ text: "5h 75% | 週 50%", weeklyReset: { text: "2日", tone: "neutral" } });
+  });
+
+  it.each([
+    [2 * 86_400_000 - 1, "1日", "neutral"],
+    [86_400_000, "1日", "neutral"],
+    [86_400_000 - 1, "1日未", "danger"],
+    [1, "1日未", "danger"],
+    [0, "1日未", "danger"],
+    [-1, "1日未", "danger"],
+  ] as const)("formats the exact remaining interval %s ms", (remainingMs, text, tone) => {
+    const nowMs = Date.UTC(2026, 0, 1);
+    expect(formatCodexAuthRateLimits({
+      rateLimits: [{ windowDurationMins: 10080, usedPercent: 50, resetsAt: String(nowMs + remainingMs) }],
+    }, nowMs)).toEqual({ text: "週 50%", weeklyReset: { text, tone } });
+  });
+
+  it.each(["seconds", "milliseconds", "ISO"])("accepts %s reset timestamps", (format) => {
+    const nowMs = Date.UTC(2026, 0, 1);
+    const resetMs = nowMs + 2 * 86_400_000;
+    const resetsAt = format === "ISO" ? new Date(resetMs).toISOString() : String(format === "seconds" ? resetMs / 1000 : resetMs);
+    expect(formatCodexAuthRateLimits({
+      rateLimits: [{ windowDurationMins: 10080, usedPercent: 50, resetsAt }],
+    }, nowMs).weeklyReset).toEqual({ text: "2日", tone: "neutral" });
+  });
+
+  it.each([undefined, "", "invalid"])("omits missing or invalid reset times: %s", (resetsAt) => {
+    expect(formatCodexAuthRateLimits({
+      rateLimits: [{ windowDurationMins: 10080, usedPercent: 50, resetsAt }],
+    })).toEqual({ text: "週 50%", weeklyReset: null });
   });
 
   it("ignores non-standard windows instead of leaking them into the account summary", () => {
@@ -56,7 +85,7 @@ describe("Codex auth account helpers", () => {
         { windowDurationMins: 60, usedPercent: 10 },
         { windowDurationMins: 300, usedPercent: 25 },
       ],
-    })).toBe("5h 75%");
+    })).toEqual({ text: "5h 75%", weeklyReset: null });
   });
 
 });

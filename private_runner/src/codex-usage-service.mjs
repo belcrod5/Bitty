@@ -89,6 +89,7 @@ export function formatCodexUsageStatus(rateLimits = {}, usageLimitReached = fals
     return [{ label, value, reset, remainingPercent: left }];
   });
   return {
+    rateLimits: windows.filter(Boolean),
     statusText: [...lines.flatMap(({ label, value, reset }) => [`${label}: ${value}`, `(resets ${reset})`]),
       ...(usageLimitReached ? ["Codex の利用上限に達しました。"] : [])].join("\n"),
     limitLines: lines.map(({ label, value, reset }) => ({ section: "default", label, value: `${value} (resets ${reset})` })),

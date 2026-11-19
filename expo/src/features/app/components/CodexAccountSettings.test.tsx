@@ -2,6 +2,8 @@ import React from "react";
 import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react-native";
 import { CodexAccountSettings } from "./CodexAccountSettings";
 import { mergeCodexAuthRegistration } from "./CodexAccountSettings";
+import { VisualThemeProvider } from "../theme/VisualThemeContext";
+import { VISUAL_THEMES } from "../theme/visualThemes";
 
 jest.mock("@expo/vector-icons", () => ({ Ionicons: () => null }));
 jest.mock("../keyboardController", () => { const { View } = require("react-native"); return { KeyboardAvoidingView: View }; });
@@ -108,6 +110,21 @@ test("shows account details and disables deletion for the active account", async
   expect(screen.getByText("plus・ready・使用中")).toBeTruthy();
   expect(screen.getByText("利用制限未取得")).toBeTruthy();
   expect(screen.getByLabelText("Active accountを削除").props.accessibilityState).toEqual({ disabled: true });
+});
+
+test("shows the shared short reset countdown and colors only the under-day label red", async () => {
+  mockCtx.codexAuthProfiles = [{
+    authId: "active",
+    isCurrent: true,
+    rateLimits: [{ windowDurationMins: 10080, usedPercent: 50, resetsAt: String(Date.now() + 3_600_000) }],
+  }];
+  const screen = await render(
+    <VisualThemeProvider themeId="standard" onSelectTheme={() => undefined}>
+      <CodexAccountSettings />
+    </VisualThemeProvider>
+  );
+  expect(screen.getByText("1日未")).toHaveStyle({ color: VISUAL_THEMES.standard.tones.danger.foreground });
+  expect(screen.getByText("週 50% | 1日未")).not.toHaveStyle({ color: VISUAL_THEMES.standard.tones.danger.foreground });
 });
 
 test("waits two seconds between pending registration polls", async () => {

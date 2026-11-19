@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, type ReactNode } fro
 import { AppState } from "react-native";
 import type {
   CodexAuthProfileEntry,
+  CodexAuthRateLimit,
   GitChangedFilesDirectoryState,
   GitChangedFilesSnapshot,
 } from "../types/appTypes";
@@ -9,6 +10,7 @@ import type { CodexAuthRegistration } from "../hooks/useCodexStatusAuthControlle
 
 export type ChatDiagnosticsContextValue = {
   codexCliStatusText: string;
+  codexCliStatusRateLimits?: CodexAuthRateLimit[];
   codexUsageLimitReached?: boolean;
   codexCliStatusFetchedAtMs: number;
   codexCliStatusLoading: boolean;
