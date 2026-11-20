@@ -160,6 +160,8 @@ function VoiceConversationSession({
   const [historyMounted, setHistoryMounted] = useState(historyExpanded);
   const historyHeight = useSharedValue(historyExpanded ? screenHeight : 0);
   const historyDragActive = useSharedValue(false);
+  const historyLayoutHeight = useSharedValue(screenHeight);
+  const dragHistoryHeight = useSharedValue(0);
   const historyStyle = useAnimatedStyle(() => ({ height: historyHeight.value }));
   const footerOffset = useSharedValue(0);
   const footerDismissing = useSharedValue(false);
@@ -316,47 +318,63 @@ function VoiceConversationSession({
     mountedRef.current = false;
     onClose();
   }, [onClose]);
-  const footerSwipe = useMemo(() => Gesture.Pan()
-    .enabled(!transitioning && !editingTranscript && !streamingStt.correctionPreview?.editing)
-    .activeOffsetY([-24, 24])
-    .failOffsetX([-32, 32])
-    .onStart(() => {
-      if (!historyExpanded && !footerDismissing.value) {
+  const [footerSwipe, headerSwipe] = useMemo(() => {
+    const createSwipe = (fromHeader: boolean) => Gesture.Pan()
+      .enabled(!transitioning && !editingTranscript && !streamingStt.correctionPreview?.editing)
+      .activeOffsetY([-24, 24])
+      .failOffsetX([-32, 32])
+      .onStart(() => {
+        if (footerDismissing.value) return;
         cancelAnimation(footerOffset);
+        cancelAnimation(historyHeight);
         historyDragActive.value = true;
-        historyHeight.value = 0;
+        dragHistoryHeight.value = historyExpanded ? historyLayoutHeight.value : 0;
+        historyHeight.value = dragHistoryHeight.value;
         runOnJS(setHistoryMounted)(true);
-      }
-    })
-    .onUpdate(({ translationY }) => {
-      if (!historyExpanded && historyDragActive.value && !footerDismissing.value) {
-        historyHeight.value = Math.min(screenHeight, Math.max(0, -translationY));
-        footerOffset.value = Math.max(0, translationY);
-      }
-    })
-    .onFinalize(({ translationY, velocityY = 0 }, success) => {
-      if (!historyDragActive.value) return;
-      historyDragActive.value = false;
-      if (historyExpanded || footerDismissing.value) return;
-      if (success && translationY < -50) {
-        footerOffset.value = 0;
-        runOnJS(setHistoryExpanded)(true);
-      } else if (success && (translationY > 50 || (translationY > 0 && velocityY > 800))) {
-        footerDismissing.value = true;
-        runOnJS(beginSwipeDismissal)();
-        footerOffset.value = withTiming(Math.max(footerOffset.value, footerDismissDistance.value),
-          { duration: reduceMotion === true ? 0 : 200 }, (finished) => {
-            if (finished) runOnJS(finishSwipeDismissal)();
+      })
+      .onUpdate(({ translationY }) => {
+        if (!historyDragActive.value || footerDismissing.value) return;
+        if (fromHeader) {
+          historyHeight.value = Math.max(0, dragHistoryHeight.value - Math.max(0, translationY));
+          footerOffset.value = Math.max(0, translationY - dragHistoryHeight.value);
+        } else {
+          if (!historyExpanded) historyHeight.value = Math.min(screenHeight, Math.max(0, -translationY));
+          footerOffset.value = Math.max(0, translationY);
+        }
+      })
+      .onFinalize(({ translationY, velocityY = 0 }, success) => {
+        if (!historyDragActive.value) return;
+        historyDragActive.value = false;
+        if (footerDismissing.value) return;
+        const duration = reduceMotion === true ? 0 : 200;
+        const dismissDistance = fromHeader
+          ? dragHistoryHeight.value + Math.max(0, footerDismissDistance.value - 50) : 50;
+        if (success && (translationY > dismissDistance || (translationY > 0 && velocityY > 800))) {
+          footerDismissing.value = true;
+          runOnJS(beginSwipeDismissal)();
+          if (historyHeight.value > 0) historyHeight.value = withTiming(0, { duration });
+          footerOffset.value = withTiming(Math.max(footerOffset.value, footerDismissDistance.value),
+            { duration }, (finished) => {
+              if (finished) runOnJS(finishSwipeDismissal)();
+            });
+        } else if (success && fromHeader && translationY > dragHistoryHeight.value / 2) {
+          footerOffset.value = withTiming(0, { duration });
+          runOnJS(setHistoryExpanded)(false);
+        } else if (success && !fromHeader && !historyExpanded && translationY < -50) {
+          footerOffset.value = 0;
+          runOnJS(setHistoryExpanded)(true);
+        } else {
+          footerOffset.value = withTiming(0, { duration });
+          historyHeight.value = withTiming(historyExpanded ? screenHeight : 0, { duration }, (finished) => {
+            if (finished && !historyExpanded) runOnJS(setHistoryMounted)(false);
           });
-      } else {
-        footerOffset.value = withTiming(0, { duration: reduceMotion === true ? 0 : 200 });
-        historyHeight.value = withTiming(0, { duration: reduceMotion === true ? 0 : 200 }, (finished) => {
-          if (finished) runOnJS(setHistoryMounted)(false);
-        });
-      }
-    }), [beginSwipeDismissal, editingTranscript, finishSwipeDismissal, footerDismissDistance,
-      footerDismissing, footerOffset, historyDragActive, historyExpanded, historyHeight, reduceMotion,
-      screenHeight, setHistoryExpanded, streamingStt.correctionPreview?.editing, transitioning]);
+        }
+      });
+    return [createSwipe(false), createSwipe(true)];
+  }, [beginSwipeDismissal, dragHistoryHeight, editingTranscript, finishSwipeDismissal,
+    footerDismissDistance, footerDismissing, footerOffset, historyDragActive, historyExpanded,
+    historyHeight, historyLayoutHeight, reduceMotion, screenHeight, setHistoryExpanded,
+    streamingStt.correctionPreview?.editing, transitioning]);
 
   const quietAudio = useCallback(async () => {
     await streamingStt.abort();
@@ -498,9 +516,16 @@ function VoiceConversationSession({
                 pointerEvents={historyExpanded ? "auto" : "none"}
                 accessibilityElementsHidden={!historyExpanded}
                 importantForAccessibility={historyExpanded ? "auto" : "no-hide-descendants"}
+                onLayout={({ nativeEvent }) => {
+                  if (historyExpanded && !historyDragActive.value && !footerDismissing.value) {
+                    historyLayoutHeight.value = nativeEvent.layout.height;
+                  }
+                }}
                 style={[{ flexShrink: 1, width: "100%", overflow: "hidden" }, historyStyle]}>
-                <View style={{ paddingHorizontal: 20, paddingTop: 20, paddingBottom: 8,
-                  flexDirection: "row", alignItems: "center", gap: 12 }}>
+                <GestureDetector gesture={headerSwipe}>
+                <View testID="voice-history-header-swipe-area"
+                  style={{ paddingHorizontal: 20, paddingTop: 20, paddingBottom: 8,
+                    flexDirection: "row", alignItems: "center", gap: 12 }}>
                   <Pressable testID="voice-orchestrator-strip" style={{ flex: 1 }}
                     onLongPress={() => void openManager()}
                     onPointerDown={(event) => { if (event.nativeEvent.button === 2) void openManager(); }}>
@@ -530,6 +555,7 @@ function VoiceConversationSession({
                     <Ionicons name="close" size={24} color="#ffffff" />
                   </Pressable>
                 </View>
+                </GestureDetector>
                 <View style={{ flex: 1 }}>
                 <ScrollView ref={historyScrollRef} testID="voice-history-messages" style={{ flex: 1 }}
                   onScroll={(event) => {
