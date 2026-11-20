@@ -26,6 +26,18 @@ export function effortOptionsForModel(
   return option.effortOptions ?? THINK_OPTIONS;
 }
 
+export function serviceTierForModel(
+  serviceTier: string | undefined,
+  option: { serviceTiers?: readonly string[] } | undefined,
+): string {
+  const tiers = option?.serviceTiers ?? [];
+  if (serviceTier && tiers.includes(serviceTier)) return serviceTier;
+  if (serviceTier === "fast" || serviceTier === "priority") {
+    return tiers.find((tier) => tier === "fast" || tier === "priority") ?? "default";
+  }
+  return "default";
+}
+
 export function modelSelectionKey(backendIdRaw: unknown, modelIdRaw: unknown): ModelOption["selectionKey"] {
   const backendId = encodeURIComponent(String(backendIdRaw || "").trim());
   const modelId = encodeURIComponent(String(modelIdRaw || "").trim());

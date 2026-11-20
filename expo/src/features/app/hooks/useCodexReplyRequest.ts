@@ -13,6 +13,7 @@ import type { CodexCommandExecutionInfo } from "../../codex/client/types";
 import type { CalendarToolResult } from "../../calendar/calendarToolSpecs";
 import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import { normalizeModelRef, type CodexApprovalPolicy, type ReasoningEffort } from "../utils/settingsParsers";
+import { serviceTierForModel } from "../modelOptions";
 import { codexItemMessageId } from "../utils/codexItemMessageId";
 import { resolveCodexItemRuntimeStatus } from "../utils/statusIcons";
 import {
@@ -1094,9 +1095,7 @@ export function useCodexReplyRequest<
         model: requestTurnModelRef || undefined,
         // Backendがeffort対応ならresumeでもturn単位で送る。
         effort: requestReasoningEffort || undefined,
-        serviceTier: requestSnapshot?.serviceTier === "fast" || requestSnapshot?.serviceTier === "priority"
-          ? requestModelOption?.serviceTiers?.find((tier) => tier === "fast" || tier === "priority") ?? "default"
-          : "default",
+        serviceTier: serviceTierForModel(requestSnapshot?.serviceTier, requestModelOption),
         approvalPolicy: current.codexApprovalPolicy,
         onCalendarToolCall: current.onCalendarToolCall,
         onCalendarRequestCancel: current.onCalendarRequestCancel,

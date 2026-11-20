@@ -138,6 +138,7 @@ test("service tier selection follows backend and per-model capabilities and reac
     getStatus: async () => ({ available: true, readiness: { ready: true }, capabilities: {
       model: { select: true, serviceTier: true, catalog: [
         { modelId: "fast-model", serviceTiers: ["fast"] }, { modelId: "standard-model", serviceTiers: [] },
+        { modelId: "ultrafast-model", serviceTiers: ["fast", "ultrafast"] },
       ] },
     } }),
     resolveSessionCwd: async () => "/workspace",
@@ -150,11 +151,13 @@ test("service tier selection follows backend and per-model capabilities and reac
   };
   let id = 0;
   const service = modelService({ backends: [backend], generateRunId: () => `speed-run-${++id}` });
-  for (const [model, serviceTier] of [["fast-model", "fast"], ["standard-model", "default"]]) {
+  for (const [model, serviceTier] of [["fast-model", "fast"], ["ultrafast-model", "ultrafast"], ["standard-model", "default"]]) {
     await complete(await service.startTurn(startRequest({ model, serviceTier, clientOperationId: `${model}-${serviceTier}` }),
       { subjectId: "user-1" }));
   }
-  assert.deepEqual(requests, ["fast", "default"]);
+  assert.deepEqual(requests, ["fast", "ultrafast", "default"]);
+  await assert.rejects(service.startTurn(startRequest({ model: "fast-model", serviceTier: "ultrafast" }),
+    { subjectId: "user-1" }), (error) => error.code === "capability_unsupported");
   await assert.rejects(service.startTurn(startRequest({ model: "standard-model", serviceTier: "fast" }),
     { subjectId: "user-1" }), (error) => error.code === "capability_unsupported");
   backend.getStatus = async () => ({ available: true, readiness: { ready: true }, capabilities: { model: {} } });

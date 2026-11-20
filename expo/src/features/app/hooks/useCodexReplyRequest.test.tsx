@@ -1456,9 +1456,13 @@ describe("useCodexReplyRequest send acceptance contract", () => {
   });
 });
 
-describe("chat speed requests", () => {
+describe.each([undefined, "thread-1"])("chat speed requests with existing thread %s", (threadId) => {
   test.each([
     ["fast", ["fast"], "fast"],
+    ["ultrafast", ["fast", "ultrafast"], "ultrafast"],
+    ["ultrafast", ["fast"], "default"],
+    ["fast", ["priority"], "priority"],
+    ["future-tier", ["future-tier"], "future-tier"],
     ["priority", ["fast"], "fast"],
     ["default", ["fast"], "default"],
     [undefined, ["fast"], "default"],
@@ -1474,8 +1478,8 @@ describe("chat speed requests", () => {
     })) as never);
     const { result } = await renderHook(() => useCodexReplyRequest(options as never));
     await act(async () => result.current.sendReplyRequest(undefined, { panelId: "panel-1",
-      sessionSnapshot: { backendId: "codex", threadId: "thread-1", modelRef: "speed-model", serviceTier },
+      sessionSnapshot: { backendId: "codex", threadId, modelRef: "speed-model", serviceTier },
     }));
-    expect(mockStartCodexAppServerTurn).toHaveBeenCalledWith(expect.objectContaining({ serviceTier: expected }));
+    expect(mockStartCodexAppServerTurn).toHaveBeenCalledWith(expect.objectContaining({ serviceTier: expected, threadId }));
   });
 });
