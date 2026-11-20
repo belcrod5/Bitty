@@ -1,6 +1,6 @@
 import React, { Profiler } from "react";
 import { act, fireEvent, render } from "@testing-library/react-native";
-import { FastModeToggle } from "./FastModeToggle";
+import { SpeedModeButton } from "./SpeedModeButton";
 
 let mockReduceMotion: boolean | null = false;
 const mockValues: { value: number }[] = [];
@@ -48,23 +48,23 @@ beforeEach(() => {
 
 test("pulses only when on and cancels/reset on disable and unmount", async () => {
   const onPress = jest.fn();
-  const screen = await render(<FastModeToggle enabled={false} onPress={onPress} />);
+  const screen = await render(<SpeedModeButton active={false} label="Standard" onPress={onPress} />);
   expect(mockWithRepeat).not.toHaveBeenCalled();
   expect(mockValues[0].value).toBe(1);
-  await fireEvent.press(screen.getByRole("switch", { name: "Fast mode" }));
+  await fireEvent.press(screen.getByRole("button", { name: "速度設定を開く: Standard" }));
   expect(onPress).toHaveBeenCalledTimes(1);
 
-  await screen.rerender(<FastModeToggle enabled onPress={onPress} />);
+  await screen.rerender(<SpeedModeButton active label="Fast" onPress={onPress} />);
   expect(mockWithTiming).toHaveBeenCalledWith(0.35, { duration: 1500, easing: expect.any(Function), reduceMotion: "never" });
   expect(mockWithRepeat).toHaveBeenLastCalledWith(0.35, -1, true, undefined, "never");
-  await screen.rerender(<FastModeToggle enabled onPress={jest.fn()} />);
+  await screen.rerender(<SpeedModeButton active label="Fast" onPress={jest.fn()} />);
   expect(mockWithRepeat).toHaveBeenCalledTimes(1);
 
   const cancelsBeforeDisable = mockCancelAnimation.mock.calls.length;
-  await screen.rerender(<FastModeToggle enabled={false} onPress={onPress} />);
+  await screen.rerender(<SpeedModeButton active={false} label="Standard" onPress={onPress} />);
   expect(mockCancelAnimation).toHaveBeenCalledTimes(cancelsBeforeDisable + 1);
   expect(mockValues[0].value).toBe(1);
-  await screen.rerender(<FastModeToggle enabled onPress={onPress} />);
+  await screen.rerender(<SpeedModeButton active label="Fast" onPress={onPress} />);
   const cancelsBeforeUnmount = mockCancelAnimation.mock.calls.length;
   await screen.unmount();
   expect(mockCancelAnimation).toHaveBeenCalledTimes(cancelsBeforeUnmount + 1);
@@ -73,16 +73,16 @@ test("pulses only when on and cancels/reset on disable and unmount", async () =>
 
 test.each([null, true])("stays static with motion preference %s and responds to OS preference changes", async (preference) => {
   mockReduceMotion = preference;
-  const screen = await render(<FastModeToggle enabled onPress={jest.fn()} />);
+  const screen = await render(<SpeedModeButton active label="Fast" onPress={jest.fn()} />);
   expect(mockWithRepeat).not.toHaveBeenCalled();
   expect(mockValues[0].value).toBe(1);
-  expect(screen.getByRole("switch", { name: "Fast mode", checked: true })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "速度設定を開く: Fast" })).toBeTruthy();
 
   mockReduceMotion = false;
-  await screen.rerender(<FastModeToggle enabled onPress={jest.fn()} />);
+  await screen.rerender(<SpeedModeButton active label="Fast" onPress={jest.fn()} />);
   expect(mockWithRepeat).toHaveBeenCalledTimes(1);
   mockReduceMotion = true;
-  await screen.rerender(<FastModeToggle enabled onPress={jest.fn()} />);
+  await screen.rerender(<SpeedModeButton active label="Fast" onPress={jest.fn()} />);
   expect(mockValues[0].value).toBe(1);
   expect(mockWithRepeat).toHaveBeenCalledTimes(1);
   await screen.unmount();
@@ -91,7 +91,7 @@ test.each([null, true])("stays static with motion preference %s and responds to 
 test("animation frames update only shared opacity without React commits", async () => {
   const onRender = jest.fn();
   const screen = await render(<Profiler id="fast-toggle" onRender={onRender}>
-    <FastModeToggle enabled onPress={jest.fn()} />
+    <SpeedModeButton active label="Fast" onPress={jest.fn()} />
   </Profiler>);
   const commits = onRender.mock.calls.length;
   await act(async () => {

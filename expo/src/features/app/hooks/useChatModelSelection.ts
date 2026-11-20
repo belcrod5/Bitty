@@ -2,7 +2,7 @@ import { useEffect, useMemo } from "react";
 import { Alert } from "react-native";
 import type { ModelOption } from "../contexts/AppSettingsContext";
 import type { PanelRuntimeSnapshot } from "../contexts/PanelRuntimeStoreContext";
-import { effortOptionsForModel, isBackendChangeBlocked } from "../modelOptions";
+import { effortOptionsForModel, isBackendChangeBlocked, serviceTierForModel } from "../modelOptions";
 import { modelRefLabelForDisplay, normalizeModelRef } from "../utils/settingsParsers";
 
 export function useChatModelSelection(options: {
@@ -83,15 +83,23 @@ export function useChatModelSelection(options: {
     options.closePicker(null);
   };
 
-  const fastServiceTier = modelOptionForView?.serviceTiers?.find((tier) => tier === "fast" || tier === "priority");
-  const fastModeEnabled = Boolean(fastServiceTier && ["fast", "priority"].includes(options.panelSnapshot.serviceTier || ""));
+  const serviceTierOptions = [
+    { value: "default", label: "Standard" },
+    ...Array.from(new Set(modelOptionForView?.serviceTiers ?? []))
+      .filter((tier) => tier !== "default")
+      .map((tier) => ({ value: tier, label: tier === "fast" || tier === "priority" ? "Fast"
+        : tier === "ultrafast" ? "Ultrafast" : tier })),
+  ];
+  const serviceTierForView = serviceTierForModel(options.panelSnapshot.serviceTier, modelOptionForView);
 
   return {
-    fastModeSupported: options.isPanelRuntimeView && Boolean(fastServiceTier),
-    fastModeEnabled,
-    toggleFastMode: () => {
-      if (options.isPanelRuntimeView && fastServiceTier) {
-        options.updatePanelSettings(options.panelId, { serviceTier: fastModeEnabled ? "default" : fastServiceTier });
+    speedSelectionSupported: options.isPanelRuntimeView && serviceTierOptions.length > 1,
+    serviceTierOptions,
+    serviceTierForView,
+    selectServiceTier: (serviceTier: string) => {
+      if (options.isPanelRuntimeView && serviceTierOptions.some((option) => option.value === serviceTier)) {
+        options.updatePanelSettings(options.panelId, { serviceTier });
+        options.closePicker(null);
       }
     },
     backendIdForView,

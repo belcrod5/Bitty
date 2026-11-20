@@ -53,6 +53,7 @@ const mockChatSessionSubagentProps: { current: Record<string, any> | null } = { 
 const mockRunnerWsConnectionStatusProps: { current: Record<string, any> | null } = { current: null };
 const mockSetStringAsync = jest.fn(async (_text: string) => {});
 let mockPanelServiceTier = "default";
+let mockServiceTiers = ["fast", "ultrafast"];
 const mockUpdatePanelSettings = jest.fn();
 let mockPanelBackendId = "codex";
 let mockPanelSessionId = "session-1";
@@ -282,7 +283,7 @@ jest.mock("../contexts/AppSettingsContext", () => ({
         label: "ChatGPT 5.6 Sol",
         supportsReasoningEffort: true,
         supportsScheduling: true,
-        serviceTiers: ["fast"],
+        serviceTiers: mockServiceTiers,
       },
       {
         selectionKey: "claude::sonnet",
@@ -534,6 +535,7 @@ describe("ChatScreen voice input", () => {
     mockGitDiffPanelProps.current = null;
     mockRunnerWsConnectionStatusProps.current = null;
     mockPanelServiceTier = "default";
+    mockServiceTiers = ["fast", "ultrafast"];
     mockPanelBackendId = "codex";
     mockPanelSessionId = "session-1";
     mockPanelSessionMaterialized = true;
@@ -1742,21 +1744,44 @@ describe("ChatScreen voice input", () => {
     await row.unmount();
     await screen.unmount();
   });
-test("chat footer shows a compact speed switch with an emphasized active bolt", async () => {
-  mockPanelServiceTier = "default";
+test("chat footer opens advertised speed choices, saves Ultrafast and returns to Standard", async () => {
+  const measure = jest.spyOn(View.prototype, "measureInWindow").mockImplementation((callback) => callback(80, 600, 90, 24));
   const screen = await render(<ChatScreen panelId="speed-panel" />);
-  expect(screen.getByRole("switch", { name: "Fast mode", checked: false })).toBeTruthy();
   expect(screen.getByText("flash-outline")).toBeTruthy();
-  await fireEvent.press(screen.getByRole("switch", { name: "Fast mode" }));
-  expect(mockUpdatePanelSettings).toHaveBeenLastCalledWith("speed-panel", { serviceTier: "fast" });
-  mockPanelServiceTier = "fast";
+  await fireEvent.press(screen.getByRole("button", { name: "速度設定を開く: Standard" }));
+  expect(screen.getByRole("radio", { name: "Standard", checked: true })).toBeTruthy();
+  expect(screen.getByRole("radio", { name: "Fast", checked: false })).toBeTruthy();
+  await fireEvent.press(screen.getByRole("radio", { name: "Ultrafast" }));
+  expect(mockUpdatePanelSettings).toHaveBeenLastCalledWith("speed-panel", { serviceTier: "ultrafast" });
+  expect(screen.queryByRole("radio", { name: "Ultrafast" })).toBeNull();
+
+  mockPanelServiceTier = "ultrafast";
   await screen.rerender(<ChatScreen panelId="speed-panel" />);
-  expect(screen.getByRole("switch", { name: "Fast mode", checked: true })).toBeTruthy();
   expect(screen.getByText("flash")).toBeTruthy();
-  await fireEvent.press(screen.getByRole("switch", { name: "Fast mode" }));
+  await fireEvent.press(screen.getByRole("button", { name: "速度設定を開く: Ultrafast" }));
+  expect(screen.getByRole("radio", { name: "Ultrafast", checked: true })).toBeTruthy();
+  await fireEvent.press(screen.getByRole("radio", { name: "Standard" }));
   expect(mockUpdatePanelSettings).toHaveBeenLastCalledWith("speed-panel", { serviceTier: "default" });
-  mockPanelServiceTier = "default";
   await screen.unmount();
+  measure.mockRestore();
+});
+
+test("speed menu follows model support and falls back from unsupported saved Ultrafast", async () => {
+  const measure = jest.spyOn(View.prototype, "measureInWindow").mockImplementation((callback) => callback(80, 600, 90, 24));
+  mockServiceTiers = ["fast"];
+  mockPanelServiceTier = "ultrafast";
+  const screen = await render(<ChatScreen panelId="speed-panel" />);
+  await fireEvent.press(screen.getByRole("button", { name: "速度設定を開く: Standard" }));
+  expect(screen.queryByRole("radio", { name: "Ultrafast" })).toBeNull();
+  await fireEvent.press(screen.getByRole("radio", { name: "Fast" }));
+  expect(mockUpdatePanelSettings).toHaveBeenLastCalledWith("speed-panel", { serviceTier: "fast" });
+
+  mockServiceTiers = [];
+  await screen.rerender(<ChatScreen panelId="speed-panel" />);
+  expect(screen.queryByLabelText(/速度設定を開く/)).toBeNull();
+  expect(screen.queryByRole("radio")).toBeNull();
+  await screen.unmount();
+  measure.mockRestore();
 });
 
   test.each(["standard", "cyberpunk"] as const)("Fast mode highlights the input in the %s theme and preserves the draft", async (themeId) => {
@@ -1773,16 +1798,16 @@ test("chat footer shows a compact speed switch with an emphasized active bolt", 
     mockPanelServiceTier = "fast";
     await screen.rerender(chat());
     expect(inputBackground()).toBe(themeId === "standard" ? "#fff2cc" : VISUAL_THEMES[themeId].colors.surfaceActionSelected);
-    expect(StyleSheet.flatten(screen.getByRole("switch", { name: "Fast mode" }).props.style).backgroundColor)
+    expect(StyleSheet.flatten(screen.getByRole("button", { name: "速度設定を開く: Fast" }).props.style).backgroundColor)
       .toBe(VISUAL_THEMES[themeId].tones.warning.background);
-    expect(screen.getByRole("switch", { name: "Fast mode", checked: true })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "速度設定を開く: Fast" })).toBeTruthy();
     expect(screen.getByTestId("chat-composer-input").props.value).toBe("keep this draft");
 
     mockPanelServiceTier = "default";
     await screen.rerender(chat());
     expect(inputBackground()).toBe(VISUAL_THEMES[themeId].colors.surface);
-    expect(screen.getByRole("switch", { name: "Fast mode", checked: false })).toBeTruthy();
-    expect(StyleSheet.flatten(screen.getByRole("switch", { name: "Fast mode" }).props.style).backgroundColor)
+    expect(screen.getByRole("button", { name: "速度設定を開く: Standard" })).toBeTruthy();
+    expect(StyleSheet.flatten(screen.getByRole("button", { name: "速度設定を開く: Standard" }).props.style).backgroundColor)
       .toBe("transparent");
     expect(screen.getByTestId("chat-composer-input").props.value).toBe("keep this draft");
     await screen.unmount();

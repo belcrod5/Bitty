@@ -46,7 +46,7 @@ import { useChatScreen } from "../contexts/ChatScreenContext";
 import { useSkiaBoard } from "../contexts/SkiaBoardContext";
 import { ChatContextUsageMenu } from "../components/ChatContextUsageMenu";
 import { RunningSessionCount } from "../components/RunningSessionCount";
-import { FastModeToggle } from "../components/FastModeToggle";
+import { SpeedModeButton } from "../components/SpeedModeButton";
 import { CodexStatusSummaryMenu } from "../components/CodexStatusSummaryMenu";
 import { CommandExecutionRow } from "../components/CommandExecutionRow";
 import { BouncingDotsIndicator } from "../components/BouncingDotsIndicator";
@@ -93,7 +93,7 @@ import { formatOutputTokens } from "../utils/messageTokens";
 import { useCodexSchedules } from "../../codexSchedules/CodexSchedulesContext";
 import { CodexScheduleSettings } from "../../codexSchedules/CodexScheduleSettings";
 
-type ChatFooterSelectTarget = "model" | "think";
+type ChatFooterSelectTarget = "model" | "think" | "speed";
 type DirectoryMenuMode = "actions" | "rename_directory" | "edit_session_title" | "select_marker" | "subagents" | "edit_note";
 type ChatScreenMode = "mini_board_popup";
 type ChatScreenProps = {
@@ -389,7 +389,7 @@ export function ChatScreen({
     selectableModelOptions, reasoningEffortSupportedForView, effortOptionsForView,
     scheduleModelOptions,
     scheduleModelRef, reasoningEffortForView, selectedModelLabelForView,
-    selectModelForView, fastModeSupported, fastModeEnabled, toggleFastMode } = useChatModelSelection({
+    selectModelForView, speedSelectionSupported, serviceTierOptions, serviceTierForView, selectServiceTier } = useChatModelSelection({
     isPanelRuntimeView, panelId, panelSnapshot,
     conversationMessageCount: isPanelRuntimeView
       ? miniInheritedSourceMessages.length + miniSourceMessages.length
@@ -513,6 +513,7 @@ export function ChatScreen({
   const chatFindInputRef = useRef<TextInput | null>(null);
   const modelSelectTriggerRef = useRef<View | null>(null);
   const thinkSelectTriggerRef = useRef<View | null>(null);
+  const speedSelectTriggerRef = useRef<View | null>(null);
   const embeddedChatListRef = useRef<LegendListRef | null>(null);
   const popupChatListRef = useRef<LegendListRef | null>(null);
   const didInitialScrollRef = useRef(false);
@@ -1546,7 +1547,8 @@ export function ChatScreen({
   ]);
 
   const openFooterSelect = (target: ChatFooterSelectTarget) => {
-    const triggerRef = target === "model" ? modelSelectTriggerRef : thinkSelectTriggerRef;
+    const triggerRef = target === "model" ? modelSelectTriggerRef
+      : target === "think" ? thinkSelectTriggerRef : speedSelectTriggerRef;
     if (!triggerRef.current || typeof triggerRef.current.measureInWindow !== "function") {
       setFooterSelectOpen(target);
       return;
@@ -1644,7 +1646,8 @@ export function ChatScreen({
     return formatElapsedHhMmSs(Math.max(0, executionNowMs - startedAtMs));
   })();
   const footerSelectEstimatedHeight = (
-    (footerSelectOpen === "model" ? selectableModelOptions.length : effortOptionsForView.length) * 34
+    (footerSelectOpen === "model" ? selectableModelOptions.length
+      : footerSelectOpen === "speed" ? serviceTierOptions.length : effortOptionsForView.length) * 34
   ) + 8;
   const footerSelectTop = Math.max(8, footerSelectAnchor.y - footerSelectEstimatedHeight - 6);
   const gitDiffBranchName = String(gitChangedFiles.branchName || "").trim() || "HEAD";
@@ -2473,7 +2476,7 @@ export function ChatScreen({
               />
             </Reanimated.View>
           ) : (
-          <View testID="chat-composer-input-wrapper" style={[styles.chatInputWrapper, fastModeEnabled && styles.chatInputWrapperFast]}>
+          <View testID="chat-composer-input-wrapper" style={[styles.chatInputWrapper, serviceTierForView !== "default" && styles.chatInputWrapperFast]}>
             <ChatComposerInput
                 inputRef={chatComposerInputRef}
                 value={transcriptForView}
@@ -2578,7 +2581,13 @@ export function ChatScreen({
                 <Text style={styles.chatFooterSettingsText}>{reasoningEffortForView || "-"}</Text>
               </TouchableOpacity>
             </View> : null}
-            {fastModeSupported ? <FastModeToggle enabled={fastModeEnabled} onPress={toggleFastMode} /> : null}
+            {speedSelectionSupported ? <View ref={speedSelectTriggerRef} collapsable={false}>
+              <SpeedModeButton
+                active={serviceTierForView !== "default"}
+                label={serviceTierOptions.find((option) => option.value === serviceTierForView)?.label ?? "Standard"}
+                onPress={() => openFooterSelect("speed")}
+              />
+            </View> : null}
           </View>
           <View style={styles.chatFooterStatusRow}>
             <RunningSessionCount />
@@ -2642,7 +2651,24 @@ export function ChatScreen({
                       </TouchableOpacity>
                     );
                   })
-                : reasoningEffortSupportedForView ? effortOptionsForView.map((item) => {
+                : footerSelectOpen === "speed" && speedSelectionSupported ? serviceTierOptions.map((item) => {
+                    const selected = item.value === serviceTierForView;
+                    return (
+                      <TouchableOpacity
+                        key={item.value}
+                        style={[styles.chatFooterSelectOption, selected && styles.chatFooterSelectOptionSelected]}
+                        accessibilityRole="radio"
+                        accessibilityLabel={item.label}
+                        accessibilityState={{ checked: selected }}
+                        onPress={() => selectServiceTier(item.value)}
+                      >
+                        <Text style={[styles.chatFooterSelectOptionText, selected && styles.chatFooterSelectOptionTextSelected]}>
+                          {item.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })
+                : footerSelectOpen === "think" && reasoningEffortSupportedForView ? effortOptionsForView.map((item) => {
                     const selected = item === reasoningEffortForView;
                     return (
                       <TouchableOpacity

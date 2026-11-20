@@ -5,6 +5,7 @@ import {
   effortOptionsForModel,
   isBackendChangeBlocked,
   modelOptionsFromStatuses,
+  serviceTierForModel,
 } from "./modelOptions";
 
 test("builds stable composite selections when backends publish the same model id", () => {
@@ -105,11 +106,26 @@ test("blocks only backend changes for locked sessions", () => {
 });
 
 test("exposes speed tiers only when the backend supports tier selection", () => {
-  const catalog = [{ modelId: "speed-model", serviceTiers: ["fast"] }];
+  const catalog = [{ modelId: "speed-model", serviceTiers: ["fast", "ultrafast"] }];
   const options = modelOptionsFromStatuses([
     { backendId: "codex", capabilities: { model: { serviceTier: true, catalog } } },
     { backendId: "other", capabilities: { model: { catalog } } },
   ]);
-  expect(options[0].serviceTiers).toEqual(["fast"]);
+  expect(options[0].serviceTiers).toEqual(["fast", "ultrafast"]);
   expect(options[1].serviceTiers).toEqual([]);
+});
+
+test.each([
+  ["ultrafast", ["fast", "ultrafast"], "ultrafast"],
+  ["ultrafast", ["fast"], "default"],
+  ["future-tier", ["future-tier"], "future-tier"],
+  ["future-tier", ["fast"], "default"],
+  ["priority", ["priority", "fast"], "priority"],
+  ["priority", ["fast"], "fast"],
+  ["fast", ["priority"], "priority"],
+  ["default", ["fast", "ultrafast"], "default"],
+  [undefined, ["fast", "ultrafast"], "default"],
+  ["ultrafast", undefined, "default"],
+])("resolves saved speed %s against advertised %j as %s", (saved, serviceTiers, expected) => {
+  expect(serviceTierForModel(saved, { serviceTiers })).toBe(expected);
 });
