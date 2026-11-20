@@ -1,7 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   ActivityIndicator,
-  InputAccessoryView,
   Keyboard,
   Platform,
   Pressable,
@@ -36,10 +35,7 @@ import {
 } from "../types/directorySessions";
 import { useAppShell } from "../contexts/AppShellContext";
 import { useSkiaBoard } from "../contexts/SkiaBoardContext";
-import {
-  AppDrawerSearch,
-  APP_DRAWER_SEARCH_INPUT_ACCESSORY_ID,
-} from "./AppDrawerSearch";
+import { AppDrawerSearch } from "./AppDrawerSearch";
 
 export type {
   DirectoryMarkerColor,
@@ -590,23 +586,6 @@ export const AppDrawer = memo(function AppDrawer({
           onClose={() => setSessionContextMenuTarget(null)}
         />
       </ScrollView>
-      {Platform.OS === "ios" ? (
-        <InputAccessoryView nativeID={APP_DRAWER_SEARCH_INPUT_ACCESSORY_ID} backgroundColor={theme.colors.surfaceRaised}>
-          <View style={styles.appDrawerKeyboardAccessory}>
-            <TouchableOpacity
-              style={styles.appDrawerKeyboardDismissButton}
-              onPress={() => {
-                setSearchActive(false);
-                Keyboard.dismiss();
-              }}
-              accessibilityRole="button"
-              accessibilityLabel="キーボードを閉じる"
-            >
-              <Text style={styles.appDrawerKeyboardDismissButtonText}>閉じる</Text>
-            </TouchableOpacity>
-          </View>
-        </InputAccessoryView>
-      ) : null}
     </SafeAreaView>
   );
 });

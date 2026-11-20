@@ -3,7 +3,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Keyboard,
-  Platform,
   Pressable,
   ScrollView,
   Text,
@@ -28,8 +27,6 @@ import {
   type DrawerConversationSearchOrder,
   type DrawerConversationSearchResult,
 } from "../utils/drawerConversationSearch";
-
-export const APP_DRAWER_SEARCH_INPUT_ACCESSORY_ID = "appDrawerSearchKeyboardAccessory";
 
 type SearchMode = "directory" | "chat";
 type SearchAge = "all" | "7" | "30";
@@ -321,7 +318,6 @@ export function AppDrawerSearch({
             autoCapitalize="none"
             autoCorrect={false}
             clearButtonMode="never"
-            inputAccessoryViewID={Platform.OS === "ios" ? APP_DRAWER_SEARCH_INPUT_ACCESSORY_ID : undefined}
             onSubmitEditing={submitSearch}
             returnKeyType="search"
             submitBehavior="blurAndSubmit"

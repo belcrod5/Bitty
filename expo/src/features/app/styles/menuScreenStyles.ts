@@ -328,28 +328,6 @@ export function createMenuScreenStyles(theme: VisualTheme) {
     fontSize: theme.typography.small.fontSize,
     textAlign: "center",
   },
-  appDrawerKeyboardAccessory: {
-    minHeight: 44,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    backgroundColor: "transparent",
-    alignItems: "flex-end",
-    justifyContent: "center",
-  },
-  appDrawerKeyboardDismissButton: {
-    minHeight: 32,
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    backgroundColor: "transparent",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  appDrawerKeyboardDismissButtonText: {
-    fontSize: theme.typography.body.fontSize,
-    color: theme.colors.textPrimary,
-    fontWeight: "700",
-  },
   appDrawerSection: {
     marginTop: 2,
     gap: 10,
