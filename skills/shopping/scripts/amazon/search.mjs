@@ -137,7 +137,11 @@ export async function main(config, existingBrowser) {
     const screenshot = async name => { await assertNoAuth(); await page.screenshot({ path: `${artifacts}/${name}` }); };
 
     async function search() {
-      await page.goto('https://www.amazon.co.jp/', { waitUntil: 'domcontentloaded', timeout: 60_000 });
+      if (cdp) await assertNoAuth();
+      const current = new URL(page.url());
+      if (current.origin !== 'https://www.amazon.co.jp' || current.pathname !== '/') {
+        await page.goto('https://www.amazon.co.jp/', { waitUntil: 'domcontentloaded', timeout: 60_000 });
+      }
       const input = page.locator('#twotabsearchtextbox');
       const submit = page.locator('#nav-search-submit-button');
       await assertNoAuth();
@@ -243,23 +247,20 @@ export async function main(config, existingBrowser) {
     log('failed', { error: summary.error, code: summary.code });
     if (page && !page.isClosed()) {
       const url = new URL(page.url());
-      // Never save login-form HTML, screenshots, or authentication query strings.
-      const auth = await authentication(page).catch(() => null);
-      if (auth || isAuthPath(url.pathname)) {
+      // DOM, screenshots and HTML may never answer after a navigation timeout.
+      // Return the recorded failure without reading the unresponsive document.
+      const auth = isAuthPath(url.pathname) ? (url.pathname.startsWith('/ap/') ? 'login_required' : 'verification_required') : null;
+      summary.url = safeURL(page.url());
+      if (auth) {
         summary.authentication = auth;
+        if (summary.addition !== 'unknown') summary.code = auth === 'login_required' ? 'LOGIN_REQUIRED' : 'VERIFICATION_REQUIRED';
         if (cartCommand && operation) {
-          await operation.update({ cart: auth ?? 'verification_required' });
+          await operation.update({ cart: auth });
           summary.cart = operation.data.cart;
         }
-        summary.url = `${url.origin}${url.pathname}`;
-      } else {
-        summary.url = safeURL(page.url());
-        summary.title = await page.title().catch(() => '');
-        await page.screenshot({ path: `${artifacts}/error.png` }).catch(() => {});
-        if (!cartCommand) await writeFile(`${artifacts}/error.html`, await page.content().catch(() => ''), 'utf8');
       }
     }
-    exitCode = summary.addition === 'unknown' ? 3 : ['LOGIN_REQUIRED', 'VERIFICATION_REQUIRED'].includes(error.code) ? 2 : 1;
+    exitCode = summary.addition === 'unknown' ? 3 : ['LOGIN_REQUIRED', 'VERIFICATION_REQUIRED'].includes(summary.code) ? 2 : 1;
   } finally {
     await save();
     if (page && routeHandler && !page.isClosed()) await page.unroute('**/*', routeHandler).catch(() => {});
