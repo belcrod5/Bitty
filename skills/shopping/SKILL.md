@@ -9,7 +9,7 @@ description: Amazon.co.jpの商品検索、検索結果からの商品詳細表�
 
 ## 実行
 
-普段使い・ログイン済み・既存Chromeを使う依頼では、先に [references/extension.md](references/extension.md) を読み、接続済みChrome上で検索・詳細・履歴・カート表示の固定コードを実行する。CDP設定やURLを求めて開始を止めない。以下はCLIを使う場合のコマンド。
+普段使い・ログイン済み・既存Chromeを使う依頼では、先に [references/extension.md](references/extension.md) を読み、接続済みChrome上で検索・詳細・履歴・カート表示の固定コードを実行する。CDP設定やURLを求めて開始を止めない。ユーザーがPlaywrightの直接接続を希望する場合は同資料の「Chromeへの直接接続」を使う。以下はCLIを使う場合のコマンド。
 
 このSKILL.mdと同じディレクトリを `<skill>` とする。リンク経由で利用でき、原本は `/Volumes/SSD-500GB-SanDisk/work/bitty-public/skills/shopping/` にある。
 

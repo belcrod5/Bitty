@@ -100,7 +100,7 @@ test('verification DOM is recognized even at an ordinary product URL', async () 
   finally { await f.context.close(); }
 });
 
-test('CDP inspection keeps existing Chrome/tab alive, cleans routes and redacts auth logs', async () => {
+test('CDP inspection keeps existing Chrome/tab alive, cleans routes and redacts auth logs', async t => {
   const { main, options } = await import('./search.mjs');
   const profile = await mkdtemp(join(tmpdir(),'shopping-cdp-'));
   const owned = await chromium.launchPersistentContext(profile,{channel:'chrome',headless:true,args:['--remote-debugging-port=0','--host-resolver-rules=MAP www.amazon.co.jp ~NOTFOUND, MAP m.media-amazon.com ~NOTFOUND']});
@@ -119,6 +119,21 @@ test('CDP inspection keeps existing Chrome/tab alive, cleans routes and redacts 
     assert.equal(await page.evaluate(()=>document.querySelector('#sc-active-cart')!==null),true);
     // A leaked cart guard would reject this mocked request. No network is used.
     assert.equal(await page.evaluate(async()=> (await fetch('/cart/delete')).ok),true);
+    // Resolve only the test's chrome channel to its isolated browser. Never
+    // discover or request permission from the user's real default profile.
+    const connect = chromium.connectOverCDP.bind(chromium);
+    const channel = t.mock.method(chromium,'connectOverCDP',async (name,config) => {
+      assert.equal(name,'chrome'); assert.equal(config.noDefaults,true);
+      return connect(endpoint,config);
+    });
+    try {
+      const previousURL=page.url();
+      output.length=0;
+      await main(options(['browser-status','--cdp','chrome']));
+      assert.equal(channel.mock.callCount(),1);
+      assert.equal(page.url(),previousURL); assert.equal(page.isClosed(),false);
+      assert.ok(output.some(line=>line.includes('"success":true') && line.includes('"tabs":')));
+    } finally { channel.mock.restore(); }
     await page.goto('https://www.amazon.co.jp/checkpoint/continue?token=SECRET');
     output.length=0;
     await main(options(['cart','--cdp','auto']));

@@ -54,3 +54,12 @@ test('auto connection is an explicit CLI choice; browser-status never starts a b
   assert.equal(options(['browser-status']).command,'browser-status');
   assert.throws(()=>options(['cart','--cdp','auto','--profile']),/併用できません/);
 });
+
+
+test('Chrome channel attachment requires an explicit choice and preserves existing browser options',()=>{
+  assert.equal(options(['search','ボールペン','--cdp','chrome']).cdp,'chrome');
+  assert.equal(options(['browser-status','--cdp','chrome']).command,'browser-status');
+  assert.throws(()=>options(['cart','--cdp','chrome','--headless']),/併用できません/);
+  assert.throws(()=>options(['cart','--cdp','chrome','--profile']),/併用できません/);
+  assert.throws(()=>options(['cart','--cdp','not-a-channel']));
+});
