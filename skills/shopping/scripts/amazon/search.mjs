@@ -60,10 +60,10 @@ export function options(input = process.argv.slice(2)) {
     keepOpen: !!values['keep-open'], headless: !!values.headless, persistent: !!values.profile || ['orders', 'cart', 'cart-add'].includes(command) };
 }
 
-export async function main(config) {
+export async function main(config, existingBrowser) {
   const { command, query, asin, index, keepOpen, headless, persistent, operationId } = config;
   let { cdp, tabURL } = config;
-  if (command === 'browser-status' && cdp !== 'chrome') { console.log(JSON.stringify(safeValue(await discoverBrowsers()), null, 2)); return; }
+  if (command === 'browser-status' && cdp !== 'chrome' && !existingBrowser) { console.log(JSON.stringify(safeValue(await discoverBrowsers()), null, 2)); return; }
   const operations = fileURLToPath(new URL('./.operations/', import.meta.url));
   if (command === 'cart-status') { console.log(JSON.stringify(safeValue(operationId ? await readOperation(operations, operationId) : await listOperations(operations)), null, 2)); return; }
   const runId = new Date().toISOString().replaceAll(':', '-').replaceAll('.', '-');
@@ -75,7 +75,8 @@ export async function main(config) {
     events.push(entry);
     console.log(JSON.stringify(entry));
   };
-  let browser, context, page, operation, routeHandler;
+  let browser = existingBrowser, context, page, operation, routeHandler;
+  let exitCode = 0;
   const attempt = { armed: false, consumed: false, action: null };
   const cartCommand = ['cart', 'cart-add'].includes(command);
   let summary = { success: false, command, artifacts };
@@ -95,12 +96,12 @@ export async function main(config) {
       log('browser-discovered', selected);
     }
     if (cdp) {
-      browser = await chromium.connectOverCDP(cdp, { timeout: 20_000, noDefaults: true });
+      browser ??= await chromium.connectOverCDP(cdp, { timeout: 20_000, noDefaults: true });
       const amazonPages = browser.contexts().flatMap(c => c.pages()).filter(p => { try { return new URL(p.url()).origin === 'https://www.amazon.co.jp'; } catch { return false; } });
       if (command === 'browser-status') {
         summary = { ...summary, success: true, browser: 'existing-chrome', tabs: await Promise.all(amazonPages.map(async p => ({ url: safeURL(p.url()), title: await p.title() }))) };
         log('browser-status', summary);
-        return;
+        return { ...summary, exitCode: 0 };
       }
       let candidates = tabURL ? amazonPages.filter(p => p.url() === tabURL) : amazonPages;
       if (tabURL && !candidates.length) candidates = amazonPages.filter(p => safeURL(p.url()) === safeURL(tabURL));
@@ -174,7 +175,7 @@ export async function main(config) {
         summary = { ...summary, ...view, success: view.cart === 'visible', code: view.cart === 'visible' ? null : 'AUTH_REQUIRED', url: safeURL(page.url()) };
       }
       if (summary.cart === 'visible') await screenshot('04-cart.png');
-      if (!summary.success) process.exitCode = summary.addition === 'unknown' ? 3 : ['login_required', 'verification_required'].includes(summary.cart) ? 2 : 1;
+      if (!summary.success) exitCode = summary.addition === 'unknown' ? 3 : ['login_required', 'verification_required'].includes(summary.cart) ? 2 : 1;
     } else if (command === 'search') {
       const products = await search();
       const titles = await products.locator('h2').allTextContents();
@@ -253,16 +254,18 @@ export async function main(config) {
         if (!cartCommand) await writeFile(`${artifacts}/error.html`, await page.content().catch(() => ''), 'utf8');
       }
     }
-    process.exitCode = summary.addition === 'unknown' ? 3 : ['LOGIN_REQUIRED', 'VERIFICATION_REQUIRED'].includes(error.code) ? 2 : 1;
+    exitCode = summary.addition === 'unknown' ? 3 : ['LOGIN_REQUIRED', 'VERIFICATION_REQUIRED'].includes(error.code) ? 2 : 1;
   } finally {
     await save();
     if (page && routeHandler && !page.isClosed()) await page.unroute('**/*', routeHandler).catch(() => {});
     if (!cdp) await context?.close();
     // connectOverCDP.close disconnects this client; existing tabs/context are not closed.
-    await browser?.close();
+    if (!existingBrowser) await browser?.close();
     await operation?.release();
     console.log(`Artifacts: ${artifacts}`);
+    if (!existingBrowser) process.exitCode = exitCode;
   }
+  return { ...safeValue(summary), exitCode };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

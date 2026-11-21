@@ -55,12 +55,26 @@ await tab.getAXState(); // このAPIが提供されるツールの場合
 
 初回はユーザーがChromeで `chrome://inspect/#remote-debugging` のリモートデバッグを有効にし、プログラム接続時のChromeの許可ダイアログで許可する。接続先はログイン状態を利用できる。設定変更がブラウザ操作ツールで禁止されている場合は、別の操作方法で迂回せず、この有効化をユーザーに引き継ぐ。既存のAI拡張機能は削除・無効化しない。
 
-有効化後、最初は以下の接続確認だけを実行する。
+有効化後は、接続を保持するコマンドを使う。
 
 ```sh
-npm run browser-status -- --cdp chrome
+npm run chrome -- start
+npm run chrome -- status
 ```
 
-この確認はAmazonのタブのタイトル・URLパスを列挙し、ページ移動・入力・クリックを行わず接続を切る。接続失敗や許可拒否で別のプロファイルに切り替えたり繰り返し接続したりしない。`browser-status` だけの従来コマンドはCDPポートの読み取り診断であり、Chromeへの接続や許可要求は行わない。
+`start` は接続要求を別プロセスで保持する。Chromeの許可はユーザーが押す。`status` が `connected` になったら、表示されるAmazonタブのタイトル・URLから対象を特定する。`waiting_for_permission` の間は新しい接続を開始せず、許可を待つ。接続が有効な間、次のコマンドは同じPlaywright接続を使い、許可を再要求しない。
 
-対象タブを特定してから `npm run search -- "ボールペン" --cdp chrome --tab-url <実際のタブURL>` などを使える。対象が複数なら停止し、既存タブを閉じて解消しない。直接接続時は `noDefaults:true` でPlaywrightによるブラウザ既定設定の上書きを抑制し、終了時はタブを閉じず接続だけを切る。初回の実Chrome接続とAI拡張との併用は、設定・許可後に実機確認するまでは未検証と報告する。
+```sh
+npm run chrome -- search "ボールペン" --tab-url <実際のタブURL>
+npm run chrome -- detail --asin B084QBPLKZ --tab-url <実際のタブURL>
+npm run chrome -- orders --tab-url <実際のタブURL>
+npm run chrome -- cart --tab-url <実際のタブURL>
+```
+
+新規単品追加も `npm run chrome -- cart-add --asin <ASIN> --operation <同じ操作ID> --tab-url <実際のタブURL>` で実行できるが、先にcart.mdと保存済み状態を確認する。購入・削除は対象外。結果はJSONと `artifacts/` に保存され、認証・成否不明・通常エラーの終了コードは従来CLIと共通。操作途中で呼び出し側が切断しても処理は自動再実行しない。とくにカート追加は同じ操作IDの記録を確認する。
+
+終了は `npm run chrome -- stop`。既存のタブは閉じない。30分間コマンドがなければ自動切断する。Chrome終了・接続停止後に再接続する場合は、Chromeの許可が再び必要。失敗・切断を自動再接続せず、`status` とログを確認する。複数コマンドの同時実行はエラーで停止する。
+
+接続時は `noDefaults:true` でPlaywrightによるブラウザ既定設定の上書きを抑制する。端末の前景プロセスはエージェントの返答時に終了することがあるため、許可待ちに短いタイムアウトのCLIを繰り返し起動しない。旧 `npm run browser-status -- --cdp chrome` はその実行中だけ接続し、確認後すぐ切断するため、この用途では保持コマンドを使う。`browser-status` だけなら読み取り診断で、Chromeへの接続や許可要求は行わない。
+
+実機ではChrome 157の既存ブラウザへ、許可後に直接接続してAmazonタブを列挙できた。Amazon操作が認証なしで成功するかは別途確認が必要。
