@@ -3,3 +3,7 @@ node_modules/
 artifacts/
 .browser-profile/
 .operations/
+.chrome-extension.json
+.chrome-extension.json.*.tmp
+.playwright-cli/
+.playwright/

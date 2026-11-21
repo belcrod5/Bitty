@@ -8,31 +8,23 @@
 
 ## ブラウザの選択
 
-既定では専用プロファイル `.browser-profile/` を使用する。普段使いChromeのログイン状態とは別であり、既存Chromeでの追加を確認する用途に黙って切り替えない。
+既存のログイン済みChromeを使う場合は [playwright-extension.md](playwright-extension.md) に従って保持接続を使う。追加済みの商品を見るだけなら、公式Playwright拡張の `cart` で確認できる。初回設定や切断後の再接続を除き、操作ごとに接続を作り直さない。接続先URLをユーザーに探させない。
 
-既存のログイン済みChromeで追加済みの商品を確認する場合は、まず接続済みブラウザツールのChromeとカートタブも調べる。**[extension.md](extension.md) の固定プログラムで、カートリンクをクリックして内容・認証状態を確認できる。すでに表示中なら読み取りだけを行う。CDPの有無だけで停止しない。** CLIで操作する場合は `npm run browser-status` を実行し、CDPのURLをユーザーに尋ねて開始を止めない。 このコマンドは起動中の同一ユーザーのChromeについて、起動引数・DevToolsActivePort・待受ポートからCDP候補を探し、応答とAmazonタブのタイトル・URLパスを読み取る。ブラウザやタブを起動・移動しない。任意のポート範囲をスキャンしない。
-
-- `available`：`--cdp auto` で対象商品・カートに合う一意の既存タブを使う。複数なら一覧のタイトル・商品から対象を特定し、`--tab-url` を渡す。ユーザーへの確認が必要なら商品やタブ名で尋ね、CDPのURLを探す作業をユーザーへ戻さない。
-- `inspection_unavailable`：プロセス情報等の読み取りが制限されている。サンドボックス制限なら通常のローカル実行権限で同じ読み取りコマンドを再実行する。権限拒否を「CDPが無効」と断定しない。
-- `unavailable`：`code` と理由を確認する。`CDP_UNAVAILABLE` は起動中Chromeに共有できるポートがない状態で、接続先URLを尋ねても解決しない。`CDP_UNREACHABLE` は候補への応答を確認できない状態、`CHROME_NOT_RUNNING` はChrome自体が見つからない状態。CLIの接続状態を表す結果であり、拡張経路の利用可否とは区別する。
-
-ユーザーから実際の接続先が指定されている場合は `--cdp <接続先>` も使える。診断で利用不可でも、対応済みの読み取りは拡張経路で進める。設定変更や再起動が必要と決めつけない。現在のChromeの設定を勝手に変更しない。旧商品の削除が依頼に含まれていても、このスキルには削除コマンドがないことを別に報告する。普段のプロファイルのコピー、Chromeの再起動、認証回避は行わない。拡張経路のカート読み取りで追加ボタンをクリックしない。接続時は既存タブを使い、終了時は接続を切断するだけでタブを閉じない。
+新規単品追加には別途保持する直接接続を使う。公式拡張の `cart-add` は安全確認が不足するため実行前に停止する。ユーザーが追加を依頼したときだけ、直接接続を準備する。最初の接続許可後は接続を保持し、操作ごとに許可を求めない。直接接続や公式拡張が未設定でも、追加済み商品の表示確認は [extension.md](extension.md) のChatGPTブラウザツール方式も使える。未対応の追加をその経路へ迂回させない。
 
 ```sh
-# 追加せず、現在のカートまたは認証状態を確認
-npm run browser-status
-npm run cart -- --cdp auto
-
-# 新しい「単品追加」の依頼。ASIN・ID・タブURLは実際の依頼に合わせる
-npm run cart-add -- --asin B012345678 --operation request-001 \
-  --cdp auto
-
-# 過去の操作一覧を確認（ブラウザを開かない）
-npm run cart-status
-
-# 同じ依頼の保存状態を確認
+# ブラウザ操作の前に、同じ追加依頼の保存状態を確認
 npm run cart-status -- --operation request-001
+
+# 追加せず、既存Chromeでカートの内容・認証状態だけを確認
+npm run chrome -- status
+npm run chrome -- cart
+
+# ユーザーが新規単品追加を依頼し、直接接続がconnectedのときだけ実行
+npm run chrome -- --direct cart-add --asin B012345678 --operation request-001 --tab-url <実際のタブURL>
 ```
+
+専用ブラウザの利用を意図している場合だけ従来の `npm run cart` / `npm run cart-add -- ...` を使う。その `.browser-profile/` は普段使いChromeのログイン状態とは別なので、既存Chromeの確認から黙って切り替えない。普段のプロファイルのコピー、Chromeの再起動、認証回避は行わない。旧商品の削除は未対応であることを別に報告する。接続の停止ではタブを閉じない。
 
 追加の実行前に `npm run cart-status` で過去の記録を確認し、同じ依頼が追加済み・成否不明ならその操作を再利用する。
 
@@ -49,7 +41,7 @@ npm run cart-status -- --operation request-001
 | `unknown` | 成功を確認できない。再追加せず、読み取りだけで確認してユーザーに報告する |
 | `confirmed` | 対象ASINを含む追加成功表示を確認済み。再開時はカート表示だけを行う |
 
-CLIではカート内に対象ASINが見つかったかを `targetPresent` に保存する。拡張経路の関数は同じフィールドを戻り値に返し、操作記録を更新しない。見つからなくても追加済みの記録は取り消さず、自動で追加し直さない。
+`cart-add` の結果には対象ASINが見つかったかを `targetPresent` に保存する。`cart` では返された `items` と対象ASINを照合する。ChatGPTブラウザツール方式の関数は `targetPresent` を戻り値に返し、操作記録を更新しない。見つからなくても追加済みの記録は取り消さず、自動で追加し直さない。
 
 `cart` は `visible`（内容表示）、`verification_required`（人間確認）、`login_required`（ログイン要求）、`unknown`（表示結果不明）、`not_opened`（未遷移）を別に記録する。
 

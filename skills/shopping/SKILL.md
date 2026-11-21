@@ -9,7 +9,7 @@ description: Amazon.co.jpの商品検索、検索結果からの商品詳細表�
 
 ## 実行
 
-普段使い・ログイン済み・既存Chromeを使う依頼では、先に [references/extension.md](references/extension.md) を読む。`npm run chrome -- status` で保持接続が `connected` なら、その接続で同梱CLIを使う。保持接続がなければ接続済みブラウザツールのChrome上で固定コードを実行できる。CDP設定やURLを求めて開始を止めない。ユーザーがPlaywrightの直接接続を希望する場合は同資料の「Chromeへの直接接続」を使う。直接接続では `npm run chrome -- start` で許可待ちを保持し、`status` が `connected` になったら `npm run chrome -- search "検索語" --tab-url <URL>` などで同じ接続を使い回す。詳細は上記資料にある。以下は専用ブラウザ等のCLIコマンド。
+普段使い・ログイン済み・既存Chromeを使う依頼では、先に [references/playwright-extension.md](references/playwright-extension.md) を読む。公式Playwright拡張の初回設定後は `npm run chrome -- start` で接続し、検索・詳細・履歴・カート表示を確認ボタンなしでプログラム実行できる。`npm run chrome -- status` で接続状態と方式を確認する。未設定のまま直接接続を繰り返して許可を求めない。カート追加は同資料に従って別途保持する直接接続を使う。ChatGPTの接続済みブラウザツールを使う既存方式は [references/extension.md](references/extension.md) にある。以下は専用ブラウザ等のCLIコマンド。
 
 このSKILL.mdと同じディレクトリを `<skill>` とする。リンク経由で利用でき、原本は `/Volumes/SSD-500GB-SanDisk/work/bitty-public/skills/shopping/` にある。
 
@@ -26,6 +26,8 @@ description: Amazon.co.jpの商品検索、検索結果からの商品詳細表�
 | 指定商品を数量1で単品追加 | `npm run cart-add -- --asin B012345678 --operation request-001` |
 | 追加操作の保存状態を確認 | `npm run cart-status -- --operation request-001` |
 
+公式Playwright拡張には検索・詳細・履歴・カート表示が対応し、カート追加は直接接続を使う。
+
 **カート追加・カート確認では、実行前に [references/cart.md](references/cart.md) を読む。** 追加成功後の認証や成否不明を追加失敗と扱って再追加しない。同じ依頼の `--operation` を変更しない。
 
 検索語は依頼に合わせて渡す。指定がなければプログラムの既定値は「ボールペン」。`--index` は1始まりで広告も表示順に含む。ASINは実際の商品URLの `/dp/` に続く10桁の英数字を使う（上表のASINは書式例）。
@@ -40,11 +42,13 @@ description: Amazon.co.jpの商品検索、検索結果からの商品詳細表�
 
 文字入力ごととクリック直前に0.5〜1秒のランダム待機を入れる。CLIのマウス移動はランダムな中継点2〜4個、3次ベジェ曲線、変動する速度と途中停止を使う。クリック直前に対象が座標上にあることを確認する。この動作はプログラム内に実装済み。
 
-`orders`・`cart`・`cart-add` は既定でこのスクリプトの `.browser-profile/` を使用する。検索・詳細は通常一時ブラウザを使い、`--profile` を付けたときだけ同じ専用プロファイルを使う。既存の普段使いChromeのプロファイルをコピーして読み込まない。既存Chromeを使う場合は、接続済みブラウザツールのChromeも確認する。検索・詳細・履歴・カート表示は [references/extension.md](references/extension.md) の固定プログラムを使え、CDP設定は不要。この経路では文字ごと・クリック前のランダム待機は行うが、ベジェ曲線の移動は利用できない。CLIの接続可否は `npm run browser-status` で診断し、利用可能なら `--cdp auto` で接続する。CDPのURLを最初からユーザーに尋ねない。対象が複数なら一覧のタイトル・商品から特定し、`--tab-url` を渡す。CDP利用不可だけで既存Chromeを使えないと判断しない。ベジェ曲線が必要な場合や新規単品追加にはCLIを使い、拡張経路で同じ動作ができたと報告しない。Chromeの設定変更・再起動はこの診断では行わない。ログインコマンドやログイン待機はない。Amazonが認証画面を出したらその旨を報告し、ログイン操作には進まない。
+`orders`・`cart`・`cart-add` は既定でこのスクリプトの `.browser-profile/` を使用する。検索・詳細は通常一時ブラウザを使い、`--profile` を付けたときだけ同じ専用プロファイルを使う。既存の普段使いChromeのプロファイルをコピーして読み込まない。
+
+既存Chromeは [references/playwright-extension.md](references/playwright-extension.md) の保持接続を優先する。公式Playwright拡張はベジェ移動に対応し、ChatGPTのブラウザツール方式は文字ごと・クリック前の待機に対応するがベジェ移動には対応しない。方式を混同して報告しない。直接接続の診断で利用不可でも、拡張方式まで使えないとは判断しない。ログインコマンドはなく、Amazonが認証画面を出したら停止する。
 
 ## 結果とエラー
 
-以下はCLI実行時の保存先・終了コード。拡張経路は関数の戻り値を確認し、既存の操作記録を書き換えない。
+以下はCLI実行時（公式Playwright拡張を含む）の保存先・終了コード。ChatGPTブラウザツール方式は関数の戻り値を確認し、既存の操作記録を書き換えない。
 
 `artifacts/<日時>/result.json` の `success`、URL、商品タイトルなどで完了を確認する。操作記録は同じ場所の `events.json`、画面はPNGに保存される。終了コード0が成功、1が通常のエラー、2が認証要求、3が追加成否不明。カート操作は `addition` と `cart` を別に保存し、追加成功・成否不明では `retryAdd: false` を保持する。
 
@@ -54,6 +58,6 @@ description: Amazon.co.jpの商品検索、検索結果からの商品詳細表�
 
 ## 操作範囲と保守
 
-ユーザーが単品追加を依頼したときだけ、対象ASIN・数量1のカート追加POSTを1回許可する。注文確定・購入・カート内の削除は行わない。CLIではその他の購入系通信を遮断する。拡張経路は検索・詳細・履歴・カート表示のみを受け付け、新規追加には使わない。認証画面には操作しない。この制限を外して依頼を実行しない。
+ユーザーが単品追加を依頼したときだけ、対象ASIN・数量1のカート追加POSTを1回許可する。注文確定・購入・カート内の削除は行わない。直接接続のCLIではその他の購入系通信を遮断する。公式Playwright拡張ではService Workerの通信まで遮断できないためカート追加を受け付けない。拡張経路は検索・詳細・履歴・カート表示のみを受け付け、新規追加には使わない。認証画面には操作しない。この制限を外して依頼を実行しない。
 
 このスキルは指定された「買い物」オーケストレーターの `.agents/skills/shopping` から原本へのリンクで配置する。共通の `~/.codex/skills/` にコピーしない。保守は原本側で行い、コードを変更した場合は `scripts/amazon/` で `npm run check` と `npm test` を実行する。実行結果・操作記録 `.operations/`・ブラウザプロファイル・node_modulesはGit管理しない。

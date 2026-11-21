@@ -79,13 +79,17 @@ export async function main(config, existingBrowser) {
   let exitCode = 0;
   const attempt = { armed: false, consumed: false, action: null };
   const cartCommand = ['cart', 'cart-add'].includes(command);
-  let summary = { success: false, command, artifacts };
+  let summary = { success: false, command, artifacts, ...(config.extensionConnection ? { transport: 'playwright-extension', serviceWorkerBypass: false } : {}) };
   const save = async () => {
     await writeFile(`${artifacts}/events.json`, JSON.stringify(events, null, 2));
     await writeFile(`${artifacts}/result.json`, JSON.stringify(safeValue(summary), null, 2));
   };
 
   try {
+    if (config.extensionConnection && command === 'cart-add') {
+      const error = new Error('公式拡張ではカート追加に必要な通信制限を保証できません。追加は実行していません。直接接続のCLIを使ってください');
+      error.code = 'EXTENSION_CART_ADD_UNSUPPORTED'; throw error;
+    }
     if (command === 'cart-add') operation = await openOperation(operations, operationId, asin);
     const contextOptions = { viewport: { width: 1440, height: 1000 }, locale: 'ja-JP', serviceWorkers: 'block', acceptDownloads: false };
     if (cdp === 'auto') {
@@ -106,15 +110,25 @@ export async function main(config, existingBrowser) {
       let candidates = tabURL ? amazonPages.filter(p => p.url() === tabURL) : amazonPages;
       if (tabURL && !candidates.length) candidates = amazonPages.filter(p => safeURL(p.url()) === safeURL(tabURL));
       if (!tabURL && candidates.length > 1 && command === 'cart-add' && operation.data.addition === 'not_started') candidates = candidates.filter(p => productAsin(new URL(p.url()).pathname) === asin);
+      // Token-authenticated extension connections own a new blank tab. Only this
+      // transport may initialize it; explicit tab selection never falls back.
+      if (!tabURL && !candidates.length && config.extensionConnection) candidates = browser.contexts().flatMap(c => c.pages()).filter(p => p.url() === 'about:blank');
       if (candidates.length !== 1) throw new Error('対象のAmazonタブを一意に選択できません。--tab-url で既存タブのURLを指定してください');
       page = candidates[0];
       context = page.context();
       // Keep page routes effective even when Amazon has a Service Worker.
       // This applies only to this CDP session and is removed by detach below.
-      networkSession = await context.newCDPSession(page);
-      await networkSession.send('Network.enable');
-      await networkSession.send('Network.setBypassServiceWorker', { bypass: true });
-      log('service-worker-network-bypass', { scope: 'selected-tab-until-command-end' });
+      if (config.extensionConnection) {
+        // Official extension supports page input/routes but not a raw CDP session.
+        // Read-only commands still validate every navigation and clicked control;
+        // cart-add is rejected above because its one-POST guard needs full coverage.
+        log('service-worker-bypass-unavailable', { transport: 'playwright-extension', cartAdditionAllowed: false });
+      } else {
+        networkSession = await context.newCDPSession(page);
+        await networkSession.send('Network.enable');
+        await networkSession.send('Network.setBypassServiceWorker', { bypass: true });
+        log('service-worker-network-bypass', { scope: 'selected-tab-until-command-end' });
+      }
     } else if (persistent) {
       // Dedicated profile only; never use the user's everyday Chrome profile.
       const profile = fileURLToPath(new URL('./.browser-profile/', import.meta.url));

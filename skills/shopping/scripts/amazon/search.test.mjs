@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { chromium } from 'playwright';
 import { main, options } from './search.mjs';
 
-test('native search reuses the loaded home, focuses an animated visible input and submits once', async () => {
+for (const fromBlank of [false, true]) test(fromBlank ? 'extension-owned blank tab initializes and searches with the same motion and guards' : 'native search reuses the loaded home, focuses an animated visible input and submits once', async () => {
   const profile = await mkdtemp(join(tmpdir(), 'shopping-search-'));
   const context = await chromium.launchPersistentContext(profile, { channel: 'chrome', headless: true, serviceWorkers: 'block', args: ['--remote-debugging-port=0', '--host-resolver-rules=MAP www.amazon.co.jp ~NOTFOUND'] });
   const previousExit = process.exitCode;
@@ -25,9 +25,19 @@ test('native search reuses the loaded home, focuses an animated visible input an
       return route.fulfill({ contentType: 'text/html; charset=utf-8', body: '<title>Test results</title><div data-component-type="s-search-result" data-asin="B012345678"><h2>Test pen</h2></div>' });
     });
     const page = context.pages()[0];
-    await page.goto('https://www.amazon.co.jp/#shopping-native-test');
+    if (!fromBlank) await page.goto('https://www.amazon.co.jp/#shopping-native-test');
     const port = (await readFile(join(profile, 'DevToolsActivePort'), 'utf8')).split('\n')[0];
-    const result = await main(options(['search', 'ボールペン', '--cdp', `http://127.0.0.1:${port}`, '--tab-url', page.url()]));
+    const config = options(['search', 'ボールペン', '--cdp', `http://127.0.0.1:${port}`, ...fromBlank ? [] : ['--tab-url', page.url()]]);
+    if (fromBlank) {
+      const denied = await main(config);
+      assert.equal(denied.success, false);
+      assert.equal(homeRequests, 0);
+      const wrongTab = await main({ ...config, extensionConnection: true, tabURL: 'https://www.amazon.co.jp/dp/B012345678' });
+      assert.equal(wrongTab.success, false);
+      assert.equal(homeRequests, 0);
+      config.extensionConnection = true;
+    }
+    const result = await main(config);
     assert.equal(result.success, true, result.error);
     assert.equal(result.exitCode, 0);
     assert.equal(homeRequests, 1); assert.equal(searches, 1);
@@ -56,4 +66,13 @@ test('a failed tab returns its error even when DOM and screenshot APIs would nev
   assert.equal(result.error, 'Connection setup failed');
   const saved = JSON.parse(await readFile(join(result.artifacts, 'result.json'), 'utf8'));
   assert.equal(saved.error, result.error);
+});
+
+
+test('official extension rejects cart-add before reading a page or creating an operation', async () => {
+  const browser = { contexts: () => { throw new Error('Must not touch a page'); } };
+  const result = await main({ ...options(['cart-add', '--asin', 'B012345678', '--operation', 'extension-must-not-add', '--cdp', 'chrome']), extensionConnection: true }, browser);
+  assert.equal(result.success, false);
+  assert.equal(result.code, 'EXTENSION_CART_ADD_UNSUPPORTED');
+  assert.equal(result.exitCode, 1);
 });

@@ -1,4 +1,6 @@
-# 接続済みChromeで固定プログラムを実行
+# ChatGPTのブラウザツールで固定プログラムを実行
+
+確認ボタンを繰り返さずPlaywrightのベジェ移動も使う場合は、先に [playwright-extension.md](playwright-extension.md) の公式拡張方式を使う。以下はChatGPTのブラウザツール経由の既存方式で、公式Playwright拡張とは別。
 
 AIのブラウザツールが接続している普段使いChromeを、そのまま使う。追加のCDP設定・再起動・再ログインは不要。CDP診断が利用不可でも、この拡張接続は別経路なので停止しない。
 
@@ -55,25 +57,25 @@ await tab.getAXState(); // このAPIが提供されるツールの場合
 
 初回はユーザーがChromeで `chrome://inspect/#remote-debugging` のリモートデバッグを有効にし、プログラム接続時のChromeの許可ダイアログで許可する。接続先はログイン状態を利用できる。設定変更がブラウザ操作ツールで禁止されている場合は、別の操作方法で迂回せず、この有効化をユーザーに引き継ぐ。既存のAI拡張機能は削除・無効化しない。
 
-有効化後は、接続を保持するコマンドを使う。
+有効化後は、`--direct` 付きの保持コマンドを使う。公式Playwright拡張とは別に接続を保持する。
 
 ```sh
-npm run chrome -- start
-npm run chrome -- status
+npm run chrome -- --direct start
+npm run chrome -- --direct status
 ```
 
 `start` は接続要求を別プロセスで保持する。Chromeの許可はユーザーが押す。`status` が `connected` になったら、表示されるAmazonタブのタイトル・URLから対象を特定する。`waiting_for_permission` の間は新しい接続を開始せず、許可を待つ。接続が有効な間、次のコマンドは同じPlaywright接続を使い、許可を再要求しない。
 
 ```sh
-npm run chrome -- search "ボールペン" --tab-url <実際のタブURL>
-npm run chrome -- detail --asin B084QBPLKZ --tab-url <実際のタブURL>
-npm run chrome -- orders --tab-url <実際のタブURL>
-npm run chrome -- cart --tab-url <実際のタブURL>
+npm run chrome -- --direct search "ボールペン" --tab-url <実際のタブURL>
+npm run chrome -- --direct detail --asin B084QBPLKZ --tab-url <実際のタブURL>
+npm run chrome -- --direct orders --tab-url <実際のタブURL>
+npm run chrome -- --direct cart --tab-url <実際のタブURL>
 ```
 
-新規単品追加も `npm run chrome -- cart-add --asin <ASIN> --operation <同じ操作ID> --tab-url <実際のタブURL>` で実行できるが、先にcart.mdと保存済み状態を確認する。購入・削除は対象外。結果はJSONと `artifacts/` に保存され、認証・成否不明・通常エラーの終了コードは従来CLIと共通。操作途中で呼び出し側が切断しても処理は自動再実行しない。とくにカート追加は同じ操作IDの記録を確認する。
+新規単品追加も `npm run chrome -- --direct cart-add --asin <ASIN> --operation <同じ操作ID> --tab-url <実際のタブURL>` で実行できるが、先にcart.mdと保存済み状態を確認する。購入・削除は対象外。結果はJSONと `artifacts/` に保存され、認証・成否不明・通常エラーの終了コードは従来CLIと共通。操作途中で呼び出し側が切断しても処理は自動再実行しない。とくにカート追加は同じ操作IDの記録を確認する。
 
-終了は `npm run chrome -- stop`。既存のタブは閉じない。30分間コマンドがなければ自動切断する。Chrome終了・接続停止後に再接続する場合は、Chromeの許可が再び必要。失敗・切断を自動再接続せず、`status` とログを確認する。複数コマンドの同時実行はエラーで停止する。
+終了は `npm run chrome -- --direct stop`。既存のタブは閉じない。操作の間隔では自動切断しない。Chrome終了・接続停止後に再接続する場合は、Chromeの許可が再び必要。失敗・切断を自動再接続せず、`status` とログを確認する。複数コマンドの同時実行はエラーで停止する。
 
 タブの作成・取得と、Chromeでの選択は別。`getTab` や `claimTab` を呼んだだけで前面表示済みと判断しない。必要ならmanagementのタブ情報の `active` を読む。切り替えAPIが非対応の場合は、識別しやすいグループ名とタブ名でユーザーに選択を引き継ぐ。既に表示されているホームは再読み込みせず検索する。クリックは対象全体が表示範囲内ならスクロールの安定待ちを省き、直前のヒットテストを維持する。
 
