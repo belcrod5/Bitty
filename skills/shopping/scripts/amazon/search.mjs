@@ -3,6 +3,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { resolve } from 'node:path';
+import { discoverBrowsers, chooseBrowser } from './browser.mjs';
 import { openOperation, readOperation, listOperations, runCartAddition, openCart } from './cart.mjs';
 import { pause, RandomMouse } from './motion.mjs';
 import { allowNavigation, createRouteHandler, isSearchPath, searchTerm, productAsin, isOrdersPath, isAuthPath, authentication, safeValue, safeURL } from './navigation.mjs';
@@ -17,6 +18,8 @@ const help = `Amazon検索・カート操作コマンド（注文確定・購入
                                  数量1を1回だけ追加し、結果を保存してカートへ移動
   npm run cart-status -- --operation request-001
                                  保存された操作状態を表示（ブラウザ操作なし）
+  npm run browser-status         起動中Chromeの接続可否・Amazonタブを自動診断
+  --cdp auto                     検出した既存Chromeと対象タブを使用
   --cdp http://127.0.0.1:9222     明示した既存Chromeへ接続（未指定時は専用ブラウザ）
   --tab-url https://www.amazon.co.jp/dp/B012345678
                                  接続先で操作する既存タブを指定
@@ -26,14 +29,14 @@ const help = `Amazon検索・カート操作コマンド（注文確定・購入
 
 export function options(input = process.argv.slice(2)) {
   const args = [...input];
-  const command = ['search', 'detail', 'orders', 'cart', 'cart-add', 'cart-status'].includes(args[0]) ? args.shift() : 'search';
+  const command = ['search', 'detail', 'orders', 'cart', 'cart-add', 'cart-status', 'browser-status'].includes(args[0]) ? args.shift() : 'search';
   const { values, positionals } = parseArgs({ args, allowPositionals: true, options: {
     'keep-open': { type: 'boolean' }, headless: { type: 'boolean' }, profile: { type: 'boolean' },
     cdp: { type: 'string' }, 'tab-url': { type: 'string' }, operation: { type: 'string' },
     asin: { type: 'string' }, index: { type: 'string' }, help: { type: 'boolean', short: 'h' },
   } });
   if (values.help) return { help: true };
-  if (['orders', 'cart', 'cart-add', 'cart-status'].includes(command) && positionals.length) throw new Error(`${command} は検索語を受け取りません`);
+  if (['orders', 'cart', 'cart-add', 'cart-status', 'browser-status'].includes(command) && positionals.length) throw new Error(`${command} は検索語を受け取りません`);
   if (values.asin !== undefined && (!['detail', 'cart-add'].includes(command) || !/^[A-Z0-9]{10}$/i.test(values.asin))) throw new Error('--asin はdetail・cart-add用の10桁の英数字です');
   if (values.asin && (positionals.length || values.index)) throw new Error('--asin と検索語・--indexは同時指定できません');
   const index = values.index === undefined ? 1 : Number(values.index);
@@ -43,8 +46,8 @@ export function options(input = process.argv.slice(2)) {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/.test(values.operation ?? '')) throw new Error('--operation が必要です（英数字・ハイフン・下線、1〜80文字）');
   } else if (values.operation !== undefined) throw new Error('--operation はcart-add・cart-status用です');
   if (values.cdp) {
-    const endpoint = new URL(values.cdp);
-    if (!['http:', 'https:', 'ws:', 'wss:'].includes(endpoint.protocol) || !['localhost', '127.0.0.1', '[::1]'].includes(endpoint.hostname) || endpoint.username || endpoint.password) throw new Error('--cdp はローカルChromeの接続先を指定してください');
+    const endpoint = values.cdp === 'auto' ? null : new URL(values.cdp);
+    if (endpoint && (!['http:', 'https:', 'ws:', 'wss:'].includes(endpoint.protocol) || !['localhost', '127.0.0.1', '[::1]'].includes(endpoint.hostname) || endpoint.username || endpoint.password)) throw new Error('--cdp はローカルChromeの接続先を指定してください');
     if (values.headless || values.profile || values['keep-open']) throw new Error('--cdp は --headless・--profile・--keep-open と併用できません。既存ブラウザは開いたままです');
   }
   if (values['tab-url']) {
@@ -57,7 +60,9 @@ export function options(input = process.argv.slice(2)) {
 }
 
 export async function main(config) {
-  const { command, query, asin, index, keepOpen, headless, persistent, cdp, tabURL, operationId } = config;
+  const { command, query, asin, index, keepOpen, headless, persistent, operationId } = config;
+  let { cdp, tabURL } = config;
+  if (command === 'browser-status') { console.log(JSON.stringify(safeValue(await discoverBrowsers()), null, 2)); return; }
   const operations = fileURLToPath(new URL('./.operations/', import.meta.url));
   if (command === 'cart-status') { console.log(JSON.stringify(safeValue(operationId ? await readOperation(operations, operationId) : await listOperations(operations)), null, 2)); return; }
   const runId = new Date().toISOString().replaceAll(':', '-').replaceAll('.', '-');
@@ -81,10 +86,18 @@ export async function main(config) {
   try {
     if (command === 'cart-add') operation = await openOperation(operations, operationId, asin);
     const contextOptions = { viewport: { width: 1440, height: 1000 }, locale: 'ja-JP', serviceWorkers: 'block', acceptDownloads: false };
+    if (cdp === 'auto') {
+      const report = await discoverBrowsers();
+      const selected = chooseBrowser(report, { command, asin, tabURL });
+      cdp = selected.endpoint;
+      tabURL ??= selected.tabURL;
+      log('browser-discovered', selected);
+    }
     if (cdp) {
       browser = await chromium.connectOverCDP(cdp, { timeout: 20_000 });
       const amazonPages = browser.contexts().flatMap(c => c.pages()).filter(p => { try { return new URL(p.url()).origin === 'https://www.amazon.co.jp'; } catch { return false; } });
       let candidates = tabURL ? amazonPages.filter(p => p.url() === tabURL) : amazonPages;
+      if (tabURL && !candidates.length) candidates = amazonPages.filter(p => safeURL(p.url()) === safeURL(tabURL));
       if (!tabURL && candidates.length > 1 && command === 'cart-add' && operation.data.addition === 'not_started') candidates = candidates.filter(p => productAsin(new URL(p.url()).pathname) === asin);
       if (candidates.length !== 1) throw new Error('対象のAmazonタブを一意に選択できません。--tab-url で既存タブのURLを指定してください');
       page = candidates[0];

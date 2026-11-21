@@ -108,10 +108,12 @@ test('CDP inspection keeps existing Chrome/tab alive, cleans routes and redacts 
   await owned.route('**/*',route=>route.fulfill({contentType:'text/html; charset=utf-8',body:'<div id="sc-active-cart">Empty cart</div>'}));
   await page.goto('https://www.amazon.co.jp/cart');
   const endpoint='http://127.0.0.1:'+(await readFile(join(profile,'DevToolsActivePort'),'utf8')).split('\n')[0];
+  const { discoverBrowsers } = await import('./browser.mjs');
+  assert.ok((await discoverBrowsers()).browsers.some(b=>b.endpoint===endpoint));
   const output=[]; const originalLog=console.log; const previousExit=process.exitCode;
   try {
     console.log=(...v)=>output.push(v.join(' '));
-    await main(options(['cart','--cdp',endpoint]));
+    await main(options(['cart','--cdp','auto']));
     assert.ok(output.some(v=>v.includes('\"success\":true')), output.join('\n'));
     assert.equal(page.isClosed(),false);
     assert.equal(await page.evaluate(()=>document.querySelector('#sc-active-cart')!==null),true);
@@ -119,7 +121,7 @@ test('CDP inspection keeps existing Chrome/tab alive, cleans routes and redacts 
     assert.equal(await page.evaluate(async()=> (await fetch('/cart/delete')).ok),true);
     await page.goto('https://www.amazon.co.jp/checkpoint/continue?token=SECRET');
     output.length=0;
-    await main(options(['cart','--cdp',endpoint]));
+    await main(options(['cart','--cdp','auto']));
     assert.equal(process.exitCode,2);
     assert.equal(output.join('\n').includes('SECRET'),false);
     const artifacts=output.find(v=>v.startsWith('Artifacts: ')).slice(11);
