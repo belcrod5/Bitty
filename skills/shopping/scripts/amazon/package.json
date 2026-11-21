@@ -8,8 +8,11 @@
     "search": "node search.mjs search",
     "detail": "node search.mjs detail",
     "orders": "node search.mjs orders",
-    "check": "node --check search.mjs && node --check motion.mjs && node --check navigation.mjs",
-    "test": "node --test navigation.test.mjs"
+    "check": "node --check search.mjs && node --check motion.mjs && node --check navigation.mjs && node --check cart.mjs",
+    "test": "node --test *.test.mjs",
+    "cart": "node search.mjs cart",
+    "cart-add": "node search.mjs cart-add",
+    "cart-status": "node search.mjs cart-status"
   },
   "dependencies": {
     "playwright": "1.65.1"

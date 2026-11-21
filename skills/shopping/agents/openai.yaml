@@ -1,4 +1,4 @@
 interface:
   display_name: "買い物"
-  short_description: "Amazonの商品検索・商品詳細・購入履歴をPlaywrightのプログラムで開く"
+  short_description: "Amazonの検索・詳細・履歴表示と数量1の単品追加・カート確認をプログラムで実行する"
   default_prompt: "$shopping を使ってAmazonで商品を検索し、指定された商品詳細や購入履歴を開いてください。"

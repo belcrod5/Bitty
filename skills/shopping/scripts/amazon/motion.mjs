@@ -28,7 +28,7 @@ export class RandomMouse {
   }
 
   async moveTo(destination) {
-    const viewport = this.page.viewportSize();
+    const viewport = this.page.viewportSize() ?? await this.page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
     const start = { ...this.position };
     const bound = p => ({ x: clamp(p.x, 1, viewport.width - 2), y: clamp(p.y, 1, viewport.height - 2) });
     const dx = destination.x - start.x;
@@ -71,7 +71,7 @@ export class RandomMouse {
     }
   }
 
-  async click(locator, label) {
+  async click(locator, label, { beforeMouseDown } = {}) {
     await locator.waitFor({ state: 'visible' });
     await locator.scrollIntoViewIfNeeded();
     const box = await locator.boundingBox();
@@ -86,6 +86,7 @@ export class RandomMouse {
     }, point);
     if (!hit) throw new Error(`${label}: target moved or is covered; stopped before click`);
     this.log('click', { label, ...point });
+    await beforeMouseDown?.();
     await this.page.mouse.down();
     await sleep(integer(60, 140));
     await this.page.mouse.up();
