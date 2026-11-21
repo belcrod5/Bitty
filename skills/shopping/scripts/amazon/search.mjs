@@ -75,7 +75,7 @@ export async function main(config, existingBrowser) {
     events.push(entry);
     console.log(JSON.stringify(entry));
   };
-  let browser = existingBrowser, context, page, operation, routeHandler;
+  let browser = existingBrowser, context, page, operation, routeHandler, networkSession;
   let exitCode = 0;
   const attempt = { armed: false, consumed: false, action: null };
   const cartCommand = ['cart', 'cart-add'].includes(command);
@@ -109,7 +109,12 @@ export async function main(config, existingBrowser) {
       if (candidates.length !== 1) throw new Error('対象のAmazonタブを一意に選択できません。--tab-url で既存タブのURLを指定してください');
       page = candidates[0];
       context = page.context();
-      if (await page.evaluate(() => !!navigator.serviceWorker?.controller)) throw new Error('Service Worker制御中のタブには安全な通信制限を適用できません');
+      // Keep page routes effective even when Amazon has a Service Worker.
+      // This applies only to this CDP session and is removed by detach below.
+      networkSession = await context.newCDPSession(page);
+      await networkSession.send('Network.enable');
+      await networkSession.send('Network.setBypassServiceWorker', { bypass: true });
+      log('service-worker-network-bypass', { scope: 'selected-tab-until-command-end' });
     } else if (persistent) {
       // Dedicated profile only; never use the user's everyday Chrome profile.
       const profile = fileURLToPath(new URL('./.browser-profile/', import.meta.url));
@@ -258,6 +263,7 @@ export async function main(config, existingBrowser) {
   } finally {
     await save();
     if (page && routeHandler && !page.isClosed()) await page.unroute('**/*', routeHandler).catch(() => {});
+    await networkSession?.detach().catch(() => {});
     if (!cdp) await context?.close();
     // connectOverCDP.close disconnects this client; existing tabs/context are not closed.
     if (!existingBrowser) await browser?.close();
