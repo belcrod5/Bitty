@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { resolve } from 'node:path';
 import { discoverBrowsers, chooseBrowser } from './browser.mjs';
-import { openOperation, readOperation, listOperations, runCartAddition, openCart } from './cart.mjs';
+import { openOperation, readOperation, listOperations, runCartAddition, runCartReplacement, openCart } from './cart.mjs';
 import { pause, RandomMouse } from './motion.mjs';
 import { searchProductSelector, readSearchResults, nextSearchPage, readProductDetails } from './catalog.mjs';
 import { allowNavigation, createRouteHandler, isSearchPath, searchTerm, productAsin, isOrdersPath, isAuthPath, authentication, safeValue, safeURL } from './navigation.mjs';
@@ -20,6 +20,8 @@ const help = `Amazon検索・カート操作コマンド（注文確定・購入
   npm run cart                   カート表示／認証状態の確認（追加なし）
   npm run cart-add -- --asin B012345678 --operation request-001
                                  数量1を1回だけ追加し、結果を保存してカートへ移動
+  npm run chrome -- cart-replace --from-asin <旧ASIN> --asin <新ASIN> --operation <ID>
+                                 色違いを数量1追加して確認後、指定した旧行だけ削除
   npm run cart-status -- --operation request-001
                                  保存された操作状態を表示（ブラウザ操作なし）
   npm run browser-status         起動中Chromeの接続可否・Amazonタブを自動診断
@@ -38,32 +40,37 @@ const help = `Amazon検索・カート操作コマンド（注文確定・購入
 
 export function options(input = process.argv.slice(2)) {
   const args = [...input];
-  const command = ['search', 'search-next', 'search-results', 'detail', 'orders', 'cart', 'cart-add', 'cart-status', 'browser-status'].includes(args[0]) ? args.shift() : 'search';
+  const command = ['search', 'search-next', 'search-results', 'detail', 'orders', 'cart', 'cart-add', 'cart-replace', 'cart-status', 'browser-status'].includes(args[0]) ? args.shift() : 'search';
   const { values, positionals } = parseArgs({ args, allowPositionals: true, options: {
     screenshots: { type: 'boolean' }, limit: { type: 'string' }, offset: { type: 'string' },
     'keep-open': { type: 'boolean' }, headless: { type: 'boolean' }, profile: { type: 'boolean' },
     cdp: { type: 'string' }, 'tab-url': { type: 'string' }, operation: { type: 'string' },
     asin: { type: 'string' }, index: { type: 'string' }, help: { type: 'boolean', short: 'h' },
     color: { type: 'string' }, size: { type: 'string' }, 'max-price': { type: 'string' },
+    'from-asin': { type: 'string' },
   } });
   if (values.help) return { help: true };
-  if (['search-next', 'search-results', 'orders', 'cart', 'cart-add', 'cart-status', 'browser-status'].includes(command) && positionals.length) throw new Error(`${command} は検索語を受け取りません`);
-  if (values.asin !== undefined && (!['detail', 'cart-add'].includes(command) || !/^[A-Z0-9]{10}$/i.test(values.asin))) throw new Error('--asin はdetail・cart-add用の10桁の英数字です');
+  if (['search-next', 'search-results', 'orders', 'cart', 'cart-add', 'cart-replace', 'cart-status', 'browser-status'].includes(command) && positionals.length) throw new Error(`${command} は検索語を受け取りません`);
+  if (values.asin !== undefined && (!['detail', 'cart-add', 'cart-replace'].includes(command) || !/^[A-Z0-9]{10}$/i.test(values.asin))) throw new Error('--asin はdetail・cart-add・cart-replace用の10桁の英数字です');
   if (values.asin && (positionals.length || values.index)) throw new Error('--asin と検索語・--indexは同時指定できません');
   const index = values.index === undefined ? 1 : Number(values.index);
   if (values.index !== undefined && (command !== 'detail' || !/^\d+$/.test(values.index) || !Number.isSafeInteger(index) || index < 1)) throw new Error('--index はdetail専用の1以上の整数です');
-  if (command === 'cart-add' && !values.asin) throw new Error('cart-add は --asin が必要です');
+  if (['cart-add', 'cart-replace'].includes(command) && !values.asin) throw new Error(`${command} は --asin が必要です`);
+  if (command === 'cart-replace') {
+    if (!values.cdp || !/^[A-Z0-9]{10}$/i.test(values['from-asin'] ?? '') || values['from-asin'].toUpperCase() === values.asin.toUpperCase()) throw new Error('cart-replace は既存接続と異なる --from-asin・--asin が必要です');
+    if (!values.color || !values.size || !values['max-price']) throw new Error('cart-replace は --color・--size・--max-price が必要です');
+  } else if (values['from-asin'] !== undefined) throw new Error('--from-asin はcart-replace専用です');
   const constraints = {};
   for (const key of ['color', 'size', 'max-price']) {
     if (values[key] === undefined) continue;
-    if (command !== 'cart-add') throw new Error(`--${key} はcart-add専用です`);
+    if (!['cart-add', 'cart-replace'].includes(command)) throw new Error(`--${key} はcart-add・cart-replace専用です`);
     if (!values[key].trim() || values[key].length > 120) throw new Error(`--${key} の値が不正です`);
     if (key === 'max-price') {
       if (!/^\d+$/.test(values[key]) || !Number.isSafeInteger(Number(values[key])) || Number(values[key]) < 1) throw new Error('--max-price は1以上の整数（円）です');
       constraints.maxPrice = Number(values[key]);
     } else constraints[key] = values[key].trim();
   }
-  if (command === 'cart-add' || command === 'cart-status' && values.operation !== undefined) {
+  if (['cart-add', 'cart-replace'].includes(command) || command === 'cart-status' && values.operation !== undefined) {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/.test(values.operation ?? '')) throw new Error('--operation が必要です（英数字・ハイフン・下線、1〜80文字）');
   } else if (values.operation !== undefined) throw new Error('--operation はcart-add・cart-status用です');
   if (values.cdp) {
@@ -84,7 +91,7 @@ export function options(input = process.argv.slice(2)) {
     const tab = new URL(values['tab-url']);
     if (tab.origin !== 'https://www.amazon.co.jp') throw new Error('--tab-url はAmazon.co.jpのタブを指定してください');
   }
-  return { command, limit, offset, constraints, screenshots: !!values.screenshots, operationId: values.operation, cdp: values.cdp, tabURL: values['tab-url'], query: positionals.join(' ').trim() || 'ボールペン', index, asin: values.asin?.toUpperCase(),
+  return { command, limit, offset, constraints, fromAsin: values['from-asin']?.toUpperCase(), screenshots: !!values.screenshots, operationId: values.operation, cdp: values.cdp, tabURL: values['tab-url'], query: positionals.join(' ').trim() || 'ボールペン', index, asin: values.asin?.toUpperCase(),
     keepOpen: !!values['keep-open'], headless: !!values.headless, persistent: !!values.profile || ['orders', 'cart', 'cart-add'].includes(command) };
 }
 
@@ -106,7 +113,7 @@ export async function main(config, existingBrowser) {
   let browser = existingBrowser, context, page, operation, routeHandler, networkSession;
   let exitCode = 0;
   const attempt = { armed: false, consumed: false, action: null };
-  const cartCommand = ['cart', 'cart-add'].includes(command);
+  const cartCommand = ['cart', 'cart-add', 'cart-replace'].includes(command);
   let summary = { success: false, command, artifacts, ...(config.extensionConnection ? { transport: 'playwright-extension', serviceWorkerBypass: false } : {}) };
   const save = async () => {
     await writeFile(`${artifacts}/events.json`, JSON.stringify(events, null, 2));
@@ -114,7 +121,7 @@ export async function main(config, existingBrowser) {
   };
 
   try {
-    if (command === 'cart-add') operation = await openOperation(operations, operationId, asin, config.constraints);
+    if (['cart-add', 'cart-replace'].includes(command)) operation = await openOperation(operations, operationId, asin, config.constraints, config.fromAsin);
     const contextOptions = { viewport: { width: 1440, height: 1000 }, locale: 'ja-JP', serviceWorkers: 'block', acceptDownloads: false };
     if (cdp === 'auto') {
       const report = await discoverBrowsers();
@@ -212,16 +219,17 @@ export async function main(config, existingBrowser) {
         const target = command === 'cart-add' && operation.data.addition === 'not_started' ? `https://www.amazon.co.jp/dp/${asin}` : 'https://www.amazon.co.jp/';
         await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 60_000 });
       }
-      if (command === 'cart-add') {
+      if (['cart-add', 'cart-replace'].includes(command)) {
         const identity = cdp ? safeURL(cdp) : fileURLToPath(new URL('./.browser-profile/', import.meta.url));
-        const data = await runCartAddition({ page, mouse, log, operation, attempt, identity });
-        summary = { ...summary, ...data, success: data.addition === 'confirmed' && data.cart === 'visible' && data.targetPresent, url: safeURL(page.url()) };
+        const run = command === 'cart-replace' ? runCartReplacement : runCartAddition;
+        const data = await run({ page, mouse, log, operation, attempt, identity });
+        summary = { ...summary, ...data, success: data.addition === 'confirmed' && data.cart === 'visible' && data.targetPresent && (command !== 'cart-replace' || data.replacementConfirmed === true), url: safeURL(page.url()) };
       } else {
         const view = await openCart(page, mouse, log);
         summary = { ...summary, ...view, success: view.cart === 'visible', code: view.cart === 'visible' ? null : 'AUTH_REQUIRED', url: safeURL(page.url()) };
       }
       if (summary.cart === 'visible') await screenshot('04-cart.png');
-      if (!summary.success) exitCode = summary.addition === 'unknown' ? 3 : ['login_required', 'verification_required'].includes(summary.cart) ? 2 : 1;
+      if (!summary.success) exitCode = summary.addition === 'unknown' || summary.removal === 'unknown' ? 3 : ['login_required', 'verification_required'].includes(summary.cart) ? 2 : 1;
     } else if (command === 'search') {
       await search();
       summary = { ...summary, ...await readSearchResults(page, config) };
@@ -275,13 +283,15 @@ export async function main(config, existingBrowser) {
     }
   } catch (error) {
     attempt.armed = false;
+    if (attempt.remove) attempt.remove.armed = false;
     if (operation) {
       if (operation.data.addition === 'submitted') await operation.update({ addition: 'unknown', retryAdd: false, code: 'ADDITION_UNKNOWN' });
+      if (operation.data.removal === 'submitted') await operation.update({ removal: 'unknown', replacementConfirmed: false, code: 'REMOVAL_UNKNOWN' });
       summary = { ...summary, ...operation.data };
     }
     summary.success = false;
     summary.error = safeValue(error.message);
-    summary.code = summary.addition === 'unknown' ? 'ADDITION_UNKNOWN' : error.code ?? summary.code ?? 'ERROR';
+    summary.code = summary.addition === 'unknown' ? 'ADDITION_UNKNOWN' : summary.removal === 'unknown' ? 'REMOVAL_UNKNOWN' : error.code ?? summary.code ?? 'ERROR';
     log('failed', { error: summary.error, code: summary.code });
     if (page && !page.isClosed()) {
       const url = new URL(page.url());
@@ -298,7 +308,7 @@ export async function main(config, existingBrowser) {
         }
       }
     }
-    exitCode = summary.addition === 'unknown' ? 3 : ['LOGIN_REQUIRED', 'VERIFICATION_REQUIRED'].includes(summary.code) ? 2 : 1;
+    exitCode = summary.addition === 'unknown' || summary.removal === 'unknown' ? 3 : ['LOGIN_REQUIRED', 'VERIFICATION_REQUIRED'].includes(summary.code) ? 2 : 1;
   } finally {
     await save();
     if (page && routeHandler && !page.isClosed()) await page.unroute('**/*', routeHandler).catch(() => {});

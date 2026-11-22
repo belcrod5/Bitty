@@ -31,7 +31,7 @@ export function allowNavigation(url, method, command) {
   if (url.hostname !== 'www.amazon.co.jp' || url.protocol !== 'https:') return false;
   if (isAuthPath(url.pathname)) return ['GET', 'HEAD'].includes(method);
   if (!['GET', 'HEAD'].includes(method)) return false;
-  const cartCommand = ['cart', 'cart-add'].includes(command);
+  const cartCommand = ['cart', 'cart-add', 'cart-replace'].includes(command);
   if (cartCommand && isCartPath(url.pathname)) return true;
   if (cartCommand && url.pathname === '/cart/smart-wagon') return true;
   if (cartCommand && url.pathname === '/cart/ewc/compact') return true;
@@ -39,7 +39,7 @@ export function allowNavigation(url, method, command) {
   if (forbiddenPath(url.pathname)) return false;
   if (url.pathname === '/') return true;
   if (['search', 'search-next', 'search-results', 'detail'].includes(command) && isSearchPath(url.pathname)) return true;
-  if (['detail', 'cart-add'].includes(command) && (productAsin(url.pathname) || url.pathname === '/sspa/click')) return true;
+  if (['detail', 'cart-add', 'cart-replace'].includes(command) && (productAsin(url.pathname) || url.pathname === '/sspa/click')) return true;
   if (command === 'orders' && isOrdersPath(url.pathname)) return true;
   return false;
 }
@@ -71,11 +71,38 @@ export function authorizeAdd(request, attempt, asin) {
   return true;
 }
 
+export function authorizeRemoval(request, removal) {
+  if (!removal?.armed || !removal.action || removal.consumed || request.method() !== 'POST') return false;
+  const url = new URL(request.url());
+  if (url.origin !== 'https://www.amazon.co.jp' || !(isCartPath(url.pathname) || ['/gp/cart/ajax-update.html', '/cart/preview/action'].includes(url.pathname))) return false;
+  if (!(request.headers()['content-type'] ?? '').startsWith('application/x-www-form-urlencoded')) return false;
+  const data = new URLSearchParams(request.postData() ?? '');
+  if ([...data.keys()].some(key => /buy.?now|checkout/i.test(key))) return false;
+  const submitters = [...data.keys()].filter(key => key.startsWith('submit.'));
+  const sameAction = url.href === removal.action || isCartPath(url.pathname) && isCartPath(new URL(removal.action).pathname);
+  let matches = sameAction && submitters.length === 1 && submitters[0] === `submit.delete-active.${removal.itemId}`;
+  if (!submitters.length && data.get('pageAction') === 'delete-active') {
+    try { const payload = JSON.parse(data.get('actionPayload')); matches = (payload.itemId ?? payload.itemID) === removal.itemId; } catch { return false; }
+  }
+  if (submitters.length === 1 && submitters[0] === 'submit.cart-actions' && data.get('pageAction') === 'cart-actions') {
+    try {
+      const actions = JSON.parse(data.get('actionPayload'));
+      const action = Array.isArray(actions) && actions.length === 1 ? actions[0] : null;
+      matches = action?.type === 'DELETE_START' && action.payload?.itemId === removal.itemId &&
+        action.payload.list === 'activeItems' && Array.isArray(action.payload.relatedItemIds) && action.payload.relatedItemIds.length === 0;
+    } catch { return false; }
+  }
+  if (!matches) return false;
+  removal.consumed = true; removal.armed = false;
+  return true;
+}
+
 export function createRouteHandler(command, attempt, asin, log) {
-  const cartCommand = ['cart', 'cart-add'].includes(command);
+  const cartCommand = ['cart', 'cart-add', 'cart-replace'].includes(command);
   return async route => {
     const request = route.request();
     const url = new URL(request.url());
+    if (command === 'cart-replace' && authorizeRemoval(request, attempt.remove)) return route.fallback();
     if (cartCommand && isAddPath(url.pathname) && request.method() === 'POST' && authorizeAdd(request, attempt, asin)) return route.fallback();
     const cartRead = cartCommand && ['GET', 'HEAD'].includes(request.method()) && allowNavigation(url, request.method(), command);
     if (forbiddenPath(url.pathname) && !cartRead) {

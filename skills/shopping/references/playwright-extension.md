@@ -24,7 +24,7 @@ npm run chrome -- search "ボールペン"
 
 トークン接続は同じChromeプロファイルに新しい空タブを作り、そのタブを制御する。既存のAmazonログイン状態を利用するが、普段の他のタブを無断で取得しない。最初の操作でその空タブをAmazonへ移動し、以後は同じ接続・タブを使う。複数の対象があるときだけ実在するURLを `--tab-url` で指定する。明示URLが見つからなければ空タブへ切り替えず停止する。
 
-検索のほか、`search-results`、`search-next`、`detail`、`orders`、`cart`、`cart-add`、`browser-status` が同じ接続で利用できる。コマンドの引数・結果・認証判定はSKILL.mdと共通。検索語・ASIN・数量・操作内容をAIの都度生成コードに置き換えない。商品データの受け取りとページングは [catalog.md](catalog.md) に従う。
+検索のほか、`search-results`、`search-next`、`detail`、`orders`、`cart`、`cart-add`、`cart-replace`、`browser-status` が同じ接続で利用できる。コマンドの引数・結果・認証判定はSKILL.mdと共通。検索語・ASIN・数量・操作内容をAIの都度生成コードに置き換えない。商品データの受け取りとページングは [catalog.md](catalog.md) に従う。
 
 停止は `npm run chrome -- stop`。自動の30分切断は行わない。Chrome終了などで切断されたら、実行中の操作の結果を確認し、`stop` → `start` で接続だけを作り直す。保存済みキーが有効なら接続ごとの確認は不要。失敗した検索・追加を自動再実行するものではない。拡張のキーを再発行した場合は初回設定をやり直す。
 

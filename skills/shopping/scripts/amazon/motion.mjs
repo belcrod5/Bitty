@@ -72,29 +72,40 @@ export class RandomMouse {
   }
 
   async click(locator, label, { beforeMouseDown } = {}) {
-    await locator.waitFor({ state: 'visible' });
-    let box = await locator.boundingBox();
-    const viewport = this.page.viewportSize() ?? await this.page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
-    // Avoid a stability/animation-frame wait when the whole target is already visible.
-    // The hit test immediately before mouse-down still rejects movement or overlays.
-    if (box && (box.x < 0 || box.y < 0 || box.x + box.width > viewport.width || box.y + box.height > viewport.height)) {
-      await locator.scrollIntoViewIfNeeded();
-      box = await locator.boundingBox();
+    for (let reaim = 0; reaim < 2; reaim++) {
+      await locator.waitFor({ state: 'visible' });
+      let box = await locator.boundingBox();
+      const viewport = this.page.viewportSize() ?? await this.page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+      // Avoid a stability/animation-frame wait when the whole target is already visible.
+      // The hit test immediately before mouse-down still rejects movement or overlays.
+      if (box && (box.x < 0 || box.y < 0 || box.x + box.width > viewport.width || box.y + box.height > viewport.height)) {
+        await locator.scrollIntoViewIfNeeded();
+        box = await locator.boundingBox();
+      }
+      if (!box || box.width <= 0 || box.height <= 0) throw new Error(`${label}: no clickable box`);
+      const point = { x: box.x + box.width * random(0.35, 0.65), y: box.y + box.height * random(0.35, 0.65) };
+      await this.moveTo(point);
+      await pause(this.log, `before clicking ${label}`);
+      // Do not click if an overlay or layout shift has replaced the intended target.
+      const hit = await locator.evaluate((element, p) => {
+        const target = document.elementFromPoint(p.x, p.y);
+        return target === element || element.contains(target);
+      }, point);
+      if (!hit) {
+        const current = await locator.boundingBox();
+        const shifted = current && ['x', 'y', 'width', 'height'].some(key => Math.abs(current[key] - box[key]) > 1);
+        if (reaim === 0 && shifted) {
+          this.log('mouse-retarget', { label, before: box, after: current });
+          continue;
+        }
+        throw new Error(`${label}: target moved or is covered; stopped before click`);
+      }
+      this.log('click', { label, ...point });
+      await beforeMouseDown?.();
+      await this.page.mouse.down();
+      await sleep(integer(60, 140));
+      await this.page.mouse.up();
+      return;
     }
-    if (!box || box.width <= 0 || box.height <= 0) throw new Error(`${label}: no clickable box`);
-    const point = { x: box.x + box.width * random(0.35, 0.65), y: box.y + box.height * random(0.35, 0.65) };
-    await this.moveTo(point);
-    await pause(this.log, `before clicking ${label}`);
-    // Do not click if an overlay or layout shift has replaced the intended target.
-    const hit = await locator.evaluate((element, p) => {
-      const target = document.elementFromPoint(p.x, p.y);
-      return target === element || element.contains(target);
-    }, point);
-    if (!hit) throw new Error(`${label}: target moved or is covered; stopped before click`);
-    this.log('click', { label, ...point });
-    await beforeMouseDown?.();
-    await this.page.mouse.down();
-    await sleep(integer(60, 140));
-    await this.page.mouse.up();
   }
 }
