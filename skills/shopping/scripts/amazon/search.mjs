@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { resolve } from 'node:path';
 import { discoverBrowsers, chooseBrowser } from './browser.mjs';
-import { openOperation, readOperation, listOperations, runCartAddition, runCartReplacement, openCart } from './cart.mjs';
+import { openOperation, readOperation, listOperations, runCartAddition, runCartRemoval, openCart } from './cart.mjs';
 import { pause, RandomMouse } from './motion.mjs';
 import { searchProductSelector, readSearchResults, nextSearchPage, readProductDetails } from './catalog.mjs';
 import { allowNavigation, createRouteHandler, isSearchPath, searchTerm, productAsin, isOrdersPath, isAuthPath, authentication, safeValue, safeURL } from './navigation.mjs';
@@ -18,10 +18,12 @@ const help = `Amazon検索・カート操作コマンド（注文確定・購入
   npm run detail -- --asin B012345678 [--keep-open]
   npm run orders -- --keep-open   専用ブラウザのログイン状態で注文履歴を開く
   npm run cart                   カート表示／認証状態の確認（追加なし）
-  npm run cart-add -- --asin B012345678 --operation request-001
+  npm run chrome -- cart-add --asin B012345678 --operation request-001
                                  数量1を1回だけ追加し、結果を保存してカートへ移動
-  npm run chrome -- cart-replace --from-asin <旧ASIN> --asin <新ASIN> --operation <ID>
-                                 色違いを数量1追加して確認後、指定した旧行だけ削除
+  npm run chrome -- detail-current
+                                 同じタブの選択済み商品JSONを取得（移動・再読込なし）
+  npm run chrome -- cart-remove --asin <ASIN> --item-id <行ID> --quantity <数量> --operation <ID>
+                                 指定したカート行を削除し、元の商品情報を保存
   npm run cart-status -- --operation request-001
                                  保存された操作状態を表示（ブラウザ操作なし）
   npm run browser-status         起動中Chromeの接続可否・Amazonタブを自動診断
@@ -32,47 +34,44 @@ const help = `Amazon検索・カート操作コマンド（注文確定・購入
                                  接続先で操作する既存タブを指定
   --limit 10 --offset 0           商品JSONの取得件数（1〜20）・開始位置（0始まり）
   --screenshots                  ページ画像も保存（既定はJSONのみ）
-  --color <表示値> --size <表示値> --max-price <円>
-                                 cart-add直前の色・サイズ・表示価格上限を検査
+  --max-price <円>                cart-add直前の表示価格上限を検査
   --headless                     画面を表示せず実行
   --profile                      専用ブラウザのログイン状態を使う
 要素が見つからない場合はエラーで停止します。`;
 
 export function options(input = process.argv.slice(2)) {
   const args = [...input];
-  const command = ['search', 'search-next', 'search-results', 'detail', 'orders', 'cart', 'cart-add', 'cart-replace', 'cart-status', 'browser-status'].includes(args[0]) ? args.shift() : 'search';
+  if (args[0] === 'cart-replace') throw new Error('cart-replaceは廃止しました。cart-remove・AIによる選択・cart-addを使ってください');
+  const command = ['search', 'search-next', 'search-results', 'detail', 'detail-current', 'orders', 'cart', 'cart-add', 'cart-remove', 'cart-status', 'browser-status'].includes(args[0]) ? args.shift() : 'search';
   const { values, positionals } = parseArgs({ args, allowPositionals: true, options: {
     screenshots: { type: 'boolean' }, limit: { type: 'string' }, offset: { type: 'string' },
     'keep-open': { type: 'boolean' }, headless: { type: 'boolean' }, profile: { type: 'boolean' },
     cdp: { type: 'string' }, 'tab-url': { type: 'string' }, operation: { type: 'string' },
     asin: { type: 'string' }, index: { type: 'string' }, help: { type: 'boolean', short: 'h' },
-    color: { type: 'string' }, size: { type: 'string' }, 'max-price': { type: 'string' },
-    'from-asin': { type: 'string' },
+    'max-price': { type: 'string' }, 'item-id': { type: 'string' }, quantity: { type: 'string' },
   } });
   if (values.help) return { help: true };
-  if (['search-next', 'search-results', 'orders', 'cart', 'cart-add', 'cart-replace', 'cart-status', 'browser-status'].includes(command) && positionals.length) throw new Error(`${command} は検索語を受け取りません`);
-  if (values.asin !== undefined && (!['detail', 'cart-add', 'cart-replace'].includes(command) || !/^[A-Z0-9]{10}$/i.test(values.asin))) throw new Error('--asin はdetail・cart-add・cart-replace用の10桁の英数字です');
+  if (['search-next', 'search-results', 'detail-current', 'orders', 'cart', 'cart-add', 'cart-remove', 'cart-status', 'browser-status'].includes(command) && positionals.length) throw new Error(`${command} は検索語を受け取りません`);
+  if (values.asin !== undefined && (!['detail', 'cart-add', 'cart-remove'].includes(command) || !/^[A-Z0-9]{10}$/i.test(values.asin))) throw new Error('--asin はdetail・cart-add・cart-remove用の10桁の英数字です');
   if (values.asin && (positionals.length || values.index)) throw new Error('--asin と検索語・--indexは同時指定できません');
   const index = values.index === undefined ? 1 : Number(values.index);
   if (values.index !== undefined && (command !== 'detail' || !/^\d+$/.test(values.index) || !Number.isSafeInteger(index) || index < 1)) throw new Error('--index はdetail専用の1以上の整数です');
-  if (['cart-add', 'cart-replace'].includes(command) && !values.asin) throw new Error(`${command} は --asin が必要です`);
-  if (command === 'cart-replace') {
-    if (!values.cdp || !/^[A-Z0-9]{10}$/i.test(values['from-asin'] ?? '') || values['from-asin'].toUpperCase() === values.asin.toUpperCase()) throw new Error('cart-replace は既存接続と異なる --from-asin・--asin が必要です');
-    if (!values.color || !values.size || !values['max-price']) throw new Error('cart-replace は --color・--size・--max-price が必要です');
-  } else if (values['from-asin'] !== undefined) throw new Error('--from-asin はcart-replace専用です');
+  if (['cart-add', 'cart-remove'].includes(command) && !values.asin) throw new Error(`${command} は --asin が必要です`);
+  if (['cart-add', 'cart-remove', 'detail-current'].includes(command) && !values.cdp) throw new Error('選択済みの既存Chromeで実行してください（npm run chrome -- <コマンド>）');
+  let removal;
+  if (command === 'cart-remove') {
+    const quantity = Number(values.quantity);
+    if (!/^[\w-]{1,80}$/.test(values['item-id'] ?? '') || !/^[1-9]\d*$/.test(values.quantity ?? '') || !Number.isSafeInteger(quantity)) throw new Error('cart-remove は --item-id と確認済みの --quantity が必要です');
+    removal = { itemId: values['item-id'], quantity };
+  } else if (values['item-id'] !== undefined || values.quantity !== undefined) throw new Error('--item-id・--quantity はcart-remove専用です');
   const constraints = {};
-  for (const key of ['color', 'size', 'max-price']) {
-    if (values[key] === undefined) continue;
-    if (!['cart-add', 'cart-replace'].includes(command)) throw new Error(`--${key} はcart-add・cart-replace専用です`);
-    if (!values[key].trim() || values[key].length > 120) throw new Error(`--${key} の値が不正です`);
-    if (key === 'max-price') {
-      if (!/^\d+$/.test(values[key]) || !Number.isSafeInteger(Number(values[key])) || Number(values[key]) < 1) throw new Error('--max-price は1以上の整数（円）です');
-      constraints.maxPrice = Number(values[key]);
-    } else constraints[key] = values[key].trim();
+  if (values['max-price'] !== undefined) {
+    if (command !== 'cart-add' || !/^[1-9]\d*$/.test(values['max-price']) || !Number.isSafeInteger(Number(values['max-price']))) throw new Error('--max-price はcart-add専用の1以上の整数（円）です');
+    constraints.maxPrice = Number(values['max-price']);
   }
-  if (['cart-add', 'cart-replace'].includes(command) || command === 'cart-status' && values.operation !== undefined) {
+  if (['cart-add', 'cart-remove'].includes(command) || command === 'cart-status' && values.operation !== undefined) {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/.test(values.operation ?? '')) throw new Error('--operation が必要です（英数字・ハイフン・下線、1〜80文字）');
-  } else if (values.operation !== undefined) throw new Error('--operation はcart-add・cart-status用です');
+  } else if (values.operation !== undefined) throw new Error('--operation はcart-add・cart-remove・cart-status用です');
   if (values.cdp) {
     const endpoint = ['auto', 'chrome'].includes(values.cdp) ? null : new URL(values.cdp);
     if (endpoint && (!['http:', 'https:', 'ws:', 'wss:'].includes(endpoint.protocol) || !['localhost', '127.0.0.1', '[::1]'].includes(endpoint.hostname) || endpoint.username || endpoint.password)) throw new Error('--cdp はローカルChromeの接続先を指定してください');
@@ -91,8 +90,8 @@ export function options(input = process.argv.slice(2)) {
     const tab = new URL(values['tab-url']);
     if (tab.origin !== 'https://www.amazon.co.jp') throw new Error('--tab-url はAmazon.co.jpのタブを指定してください');
   }
-  return { command, limit, offset, constraints, fromAsin: values['from-asin']?.toUpperCase(), screenshots: !!values.screenshots, operationId: values.operation, cdp: values.cdp, tabURL: values['tab-url'], query: positionals.join(' ').trim() || 'ボールペン', index, asin: values.asin?.toUpperCase(),
-    keepOpen: !!values['keep-open'], headless: !!values.headless, persistent: !!values.profile || ['orders', 'cart', 'cart-add'].includes(command) };
+  return { command, limit, offset, constraints, removal, screenshots: !!values.screenshots, operationId: values.operation, cdp: values.cdp, tabURL: values['tab-url'], query: positionals.join(' ').trim() || 'ボールペン', index, asin: values.asin?.toUpperCase(),
+    keepOpen: !!values['keep-open'], headless: !!values.headless, persistent: !!values.profile || ['orders', 'cart'].includes(command) };
 }
 
 export async function main(config, existingBrowser) {
@@ -113,7 +112,7 @@ export async function main(config, existingBrowser) {
   let browser = existingBrowser, context, page, operation, routeHandler, networkSession;
   let exitCode = 0;
   const attempt = { armed: false, consumed: false, action: null };
-  const cartCommand = ['cart', 'cart-add', 'cart-replace'].includes(command);
+  const cartCommand = ['cart', 'cart-add', 'cart-remove'].includes(command);
   let summary = { success: false, command, artifacts, ...(config.extensionConnection ? { transport: 'playwright-extension', serviceWorkerBypass: false } : {}) };
   const save = async () => {
     await writeFile(`${artifacts}/events.json`, JSON.stringify(events, null, 2));
@@ -121,7 +120,7 @@ export async function main(config, existingBrowser) {
   };
 
   try {
-    if (['cart-add', 'cart-replace'].includes(command)) operation = await openOperation(operations, operationId, asin, config.constraints, config.fromAsin);
+    if (['cart-add', 'cart-remove'].includes(command)) operation = await openOperation(operations, operationId, asin, config.constraints, config.removal);
     const contextOptions = { viewport: { width: 1440, height: 1000 }, locale: 'ja-JP', serviceWorkers: 'block', acceptDownloads: false };
     if (cdp === 'auto') {
       const report = await discoverBrowsers();
@@ -215,15 +214,12 @@ export async function main(config, existingBrowser) {
     }
 
     if (cartCommand) {
-      if (!cdp) {
-        const target = command === 'cart-add' && operation.data.addition === 'not_started' ? `https://www.amazon.co.jp/dp/${asin}` : 'https://www.amazon.co.jp/';
-        await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 60_000 });
-      }
-      if (['cart-add', 'cart-replace'].includes(command)) {
+      if (!cdp) await page.goto('https://www.amazon.co.jp/', { waitUntil: 'domcontentloaded', timeout: 60_000 });
+      if (['cart-add', 'cart-remove'].includes(command)) {
         const identity = cdp ? safeURL(cdp) : fileURLToPath(new URL('./.browser-profile/', import.meta.url));
-        const run = command === 'cart-replace' ? runCartReplacement : runCartAddition;
+        const run = command === 'cart-remove' ? runCartRemoval : runCartAddition;
         const data = await run({ page, mouse, log, operation, attempt, identity });
-        summary = { ...summary, ...data, success: data.addition === 'confirmed' && data.cart === 'visible' && data.targetPresent && (command !== 'cart-replace' || data.replacementConfirmed === true), url: safeURL(page.url()) };
+        summary = { ...summary, ...data, success: data.cart === 'visible' && (command === 'cart-remove' ? data.removal === 'confirmed' && data.targetPresent === false : data.addition === 'confirmed' && data.targetPresent), url: safeURL(page.url()) };
       } else {
         const view = await openCart(page, mouse, log);
         summary = { ...summary, ...view, success: view.cart === 'visible', code: view.cart === 'visible' ? null : 'AUTH_REQUIRED', url: safeURL(page.url()) };
@@ -238,6 +234,11 @@ export async function main(config, existingBrowser) {
       const data = command === 'search-next' ? await nextSearchPage(page, mouse, assertNoAuth, config) : await readSearchResults(page, config);
       summary = { ...summary, ...data };
       await screenshot('03-search-results.png');
+    } else if (command === 'detail-current') {
+      await assertNoAuth();
+      const currentAsin = productAsin(new URL(page.url()).pathname);
+      if (!currentAsin) throw new Error('現在のタブは商品詳細ページではありません');
+      summary = { ...summary, ...await readProductDetails(page, currentAsin) };
     } else if (command === 'detail') {
       let expectedAsin = asin;
       if (asin) {
@@ -286,7 +287,7 @@ export async function main(config, existingBrowser) {
     if (attempt.remove) attempt.remove.armed = false;
     if (operation) {
       if (operation.data.addition === 'submitted') await operation.update({ addition: 'unknown', retryAdd: false, code: 'ADDITION_UNKNOWN' });
-      if (operation.data.removal === 'submitted') await operation.update({ removal: 'unknown', replacementConfirmed: false, code: 'REMOVAL_UNKNOWN' });
+      if (operation.data.removal === 'submitted') await operation.update({ removal: 'unknown', code: 'REMOVAL_UNKNOWN' });
       summary = { ...summary, ...operation.data };
     }
     summary.success = false;

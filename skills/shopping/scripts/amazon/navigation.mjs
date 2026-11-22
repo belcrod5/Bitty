@@ -31,7 +31,7 @@ export function allowNavigation(url, method, command) {
   if (url.hostname !== 'www.amazon.co.jp' || url.protocol !== 'https:') return false;
   if (isAuthPath(url.pathname)) return ['GET', 'HEAD'].includes(method);
   if (!['GET', 'HEAD'].includes(method)) return false;
-  const cartCommand = ['cart', 'cart-add', 'cart-replace'].includes(command);
+  const cartCommand = ['cart', 'cart-add', 'cart-remove'].includes(command);
   if (cartCommand && isCartPath(url.pathname)) return true;
   if (cartCommand && url.pathname === '/cart/smart-wagon') return true;
   if (cartCommand && url.pathname === '/cart/ewc/compact') return true;
@@ -39,7 +39,7 @@ export function allowNavigation(url, method, command) {
   if (forbiddenPath(url.pathname)) return false;
   if (url.pathname === '/') return true;
   if (['search', 'search-next', 'search-results', 'detail'].includes(command) && isSearchPath(url.pathname)) return true;
-  if (['detail', 'cart-add', 'cart-replace'].includes(command) && (productAsin(url.pathname) || url.pathname === '/sspa/click')) return true;
+  if (['detail', 'detail-current', 'cart-add'].includes(command) && (productAsin(url.pathname) || url.pathname === '/sspa/click')) return true;
   if (command === 'orders' && isOrdersPath(url.pathname)) return true;
   return false;
 }
@@ -98,12 +98,12 @@ export function authorizeRemoval(request, removal) {
 }
 
 export function createRouteHandler(command, attempt, asin, log) {
-  const cartCommand = ['cart', 'cart-add', 'cart-replace'].includes(command);
+  const cartCommand = ['cart', 'cart-add', 'cart-remove'].includes(command);
   return async route => {
     const request = route.request();
     const url = new URL(request.url());
-    if (command === 'cart-replace' && authorizeRemoval(request, attempt.remove)) return route.fallback();
-    if (cartCommand && isAddPath(url.pathname) && request.method() === 'POST' && authorizeAdd(request, attempt, asin)) return route.fallback();
+    if (command === 'cart-remove' && authorizeRemoval(request, attempt.remove)) return route.fallback();
+    if (command === 'cart-add' && isAddPath(url.pathname) && request.method() === 'POST' && authorizeAdd(request, attempt, asin)) return route.fallback();
     const cartRead = cartCommand && ['GET', 'HEAD'].includes(request.method()) && allowNavigation(url, request.method(), command);
     if (forbiddenPath(url.pathname) && !cartRead) {
       log('blocked-request', { method: request.method(), path: url.pathname,

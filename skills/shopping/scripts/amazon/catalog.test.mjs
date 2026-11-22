@@ -134,7 +134,7 @@ test('clothing details expose child ASINs, selected labels, preloaded size chart
 });
 
 test('cart selection arguments are explicit and cannot be used on other commands', () => {
-  assert.deepEqual(options(['cart-add','--asin','B000000010','--operation','trial','--color','黒','--size','L','--max-price','1648']).constraints, {color:'黒',size:'L',maxPrice:1648});
+  assert.deepEqual(options(['cart-add','--cdp','chrome','--asin','B000000010','--operation','trial','--max-price','1648']).constraints, {maxPrice:1648});
   for (const args of [['detail','--color','黒'], ['cart-add','--asin','B000000010','--operation','trial','--size',' '], ['cart-add','--asin','B000000010','--operation','trial','--max-price','1.2']]) assert.throws(()=>options(args));
 });
 

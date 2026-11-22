@@ -11,7 +11,7 @@ import { safeURL, safeValue } from './navigation.mjs';
 import { readExtensionConfig, connectExtension, serveExtensionSetup } from './chrome-extension.mjs';
 
 // One private local socket, one Chrome connection, one command at a time.
-const commands = ['search', 'search-next', 'search-results', 'detail', 'orders', 'cart', 'cart-add', 'cart-replace', 'browser-status'];
+const commands = ['search', 'search-next', 'search-results', 'detail', 'detail-current', 'orders', 'cart', 'cart-add', 'cart-remove', 'browser-status'];
 export async function sessionPaths(direct = false) {
   const source = await realpath(dirname(fileURLToPath(import.meta.url)));
   const key = createHash('sha256').update(source).digest('hex').slice(0, 12);

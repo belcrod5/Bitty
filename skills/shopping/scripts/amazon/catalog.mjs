@@ -68,9 +68,9 @@ export async function readProductDetails(page, expectedAsin) {
     const rows = [...document.querySelectorAll('#productOverview_feature_div tr, #productDetails_techSpec_section_1 tr, #productDetails_detailBullets_sections1 tr')];
     const specifications = rows.map(row => ({ name: text(row.querySelector('th, td:first-child')), value: text(row.querySelector('td:last-child')) })).filter(row => row.name && row.value);
     // Read product controls, including choices below the fold, without clicking
-    // submit inputs. Each returned child ASIN is opened with the existing detail command.
+    // submit inputs. AI operates these controls in the same tab.
     const variationRows = [...document.querySelectorAll('[id^="inline-twister-row-"], [id^="variation_"]')];
-    const variations = variationRows.slice(0, 6).map(row => {
+    const allVariations = variationRows.map(row => {
       const dimension = row.id.replace(/^(?:inline-twister-row-|variation_)/, '');
       const choices = [...row.querySelectorAll('li[data-asin], li[data-defaultasin], select option')].map(element => {
         const raw = element.getAttribute('data-asin') || element.getAttribute('data-defaultasin') || element.value;
@@ -82,10 +82,12 @@ export async function readProductDetails(page, expectedAsin) {
       }).filter(choice => choice.value && choice.asin);
       const selected = text(row.querySelector('.inline-twister-dim-title-value, .selection')) || choices.find(choice => choice.selected)?.value || null;
       const unique = [...new Map(choices.map(choice => [`${choice.asin}:${choice.value}`, choice])).values()];
-      return { dimension: dimension.slice(0, 100), selected: selected?.slice(0, 120) ?? null,
+      return { dimension, selected,
         options: unique.slice(0, 30).map(choice => ({ ...choice, value: choice.value.slice(0, 120) })),
         truncated: unique.length > 30 || selected?.length > 120 || unique.some(choice => choice.value.length > 120) || false };
     });
+    const variations = allVariations.slice(0, 6).map(row => ({ ...row, dimension: row.dimension.slice(0, 100), selected: row.selected?.slice(0, 120) ?? null }));
+    const selectedOptions = allVariations.map(({ dimension, selected }) => ({ dimension, selected }));
     const chartTables = [...document.querySelectorAll('#sizeChartV2Data_feature_div table, #a-popover-sizeGuide table')];
     const sizeCharts = chartTables.slice(0, 3).map(table => {
       const rows = [...table.rows].map(row => [...row.cells].map(cell => text(cell) || ''));
@@ -105,7 +107,7 @@ export async function readProductDetails(page, expectedAsin) {
       ratingText: firstText('#acrPopover .a-icon-alt'), ratingCountText: firstText('#acrCustomerReviewText'),
       features: features.slice(0, 8).map(value => value.slice(0, 500)),
       specifications: specifications.slice(0, 16).map(row => ({ name: row.name.slice(0, 100), value: row.value.slice(0, 300) })),
-      variations, variationsTruncated: variationRows.length > 6, sizeCharts, productFactsText: productFactsText?.slice(0, 4000) ?? null,
+      selectedOptions, variations, variationsTruncated: variationRows.length > 6, sizeCharts, productFactsText: productFactsText?.slice(0, 4000) ?? null,
       contentTruncated: features.length > 8 || features.some(value => value.length > 500) || specifications.length > 16 || specifications.some(row => row.name.length > 100 || row.value.length > 300) || variationRows.length > 6 || variations.some(row => row.truncated) || chartTables.length > 3 || sizeCharts.some(chart => chart.truncated) || productFactsText?.length > 4000 || false,
       imageUrl,
     };

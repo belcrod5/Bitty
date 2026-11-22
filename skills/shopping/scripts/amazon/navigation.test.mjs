@@ -71,10 +71,10 @@ test('active isBuyNow is allowed only for an explicit add submitter on the dedic
   }
 });
 test('CLI requires an ASIN and stable operation ID; attachment must be explicit and local', () => {
-  assert.throws(() => options(['cart-add','--asin','B012345678']), /operation/);
-  assert.throws(() => options(['cart-add','--operation','a']), /asin/);
-  assert.throws(() => options(['cart-add','--asin','B012345678','--operation','../a']), /operation/);
+  assert.throws(() => options(['cart-add','--cdp','chrome','--asin','B012345678']), /operation/);
+  assert.throws(() => options(['cart-add','--cdp','chrome','--operation','a']), /asin/);
+  assert.throws(() => options(['cart-add','--cdp','chrome','--asin','B012345678','--operation','../a']), /operation/);
   assert.throws(() => options(['cart','--cdp','http://example.com:9222']), /ローカル/);
   assert.throws(() => options(['cart','--tab-url','https://www.amazon.co.jp/cart']), /cdp/);
-  assert.equal(options(['cart-add','--asin','B012345678','--operation','one']).command, 'cart-add');
+  assert.equal(options(['cart-add','--cdp','chrome','--asin','B012345678','--operation','one']).command, 'cart-add');
 });

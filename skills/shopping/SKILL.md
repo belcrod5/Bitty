@@ -1,71 +1,51 @@
 ---
 name: shopping
-description: Amazon.co.jpの商品検索、検索結果のJSON取得・次ページ移動・商品詳細表示・購入履歴を、Playwrightのプログラムで実行する。「買い物」オーケストレーターでAmazonの商品を探す・詳細や注文履歴を開く依頼に使う。指定商品の数量1でのカート追加、合計金額の取得、追加済み衣類の色変更と認証状態の確認にも対応する。注文確定・購入・ログイン操作は対象外。
+description: Amazon.co.jpの商品検索・ページング・詳細取得・購入履歴表示と、カートの合計取得・追加・削除に使う。「買い物」オーケストレーター専用。サイズ・色・タイプなどはAIが既存Chromeの同じタブで選び、カート操作は同梱プログラムで行う。注文確定・購入・ログイン操作は対象外。
 ---
 
 # 買い物
 
-同梱の `scripts/amazon/` のコマンドを使い、Amazonの商品検索・詳細表示・購入履歴・カート操作を実行する。入力・クリック・判定は固定プログラムで行う。既存Chromeを使う場合は、AIが接続とタブ選択を行い、同梱JavaScriptで検索・詳細・履歴・カート表示を実行できる。
+検索とカート操作は同梱プログラム、商品選定と詳細ページの選択項目操作はAIが担当する。色変更専用の手順・コマンドは使わない。サイズ・色・タイプ・セット内容などは、その場の画面からAIが判断する。
 
 ## 実行
 
-普段使い・ログイン済み・既存Chromeを使う依頼では、先に [references/playwright-extension.md](references/playwright-extension.md) を読む。公式Playwright拡張の初回設定後は `npm run chrome -- start` で接続し、検索・詳細・履歴・カート表示・単品追加を接続確認ボタンなしでプログラム実行できる。`npm run chrome -- status` で接続状態と方式を確認する。未設定のまま直接接続を繰り返して許可を求めない。カート追加も同じ公式拡張接続を使い、直接接続へ切り替えない。ChatGPTの接続済みブラウザツールを使う既存方式は [references/extension.md](references/extension.md) にある。以下が通常使うコマンド。
+実行ディレクトリは、このSKILL.mdと同じディレクトリの `scripts/amazon/`。原本は `/Volumes/SSD-500GB-SanDisk/work/bitty-public/skills/shopping/`。Node.js 22以降とGoogle Chromeが必要。依存がなければ `npm ci --cache .npm-cache --no-audit --no-fund`。
 
-このSKILL.mdと同じディレクトリを `<skill>` とする。リンク経由で利用でき、原本は `/Volumes/SSD-500GB-SanDisk/work/bitty-public/skills/shopping/` にある。
+先に [references/playwright-extension.md](references/playwright-extension.md) を読む。既存のログイン済みChromeへ公式Playwright拡張で接続し、`npm run chrome -- status` で `transport: extension`・`state: connected` を確認する。接続がなければ `start`。設定済みキーを使い、直接CDP接続への切替や接続許可の要求を繰り返さない。コマンドとAI操作を同時に実行しない。
 
-実行ディレクトリを `<skill>/scripts/amazon/` に設定する。Node.js 22以降とGoogle Chromeが必要。依存パッケージがなければ同ディレクトリで `npm ci --cache .npm-cache --no-audit --no-fund` を実行する。
-
-| 依頼 | コマンド |
+| 操作 | コマンド |
 | --- | --- |
-| 商品検索（商品JSONを取得） | `npm run chrome -- search "検索語" --limit 10` |
-| 今のページの続きのJSON | `npm run chrome -- search-results --offset 10 --limit 10` |
-| 検索結果の次ページ | `npm run chrome -- search-next --limit 10` |
-| 検索結果の指定番号の商品詳細 | `npm run chrome -- detail "検索語" --index 1` |
-| ASINを指定した商品詳細 | `npm run chrome -- detail --asin B012345678` |
-| 購入履歴（注文履歴）を開く | `npm run chrome -- orders` |
-| 既存Chromeの接続可否・対象タブを診断 | `npm run chrome -- browser-status` |
-| カート内容・合計金額・認証状態を確認 | `npm run chrome -- cart` |
-| 指定商品を数量1で単品追加 | `npm run chrome -- cart-add --asin B012345678 --operation request-001` |
-| 追加済み衣類を同サイズの別色へ変更 | `npm run chrome -- cart-replace --from-asin <旧ASIN> --asin <新ASIN> --operation <新しい変更依頼ID> --color <表示値> --size <表示値> --max-price <円>` |
-| 追加操作の保存状態を確認 | `npm run cart-status -- --operation request-001` |
+| 商品検索 | `npm run chrome -- search "検索語" --limit 10` |
+| 同じ検索ページの続き | `npm run chrome -- search-results --offset 10 --limit 10` |
+| 次の検索ページ | `npm run chrome -- search-next --limit 10` |
+| 商品詳細を開く（削除後も同じASINで開ける） | `npm run chrome -- detail --asin <ASIN>` |
+| 選択済みの現在の詳細を読む（移動・再読み込みなし） | `npm run chrome -- detail-current` |
+| 購入履歴リンクをクリック | `npm run chrome -- orders` |
+| カート内容・合計・商品詳細URLを取得 | `npm run chrome -- cart` |
+| 現在の詳細ページから数量1を追加 | `npm run chrome -- cart-add --asin <選択後ASIN> --operation <追加ID> --max-price <円>` |
+| 指定したカート行を削除 | `npm run chrome -- cart-remove --asin <ASIN> --item-id <行ID> --quantity <確認済み数量> --operation <削除ID>` |
+| 保存状態を確認（ブラウザ操作なし） | `npm run cart-status -- --operation <ID>` |
 
-公式Playwright拡張でのブラウザ操作は `npm run chrome -- <コマンド>` で実行する。保存記録の `cart-status` は表のコマンドを使う。接続の再作成が必要な場合も登録済みキーで同じ方式に接続し、Chromeのリモートデバッグ許可を要求しない。
+検索・候補比較・JSONの項目は [references/catalog.md](references/catalog.md)。追加・削除・合計・再開は [references/cart.md](references/cart.md) を読む。
 
-**検索・ページング・商品選択では [references/catalog.md](references/catalog.md) を読む。** 通常はJSONから判断し、返されたASINで商品詳細を開く。ページ画像の保存・読み取りは必要な場合だけ行う。
+## 詳細ページでの選択
 
-色・サイズのある商品では、詳細JSONの選択肢・サイズ表で最終子ASINを選び直す。追加には確認した表示値の `--color`・`--size` と表示価格上限の `--max-price` を使う。身長・体重だけから適合を断定せず、商品実寸など選定根拠を確認する。
+1. `detail --asin` で商品を開く。
+2. AIのブラウザツールで、公式Playwright拡張が開いている**同じChromeプロファイルの同じタブ**を取得する。URL・商品とタブ一覧を照合し、IDを過去の会話から固定しない。引き継ぎ方法は [references/playwright-extension.md](references/playwright-extension.md#aiへの同じタブの引き継ぎ)。
+3. 画面にある選択肢をAIが確認して操作する。選択ごとに状態を取り直す。新しく現れた項目・価格・在庫の変化にも対応する。プログラムに色やサイズの専用引数を渡さない。
+4. `detail-current` で最終ASIN・価格・取得できた選択項目を読み、AIの画面確認と照合する。JSONは既知のDOMからの補助情報で、未知の選択UIをすべて取得できる保証はない。画面が更新中・不一致なら追加しない。
+5. 追加の依頼がある場合だけ、同じタブを開いたまま `cart-add` を実行する。途中で `detail --asin` を呼んで選択済みページを開き直さない。
 
-**カート追加・合計確認・色変更では、実行前に [references/cart.md](references/cart.md) を読む。** 追加成功後の認証や成否不明を追加失敗と扱って再追加しない。同じ依頼の `--operation` を変更しない。
+カート商品の変更は、元の行の商品情報を保存 → `cart-remove` → 記録のASINで詳細を開く、または検索し直す → AIが選択 → 別の追加IDで `cart-add`。元の商品を削除済みで希望品が見つからない場合は、その状態を報告する。勝手な代替品追加や自動復元はしない。複数個の行の削除は行全体を削除するため、1個だけ減らす操作と混同しない。
 
-検索語は依頼に合わせて渡す。指定がなければプログラムの既定値は「ボールペン」。`--index` は1始まりで広告も表示順に含む。ASINは実際の商品URLの `/dp/` に続く10桁の英数字を使う（上表のASINは書式例）。
+## 結果・停止・保守
 
-専用ブラウザで画面を残してほしい依頼には `--keep-open` を追加する。この場合はブラウザを手動で閉じるまでプロセスが継続するため、結果ファイルに成功が記録された時点で完了を報告できる。通常は結果保存後にブラウザを閉じる。必要なら `--headless` で実行する。
+通常はJSONで確認し、ページ画像は必要な場合だけ `--screenshots`。コマンド応答と `artifacts/<日時>/result.json`、`events.json` を確認する。操作記録は `.operations/<ID>.json`。同じ操作は同じIDで再開し、成功・成否不明の追加を別IDでやり直さない。過去の記録は削除・リセットしない。
 
-## CLIの各コマンドの動作
+終了コードは0（成功）、1（通常エラー）、2（認証要求）、3（追加・削除成否不明）。追加成功と後続のカート表示成功は別。認証画面では停止し、認証を自動突破しない。注文確定・購入・数量変更は実行しない。
 
-- 検索：ホームを開く（既にホームならそのまま使う）。`#twotabsearchtextbox` をクリックしてフォーカスを確認。1文字ずつ入力し、`#nav-search-submit-button` をクリックする。
-- 続きの取得：`search-results` は同じ検索ページを読み取るだけ。`search-next` は実在する「次へ」を1回クリックし、同じ検索語・次のページ番号への移動を確認する。再検索や全ページ巡回は行わない。
-- 検索から商品詳細：検索後、指定番号の検索結果の `data-asin` に対応する商品リンクをクリックする。ASIN指定時だけは詳細URLに直接遷移する。`#productTitle:visible` とASINの一致を確認する。
-- 購入履歴：ホームの `#nav-orders` をクリックし、見出し「注文履歴」の表示を確認する。履歴URLの直開きではない。
+プログラムは固定セレクタ・クリック直前のフォーム検査・送信前の永続記録を使う。要素不在・曖昧・ASINや数量の不一致ではエラー。通常20秒、商品タイトル等は30秒でタイムアウトする。画面調査が必要ならAIのブラウザツールを使えるが、未確認の成功を報告しない。選択項目の操作はAI、追加・削除はプログラムを使う。
 
-文字入力ごととクリック直前に0.5〜1秒のランダム待機を入れる。CLIのマウス移動はランダムな中継点2〜4個、3次ベジェ曲線、変動する速度と途中停止を使う。クリック直前に対象が座標上にあることを確認する。位置がずれた場合だけ、マウスダウン前に1回再照準する。遮蔽が残る場合やクリック後は再試行しない。この動作はプログラム内に実装済み。
+プログラムの入力間隔とクリック前待機は0.5〜1秒。マウスはベジェ曲線・ランダム中継点・変速・途中停止を使用する。AIブラウザツールでの選択には、このマウス動作を適用したとは報告しない。通信遮断は補助で、公式拡張ではService Workerの通信全体を遮断できない。
 
-保持接続を使わず `npm run orders` / `npm run cart` / `npm run cart-add` を直接実行した場合だけ、このスクリプトの `.browser-profile/` を使用する。検索・詳細は通常一時ブラウザを使い、`--profile` を付けたときだけ同じ専用プロファイルを使う。既存の普段使いChromeのプロファイルをコピーして読み込まない。
-
-既存Chromeは [references/playwright-extension.md](references/playwright-extension.md) の保持接続を優先する。公式Playwright拡張はベジェ移動に対応し、ChatGPTのブラウザツール方式は文字ごと・クリック前の待機に対応するがベジェ移動には対応しない。方式を混同して報告しない。直接接続の診断で利用不可でも、拡張方式まで使えないとは判断しない。ログインコマンドはなく、Amazonが認証画面を出したら停止する。
-
-## 結果とエラー
-
-以下はCLI実行時（公式Playwright拡張を含む）の保存先・終了コード。ChatGPTブラウザツール方式は関数の戻り値を確認し、既存の操作記録を書き換えない。
-
-`artifacts/<日時>/result.json` の `success`、URL、商品タイトルなどで完了を確認する。操作記録は同じ場所の `events.json`。既定ではページ画像を保存せず、必要な場合だけ `--screenshots` でPNGも保存する。商品画像はJSON内の `imageUrl` で示し、自動でAIに読ませない。終了コード0が成功、1が通常のエラー、2が認証要求、3が追加成否不明。カート操作は `addition` と `cart` を別に保存し、追加成功・成否不明では `retryAdd: false` を保持する。
-
-要素は固定セレクタで取得し、通常20秒、検索結果・商品タイトル・履歴見出しは30秒でタイムアウトする。要素が見つからない、クリック位置が隠れている、商品番号が範囲外、ASINが不一致の場合も停止する。失敗は例外とURLパスを結果JSON・イベントに保存する。応答しないページでもエラーを返せるよう、失敗時の画像・HTML取得は行わない。URLのクエリ・フラグメント・認証情報はログ・例外・結果から除去する。
-
-失敗したら保存されたエラーを確認して報告する。取得に失敗した要素をAIのブラウザ操作で調査できる。読み取り値はDOMのテキストと照合し、見た目の確認が必要な場合だけ画像を使う。未実行の操作を成功扱いにしない。CAPTCHAを自動突破しない。
-
-## 操作範囲と保守
-
-ユーザーが単品追加を依頼したときだけ、対象ASIN・数量1の通常追加ボタンを1回だけクリックする。注文確定・購入は行わない。色変更を依頼された場合だけ、`cart-replace`で新色の追加確認後に指定した旧商品の行を削除する。一般の商品削除・数量変更は行わない。通常追加ボタンの表示・フォームのASIN・数量・送信先・購入用送信ボタンが含まれないことをクリック直前にも検査する。ページ通信の遮断は補助であり、公式拡張ではService Workerの通信まで遮断できない。追加成功は通信の捕捉ではなく対象ASINを含む成功表示で確認する。認証画面には操作しない。
-
-このスキルは指定された「買い物」オーケストレーターの `.agents/skills/shopping` から原本へのリンクで配置する。共通の `~/.codex/skills/` にコピーしない。保守は原本側で行い、コードを変更した場合は `scripts/amazon/` で `npm run check` と `npm test` を実行する。実行結果・操作記録 `.operations/`・ブラウザプロファイル・node_modulesはGit管理しない。
+このスキルは指定オーケストレーターの `.agents/skills/shopping` から原本へのリンクで配置し、共通 `~/.codex/skills/` へ配置しない。原本をGit管理する。変更後は `scripts/amazon/` の `npm run check`・`npm test` とスキル検証を行う。実カートの変更はユーザーの対象商品への指示がある場合だけで、実装検証だけのために追加・削除しない。

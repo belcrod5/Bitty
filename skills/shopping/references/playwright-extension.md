@@ -1,6 +1,6 @@
 # 確認ボタンを繰り返さないChrome接続
 
-既存のログイン済みChromeで、検索・商品詳細・注文履歴・カート表示・単品追加をプログラム実行するときに使う。MicrosoftのPlaywright公式拡張を利用し、初回に登録するプロファイル固有のキーで接続する。ChatGPTのブラウザツール経由とは別方式で、Playwrightのマウス移動・1文字ずつの入力をそのまま使う。
+既存のログイン済みChromeで、検索・商品詳細・注文履歴・カート表示・追加・削除をプログラム実行するときに使う。MicrosoftのPlaywright公式拡張を利用し、初回に登録するプロファイル固有のキーで接続する。ChatGPTのブラウザツール経由とは別方式で、Playwrightのマウス移動・1文字ずつの入力をそのまま使う。
 
 ## 初回だけ
 
@@ -24,9 +24,20 @@ npm run chrome -- search "ボールペン"
 
 トークン接続は同じChromeプロファイルに新しい空タブを作り、そのタブを制御する。既存のAmazonログイン状態を利用するが、普段の他のタブを無断で取得しない。最初の操作でその空タブをAmazonへ移動し、以後は同じ接続・タブを使う。複数の対象があるときだけ実在するURLを `--tab-url` で指定する。明示URLが見つからなければ空タブへ切り替えず停止する。
 
-検索のほか、`search-results`、`search-next`、`detail`、`orders`、`cart`、`cart-add`、`cart-replace`、`browser-status` が同じ接続で利用できる。コマンドの引数・結果・認証判定はSKILL.mdと共通。検索語・ASIN・数量・操作内容をAIの都度生成コードに置き換えない。商品データの受け取りとページングは [catalog.md](catalog.md) に従う。
+検索のほか、`search-results`、`search-next`、`detail`、`detail-current`、`orders`、`cart`、`cart-add`、`cart-remove`、`browser-status` が同じ接続で利用できる。コマンドの引数・結果・認証判定はSKILL.mdと共通。検索・追加・削除は固定コマンドを使い、詳細ページの選択項目はAIのブラウザツールで操作する。商品データの受け取りとページングは [catalog.md](catalog.md) に従う。
 
 停止は `npm run chrome -- stop`。自動の30分切断は行わない。Chrome終了などで切断されたら、実行中の操作の結果を確認し、`stop` → `start` で接続だけを作り直す。保存済みキーが有効なら接続ごとの確認は不要。失敗した検索・追加を自動再実行するものではない。拡張のキーを再発行した場合は初回設定をやり直す。
+
+## AIへの同じタブの引き継ぎ
+
+1. `status` / `browser-status` の操作対象URLを取得する。コマンド実行中はAI側で操作しない。
+2. AIブラウザツール（この環境では `cua_repl`）でChromeのプロファイルとタブ一覧を読む。公式Playwright拡張の対象URL・商品・`Playwright` タブグループを照合して既存タブを取得する。タブIDを固定値として保存しない。同じURLが複数あって特定できないときは、勝手に別タブで選択しない。
+3. ブラウザツールの最新の説明に従って、表示項目をAIが確認・選択する。Cuaでは `getTab` → `getAXState` → 要素の操作 → 状態取得、または提供されるDOM／locator APIを使う。取得したタブを保持し、各クリック後に状態を取り直す。
+4. 選択後のURLと `npm run chrome -- detail-current` が返すASIN・選択値・価格を照合する。一致する同じタブのまま `cart-add` に進む。`detail --asin` による開き直しは不要。
+
+接続を切断したり、新しいタブを作ったりする引き継ぎではない。AI側で参照できなければ選択処理を止め、状態を伝える。ブラウザツールの制限を別経路で迂回しない。
+
+2026-11-22に実機確認：Playwrightが開いた「ワイン・LL」の同じChromeタブをCuaで取得し、AIが「ブラック・L」に変更。保持中のPlaywrightで移動・再読み込みせず変更後ASIN・選択値・価格を読み取れた。追加の接続許可は不要。カート操作は行っていない。
 
 ## カート追加
 
@@ -34,10 +45,11 @@ npm run chrome -- search "ボールペン"
 
 ```sh
 npm run cart-status -- --operation <同じ操作ID>
-npm run chrome -- cart-add --asin <ASIN> --operation <同じ操作ID> --tab-url <実際の商品URL>
+npm run chrome -- detail-current
+npm run chrome -- cart-add --asin <選択後ASIN> --operation <同じ操作ID> --max-price <円> --tab-url <選択後の実際の商品URL>
 ```
 
-表示中の通常追加ボタンを選び、定期便・今すぐ買うのボタンは選ばない。クリック直前にもフォームのASIN・数量1・POST先・送信項目を検査し、送信前の記録をディスクに保存する。Amazonの通常追加フォームにも `isBuyNow=1` が含まれる場合がある。これは `/cart/add-to-cart` 宛てかつ `submit.add-to-cart` が選ばれた場合だけ許可し、購入ボタンの送信項目やチェックアウト項目は拒否する。
+追加・削除は既存接続専用。削除は [cart.md](cart.md) の `cart-remove` を使う。追加ではページを開き直さず、表示中の通常追加ボタンを選び、定期便・今すぐ買うのボタンは選ばない。クリック直前にもフォームのASIN・数量1・POST先・送信項目を検査し、送信前の記録をディスクに保存する。Amazonの通常追加フォームにも `isBuyNow=1` が含まれる場合がある。これは `/cart/add-to-cart` 宛てかつ `submit.add-to-cart` が選ばれた場合だけ許可し、購入ボタンの送信項目やチェックアウト項目は拒否する。
 
 公式拡張では追加のCDPセッションが利用できず、Service Worker経由の通信全体は遮断できない。ページ通信の制限は補助とし、結果の `serviceWorkerBypass: false` にこの違いを記録する。成功は対象ASINを含む「カートに入れました」の実表示で確認する。成功・成否不明の記録があれば再追加せず、後続のカート表示で認証が出た場合も記録を保持する。
 

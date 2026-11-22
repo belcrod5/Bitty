@@ -54,48 +54,39 @@ async function clothing(page) {
   await page.locator('body').evaluate(body => body.insertAdjacentHTML('beforeend', `<div id="inline-twister-row-color_name"><span class="inline-twister-dim-title-value">ブラック</span></div><div id="variation_size_name"><span class="selection">L</span></div><div id="corePriceDisplay_desktop_feature_div"><span class="a-price"><span class="a-offscreen">￥1,648</span></span></div>`));
 }
 
-test('clothing requires exact selected color and size, checks price, and persists constraints for a read-only resume', async () => {
+test('AI-selected color, size and arbitrary type are added in-place without navigation or specific flags', async () => {
   await cleanupOperation(); const f = await fixture();
-  let op = await openOperation(directory,'current',asin);
+  let op = await openOperation(directory,'current',asin,{maxPrice:1648});
   try {
     await clothing(f.page);
-    await assert.rejects(runCartAddition({...f,operation:op,identity:'fixture',log:()=>{}}), /--color/);
-    assert.equal(f.posts,0); assert.equal(op.data.addition,'not_started');
-    await op.release();
-    op = await openOperation(directory,'current',asin,{color:'ブラック',size:'L',maxPrice:1648});
+    await f.page.locator('body').evaluate(body => body.insertAdjacentHTML('beforeend', '<div id="variation_style_name"><span class="selection">ジップ式</span></div>'));
     const result=await runCartAddition({...f,operation:op,identity:'fixture',log:()=>{},timeout:1000});
-    assert.equal(result.addition,'confirmed'); assert.equal(result.selection.size,'L'); assert.equal(f.posts,1);
+    assert.equal(result.addition,'confirmed'); assert.equal(f.posts,1);
+    assert.deepEqual(result.selection.options,[{dimension:'color_name',selected:'ブラック'},{dimension:'size_name',selected:'L'},{dimension:'style_name',selected:'ジップ式'}]);
     await op.release();
-    await assert.rejects(openOperation(directory,'current',asin,{size:'M'}), /条件を変更/);
+    await assert.rejects(openOperation(directory,'current',asin,{maxPrice:2000}), /条件を変更/);
     op=await openOperation(directory,'current',asin);
     const resumed=await runCartAddition({...f,operation:op,identity:'fixture',log:()=>{},timeout:1000});
     assert.equal(resumed.addition,'confirmed'); assert.equal(f.posts,1); assert.equal(resumed.constraints.maxPrice,1648);
   } finally { await op.release(); await f.context.close(); }
 });
 
-test('wrong color or size, price increases, and selection changes during mouse movement never submit', async () => {
-  for (const constraints of [{color:'白',size:'L'}, {color:'ブラック',size:'M'}, {color:'ブラック',size:'L',maxPrice:1647}, {color:'ブラック',size:'L',maxPrice:1648}]) {
-    await cleanupOperation(); const f=await fixture(); const op=await openOperation(directory,'current',asin,constraints);
+test('price ceiling and any changed or newly appeared selection stop before submission', async () => {
+  for (const scenario of ['price','size','new-type','beyond-six']) {
+    await cleanupOperation(); const f=await fixture(); const op=await openOperation(directory,'current',asin,{maxPrice:scenario==='price'?1647:1648});
     try {
       await clothing(f.page);
+      if(scenario==='beyond-six') await f.page.locator('body').evaluate(body => body.insertAdjacentHTML('beforeend', Array.from({length:6},(_,i)=>`<div id="variation_custom_${i}"><span class="selection">A</span></div>`).join('')));
       const mouse={click:async (locator,label,{beforeMouseDown})=>{
-        await f.page.locator('#variation_size_name .selection').evaluate(e=>e.textContent='M');
+        if(scenario==='size') await f.page.locator('#variation_size_name .selection').evaluate(e=>e.textContent='M');
+        if(scenario==='new-type') await f.page.locator('body').evaluate(body=>body.insertAdjacentHTML('beforeend','<div id="variation_style_name"><span class="selection">タイプB</span></div>'));
+        if(scenario==='beyond-six') await f.page.locator('#variation_custom_5 .selection').evaluate(e=>e.textContent='B');
         await beforeMouseDown(); await locator.click();
       }};
-      await assert.rejects(runCartAddition({...f,mouse,operation:op,identity:'fixture',log:()=>{}}), /一致しません|価格|変わりました/);
+      await assert.rejects(runCartAddition({...f,mouse,operation:op,identity:'fixture',log:()=>{}}), /価格|変わりました/);
       assert.equal(f.posts,0); assert.equal(op.data.addition,'not_started');
     } finally {await op.release(); await f.context.close();}
   }
-});
-
-test('omitted variation rows stop before submission rather than treating an unseen color as absent', async () => {
-  await cleanupOperation(); const f=await fixture(); const op=await openOperation(directory,'current',asin);
-  try {
-    await f.page.locator('body').evaluate(body => body.insertAdjacentHTML('beforeend', Array.from({length:6},(_,i)=>`<div id="variation_style_${i}"><span class="selection">style</span></div>`).join('')));
-    await clothing(f.page);
-    await assert.rejects(runCartAddition({...f,operation:op,identity:'fixture',log:()=>{}}), /省略/);
-    assert.equal(f.posts,0); assert.equal(op.data.addition,'not_started');
-  } finally { await op.release(); await f.context.close(); }
 });
 
 test('cart reads the current price and clean title, and prefers the header over a covered success-panel link', async () => {

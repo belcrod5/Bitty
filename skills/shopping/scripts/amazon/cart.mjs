@@ -20,8 +20,11 @@ export async function listOperations(directory) {
   for (const file of files.filter(f => f.endsWith('.json')).sort()) records.push(await readOperation(directory, file.slice(0, -5)));
   return records;
 }
-export async function openOperation(directory, id, asin, constraints = {}, fromAsin) {
+export async function openOperation(directory, id, asin, constraints = {}, removal) {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/.test(id ?? '')) throw new Error('--operation を指定してください（英数字・ハイフン・下線、1〜80文字）');
+  const kind = removal ? 'cart-remove' : 'cart-add';
+  const quantity = removal?.quantity ?? 1;
+  if (removal && (!/^[\w-]{1,80}$/.test(removal.itemId ?? '') || !Number.isSafeInteger(quantity) || quantity < 1)) throw new Error('削除対象の行ID・数量が不正です');
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const lock = join(directory, `${id}.lock`);
   try { await mkdir(lock); } catch { throw new Error('OPERATION_LOCKED: 同じ操作を実行中か、前回異常終了のロックがあります。自動解除・新しいIDでの再追加はしません'); }
@@ -31,12 +34,15 @@ export async function openOperation(directory, id, asin, constraints = {}, fromA
     try { data = await readOperation(directory, id); }
     catch (e) {
       if (e.code !== 'ENOENT') throw e;
-      data = { operation: id, asin, quantity: 1, addition: 'not_started', cart: 'not_opened', retryAdd: true, ...(fromAsin ? { fromAsin, removal: 'not_started' } : {}), createdAt: new Date().toISOString() };
+      data = { operation: id, kind, asin, quantity, cart: 'not_opened', ...(removal ? { itemId: removal.itemId, removal: 'not_started', retryAdd: false } : { addition: 'not_started', retryAdd: true }), createdAt: new Date().toISOString() };
     }
-    if (data.operation !== id || !['not_started', 'submitted', 'unknown', 'confirmed'].includes(data.addition)) throw new Error('操作記録が不正です。追加せず停止します');
-    if (data.asin !== asin || data.quantity !== 1) throw new Error('操作IDに記録されたASIN・数量が異なります');
-    if (data.fromAsin !== fromAsin) throw new Error('操作IDに記録された置換元ASINが異なります');
-    if (Object.entries(constraints).some(([key, value]) => data.constraints?.[key] !== undefined ? data.constraints[key] !== value : data.addition !== 'not_started')) throw new Error('操作IDに記録された色・サイズ・価格条件を変更できません');
+    if (data.fromAsin) throw new Error('旧色変更記録はcart-statusで確認してください。汎用操作として再実行できません');
+    if ((data.kind ?? 'cart-add') !== kind) throw new Error('操作IDに記録された操作種別が異なります');
+    const state = removal ? data.removal : data.addition;
+    if (data.operation !== id || !['not_started', 'submitted', 'unknown', 'confirmed'].includes(state)) throw new Error('操作記録が不正です。停止します');
+    if (data.asin !== asin || data.quantity !== quantity || removal && data.itemId !== removal.itemId) throw new Error('操作IDに記録されたASIN・行ID・数量が異なります');
+    if (state === 'not_started' && (data.constraints?.color || data.constraints?.size)) throw new Error('旧色・サイズ条件の未送信記録です。内容を確認してから移行してください');
+    if (Object.entries(constraints).some(([key, value]) => data.constraints?.[key] !== undefined ? data.constraints[key] !== value : state !== 'not_started')) throw new Error('操作IDに記録された条件を変更できません');
     data.constraints = { ...data.constraints, ...constraints };
     async function update(fields) {
       data = safeValue({ ...data, ...fields, updatedAt: new Date().toISOString() });
@@ -63,6 +69,7 @@ export async function cartView(page) {
   const items = await page.locator('#sc-active-cart .sc-list-item[data-asin]').evaluateAll(elements => elements.filter(e => e.getClientRects().length && !['true','1'].includes(e.getAttribute('data-removed')) && e.getAttribute('data-itemtype') !== 'removed').map(e => ({
     asin: e.getAttribute('data-asin'),
     itemId: e.getAttribute('data-itemid'),
+    productUrl: /^[A-Z0-9]{10}$/i.test(e.getAttribute('data-asin') ?? '') ? `https://www.amazon.co.jp/dp/${e.getAttribute('data-asin').toUpperCase()}` : null,
     title: (e.getAttribute('data-producttitle') || e.querySelector('.sc-product-title .a-truncate-full, .sc-product-title')?.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 500),
     quantity: e.querySelector('select[name="quantity"], input[name="quantityBox"], input.sc-quantity-textfield')?.value ?? e.querySelector('[data-a-selector="value"]')?.textContent?.trim() ?? null,
     priceText: e.querySelector('[data-feature-id="sc-item-price"] .apex-price-to-pay-value .a-offscreen, .sc-product-price')?.textContent?.replace(/\s+/g, ' ').trim() ?? null,
@@ -131,22 +138,12 @@ export async function runCartAddition({ page, mouse, log, operation, attempt, id
     const title = (await page.locator('#productTitle:visible').innerText()).trim();
     async function verifySelection() {
       const detail = await readProductDetails(page, asin);
-      if (detail.variationsTruncated) throw new Error('バリエーション情報が省略されているため追加できません');
       const constraints = operation.data.constraints ?? {};
-      const selected = {};
-      for (const [key, dimension] of [['color', 'color_name'], ['size', 'size_name']]) {
-        const rows = detail.variations.filter(row => row.dimension === dimension);
-        if (rows.length > 1) throw new Error(`${key} の選択状態が一意ではありません`);
-        const value = rows[0]?.selected ?? null;
-        if (rows.length && !constraints[key]) throw new Error(`色・サイズのある商品は --${key} に確認した表示値が必要です`);
-        if (constraints[key] && value?.normalize('NFKC') !== constraints[key].normalize('NFKC')) throw new Error(`${key} の選択値が指定条件と一致しません`);
-        selected[key] = value;
-      }
       if (constraints.maxPrice !== undefined) {
         const amount = yenAmount(detail.priceText);
         if (amount === null || amount > constraints.maxPrice) throw new Error('表示価格を確認できないか、--max-price を超えています');
       }
-      return { ...selected, priceText: detail.priceText };
+      return { options: detail.selectedOptions, priceText: detail.priceText };
     }
     const selection = await verifySelection();
     const button = page.locator('#add-to-cart-button:visible');
@@ -179,7 +176,7 @@ export async function runCartAddition({ page, mouse, log, operation, attempt, id
     log('quantity-confirmed', { asin, quantity: 1 });
     await mouse.click(button, 'add to cart', { beforeMouseDown: async () => {
       if ((await verifyForm()).href !== action.href) throw new Error('クリック直前に追加先が変わりました');
-      if (JSON.stringify(await verifySelection()) !== JSON.stringify(selection)) throw new Error('クリック直前に色・サイズ・価格が変わりました');
+      if (JSON.stringify(await verifySelection()) !== JSON.stringify(selection)) throw new Error('クリック直前に選択項目・価格が変わりました');
       // Record the point of no automatic retry BEFORE submitting any event.
       await operation.update({ addition: 'submitted', retryAdd: false, submittedAt: new Date().toISOString() });
       attempt.action = action.href;
@@ -210,55 +207,35 @@ export async function runCartAddition({ page, mouse, log, operation, attempt, id
   }
 }
 
-// Add the verified color first. Only after it is present at quantity one may
-// the original, fixed cart line be removed. Both submissions share one journal.
-export async function runCartReplacement({ page, mouse, log, operation, attempt, identity, timeout = 20_000 }) {
-  const { asin, fromAsin } = operation.data;
-  if (!fromAsin || fromAsin === asin) throw new Error('異なる置換元・置換先ASINが必要です');
-  const targetItems = (view, target) => view.items.filter(item => item.asin === target);
-  // A delete of the same server cart-line ID is idempotent. After an uncertain
-  // response, refresh first; never replay the addition or target a new line ID.
-  if (operation.data.addition === 'confirmed' && ['submitted', 'unknown'].includes(operation.data.removal)) {
-    if (!isCartPath(new URL(page.url()).pathname)) {
-      const current = await openCart(page, mouse, log, timeout);
-      if (current.cart !== 'visible') return operation.update({ cart: current.cart, code: 'AUTH_REQUIRED' });
-    }
-    // Explicit GET: reload() could resubmit a previous form POST.
-    await page.goto('https://www.amazon.co.jp/cart', { waitUntil: 'domcontentloaded', timeout: 60_000 });
-  }
-  if (operation.data.addition === 'not_started') {
-    const before = await openCart(page, mouse, log, timeout);
-    if (before.cart !== 'visible') return operation.update({ cart: before.cart, code: 'AUTH_REQUIRED' });
-    const originals = targetItems(before, fromAsin);
-    if (originals.length !== 1 || originals[0].quantity !== '1' || !/^[\w-]{1,80}$/.test(originals[0].itemId ?? '')) throw new Error('置換元を数量1のカート行として一意に確認できません');
-    if (operation.data.fromItemId && operation.data.fromItemId !== originals[0].itemId) throw new Error('置換元のカート行が変わっています');
-    const sizes = originals[0].variantText.filter(text => /^サイズ\s*[:：]/.test(text)).map(text => text.replace(/^サイズ\s*[:：]\s*/, '').trim());
-    if (sizes.length !== 1 || sizes[0].normalize('NFKC') !== operation.data.constraints?.size?.normalize('NFKC')) throw new Error('置換元と同じサイズであることを確認できません');
-    if (targetItems(before, asin).length) throw new Error('置換先が既にカートにあります。重複追加しません');
-    await operation.update({ fromItemId: originals[0].itemId });
-    await page.goto(`https://www.amazon.co.jp/dp/${asin}`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+// Delete exactly the user-selected server cart line. Product data is retained
+// before submission so AI can reopen/reconsider the product after removal.
+export async function runCartRemoval({ page, mouse, log, operation, attempt, identity, timeout = 20_000 }) {
+  const { asin, itemId, quantity } = operation.data;
+  if (operation.data.kind !== 'cart-remove') throw new Error('削除操作の記録ではありません');
+  if (operation.data.browserIdentity && operation.data.browserIdentity !== identity) throw new Error('操作途中でブラウザ接続先が変わっています');
+  if (['submitted', 'unknown'].includes(operation.data.removal)) {
     const auth = await authentication(page);
     if (auth) return operation.update({ cart: auth, code: 'AUTH_REQUIRED' });
-    const detail = await readProductDetails(page, asin);
-    if (!detail.variations.some(row => row.dimension === 'color_name' && row.options.some(option => option.asin === fromAsin))) throw new Error('同じサイズ・商品の色違いであることを確認できません');
+    // Explicit GET, never reload a possibly submitted POST.
+    await page.goto('https://www.amazon.co.jp/cart', { waitUntil: 'domcontentloaded', timeout: 60_000 });
   }
-  const added = await runCartAddition({ page, mouse, log, operation, attempt, identity, timeout });
-  if (added.addition !== 'confirmed' || added.cart !== 'visible' || !added.targetPresent) return added;
-  const checkCart = async (view) => {
-    view ??= await cartView(page);
-    if (view?.cart !== 'visible') throw new Error('削除前にカートを確認できません');
-    const replacements = targetItems(view, asin);
-    if (replacements.length !== 1 || replacements[0].quantity !== '1') throw new Error('置換先の数量1を確認できないため削除しません');
-    const price = yenAmount(replacements[0].priceText);
-    if (price === null || price > operation.data.constraints.maxPrice) throw new Error('置換先のカート価格が上限内であることを確認できません');
-    const originals = targetItems(view, fromAsin);
-    if (originals.length && (originals.length !== 1 || originals[0].quantity !== '1' || originals[0].itemId !== operation.data.fromItemId)) throw new Error('置換元の行・数量が変わったため削除しません');
-    return { view, originals };
+  let view = await openCart(page, mouse, log, timeout);
+  if (view.cart !== 'visible') return operation.update({ cart: view.cart, code: 'AUTH_REQUIRED' });
+  const checkCart = async (current) => {
+    current ??= await cartView(page);
+    if (current?.cart !== 'visible') throw new Error('削除前にカートを確認できません');
+    const originals = current.items.filter(item => item.itemId === itemId);
+    if (originals.length > 1 || originals.some(item => item.asin !== asin || Number(item.quantity) !== quantity)) throw new Error('削除対象の行・数量が変わったため削除しません');
+    return { view: current, originals };
   };
-  let { view, originals } = await checkCart();
-  if (!originals.length) return operation.update({ ...view, removal: 'confirmed', replacementConfirmed: true, code: null });
-  if (operation.data.removal === 'confirmed') return operation.update({ ...view, replacementConfirmed: false, code: 'ORIGINAL_REAPPEARED' });
-  const row = page.locator(`#sc-active-cart .sc-list-item[data-asin="${fromAsin}"][data-itemid="${operation.data.fromItemId}"]:visible`);
+  let { originals } = await checkCart(view);
+  if (!originals.length) {
+    if (!operation.data.removedItem) throw new Error('指定したカート行が見つかりません。削除済みと推測しません');
+    return operation.update({ ...view, removal: 'confirmed', targetPresent: false, code: null });
+  }
+  if (operation.data.removal === 'confirmed') return operation.update({ ...view, targetPresent: true, code: 'ITEM_REAPPEARED' });
+  await operation.update({ removedItem: operation.data.removedItem ?? originals[0], browserIdentity: identity });
+  const row = page.locator(`#sc-active-cart .sc-list-item[data-asin="${asin}"][data-itemid="${itemId}"]:visible`);
   const button = row.locator('input[type="submit"][data-action="delete-active"][data-feature-id="item-delete-button"]:visible');
   const verify = async () => {
     const { originals } = await checkCart();
@@ -271,7 +248,7 @@ export async function runCartReplacement({ page, mouse, log, operation, attempt,
       encoding: button.getAttribute('formenctype') ?? button.form?.enctype,
       entries: button.form ? [...new FormData(button.form, button)].map(([key,value])=>[key,typeof value==='string'?value:'']) : [] }));
     const action = new URL(control.action);
-    if (control.name !== `submit.delete-active.${operation.data.fromItemId}` || !/^(削除|Delete)$/i.test(control.value) ||
+    if (control.name !== `submit.delete-active.${itemId}` || !/^(削除|Delete)$/i.test(control.value) ||
       action.origin !== 'https://www.amazon.co.jp' || !isCartPath(action.pathname) || control.method !== 'post' ||
       !['', '_self'].includes(control.target) || control.encoding !== 'application/x-www-form-urlencoded') throw new Error('未対応の単品削除ボタンです');
     const submitters = control.entries.filter(([key]) => key.startsWith('submit.'));
@@ -279,10 +256,10 @@ export async function runCartReplacement({ page, mouse, log, operation, attempt,
     return action;
   };
   const action = await verify();
-  await mouse.click(button, 'remove replaced cart item', { beforeMouseDown: async () => {
+  await mouse.click(button, 'remove cart item', { beforeMouseDown: async () => {
     if ((await verify()).href !== action.href) throw new Error('削除先が変わりました');
-    await operation.update({ removal: 'submitted', removalSubmittedAt: new Date().toISOString(), replacementConfirmed: false });
-    attempt.remove = { itemId: operation.data.fromItemId, action: action.href, armed: true, consumed: false };
+    await operation.update({ removal: 'submitted', removalSubmittedAt: new Date().toISOString(), targetPresent: true });
+    attempt.remove = { itemId, action: action.href, armed: true, consumed: false };
   } });
   const deadline = Date.now() + timeout;
   do {
@@ -291,10 +268,10 @@ export async function runCartReplacement({ page, mouse, log, operation, attempt,
     const current = await cartView(page);
     if (current?.cart === 'visible') {
       ({ view, originals } = await checkCart(current));
-      if (!originals.length && view.subtotalMatchesSelectedItems !== false) { if (attempt.remove) attempt.remove.armed = false; return operation.update({ ...view, removal: 'confirmed', removalConfirmedAt: new Date().toISOString(), replacementConfirmed: true, code: null }); }
+      if (!originals.length && view.subtotalMatchesSelectedItems !== false) { if (attempt.remove) attempt.remove.armed = false; return operation.update({ ...view, removal: 'confirmed', removalConfirmedAt: new Date().toISOString(), targetPresent: false, code: null }); }
     }
     await sleep(200);
   } while (Date.now() < deadline);
   if (attempt.remove) attempt.remove.armed = false;
-  return operation.update({ removal: 'unknown', replacementConfirmed: false, code: 'REMOVAL_UNKNOWN' });
+  return operation.update({ removal: 'unknown', targetPresent: true, code: 'REMOVAL_UNKNOWN' });
 }
