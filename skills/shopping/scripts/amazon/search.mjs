@@ -5,9 +5,10 @@ import { parseArgs } from 'node:util';
 import { resolve } from 'node:path';
 import { discoverBrowsers, chooseBrowser } from './browser.mjs';
 import { openOperation, readOperation, listOperations, runCartAddition, runCartRemoval, openCart } from './cart.mjs';
-import { pause, RandomMouse } from './motion.mjs';
+import { runOrders } from './orders.mjs';
+import { typeSearchQuery, RandomMouse } from './motion.mjs';
 import { searchProductSelector, readSearchResults, nextSearchPage, readProductDetails } from './catalog.mjs';
-import { allowNavigation, createRouteHandler, isSearchPath, searchTerm, productAsin, isOrdersPath, isAuthPath, authentication, safeValue, safeURL } from './navigation.mjs';
+import { allowNavigation, createRouteHandler, isSearchPath, searchTerm, productAsin, isAuthPath, authentication, safeValue, safeURL } from './navigation.mjs';
 
 const help = `Amazon検索・カート操作コマンド（注文確定・購入操作なし）
   npm start -- "検索語" [--keep-open] [--profile]
@@ -16,7 +17,11 @@ const help = `Amazon検索・カート操作コマンド（注文確定・購入
                                  今のページの続きの商品JSONを取得（再検索なし）
   npm run detail -- "検索語" [--index 1] [--keep-open]
   npm run detail -- --asin B012345678 [--keep-open]
-  npm run orders -- --keep-open   専用ブラウザのログイン状態で注文履歴を開く
+  npm run chrome -- orders       購入履歴を開いて商品JSONを取得
+  npm run chrome -- orders-search "検索語"  履歴内を検索・再絞り込み
+  npm run chrome -- orders-results --offset 10 --limit 10
+  npm run chrome -- orders-next   履歴の次ページ
+  npm run chrome -- orders-resume 認証後、保存した続きから再開
   npm run cart                   カート表示／認証状態の確認（追加なし）
   npm run chrome -- cart-add --asin B012345678 --operation request-001
                                  数量1を1回だけ追加し、結果を保存してカートへ移動
@@ -42,7 +47,7 @@ const help = `Amazon検索・カート操作コマンド（注文確定・購入
 export function options(input = process.argv.slice(2)) {
   const args = [...input];
   if (args[0] === 'cart-replace') throw new Error('cart-replaceは廃止しました。cart-remove・AIによる選択・cart-addを使ってください');
-  const command = ['search', 'search-next', 'search-results', 'detail', 'detail-current', 'orders', 'cart', 'cart-add', 'cart-remove', 'cart-status', 'browser-status'].includes(args[0]) ? args.shift() : 'search';
+  const command = ['search', 'search-next', 'search-results', 'detail', 'detail-current', 'orders', 'orders-search', 'orders-results', 'orders-next', 'orders-resume', 'cart', 'cart-add', 'cart-remove', 'cart-status', 'browser-status'].includes(args[0]) ? args.shift() : 'search';
   const { values, positionals } = parseArgs({ args, allowPositionals: true, options: {
     screenshots: { type: 'boolean' }, limit: { type: 'string' }, offset: { type: 'string' },
     'keep-open': { type: 'boolean' }, headless: { type: 'boolean' }, profile: { type: 'boolean' },
@@ -51,7 +56,8 @@ export function options(input = process.argv.slice(2)) {
     'max-price': { type: 'string' }, 'item-id': { type: 'string' }, quantity: { type: 'string' },
   } });
   if (values.help) return { help: true };
-  if (['search-next', 'search-results', 'detail-current', 'orders', 'cart', 'cart-add', 'cart-remove', 'cart-status', 'browser-status'].includes(command) && positionals.length) throw new Error(`${command} は検索語を受け取りません`);
+  if (['search-next', 'search-results', 'detail-current', 'orders', 'orders-results', 'orders-next', 'orders-resume', 'cart', 'cart-add', 'cart-remove', 'cart-status', 'browser-status'].includes(command) && positionals.length) throw new Error(`${command} は検索語を受け取りません`);
+  if (command === 'orders-search' && !positionals.join(' ').trim()) throw new Error('orders-search は検索語が必要です');
   if (values.asin !== undefined && (!['detail', 'cart-add', 'cart-remove'].includes(command) || !/^[A-Z0-9]{10}$/i.test(values.asin))) throw new Error('--asin はdetail・cart-add・cart-remove用の10桁の英数字です');
   if (values.asin && (positionals.length || values.index)) throw new Error('--asin と検索語・--indexは同時指定できません');
   const index = values.index === undefined ? 1 : Number(values.index);
@@ -80,11 +86,11 @@ export function options(input = process.argv.slice(2)) {
   const limit = values.limit === undefined ? 10 : Number(values.limit);
   const offset = values.offset === undefined ? 0 : Number(values.offset);
   if (values.limit !== undefined || values.offset !== undefined) {
-    if (!['search', 'search-next', 'search-results'].includes(command)) throw new Error('--limit・--offset は検索結果用です');
+    if (!['search', 'search-next', 'search-results', 'orders', 'orders-search', 'orders-results', 'orders-next', 'orders-resume'].includes(command)) throw new Error('--limit・--offset は検索結果用です');
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20 || values.limit !== undefined && !/^\d+$/.test(values.limit)) throw new Error('--limit は1〜20の整数です');
     if (!Number.isSafeInteger(offset) || offset < 0 || values.offset !== undefined && !/^\d+$/.test(values.offset)) throw new Error('--offset は0以上の整数です');
   }
-  if (['search-next', 'search-results'].includes(command) && !values.cdp) throw new Error('続きの検索結果は既存接続で実行してください（npm run chrome -- search-next / search-results）');
+  if (['search-next', 'search-results', 'orders-search', 'orders-results', 'orders-next', 'orders-resume'].includes(command) && !values.cdp) throw new Error('継続操作は既存接続で実行してください（npm run chrome -- <コマンド>）');
   if (values['tab-url']) {
     if (!values.cdp) throw new Error('--tab-url は --cdp と併用してください');
     const tab = new URL(values['tab-url']);
@@ -194,15 +200,7 @@ export async function main(config, existingBrowser) {
       await mouse.click(input, 'search input');
       if (!await input.evaluate(element => document.activeElement === element)) throw new Error('Search input did not receive focus');
       log('focused-search-input');
-      await page.keyboard.press('ControlOrMeta+A');
-      await page.keyboard.press('Backspace');
-      for (const { segment: character } of new Intl.Segmenter('ja', { granularity: 'grapheme' }).segment(query)) {
-        await pause(log, 'before character');
-        if (!await input.evaluate(element => document.activeElement === element)) throw new Error('Search input lost focus');
-        await page.keyboard.type(character);
-        log('typed-character', { character });
-      }
-      if (await input.inputValue() !== query) throw new Error('Search input does not match requested query');
+      await typeSearchQuery(page, input, query, log);
       await screenshot('02-entered-query.png');
       await mouse.click(submit, 'search button');
       await page.waitForURL(url => isAuthPath(url.pathname) || url.hostname === 'www.amazon.co.jp' && isSearchPath(url.pathname) && searchTerm(url) === query, { waitUntil: 'domcontentloaded', timeout: 30_000 });
@@ -263,16 +261,10 @@ export async function main(config, existingBrowser) {
       await assertNoAuth();
       summary = { ...summary, ...await readProductDetails(page, expectedAsin.toUpperCase()), ...(asin ? {} : { query, index }) };
       await screenshot('04-product-detail.png');
-    } else {
-      await page.goto('https://www.amazon.co.jp/', { waitUntil: 'domcontentloaded', timeout: 60_000 });
-      const ordersLink = page.locator('#nav-orders');
-      await ordersLink.waitFor({ state: 'visible' });
-      await mouse.click(ordersLink, 'order history link');
-      await page.waitForURL(url => isOrdersPath(url.pathname) || isAuthPath(url.pathname), { waitUntil: 'domcontentloaded', timeout: 30_000 });
-      await assertNoAuth();
-      await page.getByRole('heading', { name: '注文履歴', exact: true }).first().waitFor({ state: 'visible', timeout: 30_000 });
+    } else if (command.startsWith('orders')) {
+      summary = { ...summary, ...await runOrders({ page, mouse, log, config,
+        progressPath: config.ordersProgressPath ?? fileURLToPath(new URL('./.orders-progress.json', import.meta.url)) }) };
       await screenshot('04-order-history.png');
-      summary = { ...summary, authenticated: true };
     }
     summary = { ...summary, success: cartCommand ? summary.success : true, url: safeURL(page.url()), title: await page.title() };
     log(`${command}-completed`, summary);
@@ -290,6 +282,7 @@ export async function main(config, existingBrowser) {
       if (operation.data.removal === 'submitted') await operation.update({ removal: 'unknown', code: 'REMOVAL_UNKNOWN' });
       summary = { ...summary, ...operation.data };
     }
+    if (error.ordersProgress !== undefined) summary.progress = error.ordersProgress;
     summary.success = false;
     summary.error = safeValue(error.message);
     summary.code = summary.addition === 'unknown' ? 'ADDITION_UNKNOWN' : summary.removal === 'unknown' ? 'REMOVAL_UNKNOWN' : error.code ?? summary.code ?? 'ERROR';

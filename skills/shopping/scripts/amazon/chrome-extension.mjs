@@ -52,16 +52,21 @@ export async function connectExtension(config, sessionName, { run = execute, con
     }
   };
   const disconnect = () => invoke(['detach', `--session=${sessionName}`]);
+  let attached = false;
   try {
-    await invoke(['attach', '--extension=chrome', `--session=${sessionName}`]);
-    const listing = await invoke(['list', '--all']);
+    let listing = await invoke(['list', '--all']);
+    if (!(listing.servers ?? []).some(server => server.title === sessionName)) {
+      attached = true;
+      await invoke(['attach', '--extension=chrome', `--session=${sessionName}`]);
+      listing = await invoke(['list', '--all']);
+    }
     const matches = (listing.servers ?? []).filter(server => server.title === sessionName);
     if (matches.length !== 1) throw new Error('買い物専用のPlaywright接続先を一意に取得できません');
     const endpoint = matches[0].endpoint ?? matches[0].pipeName;
     if (typeof endpoint !== 'string' || !endpoint.startsWith('/')) throw new Error('Playwrightのローカルソケットが見つかりません');
     return { browser: await connect(endpoint), disconnect };
   } catch (error) {
-    await disconnect().catch(() => {});
+    if (attached) await disconnect().catch(() => {});
     throw error;
   }
 }

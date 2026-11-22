@@ -11,7 +11,7 @@ import { safeURL, safeValue } from './navigation.mjs';
 import { readExtensionConfig, connectExtension, serveExtensionSetup } from './chrome-extension.mjs';
 
 // One private local socket, one Chrome connection, one command at a time.
-const commands = ['search', 'search-next', 'search-results', 'detail', 'detail-current', 'orders', 'cart', 'cart-add', 'cart-remove', 'browser-status'];
+const commands = ['search', 'search-next', 'search-results', 'detail', 'detail-current', 'orders', 'orders-search', 'orders-results', 'orders-next', 'orders-resume', 'cart', 'cart-add', 'cart-remove', 'browser-status'];
 export async function sessionPaths(direct = false) {
   const source = await realpath(dirname(fileURLToPath(import.meta.url)));
   const key = createHash('sha256').update(source).digest('hex').slice(0, 12);
@@ -43,7 +43,7 @@ export function requestSession(socket, request) {
 export async function serveSession(socket, connect = () => chromium.connectOverCDP('chrome', { timeout: 0, noDefaults: true }), { transport = 'direct', onStop = async () => {} } = {}) {
   let browser, failure, busy = false, state = transport === 'extension' ? 'connecting' : 'waiting_for_permission', finish;
   const closed = new Promise(resolve => { finish = resolve; });
-  const status = async () => ({ success: state === 'connected', state, transport, ...(failure ? { error: failure } : {}),
+  const status = async () => ({ success: state === 'connected', state, transport, busy, ...(failure ? { error: failure } : {}),
     ...(browser?.isConnected() ? { tabs: await Promise.all(browser.contexts().flatMap(c => c.pages())
       .filter(p => { try { return new URL(p.url()).origin === 'https://www.amazon.co.jp'; } catch { return false; } })
       .map(async p => ({ url: safeURL(p.url()), title: await p.title().catch(() => '') }))) } : {}) });

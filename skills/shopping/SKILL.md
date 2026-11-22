@@ -1,6 +1,6 @@
 ---
 name: shopping
-description: Amazon.co.jpの商品検索・ページング・詳細取得・購入履歴表示と、カートの合計取得・追加・削除に使う。「買い物」オーケストレーター専用。サイズ・色・タイプなどはAIが既存Chromeの同じタブで選び、カート操作は同梱プログラムで行う。注文確定・購入・ログイン操作は対象外。
+description: Amazon.co.jpの商品検索・ページング・詳細取得・購入履歴の検索・ページ送り・認証後再開と、カートの合計取得・追加・削除に使う。「買い物」オーケストレーター専用。サイズ・色・タイプなどはAIが既存Chromeの同じタブで選び、カート操作は同梱プログラムで行う。注文確定・購入・ログイン操作は対象外。
 ---
 
 # 買い物
@@ -20,11 +20,17 @@ description: Amazon.co.jpの商品検索・ページング・詳細取得・購�
 | 次の検索ページ | `npm run chrome -- search-next --limit 10` |
 | 商品詳細を開く（削除後も同じASINで開ける） | `npm run chrome -- detail --asin <ASIN>` |
 | 選択済みの現在の詳細を読む（移動・再読み込みなし） | `npm run chrome -- detail-current` |
-| 購入履歴リンクをクリック | `npm run chrome -- orders` |
+| 購入履歴を開いて商品JSONを取得 | `npm run chrome -- orders` |
+| 購入履歴内を検索・検索語で再絞り込み | `npm run chrome -- orders-search "検索語"` |
+| 現在の履歴ページを読む（移動なし） | `npm run chrome -- orders-results --offset 0 --limit 10` |
+| 履歴の次ページ | `npm run chrome -- orders-next` |
+| 認証後に履歴操作を再開 | `npm run chrome -- orders-resume` |
 | カート内容・合計・商品詳細URLを取得 | `npm run chrome -- cart` |
 | 現在の詳細ページから数量1を追加 | `npm run chrome -- cart-add --asin <選択後ASIN> --operation <追加ID> --max-price <円>` |
 | 指定したカート行を削除 | `npm run chrome -- cart-remove --asin <ASIN> --item-id <行ID> --quantity <確認済み数量> --operation <削除ID>` |
 | 保存状態を確認（ブラウザ操作なし） | `npm run cart-status -- --operation <ID>` |
+
+購入履歴を探す場合は [references/orders.md](references/orders.md) を読む。履歴内の検索・ページ送りもプログラムで行う。認証時は同じタブと接続を残し、手動認証後に `orders-resume`。Chrome接続許可とAmazonの人間確認を混同せず、認証だけを理由に再接続しない。
 
 検索・候補比較・JSONの項目は [references/catalog.md](references/catalog.md)。追加・削除・合計・再開は [references/cart.md](references/cart.md) を読む。
 

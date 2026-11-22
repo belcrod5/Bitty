@@ -50,6 +50,7 @@ test('extension connects only to its own named local server and uses the token i
   });
   assert.equal(endpoint, '/tmp/own.sock');
   assert.equal(result.browser, browser);
+  assert.equal(calls.some(args => args.includes('attach')), false);
   await result.disconnect();
   assert.ok(calls.at(-1).includes('detach'));
   assert.ok(calls.every(args => !args.includes('close-all') && !args.includes('kill-all')));
@@ -63,7 +64,7 @@ test('extension errors redact the key and ambiguous servers fail without a direc
       throw new Error(`connection token=${token}`);
     }, connect: async () => { connected = true; },
   }), error => error.message.includes('[redacted]') && !error.message.includes(token));
-  assert.equal(detached, true); assert.equal(connected, false);
+  assert.equal(detached, false); assert.equal(connected, false);
   await assert.rejects(connectExtension({ token }, 'shopping-test', {
     cwd: '/tmp/test',
     run: async (_, args) => ({ stdout: JSON.stringify(args.includes('list') ? { servers: [
@@ -73,4 +74,16 @@ test('extension errors redact the key and ambiguous servers fail without a direc
     connect: async () => { connected = true; },
   }), /一意/);
   assert.equal(connected, false);
+});
+
+
+test('a new extension connection attaches once only when no named server exists', async () => {
+  let attached = false, connects = 0;
+  const result = await connectExtension({token}, 'shopping-new', {
+    run: async (_, args) => {
+      if (args.includes('attach')) { assert.equal(attached,false); attached=true; }
+      return {stdout:JSON.stringify(args.includes('list') ? {servers:attached ? [{title:'shopping-new',endpoint:'/tmp/new.sock'}] : []} : {})};
+    }, connect: async () => {connects++;return {};},
+  });
+  assert.equal(attached,true); assert.equal(connects,1); await result.disconnect();
 });

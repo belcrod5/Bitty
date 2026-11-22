@@ -24,7 +24,9 @@ npm run chrome -- search "ボールペン"
 
 トークン接続は同じChromeプロファイルに新しい空タブを作り、そのタブを制御する。既存のAmazonログイン状態を利用するが、普段の他のタブを無断で取得しない。最初の操作でその空タブをAmazonへ移動し、以後は同じ接続・タブを使う。複数の対象があるときだけ実在するURLを `--tab-url` で指定する。明示URLが見つからなければ空タブへ切り替えず停止する。
 
-検索のほか、`search-results`、`search-next`、`detail`、`detail-current`、`orders`、`cart`、`cart-add`、`cart-remove`、`browser-status` が同じ接続で利用できる。コマンドの引数・結果・認証判定はSKILL.mdと共通。検索・追加・削除は固定コマンドを使い、詳細ページの選択項目はAIのブラウザツールで操作する。商品データの受け取りとページングは [catalog.md](catalog.md) に従う。
+検索のほか、`search-results`、`search-next`、`detail`、`detail-current`、`orders`、`orders-search`、`orders-results`、`orders-next`、`orders-resume`、`cart`、`cart-add`、`cart-remove`、`browser-status` が同じ接続で利用できる。コマンドの引数・結果・認証判定はSKILL.mdと共通。検索・追加・削除は固定コマンドを使い、詳細ページの選択項目はAIのブラウザツールで操作する。商品データの受け取りとページングは [catalog.md](catalog.md) に従う。
+
+購入履歴の検索・認証後の再開は [orders.md](orders.md)。Amazonの認証時は接続を停止せず、同じタブを維持する。`start` 時に同名の公式Playwright接続が残っていれば、公開CLIの一覧から再利用する。
 
 停止は `npm run chrome -- stop`。自動の30分切断は行わない。Chrome終了などで切断されたら、実行中の操作の結果を確認し、`stop` → `start` で接続だけを作り直す。保存済みキーが有効なら接続ごとの確認は不要。失敗した検索・追加を自動再実行するものではない。拡張のキーを再発行した場合は初回設定をやり直す。
 

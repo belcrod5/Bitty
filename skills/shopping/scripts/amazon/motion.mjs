@@ -11,6 +11,25 @@ export async function pause(log, reason, min = 500, max = 1000) {
   await sleep(milliseconds);
 }
 
+// ControlOrMeta+A did not select all text in the live extension session.
+// Select only the focused input's contents, then use real key events.
+export async function typeSearchQuery(page, input, query, log) {
+  const focused = () => input.evaluate(element => document.activeElement === element);
+  if (!await focused()) throw new Error('Search input did not receive focus');
+  await input.evaluate(element => element.select());
+  const selected = await input.evaluate(element => element.selectionStart === 0 && element.selectionEnd === element.value.length);
+  if (!selected) throw new Error('Search input contents were not selected');
+  await page.keyboard.press('Backspace');
+  if (await input.inputValue() !== '') throw new Error('Search input was not cleared');
+  for (const { segment: character } of new Intl.Segmenter('ja', { granularity: 'grapheme' }).segment(query)) {
+    await pause(log, 'before character');
+    if (!await focused()) throw new Error('Search input lost focus');
+    await page.keyboard.type(character);
+    log('typed-character', { character });
+  }
+  if (await input.inputValue() !== query) throw new Error('Search input does not match requested query');
+}
+
 function bezier(a, b, c, d, t) {
   const u = 1 - t;
   return {

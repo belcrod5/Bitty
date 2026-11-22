@@ -1,7 +1,7 @@
 export const isSearchPath = pathname => /^\/s(?:\/ref=[^/]+)?\/?$/.test(pathname);
 export const searchTerm = url => url.searchParams.get('k') ?? url.searchParams.get('field-keywords');
 export const productAsin = pathname => pathname.match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})(?:\/|$)/i)?.[1]?.toUpperCase();
-export const isOrdersPath = pathname => /^\/(?:gp\/(?:css|your-account)\/order-history|your-orders\/(?:orders|order-history))(?:\/|$)/.test(pathname);
+export const isOrdersPath = pathname => /^\/(?:gp\/(?:css|your-account)\/order-history|your-orders\/(?:orders|order-history|search))(?:\/|$)/.test(pathname);
 export const isAuthPath = pathname => /^(?:\/ap\/|\/checkpoint(?:\/|$)|\/errors\/validateCaptcha)/i.test(pathname);
 export const isCartPath = pathname => /^\/(?:cart(?:\/ref=[^/]+)?\/?|gp\/cart\/view\.html)$/.test(pathname);
 export const isAddPath = pathname => /^\/(?:cart\/add-to-cart|gp\/product\/handle-buy-box)(?:\/|$)/.test(pathname);
@@ -40,7 +40,7 @@ export function allowNavigation(url, method, command) {
   if (url.pathname === '/') return true;
   if (['search', 'search-next', 'search-results', 'detail'].includes(command) && isSearchPath(url.pathname)) return true;
   if (['detail', 'detail-current', 'cart-add'].includes(command) && (productAsin(url.pathname) || url.pathname === '/sspa/click')) return true;
-  if (command === 'orders' && isOrdersPath(url.pathname)) return true;
+  if (['orders', 'orders-search', 'orders-results', 'orders-next', 'orders-resume'].includes(command) && isOrdersPath(url.pathname)) return true;
   return false;
 }
 export function addDataError(data, asin, action) {

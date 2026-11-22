@@ -8,7 +8,7 @@
     "search": "node search.mjs search",
     "detail": "node search.mjs detail",
     "orders": "node search.mjs orders",
-    "check": "node --check search.mjs && node --check motion.mjs && node --check navigation.mjs && node --check cart.mjs && node --check browser.mjs && node --check extension.mjs && node --check chrome-session.mjs && node --check chrome-extension.mjs && node --check catalog.mjs",
+    "check": "node --check search.mjs && node --check motion.mjs && node --check navigation.mjs && node --check cart.mjs && node --check browser.mjs && node --check extension.mjs && node --check chrome-session.mjs && node --check chrome-extension.mjs && node --check catalog.mjs && node --check orders.mjs",
     "test": "node --test --test-concurrency=1 *.test.mjs",
     "cart": "node search.mjs cart",
     "cart-add": "node search.mjs cart-add",
