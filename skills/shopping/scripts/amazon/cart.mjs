@@ -178,10 +178,10 @@ export async function runCartAddition({ page, mouse, log, operation, attempt, id
             fieldNames: entries.map(([key]) => key.slice(0, 120)).slice(0, 100), fieldCount: entries.length } };
       });
       const data = new URLSearchParams(form.entries);
-      const quantity = addQuantityEvidence(data, asin);
+      const action = new URL(form.action);
+      const quantity = addQuantityEvidence(data, asin, action);
       log('cart-add-form-check', { stage, asin, ...form.diagnostics,
         quantity: { ...quantity, fields: quantity.fields.slice(0, 20).map(([key, value]) => [key.slice(0, 120), value.slice(0, 100)]) } });
-      const action = new URL(form.action);
       if (form.asin?.toUpperCase() !== asin) throw new Error('カート追加フォームの商品ASINが一致しません');
       if (action.origin !== 'https://www.amazon.co.jp' || !isAddPath(action.pathname) || form.method !== 'POST' ||
         !form.ordinaryAdd || !['', '_self'].includes(form.target) || form.encoding !== 'application/x-www-form-urlencoded') throw new Error('未対応のカート追加フォームです');

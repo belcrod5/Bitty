@@ -101,3 +101,45 @@ test('request guard binds nested quantity to the one target item and never defau
     assert.equal(attempt.consumed,allowed);
   }
 });
+
+test('dual quantity schemas authorize only one explicit base-item add with both values equal to one', () => {
+  const asin='B012345678';
+  const action='https://www.amazon.co.jp/cart/add-to-cart/ref=one';
+  const base='ASIN=B012345678&items[0.base][asin]=B012345678&quantity=1&items[0.base][quantity]=1&submit.add-to-cart=Add';
+  const cases=[
+    [base,true],
+    [base+'&isBuyNow=1',true],
+    [base.replace('quantity=1&items','quantity=2&items'),false],
+    [base.replace('[quantity]=1','[quantity]=2'),false],
+    [base.replace('quantity=1','quantity=2').replace('[quantity]=1','[quantity]=2'),false],
+    [base+'&quantity=1',false],
+    [base+'&items[0.base][quantity]=1',false],
+    [base+'&quantityBox=1',false],
+    [base.replace('&quantity=1','&quantity.1=1'),false],
+    [base.replace('&quantity=1','&qty=1'),false],
+    [base.replace('items[0.base][asin]=B012345678','items[0.base][asin]=B099999999'),false],
+    [base.replace('ASIN=B012345678','ASIN=B099999999'),false],
+    [base.replace('ASIN=B012345678&',''),false],
+    [base.replace('items[0.base][asin]=B012345678&',''),false],
+    [base+'&ASIN=B012345678',false],
+    [base+'&ASIN.1=B012345678',false],
+    [base+'&items[0.base][asin]=B012345678',false],
+    [base+'&items[1.base][asin]=B012345678',false],
+    [base+'&items[1.base][quantity]=1',false],
+    [base.replace('&submit.add-to-cart=Add',''),false],
+    [base+'&submit.add-to-cart=Add',false],
+    [base+'&submit.other=1',false],
+    [base+'&submit.buy-now=1',false],
+  ];
+  for(const [body,allowed] of cases){
+    const request={url:()=>action,method:()=>'POST',headers:()=>({'content-type':'application/x-www-form-urlencoded'}),postData:()=>body};
+    const attempt={action,armed:true,consumed:false};
+    assert.equal(authorizeAdd(request,attempt,asin),allowed,body);
+    assert.equal(attempt.consumed,allowed,body);
+    if(allowed)assert.equal(authorizeAdd(request,attempt,asin),false,'same pair cannot send twice');
+  }
+  for(const url of ['https://www.amazon.co.jp/gp/product/handle-buy-box/ref=one','https://www.amazon.co.jp/checkout','https://example.com/cart/add-to-cart']){
+    const request={url:()=>url,method:()=>'POST',headers:()=>({'content-type':'application/x-www-form-urlencoded'}),postData:()=>base};
+    assert.equal(authorizeAdd(request,{action:url,armed:true},asin),false,url);
+  }
+});

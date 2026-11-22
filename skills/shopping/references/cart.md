@@ -28,11 +28,11 @@ npm run chrome -- cart-add --asin <選択後ASIN> --operation <追加ID> --max-p
 
 `cart-add` は既存接続専用で、詳細ページへの移動・再読み込み・選択操作を行わない。現在のURLと通常追加フォームのASIN、数量1、POST先、送信ボタンを検査する。取得できた全選択項目と価格をクリック直前にも比較し、途中で変われば未送信で停止する。選択の適否はAIが画面から確認する。`--color`・`--size` は廃止し、特定の選択項目の指定を必須にしない。
 
-`--max-price` は表示単価の上限（整数の円）。指定時に価格が不明・超過なら送信しない。追加は数量1のみ。数量は、選択した追加ボタンの `button.form` と送信ボタンを指定した `FormData` から取得する。標準の `quantity` / `quantity.N` と、同じASINを明示した `items[0.base][quantity]` に対応する。数量欄が隠し項目や `form` 属性でフォーム外に配置されていても、実送信対象なら検証する。数量項目は1件・値は厳密に `1` を要求し、複数項目・別商品・未知の数量名は停止する。ページ全体の `#quantity`、サイドカートや別フォームの数量、「今すぐ買う」専用設定は追加数量の根拠にしない。省略時の既定値は推測しない。
+`--max-price` は表示単価の上限（整数の円）。指定時に価格が不明・超過なら送信しない。追加は数量1のみ。数量は、選択した追加ボタンの `button.form` と送信ボタンを指定した `FormData` から取得する。標準の `quantity` / `quantity.N` と、同じASINを明示した `items[0.base][quantity]` に対応する。数量欄が隠し項目や `form` 属性でフォーム外に配置されていても、実送信対象なら検証する。通常は数量項目1件・値は厳密に `1` を要求する。例外として `quantity=1` と `items[0.base][quantity]=1` が各1件併存し、単一の `ASIN` と `items[0.base][asin]` がともに対象商品を示し、他商品の項目がなく、専用 `/cart/add-to-cart` POST先と通常追加の `submit.add-to-cart` が選ばれたフォームに対応する。この2形式は同じ商品の数量1として扱い、合算しない。数量の不一致・2以上・同名重複・その他の複数形式・別商品・未知の数量名は停止する。クリック直前と取得できた実POSTにも同じ検査を適用する。ページ全体の `#quantity`、サイドカートや別フォームの数量、「今すぐ買う」専用設定は追加数量の根拠にしない。省略時の既定値は推測しない。
 
 数量が完全に省略された既知の単品フォームでは、プログラムが同じフォームに `items[0.base][quantity]=1` を明示してから再検査する。条件は `addToCart` フォーム、通常追加の `submit.add-to-cart`、専用 `/cart/add-to-cart` POST先、単一の `ASIN` と `items[0.base][asin]` の一致、他商品の項目なし、数量関連の送信値・要素（無効な欄も含む）・ページ内の `#quantity` がすべてないこと。既存の数量を上書きしない。条件外の省略は従来通り停止する。追加した数量欄がクリック直前に消失・変更した場合も停止し、自動補充しない。未送信で失敗した場合だけ補った欄を除去する。送信後は非同期処理に必要な欄を残し、同じ操作記録で再追加を防ぐ。
 
-`QUANTITY_UNVERIFIED` では未送信のまま停止し、`events.json` の `cart-add-form-check` を読む。`cart-add-quantity-explicit` は省略数量を明示した記録。`stage` は初回／数量明示後／クリック直前、`quantity.reason` は `missing`・`ambiguous`・`not_one`・`unsupported_field`・`item_asin_mismatch`。実送信数量、対象フォームの数量要素、ページ内の `#quantity` とフォーム所属、関連項目名を記録する。CSRF・セッション等の無関係なフォーム値は記録しない。
+`QUANTITY_UNVERIFIED` では未送信のまま停止し、`events.json` の `cart-add-form-check` を読む。`cart-add-quantity-explicit` は省略数量を明示した記録。`stage` は初回／数量明示後／クリック直前、`quantity.reason` は `missing`・`ambiguous`・`not_one`・`unsupported_field`・`item_asin_mismatch`・`unsupported_form`。実送信数量、対象フォームの数量要素、ページ内の `#quantity` とフォーム所属、関連項目名を記録する。CSRF・セッション等の無関係なフォーム値は記録しない。
 
 カートへ移動した後、最終ASIN・数量・`variantText`・価格を確認する。
 

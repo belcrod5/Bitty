@@ -45,17 +45,26 @@ export function allowNavigation(url, method, command) {
 }
 // Inspect the actual successful controls of the selected submitter's form.
 // Never use a different form or a buy-now configuration to supply missing quantity.
-export function addQuantityEvidence(data, asin) {
+export function addQuantityEvidence(data, asin, action) {
   const fields = [...data.entries()].filter(([key]) => /quantity|qty/i.test(key));
+  const nested = 'items[0.base][quantity]';
+  // Amazon can serialize the same base item's quantity in both schemas.
+  // This exact pair is one quantity, not two line items or a summed count.
+  const paired = fields.length === 2 && data.getAll('quantity').length === 1 && data.getAll(nested).length === 1;
   let reason = null;
   if (!fields.length) reason = 'missing';
-  else if (fields.length !== 1) reason = 'ambiguous';
-  else {
-    const [name, value] = fields[0];
-    if (!/^quantity(?:\.\d+)?$/i.test(name) && name !== 'items[0.base][quantity]') reason = 'unsupported_field';
-    else if (value !== '1') reason = 'not_one';
-    else if (name === 'items[0.base][quantity]' &&
-      (data.getAll('items[0.base][asin]').length !== 1 || data.get('items[0.base][asin]')?.toUpperCase() !== asin)) reason = 'item_asin_mismatch';
+  else if (fields.length !== 1 && !paired) reason = 'ambiguous';
+  else if (fields.some(([name]) => !/^quantity(?:\.\d+)?$/i.test(name) && name !== nested)) reason = 'unsupported_field';
+  else if (fields.some(([, value]) => value !== '1')) reason = 'not_one';
+  else if (data.has(nested) &&
+    (data.getAll('items[0.base][asin]').length !== 1 || data.get('items[0.base][asin]')?.toUpperCase() !== asin)) reason = 'item_asin_mismatch';
+  else if (paired) {
+    const asins = [...data.entries()].filter(([key]) => /^ASIN(?:\.\d+)?$/i.test(key));
+    const otherItems = [...data.keys()].some(key => /^items\[/i.test(key) && !key.startsWith('items[0.base]['));
+    const submitters = [...data.keys()].filter(key => key.startsWith('submit.'));
+    if (asins.length !== 1 || asins[0][0] !== 'ASIN' || asins[0][1].toUpperCase() !== asin || otherItems) reason = 'item_asin_mismatch';
+    else if (action?.origin !== 'https://www.amazon.co.jp' || !/^\/cart\/add-to-cart(?:\/|$)/.test(action.pathname) ||
+      submitters.length !== 1 || submitters[0] !== 'submit.add-to-cart') reason = 'unsupported_form';
   }
   return { source: 'submitter_form_data', fields, quantity: reason ? null : 1, reason };
 }
@@ -65,7 +74,7 @@ export function addDataError(data, asin, action) {
   const itemAsins = data.getAll('items[0.base][asin]').map(value => value.toUpperCase());
   const otherItems = [...data.keys()].some(key => /^items\[/i.test(key) && !key.startsWith('items[0.base]['));
   if (asins.length > 1 || itemAsins.length > 1 || asins.length + itemAsins.length === 0 ||
-    [...asins, ...itemAsins].some(value => value !== asin) || otherItems || addQuantityEvidence(data, asin).reason) return 'asin_or_quantity_mismatch';
+    [...asins, ...itemAsins].some(value => value !== asin) || otherItems || addQuantityEvidence(data, asin, action).reason) return 'asin_or_quantity_mismatch';
   // Ordinary Amazon forms can contain isBuyNow=1. It is safe only with the
   // explicit add submitter AND the dedicated cart endpoint, never buy-box.
   const explicitAdd = /^\/cart\/add-to-cart(?:\/|$)/.test(action.pathname) && data.has('submit.add-to-cart');

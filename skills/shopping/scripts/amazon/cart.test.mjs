@@ -479,3 +479,82 @@ test('explicit quantity remains available for asynchronous serialization after m
     assert.equal(result.addition,'confirmed');assert.equal(f.posts,1);
   }finally{await op.release();await f.context.close();}
 });
+
+async function dualQuantityForm(page) {
+  await page.locator('#add-to-cart-button:visible').evaluate(button=>{
+    button.form.id='addToCart';
+    button.form.insertAdjacentHTML('beforeend','<input type="hidden" name="items[0.base][asin]" value="B012345678"><input type="hidden" name="items[0.base][quantity]" value="1">');
+  });
+}
+
+test('dual quantity form submits two consistent aliases as one item, rechecks and never re-adds',async()=>{
+  await cleanupOperation();const f=await fixture({buyBox:true});const op=await openOperation(directory,'current',asin);const events=[];
+  try{
+    await dualQuantityForm(f.page);
+    let submitted;
+    await f.page.route('**/cart/add-to-cart/**',async route=>{
+      if(route.request().method()==='POST')submitted=new URLSearchParams(route.request().postData());
+      await route.fallback();
+    });
+    const result=await runCartAddition({...f,operation:op,identity:'fixture',log:(event,data)=>events.push({event,...data}),timeout:1000});
+    assert.equal(result.addition,'confirmed');assert.equal(result.quantity,1);assert.equal(f.posts,1);
+    assert.deepEqual(submitted.getAll('quantity'),['1']);assert.deepEqual(submitted.getAll('items[0.base][quantity]'),['1']);
+    assert.equal(submitted.get('ASIN'),asin);assert.equal(submitted.get('items[0.base][asin]'),asin);
+    const checks=events.filter(e=>e.event==='cart-add-form-check');
+    assert.deepEqual(checks.map(e=>e.stage),['initial','before_mouse_down']);
+    assert.ok(checks.every(e=>e.quantity.quantity===1&&e.quantity.fields.length===2&&e.quantity.reason===null));
+    await runCartAddition({...f,operation:op,identity:'fixture',log:()=>{},timeout:1000});assert.equal(f.posts,1);
+  }finally{await op.release();await f.context.close();}
+});
+
+test('dual quantity form refuses conflicts, duplicate or unknown fields, other items and non-add actions before clicking',async()=>{
+  for(const scenario of ['standard-two','nested-two','both-two','duplicate','duplicate-nested','unknown','indexed','other-item','wrong-item','missing-asin','missing-item-asin','duplicate-asin','buy-box','wrong-submitter','get']){
+    await cleanupOperation();const f=await fixture();const op=await openOperation(directory,'current',asin);
+    try{
+      await dualQuantityForm(f.page);
+      await f.page.locator('#add-to-cart-button:visible').evaluate((button,scenario)=>{
+        const form=button.form;
+        if(['standard-two','both-two'].includes(scenario))form.elements.namedItem('quantity').innerHTML='<option>2</option>';
+        if(['nested-two','both-two'].includes(scenario))form.elements.namedItem('items[0.base][quantity]').value='2';
+        if(scenario==='duplicate')form.insertAdjacentHTML('beforeend','<input name="quantity" value="1">');
+        if(scenario==='duplicate-nested')form.insertAdjacentHTML('beforeend','<input name="items[0.base][quantity]" value="1">');
+        if(scenario==='unknown')form.insertAdjacentHTML('beforeend','<input name="quantityBox" value="1">');
+        if(scenario==='indexed')form.elements.namedItem('quantity').name='quantity.1';
+        if(scenario==='other-item')form.insertAdjacentHTML('beforeend','<input name="items[1.base][asin]" value="B012345678">');
+        if(scenario==='wrong-item')form.elements.namedItem('items[0.base][asin]').value='B099999999';
+        if(scenario==='missing-asin')form.elements.namedItem('ASIN').remove();
+        if(scenario==='missing-item-asin')form.elements.namedItem('items[0.base][asin]').remove();
+        if(scenario==='duplicate-asin')form.insertAdjacentHTML('beforeend','<input name="ASIN" value="B012345678">');
+        if(scenario==='buy-box')button.formAction='https://www.amazon.co.jp/gp/product/handle-buy-box';
+        if(scenario==='wrong-submitter')button.name='submit.other';
+        if(scenario==='get')button.formMethod='get';
+      },scenario);
+      await assert.rejects(runCartAddition({...f,operation:op,identity:'fixture',log:()=>{}}),undefined,scenario);
+      assert.equal(f.posts,0,scenario);assert.deepEqual(f.clicked,[],scenario);assert.equal(op.data.addition,'not_started',scenario);
+    }finally{await op.release();await f.context.close();}
+  }
+});
+
+test('dual quantity aliases and ASIN association are rechecked immediately before mouse-down',async()=>{
+  for(const scenario of ['standard-two','nested-two','duplicate','wrong-item','buy-box']){
+    await cleanupOperation();const f=await fixture();const op=await openOperation(directory,'current',asin);const events=[];
+    try{
+      await dualQuantityForm(f.page);
+      const mouse={click:async(locator,label,{beforeMouseDown})=>{
+        await locator.evaluate((button,scenario)=>{
+          const form=button.form;
+          if(scenario==='standard-two')form.elements.namedItem('quantity').innerHTML='<option>2</option>';
+          if(scenario==='nested-two')form.elements.namedItem('items[0.base][quantity]').value='2';
+          if(scenario==='duplicate')form.insertAdjacentHTML('beforeend','<input name="quantity" value="1">');
+          if(scenario==='wrong-item')form.elements.namedItem('items[0.base][asin]').value='B099999999';
+          if(scenario==='buy-box')button.formAction='https://www.amazon.co.jp/gp/product/handle-buy-box';
+        },scenario);
+        await beforeMouseDown();throw new Error('Must not reach mouse-down');
+      }};
+      await assert.rejects(runCartAddition({...f,mouse,operation:op,identity:'fixture',log:(event,data)=>events.push({event,...data})}),e=>e.code==='QUANTITY_UNVERIFIED',scenario);
+      const checks=events.filter(e=>e.event==='cart-add-form-check');
+      assert.equal(checks[0].quantity.quantity,1);assert.equal(checks[1].stage,'before_mouse_down');assert.ok(checks[1].quantity.reason);
+      assert.equal(f.posts,0);assert.equal(op.data.addition,'not_started');assert.equal(f.attempt.armed,false);
+    }finally{await op.release();await f.context.close();}
+  }
+});
