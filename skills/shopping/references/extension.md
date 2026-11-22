@@ -46,9 +46,9 @@ await tab.getAXState(); // このAPIが提供されるツールの場合
 
 拡張経路は検索・詳細・履歴・カート表示まで。`cart-add`・購入・削除・数量変更は受け付けない。Node CLIの通信遮断・追加POSTの1回許可は拡張経路にはない。新規単品追加は引き続きCLIの実装を使う。スキル改善の検証だけで実カートに商品を追加しない。
 
-## 追加済み商品の確認
+## カートの確認
 
-過去の追加操作がある場合は `npm run cart-status -- --operation <同じID>` を先に確認する。`confirmed`・`submitted`・`unknown` の商品は再追加しない。拡張経路では `cart` または読み取り関数だけを使う。対象がカートに見つからなくても、過去の追加記録を取り消さず再追加しない。過去の追加成功と、現在のカート表示は別の事実として報告する。
+現在のカートは `cart` または `inspectExistingCart` の結果で確認する。この経路は読み取り専用で、操作記録の事前読み込みは不要。
 
 
 ## Chromeへの直接接続
@@ -73,7 +73,7 @@ npm run chrome -- --direct orders --tab-url <実際のタブURL>
 npm run chrome -- --direct cart --tab-url <実際のタブURL>
 ```
 
-新規単品追加も `npm run chrome -- --direct cart-add --asin <ASIN> --operation <同じ操作ID> --tab-url <実際のタブURL>` で実行できるが、先にcart.mdと保存済み状態を確認する。削除は同じ保持接続のcart-removeを使い、cart.mdに従う。購入は対象外。結果はJSONと `artifacts/` に保存され、認証・成否不明・通常エラーの終了コードは従来CLIと共通。操作途中で呼び出し側が切断しても処理は自動再実行しない。とくにカート追加は同じ操作IDの記録を確認する。
+新規単品追加も `npm run chrome -- --direct cart-add --asin <ASIN> --operation <同じ操作ID> --tab-url <実際のタブURL>` で実行できる。引数と結果は [cart.md](cart.md) を参照する。削除は同じ保持接続のcart-removeを使い、cart.mdに従う。購入は対象外。結果はJSONと `artifacts/` に保存され、認証・成否不明・通常エラーの終了コードは従来CLIと共通。操作途中で呼び出し側が切断しても処理は自動再実行しない。二重送信の防止はプログラム内部で処理する。
 
 終了は `npm run chrome -- --direct stop`。既存のタブは閉じない。操作の間隔では自動切断しない。Chrome終了・接続停止後に再接続する場合は、Chromeの許可が再び必要。失敗・切断を自動再接続せず、`status` とログを確認する。複数コマンドの同時実行はエラーで停止する。
 
