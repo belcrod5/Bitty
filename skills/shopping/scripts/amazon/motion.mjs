@@ -49,11 +49,6 @@ export class RandomMouse {
     this.position = { x: 0, y: 0 };
   }
 
-  async requireVisibleTab() {
-    const visibility = await this.page.evaluate(() => document.visibilityState);
-    if (visibility !== 'visible') throw Object.assign(new Error('Amazonの操作対象タブが非表示です。同じタブを前面にしてから状態を確認してください。クリックは送信しません'), { code: 'BROWSER_TAB_HIDDEN' });
-  }
-
   async moveTo(destination) {
     const viewport = this.page.viewportSize() ?? await this.page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
     const start = { ...this.position };
@@ -71,35 +66,48 @@ export class RandomMouse {
     }
     waypoints.push(destination);
     this.log('mouse-path', { start, destination, waypoints });
-    for (let segment = 0; segment < waypoints.length; segment++) {
-      const a = { ...this.position };
-      const d = waypoints[segment];
-      const b = bound({ x: a.x + (d.x - a.x) * random(0.15, 0.4) + random(-45, 45), y: a.y + (d.y - a.y) * random(0.15, 0.4) + random(-45, 45) });
-      const c = bound({ x: a.x + (d.x - a.x) * random(0.6, 0.85) + random(-45, 45), y: a.y + (d.y - a.y) * random(0.6, 0.85) + random(-45, 45) });
-      const frames = integer(15, 28);
-      // Unequal progress increments + ease-in/out + frame jitter give varying speed.
-      const weights = Array.from({ length: frames }, () => random(0.3, 2.1));
-      const total = weights.reduce((sum, v) => sum + v, 0);
-      let accumulated = 0;
-      const stopAt = integer(4, frames - 4);
-      this.log('mouse-segment', { segment, a, b, c, d, frames });
-      for (let i = 0; i < frames; i++) {
-        accumulated += weights[i];
-        const progress = i === frames - 1 ? 1 : accumulated / total;
-        const t = progress * progress * (3 - 2 * progress);
-        const p = bezier(a, b, c, d, t);
-        await this.page.mouse.move(p.x, p.y);
-        this.position = p;
-        await sleep(integer(8, 30));
-        if (i === stopAt && segment < waypoints.length - 1) {
-          await pause(this.log, 'mid-movement stop', 150, 650);
+    const pending = [];
+    let moveError, maxAckMs = 0;
+    try {
+      for (let segment = 0; segment < waypoints.length; segment++) {
+        const a = { ...this.position };
+        const d = waypoints[segment];
+        const b = bound({ x: a.x + (d.x - a.x) * random(0.15, 0.4) + random(-45, 45), y: a.y + (d.y - a.y) * random(0.15, 0.4) + random(-45, 45) });
+        const c = bound({ x: a.x + (d.x - a.x) * random(0.6, 0.85) + random(-45, 45), y: a.y + (d.y - a.y) * random(0.6, 0.85) + random(-45, 45) });
+        const frames = integer(15, 28);
+        // Unequal progress increments + ease-in/out + frame jitter give varying speed.
+        const weights = Array.from({ length: frames }, () => random(0.3, 2.1));
+        const total = weights.reduce((sum, v) => sum + v, 0);
+        let accumulated = 0;
+        const stopAt = integer(4, frames - 4);
+        this.log('mouse-segment', { segment, a, b, c, d, frames });
+        for (let i = 0; i < frames; i++) {
+          accumulated += weights[i];
+          const progress = i === frames - 1 ? 1 : accumulated / total;
+          const t = progress * progress * (3 - 2 * progress);
+          const p = bezier(a, b, c, d, t);
+          if (moveError) throw moveError;
+          // Background Chrome sessions can defer movement acknowledgements.
+          // Pace delivery here; drain all acknowledgements before any click.
+          const sent = performance.now();
+          pending.push(this.page.mouse.move(p.x, p.y).then(() => {
+            maxAckMs = Math.max(maxAckMs, performance.now() - sent);
+          }, error => { moveError ??= error; }));
+          this.position = p;
+          await sleep(integer(8, 30));
+          if (i === stopAt && segment < waypoints.length - 1) {
+            await pause(this.log, 'mid-movement stop', 150, 650);
+          }
         }
       }
+    } finally {
+      await Promise.all(pending);
     }
+    if (moveError) throw moveError;
+    this.log('mouse-move-delivery', { moves: pending.length, maxAckMs: Math.round(maxAckMs) });
   }
 
   async click(locator, label, { beforeMouseDown } = {}) {
-    await this.requireVisibleTab();
     const clickStarted = performance.now();
     for (let reaim = 0; reaim < 2; reaim++) {
       await locator.waitFor({ state: 'visible' });
@@ -167,7 +175,6 @@ export class RandomMouse {
         throw new Error(`${label}: target moved or is covered; stopped before click`);
       }
       this.log('click', { label, ...point });
-      await this.requireVisibleTab();
       await beforeMouseDown?.();
       await this.page.mouse.down();
       await sleep(integer(60, 140));

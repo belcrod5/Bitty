@@ -100,17 +100,47 @@ test('input pacing rechecks focus after waits and never clears a newly focused u
 });
 
 
-test('a hidden tab initially or after movement stops before mutation preflight and mouse-down',async()=>{
-  for(const stage of ['initial','after-movement']){
-    const p=await browser.newPage();
-    try{
-      await p.setContent('<button onmousedown="window.downs=(window.downs||0)+1">カートに入れる</button>');
-      const hide=()=>p.evaluate(()=>Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'hidden'}));
-      if(stage==='initial')await hide();
-      const mouse=new RandomMouse(p,()=>{});let movements=0,preflights=0;
-      mouse.moveTo=async point=>{movements++;await p.mouse.move(point.x,point.y);await hide();};
-      await assert.rejects(mouse.click(p.locator('button'),'test',{beforeMouseDown:async()=>{preflights++;}}),e=>e.code==='BROWSER_TAB_HIDDEN');
-      assert.equal(movements,stage==='initial'?0:1);assert.equal(preflights,0);assert.equal(await p.evaluate(()=>window.downs||0),0);
-    }finally{await p.close();}
+test('tab visibility alone does not reject a working click',async()=>{
+  const p=await browser.newPage();
+  try{
+    await p.setContent('<button onclick="window.clicks=(window.clicks||0)+1">test</button>');
+    await p.evaluate(()=>Object.defineProperty(document,'visibilityState',{get:()=> 'hidden'}));
+    const mouse=new RandomMouse(p,()=>{});let preflights=0;
+    mouse.moveTo=point=>p.mouse.move(point.x,point.y);
+    await mouse.click(p.locator('button'),'test',{beforeMouseDown:async()=>{preflights++;}});
+    assert.equal(preflights,1);assert.equal(await p.evaluate(()=>window.clicks),1);
+  }finally{await p.close();}
+});
+
+test('paced moves do not wait for each acknowledgement and drain the last one before returning',async()=>{
+  const sent=[],acks=[];let release,finished=false;
+  const page={viewportSize:()=>({width:800,height:600}),mouse:{move:(x,y)=>{
+    release?.();sent.push({x,y,time:performance.now()});
+    return new Promise(resolve=>{release=()=>{acks.push({x,y});resolve();};});
+  }}};
+  const mouse=new RandomMouse(page,()=>{});
+  const moving=mouse.moveTo({x:300,y:200}).then(()=>{finished=true;});
+  // Each next move releases the previous one, modelling the live Chrome delay.
+  const deadline=Date.now()+15000;
+  while(sent.at(-1)?.x!==300 || sent.at(-1)?.y!==200){
+    assert.ok(Date.now()<deadline,'moves stalled waiting for an acknowledgement');
+    await new Promise(resolve=>setTimeout(resolve,20));
   }
+  await new Promise(resolve=>setTimeout(resolve,100));
+  assert.equal(finished,false);assert.equal(acks.length,sent.length-1);
+  release();await moving;
+  assert.deepEqual(acks,sent.map(({x,y})=>({x,y})));
+  assert.ok(sent.length>=45);assert.ok(sent.slice(1).every((p,i)=>p.time-sent[i].time>=5));
+});
+
+test('a failed movement acknowledgement prevents the mutation callback and mouse-down',async()=>{
+  const p=await browser.newPage();
+  try{
+    await p.setContent('<button onmousedown="window.downs=(window.downs||0)+1">test</button>');
+    const mouse=new RandomMouse(p,()=>{});let preflights=0,moves=0;
+    p.mouse.move=async()=>{if(++moves===4)throw new Error('movement delivery failed');};
+    await assert.rejects(mouse.click(p.locator('button'),'test',{beforeMouseDown:async()=>{preflights++;}}),/movement delivery failed/);
+    assert.equal(preflights,0);assert.equal(await p.evaluate(()=>window.downs||0),0);
+    assert.equal(moves,4);
+  }finally{await p.close();}
 });
