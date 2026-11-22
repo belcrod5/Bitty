@@ -98,3 +98,19 @@ test('input pacing rechecks focus after waits and never clears a newly focused u
     }finally{await p.close();}
   }
 });
+
+
+test('a hidden tab initially or after movement stops before mutation preflight and mouse-down',async()=>{
+  for(const stage of ['initial','after-movement']){
+    const p=await browser.newPage();
+    try{
+      await p.setContent('<button onmousedown="window.downs=(window.downs||0)+1">カートに入れる</button>');
+      const hide=()=>p.evaluate(()=>Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'hidden'}));
+      if(stage==='initial')await hide();
+      const mouse=new RandomMouse(p,()=>{});let movements=0,preflights=0;
+      mouse.moveTo=async point=>{movements++;await p.mouse.move(point.x,point.y);await hide();};
+      await assert.rejects(mouse.click(p.locator('button'),'test',{beforeMouseDown:async()=>{preflights++;}}),e=>e.code==='BROWSER_TAB_HIDDEN');
+      assert.equal(movements,stage==='initial'?0:1);assert.equal(preflights,0);assert.equal(await p.evaluate(()=>window.downs||0),0);
+    }finally{await p.close();}
+  }
+});

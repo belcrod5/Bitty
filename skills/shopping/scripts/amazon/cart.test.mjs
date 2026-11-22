@@ -394,3 +394,88 @@ test('a quantity change immediately before mouse-down is diagnosed and remains u
     assert.equal(f.posts,0);assert.equal(op.data.addition,'not_started');
   }finally{await op.release();await f.context.close();}
 });
+
+test('single base-item form with omitted quantity submits explicit one, preserves journal and never re-adds', async () => {
+  await cleanupOperation(); const f=await fixture({buyBox:true}); const op=await openOperation(directory,'current',asin); const events=[];
+  try {
+    await f.page.locator('#add-to-cart-button:visible').evaluate(button=>{
+      const form=button.form;form.id='addToCart';form.elements.namedItem('quantity').remove();
+      form.insertAdjacentHTML('beforeend','<input name="items[0.base][asin]" value="B012345678">');
+    });
+    let submitted;
+    await f.page.route('**/cart/add-to-cart/**',async route=>{
+      if(route.request().method()==='POST')submitted=new URLSearchParams(route.request().postData());
+      await route.fallback();
+    });
+    const result=await runCartAddition({...f,operation:op,identity:'fixture',log:(event,data)=>events.push({event,...data}),timeout:1000});
+    assert.equal(result.addition,'confirmed');assert.equal(f.posts,1);
+    assert.equal(submitted.get('items[0.base][quantity]'),'1');assert.equal(submitted.has('quantity'),false);
+    assert.deepEqual(events.filter(e=>e.event==='cart-add-form-check').map(e=>[e.stage,e.quantity.reason]),[['initial','missing'],['quantity_explicit',null],['before_mouse_down',null]]);
+    await runCartAddition({...f,operation:op,identity:'fixture',log:()=>{},timeout:1000});assert.equal(f.posts,1);
+  }finally{await op.release();await f.context.close();}
+});
+
+test('omitted quantity support cannot override conflicting controls, unknown form, another item or purchase button',async()=>{
+  for(const scenario of ['two','disabled','unknown','foreign-one','wrong-asin','other-item','unknown-form','buy-now','empty']){
+    await cleanupOperation();const f=await fixture({buyBox:true});const op=await openOperation(directory,'current',asin);
+    try{
+      await f.page.locator('#add-to-cart-button:visible').evaluate((button,scenario)=>{
+        const form=button.form;form.id='addToCart';form.elements.namedItem('quantity').remove();
+        form.insertAdjacentHTML('beforeend',`<input name="items[0.base][asin]" value="${scenario==='wrong-asin'?'B099999999':'B012345678'}">`);
+        if(scenario==='two')form.insertAdjacentHTML('beforeend','<input name="items[0.base][quantity]" value="2">');
+        if(scenario==='disabled')form.insertAdjacentHTML('beforeend','<input name="quantity" value="2" disabled>');
+        if(scenario==='unknown')form.insertAdjacentHTML('beforeend','<input name="quantityBox" value="1">');
+        if(scenario==='empty')form.insertAdjacentHTML('beforeend','<input name="quantity" value="">');
+        if(scenario==='foreign-one')form.insertAdjacentHTML('beforebegin','<form><input id="quantity" name="quantity" value="1"></form>');
+        if(scenario==='other-item')form.insertAdjacentHTML('beforeend','<input name="items[1.base][asin]" value="B099999999">');
+        if(scenario==='unknown-form')form.id='unknown';
+        if(scenario==='buy-now')button.name='submit.buy-now';
+      },scenario);
+      await assert.rejects(runCartAddition({...f,operation:op,identity:'fixture',log:()=>{}}));
+      assert.equal(f.posts,0,scenario);assert.equal(op.data.addition,'not_started');
+    }finally{await op.release();await f.context.close();}
+  }
+});
+
+test('explicit quantity is rechecked before mouse-down and cleaned up on preflight failure',async()=>{
+  for(const scenario of ['removed','two','price']){
+    await cleanupOperation();const f=await fixture({buyBox:true});const op=await openOperation(directory,'current',asin,{maxPrice:1648});
+    try{
+      await clothing(f.page);
+      await f.page.locator('#add-to-cart-button:visible').evaluate(button=>{
+        const form=button.form;form.id='addToCart';form.elements.namedItem('quantity').remove();
+        form.insertAdjacentHTML('beforeend','<input name="items[0.base][asin]" value="B012345678">');
+      });
+      const mouse={click:async(locator,label,{beforeMouseDown})=>{
+        await locator.evaluate((button,scenario)=>{
+          const input=button.form.elements.namedItem('items[0.base][quantity]');
+          if(scenario==='removed')input.remove();
+          if(scenario==='two')input.value='2';
+          if(scenario==='price')document.querySelector('.a-offscreen').textContent='￥3,000';
+        },scenario);
+        await beforeMouseDown();throw new Error('Must not reach mouse-down');
+      }};
+      await assert.rejects(runCartAddition({...f,mouse,operation:op,identity:'fixture',log:()=>{}}),/数量が1|価格/);
+      assert.equal(f.posts,0);assert.equal(op.data.addition,'not_started');
+      assert.equal(await f.page.locator('[name="items[0.base][quantity]"]').count(),0);
+    }finally{await op.release();await f.context.close();}
+  }
+});
+
+
+test('explicit quantity remains available for asynchronous serialization after mouse-up', async()=>{
+  await cleanupOperation();const f=await fixture({buyBox:true});const op=await openOperation(directory,'current',asin);
+  try{
+    await f.page.locator('#add-to-cart-button:visible').evaluate(button=>{
+      const form=button.form;form.id='addToCart';form.elements.namedItem('quantity').remove();
+      form.insertAdjacentHTML('beforeend','<input name="items[0.base][asin]" value="B012345678">');
+    });
+    const mouse={click:async(locator,label,{beforeMouseDown}={})=>{
+      await beforeMouseDown?.();
+      if(label==='add to cart')await locator.evaluate(button=>{setTimeout(()=>button.form.requestSubmit(button),200);});
+      else await locator.click();
+    }};
+    const result=await runCartAddition({...f,mouse,operation:op,identity:'fixture',log:()=>{},timeout:1500});
+    assert.equal(result.addition,'confirmed');assert.equal(f.posts,1);
+  }finally{await op.release();await f.context.close();}
+});

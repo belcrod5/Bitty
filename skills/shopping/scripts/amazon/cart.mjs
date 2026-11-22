@@ -153,6 +153,7 @@ export async function runCartAddition({ page, mouse, log, operation, attempt, id
     const button = page.locator('#add-to-cart-button:visible');
     await button.waitFor({ state: 'visible' });
     if (!await button.isEnabled()) throw new Error('カート追加ボタンが無効です');
+    let explicitQuantity;
     async function verifyForm(stage = 'initial') {
       const form = await button.evaluate(button => {
         const form = button.form;
@@ -182,24 +183,60 @@ export async function runCartAddition({ page, mouse, log, operation, attempt, id
         quantity: { ...quantity, fields: quantity.fields.slice(0, 20).map(([key, value]) => [key.slice(0, 120), value.slice(0, 100)]) } });
       const action = new URL(form.action);
       if (form.asin?.toUpperCase() !== asin) throw new Error('カート追加フォームの商品ASINが一致しません');
-      if (quantity.reason) throw Object.assign(new Error(`数量が1であることを確認できません。数量変更や追加は行いません (${quantity.reason})`), { code: 'QUANTITY_UNVERIFIED' });
       if (action.origin !== 'https://www.amazon.co.jp' || !isAddPath(action.pathname) || form.method !== 'POST' ||
         !form.ordinaryAdd || !['', '_self'].includes(form.target) || form.encoding !== 'application/x-www-form-urlencoded') throw new Error('未対応のカート追加フォームです');
+      // Amazon's single base-item form can omit quantity entirely. Make the
+      // requested one explicit in that same item schema, never infer a default
+      // or override an existing/disabled/foreign quantity control.
+      if (stage === 'initial' && quantity.reason === 'missing' &&
+        form.diagnostics.formId === 'addToCart' && form.diagnostics.submitterName === 'submit.add-to-cart' &&
+        /^\/cart\/add-to-cart(?:\/|$)/.test(action.pathname) &&
+        form.diagnostics.quantityControlCount === 0 && form.diagnostics.pageQuantityCount === 0 &&
+        data.getAll('ASIN').length === 1 && data.get('ASIN') === asin &&
+        data.getAll('items[0.base][asin]').length === 1 && data.get('items[0.base][asin]') === asin) {
+        const candidate = new URLSearchParams(data);
+        candidate.append('items[0.base][quantity]', '1');
+        const error = addDataError(candidate, asin, action);
+        if (error) throw new Error(`カート追加フォームを送信できません: ${error}`);
+        explicitQuantity = await button.evaluateHandle((button, expected) => {
+          const form = button.form;
+          if (!form || form.id !== 'addToCart' ||
+            JSON.stringify([...new FormData(form, button)]) !== JSON.stringify(expected.entries) ||
+            button.formAction !== expected.action ||
+            [...form.elements].some(e => /quantity|qty/i.test(e.name ?? '') || e.id === 'quantity') ||
+            document.querySelector('[id="quantity"]')) throw new Error('数量の明示前にフォームが変わりました');
+          const input = document.createElement('input');
+          input.type = 'hidden'; input.name = 'items[0.base][quantity]'; input.value = '1';
+          form.append(input);
+          return input;
+        }, { entries: form.entries, action: action.href });
+        log('cart-add-quantity-explicit', { asin, quantity: 1, field: 'items[0.base][quantity]', reason: 'missing_single_base_item_quantity' });
+        return verifyForm('quantity_explicit');
+      }
+      if (quantity.reason) throw Object.assign(new Error(`数量が1であることを確認できません。数量変更や追加は行いません (${quantity.reason})`), { code: 'QUANTITY_UNVERIFIED' });
       const formError = addDataError(data, asin, action);
       if (formError) throw new Error(`カート追加フォームを送信できません: ${formError}`);
       return action;
     }
-    const action = await verifyForm();
-    await operation.update({ title, browserIdentity: identity, quantity: 1, selection });
-    log('quantity-confirmed', { asin, quantity: 1 });
-    await mouse.click(button, 'add to cart', { beforeMouseDown: async () => {
-      if ((await verifyForm('before_mouse_down')).href !== action.href) throw new Error('クリック直前に追加先が変わりました');
-      if (JSON.stringify(await verifySelection()) !== JSON.stringify(selection)) throw new Error('クリック直前に選択項目・価格が変わりました');
-      // Record the point of no automatic retry BEFORE submitting any event.
-      await operation.update({ addition: 'submitted', retryAdd: false, submittedAt: new Date().toISOString() });
-      attempt.action = action.href;
-      attempt.armed = true;
-    } });
+    try {
+      const action = await verifyForm();
+      await operation.update({ title, browserIdentity: identity, quantity: 1, selection });
+      log('quantity-confirmed', { asin, quantity: 1 });
+      await mouse.click(button, 'add to cart', { beforeMouseDown: async () => {
+        if ((await verifyForm('before_mouse_down')).href !== action.href) throw new Error('クリック直前に追加先が変わりました');
+        if (JSON.stringify(await verifySelection()) !== JSON.stringify(selection)) throw new Error('クリック直前に選択項目・価格が変わりました');
+        // Record the point of no automatic retry BEFORE submitting any event.
+        await operation.update({ addition: 'submitted', retryAdd: false, submittedAt: new Date().toISOString() });
+        attempt.action = action.href;
+        attempt.armed = true;
+      } });
+    } finally {
+      if (explicitQuantity) {
+        // A submitted page may still serialize asynchronously; retain its value.
+        if (operation.data.addition === 'not_started') await explicitQuantity.evaluate(element => element.remove()).catch(() => {});
+        await explicitQuantity.dispose().catch(() => {});
+      }
+    }
     const deadline = Date.now() + timeout;
     let confirmed = false;
     do {

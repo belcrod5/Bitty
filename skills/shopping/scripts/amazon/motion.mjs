@@ -49,6 +49,11 @@ export class RandomMouse {
     this.position = { x: 0, y: 0 };
   }
 
+  async requireVisibleTab() {
+    const visibility = await this.page.evaluate(() => document.visibilityState);
+    if (visibility !== 'visible') throw Object.assign(new Error('Amazonの操作対象タブが非表示です。同じタブを前面にしてから状態を確認してください。クリックは送信しません'), { code: 'BROWSER_TAB_HIDDEN' });
+  }
+
   async moveTo(destination) {
     const viewport = this.page.viewportSize() ?? await this.page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
     const start = { ...this.position };
@@ -94,6 +99,7 @@ export class RandomMouse {
   }
 
   async click(locator, label, { beforeMouseDown } = {}) {
+    await this.requireVisibleTab();
     const clickStarted = performance.now();
     for (let reaim = 0; reaim < 2; reaim++) {
       await locator.waitFor({ state: 'visible' });
@@ -161,6 +167,7 @@ export class RandomMouse {
         throw new Error(`${label}: target moved or is covered; stopped before click`);
       }
       this.log('click', { label, ...point });
+      await this.requireVisibleTab();
       await beforeMouseDown?.();
       await this.page.mouse.down();
       await sleep(integer(60, 140));
