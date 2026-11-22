@@ -28,3 +28,38 @@ test('a covering overlay, repeated shifts or a failed preflight never trigger a 
     }finally{await p.close();}
   }
 });
+
+test('scroll logs distinguish visible targets, document scrolling and nested scrolling, with a wait only when needed',async()=>{
+  for(const scenario of ['visible','document','nested']){
+    const p=await browser.newPage({viewport:{width:800,height:600}});
+    try{
+      const button='<button style="width:120px;height:40px" onclick="window.clicks=(window.clicks||0)+1">次へ</button>';
+      await p.setContent(scenario==='visible'?button:scenario==='document'
+        ?'<div style="height:1800px"></div>'+button
+        :'<div id="scroller" style="height:250px;overflow:auto"><div style="height:1800px"></div>'+button+'</div>');
+      const logs=[],mouse=new RandomMouse(p,(event,data)=>logs.push({event,...data,time:performance.now()}));
+      if(scenario!=='document')mouse.moveTo=point=>p.mouse.move(point.x,point.y);
+      await mouse.click(p.locator('button'),'test');
+      assert.equal(await p.evaluate(()=>window.clicks),1);
+      const scroll=logs.find(e=>e.event==='scroll');
+      assert.equal(scroll.needed,scenario!=='visible');
+      assert.equal(scroll.scrolled,scenario!=='visible');
+      assert.ok(scroll.durationMs>=0);
+      const wait=logs.find(e=>e.event==='pause'&&e.reason==='after scrolling test');
+      const movement=logs.find(e=>e.event==='mouse-move-complete');
+      const complete=logs.find(e=>e.event==='click-complete');
+      assert.ok(complete.durationMs>=movement.durationMs);
+      if(scenario==='visible'){
+        assert.equal(wait,undefined);assert.deepEqual(scroll.deltas,[]);
+      }else{
+        assert.ok(scroll.deltas.some(d=>d.y>0));
+        assert.ok(wait.milliseconds>=1000&&wait.milliseconds<=2000);
+        assert.ok(movement.time-wait.time>=wait.milliseconds-10);
+        if(scenario==='nested'){
+          assert.equal(await p.evaluate(()=>scrollY),0);
+          assert.ok(await p.locator('#scroller').evaluate(e=>e.scrollTop)>0);
+        }else assert.ok(movement.durationMs>0);
+      }
+    }finally{await p.close();}
+  }
+});

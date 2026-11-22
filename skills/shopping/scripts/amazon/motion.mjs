@@ -91,19 +91,41 @@ export class RandomMouse {
   }
 
   async click(locator, label, { beforeMouseDown } = {}) {
+    const clickStarted = performance.now();
     for (let reaim = 0; reaim < 2; reaim++) {
       await locator.waitFor({ state: 'visible' });
       let box = await locator.boundingBox();
       const viewport = this.page.viewportSize() ?? await this.page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
-      // Avoid a stability/animation-frame wait when the whole target is already visible.
-      // The hit test immediately before mouse-down still rejects movement or overlays.
-      if (box && (box.x < 0 || box.y < 0 || box.x + box.width > viewport.width || box.y + box.height > viewport.height)) {
-        await locator.scrollIntoViewIfNeeded();
-        box = await locator.boundingBox();
+      const needed = Boolean(box && (box.x < 0 || box.y < 0 || box.x + box.width > viewport.width || box.y + box.height > viewport.height));
+      // Include nested scrolling containers, not just the document scroll position.
+      const readScrollPositions = element => {
+        const positions = [];
+        for (let node = element.parentElement; node; node = node.parentElement) {
+          positions.push({ x: node.scrollLeft, y: node.scrollTop });
+        }
+        return positions;
+      };
+      const before = await locator.evaluate(readScrollPositions);
+      const scrollStarted = performance.now();
+      if (needed) await locator.scrollIntoViewIfNeeded();
+      const durationMs = Math.round(performance.now() - scrollStarted);
+      const after = await locator.evaluate(readScrollPositions);
+      const comparable = before.length === after.length;
+      const deltas = comparable ? after.map((position, index) => ({
+        ancestorIndex: index, x: position.x - before[index].x, y: position.y - before[index].y,
+      })).filter(delta => delta.x !== 0 || delta.y !== 0) : null;
+      this.log('scroll', { label, attempt: reaim + 1, needed,
+        scrolled: comparable ? deltas.length > 0 : null, before, after, deltas, durationMs });
+      if (needed) {
+        await pause(this.log, `after scrolling ${label}`, 1000, 2000);
       }
+      // Read again after the wait; the page may have shifted while settling.
+      box = await locator.boundingBox();
       if (!box || box.width <= 0 || box.height <= 0) throw new Error(`${label}: no clickable box`);
       const point = { x: box.x + box.width * random(0.35, 0.65), y: box.y + box.height * random(0.35, 0.65) };
+      const movementStarted = performance.now();
       await this.moveTo(point);
+      this.log('mouse-move-complete', { label, attempt: reaim + 1, durationMs: Math.round(performance.now() - movementStarted) });
       await pause(this.log, `before clicking ${label}`);
       // Do not click if an overlay or layout shift has replaced the intended target.
       const hit = await locator.evaluate((element, p) => {
@@ -124,6 +146,7 @@ export class RandomMouse {
       await this.page.mouse.down();
       await sleep(integer(60, 140));
       await this.page.mouse.up();
+      this.log('click-complete', { label, durationMs: Math.round(performance.now() - clickStarted) });
       return;
     }
   }
