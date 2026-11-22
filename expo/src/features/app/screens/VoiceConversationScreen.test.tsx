@@ -125,7 +125,7 @@ const mockNativeStt = {
     return { remove: () => mockNativeSttListeners.delete(name) };
   }),
 };
-let mockLastSttOptions: { ttsPlaybackActive: boolean; onDiagnostic: (event: string, payload: Record<string, unknown>) => void } | null = null;
+let mockLastSttOptions: { announce?: (signal: AbortSignal) => Promise<void>; ttsPlaybackActive: boolean; onDiagnostic: (event: string, payload: Record<string, unknown>) => void } | null = null;
 type MockFooterProps = {
   voiceContextStats?: unknown;
   transcript: string;
@@ -2012,6 +2012,78 @@ test("a remote handoff destination never auto-starts after a rejected operation 
   await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose}
     initialOrchestratorId="other" initialControlSignal={controller.signal} />);
   expect(mockStt.start).not.toHaveBeenCalled();
+  expect(mockSynthesizeSpeechStream).not.toHaveBeenCalled();
+  expect(mockFooterProps?.stopLabel).toBe("オーケストレーターを閉じる");
+  expect(mockFooterProps?.statusText).toContain("音声入力は停止しています");
+  await screen.unmount();
+});
+
+test.each(["ready wait", "announcement"])("stopping remote %s cancels input first and closes only on the next stop", async (stage) => {
+  const { getVoiceControl } = jest.requireActual("../../appControl/voiceControl");
+  const controller = new AbortController();
+  const control = getVoiceControl(mockManager);
+  jest.spyOn(control, "pendingTarget").mockImplementation(() => !controller.signal.aborted);
+  jest.spyOn(control, "stopSurface").mockImplementation(async () => {
+    controller.abort();
+    await mockStt.disarm();
+  });
+  mockVoice.ready = stage !== "ready wait";
+  const props = { ...playback, onClose: mockOnClose, initialOrchestratorId: "other", initialControlSignal: controller.signal };
+  const screen = await render(<VoiceConversationScreen {...props} />);
+  let finishAnnouncement: (() => void) | undefined;
+  if (stage === "announcement") {
+    mockSynthesizeSpeechStream.mockImplementationOnce(() => new Promise<void>((resolve) => { finishAnnouncement = resolve; }));
+    await act(async () => { void mockLastSttOptions?.announce?.(controller.signal); });
+    expect(mockFooterProps?.voiceStatus).toBe("speaking");
+  }
+  expect(mockFooterProps?.stopLabel).toBe("音声入力を停止");
+  await fireEvent.press(screen.getByTestId("streaming-stt-stop"));
+  expect(controller.signal.aborted).toBe(true);
+  if (stage === "announcement") {
+    expect(mockStopTtsPlayback).toHaveBeenCalledTimes(1);
+    expect(mockStopTtsPlayback).toHaveBeenCalledWith(expect.objectContaining({ reason: "voice_control_cancelled" }));
+  }
+  expect(mockOnClose).not.toHaveBeenCalled();
+  expect(mockVoice.interrupt).not.toHaveBeenCalled();
+  expect(mockFooterProps?.stopLabel).toBe("オーケストレーターを閉じる");
+  await act(async () => { finishAnnouncement?.(); });
+  mockVoice.ready = true;
+  await screen.rerender(<VoiceConversationScreen {...props} />);
+  expect(mockStt.start).not.toHaveBeenCalled();
+  await fireEvent.press(screen.getByTestId("streaming-stt-stop"));
+  expect(mockOnClose).toHaveBeenCalledTimes(1);
+  expect(mockVoice.interrupt).toHaveBeenCalledTimes(1);
+  await screen.unmount();
+});
+
+test("external cancellation settles remote preparation immediately and never starts when readiness arrives", async () => {
+  const { getVoiceControl } = jest.requireActual("../../appControl/voiceControl");
+  const controller = new AbortController();
+  jest.spyOn(getVoiceControl(mockManager), "pendingTarget").mockImplementation(() => !controller.signal.aborted);
+  mockVoice.ready = false;
+  const props = { ...playback, onClose: mockOnClose, initialOrchestratorId: "other", initialControlSignal: controller.signal };
+  const screen = await render(<VoiceConversationScreen {...props} />);
+  expect(mockFooterProps?.stopLabel).toBe("音声入力を停止");
+  await act(async () => { controller.abort(); });
+  expect(mockFooterProps?.stopLabel).toBe("オーケストレーターを閉じる");
+  expect(mockFooterProps?.statusText).toContain("音声入力は停止しています");
+  mockVoice.ready = true;
+  await screen.rerender(<VoiceConversationScreen {...props} />);
+  expect(mockStt.start).not.toHaveBeenCalled();
+  expect(mockSynthesizeSpeechStream).not.toHaveBeenCalled();
+  await screen.unmount();
+});
+
+test("a completed remote start still resumes input after returning from management", async () => {
+  const controller = new AbortController();
+  mockStt.active = true;
+  mockStt.phase = "recording";
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose}
+    initialOrchestratorId="other" initialControlSignal={controller.signal} />);
+  await fireEvent(screen.getByTestId("voice-orchestrator-strip"), "longPress");
+  expect(mockManagerVisible).toBe(true);
+  await act(async () => { mockManagerOnClose?.(); });
+  expect(mockStt.start).toHaveBeenCalledTimes(1);
   expect(mockSynthesizeSpeechStream).not.toHaveBeenCalled();
   await screen.unmount();
 });

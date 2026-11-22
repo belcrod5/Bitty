@@ -15,6 +15,7 @@ export type VoiceSurface = {
   busy: () => boolean;
   canStart: () => boolean;
   controlVersion: () => number;
+  startSignal?: () => AbortSignal | undefined;
   hasPermission: () => Promise<boolean>;
   disarm: () => Promise<void>;
   start: () => Promise<void>;
@@ -181,7 +182,9 @@ export class VoiceControl {
   async stopSurface(id: string) {
     const entry = this.entries.get(id);
     if (!entry) return;
-    for (const op of this.active.values()) if (op.sourceId === id || this.owner === id) this.cancel(op);
+    for (const op of this.active.values()) {
+      if (op.sourceId === id || this.owner === id || op.controller.signal === entry.surface.startSignal?.()) this.cancel(op);
+    }
     entry.generation = ++this.generation;
     this.intent += 1;
     // Keep interaction ownership: stopping input must not suppress its answer/TTS.

@@ -173,7 +173,7 @@ function VoiceConversationSession({
   const footerDismissing = useSharedValue(false);
   const footerDismissDistance = useSharedValue(screenHeight);
   const footerStyle = useAnimatedStyle(() => ({ transform: [{ translateY: footerOffset.value }] }));
-  const [initialStartPending, setInitialStartPending] = useState(!initialControlSignal);
+  const [initialStartPending, setInitialStartPending] = useState(true);
   const [synthesisStarting, setSynthesisStarting] = useState(false);
   const [synthesisRequestSettled, setSynthesisRequestSettled] = useState(false);
   const [transitioning, setTransitioning] = useState(false);
@@ -187,7 +187,7 @@ function VoiceConversationSession({
   const manager = useRunnerWebSocketManager();
   const transitioningRef = useRef(false);
   const wasPausedRef = useRef(paused);
-  const startAnnouncedRef = useRef(Boolean(initialControlSignal));
+  const startAnnouncedRef = useRef(false);
   const voicePlaybackMessageIdRef = useRef("");
 
   useEffect(() => {
@@ -273,6 +273,7 @@ function VoiceConversationSession({
     && voice.ready && !replyLoading && voice.turnStatus !== "sending" && !playbackActive;
   const streamingStt = useControlledStreamingStt({
     target: { kind: "orchestrator", orchestratorId: orchestrator.id },
+    startSignal: initialControlSignal,
     busy: replyLoading || voice.turnStatus === "sending",
     announce: async (signal) => {
       const messageId = `voice-start-${randomUUID()}`;
@@ -437,7 +438,20 @@ function VoiceConversationSession({
   }, [paused, savedDraft?.text, transcript]);
 
   useEffect(() => {
-    if (streamingStt.active) { setInitialStartPending(false); return; }
+    if (streamingStt.active) {
+      startAnnouncedRef.current = true;
+      setInitialStartPending(false);
+      return;
+    }
+    if (initialControlSignal && !startAnnouncedRef.current) {
+      const finishRemoteStart = () => {
+        startAnnouncedRef.current = true;
+        setInitialStartPending(false);
+      };
+      if (initialControlSignal.aborted || !streamingStt.remotePending()) finishRemoteStart();
+      else initialControlSignal.addEventListener("abort", finishRemoteStart, { once: true });
+      return () => initialControlSignal.removeEventListener("abort", finishRemoteStart);
+    }
     if (!initialStartPending || savedDraft?.text.trim() || transcript.trim()
       || !canStart || streamingStt.remotePending()) return;
     if (!startAnnouncedRef.current) {
@@ -451,7 +465,7 @@ function VoiceConversationSession({
     setInitialStartPending(false);
     streamingStt.start();
   }, [canStart, initialStartPending, orchestrator.name, playSpeech,
-    savedDraft?.text, streamingStt.start, synthesisRequestSettled, initialControlSignal, transcript]);
+    savedDraft?.text, streamingStt.active, streamingStt.start, synthesisRequestSettled, initialControlSignal, transcript]);
 
   useEffect(() => {
     if (synthesisStarting && (isTtsPlaybackActive || ttsUiStatus === "error"
@@ -760,7 +774,7 @@ function VoiceConversationSession({
                       if (stopInputOnly) {
                         setInitialStartPending(false);
                         streamingStt.stop();
-                        if (initialStartPending) cancelSpeaking();
+                        if (initialStartPending && !initialControlSignal) cancelSpeaking();
                         return;
                       }
                       voice.interrupt();
