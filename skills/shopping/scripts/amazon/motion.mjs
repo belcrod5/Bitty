@@ -15,6 +15,7 @@ export async function pause(log, reason, min = 500, max = 1000) {
 // Select only the focused input's contents, then use real key events.
 export async function typeSearchQuery(page, input, query, log) {
   const focused = () => input.evaluate(element => document.activeElement === element);
+  await pause(log, 'before editing search input', 750, 1500);
   if (!await focused()) throw new Error('Search input did not receive focus');
   await input.evaluate(element => element.select());
   const selected = await input.evaluate(element => element.selectionStart === 0 && element.selectionEnd === element.value.length);
@@ -27,6 +28,8 @@ export async function typeSearchQuery(page, input, query, log) {
     await page.keyboard.type(character);
     log('typed-character', { character });
   }
+  await pause(log, 'after entering search query', 1000, 2000);
+  if (!await focused()) throw new Error('Search input lost focus');
   if (await input.inputValue() !== query) throw new Error('Search input does not match requested query');
 }
 
@@ -94,6 +97,7 @@ export class RandomMouse {
     const clickStarted = performance.now();
     for (let reaim = 0; reaim < 2; reaim++) {
       await locator.waitFor({ state: 'visible' });
+      if (reaim === 0) await pause(this.log, `before preparing ${label}`, 1000, 2000);
       let box = await locator.boundingBox();
       const viewport = this.page.viewportSize() ?? await this.page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
       const needed = Boolean(box && (box.x < 0 || box.y < 0 || box.x + box.width > viewport.width || box.y + box.height > viewport.height));

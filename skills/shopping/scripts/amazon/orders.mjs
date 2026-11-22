@@ -1,7 +1,7 @@
 import { readFile, writeFile, rename } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { isOrdersPath, isAuthPath, authentication } from './navigation.mjs';
-import { typeSearchQuery } from './motion.mjs';
+import { typeSearchQuery, pause } from './motion.mjs';
 
 const origin = 'https://www.amazon.co.jp';
 const inputSelector = '#searchOrdersInput, input[name="search"][type="search"], input[name="search"][type="text"]';
@@ -125,7 +125,11 @@ export async function runOrders({ page, mouse, log, config, progressPath }) {
     }
     if (action === 'orders') {
       if (isOrdersPath(new URL(page.url()).pathname)) return await complete({ navigationRepeated: false });
-      if (page.url() === 'about:blank') await page.goto(origin, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+      if (page.url() === 'about:blank') {
+        await pause(log, 'before opening Amazon home', 1500, 3000);
+        await noAuth(page);
+        await page.goto(origin, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+      }
       await noAuth(page);
       const link = page.locator('#nav-orders');
       if (await link.count() !== 1) throw new Error('購入履歴リンクがありません');

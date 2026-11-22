@@ -6,7 +6,7 @@ import { resolve } from 'node:path';
 import { discoverBrowsers, chooseBrowser } from './browser.mjs';
 import { openOperation, readOperation, listOperations, runCartAddition, runCartRemoval, openCart } from './cart.mjs';
 import { runOrders } from './orders.mjs';
-import { typeSearchQuery, RandomMouse } from './motion.mjs';
+import { typeSearchQuery, RandomMouse, pause } from './motion.mjs';
 import { searchProductSelector, readSearchResults, nextSearchPage, readProductDetails } from './catalog.mjs';
 import { allowNavigation, createRouteHandler, isSearchPath, searchTerm, productAsin, isAuthPath, authentication, safeValue, safeURL } from './navigation.mjs';
 
@@ -200,6 +200,8 @@ export async function main(config, existingBrowser) {
       if (cdp) await assertNoAuth();
       const current = new URL(page.url());
       if (current.origin !== 'https://www.amazon.co.jp' || current.pathname !== '/') {
+        await pause(log, 'before opening Amazon home', 1500, 3000);
+        await assertNoAuth();
         await page.goto('https://www.amazon.co.jp/', { waitUntil: 'domcontentloaded', timeout: 60_000 });
       }
       const input = page.locator('#twotabsearchtextbox');
@@ -223,7 +225,10 @@ export async function main(config, existingBrowser) {
     }
 
     if (cartCommand) {
-      if (!cdp) await page.goto('https://www.amazon.co.jp/', { waitUntil: 'domcontentloaded', timeout: 60_000 });
+      if (!cdp) {
+        await pause(log, 'before opening Amazon home', 1500, 3000);
+        await page.goto('https://www.amazon.co.jp/', { waitUntil: 'domcontentloaded', timeout: 60_000 });
+      }
       if (['cart-add', 'cart-remove'].includes(command)) {
         const identity = cdp ? safeURL(cdp) : fileURLToPath(new URL('./.browser-profile/', import.meta.url));
         const run = command === 'cart-remove' ? runCartRemoval : runCartAddition;
@@ -251,6 +256,9 @@ export async function main(config, existingBrowser) {
     } else if (command === 'detail') {
       let expectedAsin = asin;
       if (asin) {
+        await assertNoAuth();
+        await pause(log, 'before opening product detail', 1500, 3000);
+        await assertNoAuth();
         await page.goto(`https://www.amazon.co.jp/dp/${asin}`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
       } else {
         const products = await search();

@@ -1,7 +1,7 @@
 import {test,before,after} from 'node:test';
 import assert from 'node:assert/strict';
 import {chromium} from 'playwright';
-import {RandomMouse} from './motion.mjs';
+import {RandomMouse,typeSearchQuery} from './motion.mjs';
 let browser;
 before(async()=>{browser=await chromium.launch({channel:'chrome',headless:true});});
 after(async()=>{await browser?.close();});
@@ -43,6 +43,9 @@ test('scroll logs distinguish visible targets, document scrolling and nested scr
       await mouse.click(p.locator('button'),'test');
       assert.equal(await p.evaluate(()=>window.clicks),1);
       const scroll=logs.find(e=>e.event==='scroll');
+      const preparation=logs.find(e=>e.event==='pause'&&e.reason==='before preparing test');
+      assert.ok(preparation.milliseconds>=1000&&preparation.milliseconds<=2000);
+      assert.ok(scroll.time-preparation.time>=preparation.milliseconds-10);
       assert.equal(scroll.needed,scenario!=='visible');
       assert.equal(scroll.scrolled,scenario!=='visible');
       assert.ok(scroll.durationMs>=0);
@@ -78,4 +81,20 @@ test('scrolling that does not settle stops before mouse-down',async()=>{
     await assert.rejects(mouse.click(p.locator('button'),'test'),/scroll did not settle/);
     assert.equal(await p.evaluate(()=>window.downs||0),0);
   }finally{await p.close();}
+});
+
+test('input pacing rechecks focus after waits and never clears a newly focused unrelated input',async()=>{
+  for(const reason of ['before editing search input','after entering search query']){
+    const p=await browser.newPage();
+    try{
+      await p.setContent('<input id="search" value="previous"><input id="other" value="untouched">');
+      const input=p.locator('#search');await input.focus();let changed;
+      await assert.rejects(typeSearchQuery(p,input,'A',(event,data)=>{
+        if(event==='pause'&&data.reason===reason)changed=p.locator('#other').focus();
+      }),/focus/i);
+      await changed;
+      assert.equal(await p.locator('#other').inputValue(),'untouched');
+      assert.equal(await input.inputValue(),reason==='before editing search input'?'previous':'A');
+    }finally{await p.close();}
+  }
 });

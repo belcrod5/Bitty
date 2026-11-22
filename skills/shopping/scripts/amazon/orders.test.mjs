@@ -39,7 +39,7 @@ async function fixture(initial = '/your-orders/orders?orderFilter=all') {
   const run = async (command, config = {}) => {
     const guard = createRouteHandler(command, {}, null, () => {});
     await page.route('**/*', guard);
-    try { return await runOrders({ page, mouse, log: e => events.push(e), config: {command, ...config}, progressPath }); }
+    try { return await runOrders({ page, mouse, log: (event, data) => events.push({ event, ...data }), config: {command, ...config}, progressPath }); }
     finally { await page.unroute('**/*', guard); }
   };
   return { context, page, run, progressPath, events, auth: () => { requireAuth = true; },
@@ -65,7 +65,10 @@ test('search and refinement use the focused form; paging preserves query, last p
   try {
     const found = await f.run('orders-search', {query:'電池'});
     assert.equal(found.query, '電池'); assert.equal(f.clicks, 2);
-    assert.equal(f.events.filter(e=>e==='pause').length, 2);
+    const characterWaits = f.events.filter(e=>e.event==='pause' && e.reason==='before character');
+    assert.equal(characterWaits.length, 2);
+    assert.ok(characterWaits.every(e=>e.milliseconds>=500 && e.milliseconds<=1000));
+    assert.deepEqual(f.events.filter(e=>e.event==='typed-character').map(e=>e.character), ['電','池']);
     const refined = await f.run('orders-search', {query:'単3'});
     assert.equal(refined.query, '単3');
     const next = await f.run('orders-next');

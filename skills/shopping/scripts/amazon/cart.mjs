@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { authentication, isCartPath, isAddPath, productAsin, safeValue, addDataError } from './navigation.mjs';
 import { readProductDetails } from './catalog.mjs';
+import { pause } from './motion.mjs';
 
 function yenAmount(value) {
   const match = value?.normalize('NFKC').match(/^[¥￥]\s*([\d,]+)$/);
@@ -91,7 +92,10 @@ export async function openCart(page, mouse, log, timeout = 20_000) {
   let view = await cartView(page);
   if (view) return view;
   const current = new URL(page.url());
-  if (current.hostname !== 'www.amazon.co.jp') await page.goto('https://www.amazon.co.jp/', { waitUntil: 'domcontentloaded' });
+  if (current.hostname !== 'www.amazon.co.jp') {
+    await pause(log, 'before opening Amazon home', 1500, 3000);
+    await page.goto('https://www.amazon.co.jp/', { waitUntil: 'domcontentloaded' });
+  }
   view = await cartView(page);
   if (view) return view;
   const successLink = page.getByRole('link', { name: 'カートに移動', exact: true });
@@ -217,6 +221,9 @@ export async function runCartRemoval({ page, mouse, log, operation, attempt, ide
     const auth = await authentication(page);
     if (auth) return operation.update({ cart: auth, code: 'AUTH_REQUIRED' });
     // Explicit GET, never reload a possibly submitted POST.
+    await pause(log, 'before refreshing cart for removal confirmation', 1500, 3000);
+    const latestAuth = await authentication(page);
+    if (latestAuth) return operation.update({ cart: latestAuth, code: 'AUTH_REQUIRED' });
     await page.goto('https://www.amazon.co.jp/cart', { waitUntil: 'domcontentloaded', timeout: 60_000 });
   }
   let view = await openCart(page, mouse, log, timeout);
