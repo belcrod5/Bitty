@@ -315,3 +315,82 @@ test('verification before add and a mismatched form ASIN both prevent submission
     assert.equal(result.addition,'not_started'); assert.equal(result.cart,'verification_required'); assert.equal(f.posts,0);
   } finally { await op.release(); await f.context.close(); }
 });
+
+test('quantity comes from the selected submitter form, including hidden, indexed and item-scoped fields', async () => {
+  for (const scenario of ['hidden-with-foreign-two', 'id-wrapper', 'indexed', 'item-scoped', 'form-attribute']) {
+    await cleanupOperation(); const f=await fixture(); const op=await openOperation(directory,'current',asin);
+    const events=[];
+    try {
+      await f.page.locator('#add-to-cart-button:visible').evaluate((button,scenario)=>{
+        const form=button.form, quantity=form.elements.namedItem('quantity');
+        form.id='target';quantity.removeAttribute('id');
+        if(scenario==='hidden-with-foreign-two'){
+          quantity.outerHTML='<input type="hidden" name="quantity" value="1">';
+          form.insertAdjacentHTML('beforebegin','<form><input id="quantity" name="quantity" value="2"></form>');
+        }
+        if(scenario==='id-wrapper')quantity.insertAdjacentHTML('beforebegin','<span id="quantity">数量</span>');
+        if(scenario==='indexed')quantity.name='quantity.1';
+        if(scenario==='item-scoped'){
+          quantity.name='items[0.base][quantity]';
+          form.insertAdjacentHTML('beforeend','<input name="items[0.base][asin]" value="B012345678">');
+        }
+        if(scenario==='form-attribute'){
+          quantity.remove();form.insertAdjacentHTML('afterend','<input form="target" name="quantity" value="1">');
+        }
+      },scenario);
+      const result=await runCartAddition({...f,operation:op,identity:'fixture',log:(event,data)=>events.push({event,...data}),timeout:1000});
+      assert.equal(result.addition,'confirmed',scenario);assert.equal(f.posts,1);
+      const checks=events.filter(e=>e.event==='cart-add-form-check');
+      assert.deepEqual(checks.map(e=>e.stage),['initial','before_mouse_down']);
+      assert.ok(checks.every(e=>e.quantity.quantity===1&&e.quantity.source==='submitter_form_data'));
+      if(scenario==='hidden-with-foreign-two')assert.equal(checks[0].pageQuantity[0].belongsToForm,false);
+    }finally{await op.release();await f.context.close();}
+  }
+});
+
+test('missing, two, unknown, disabled, duplicate and foreign quantities stop before any add click and log only relevant values', async () => {
+  for(const scenario of ['missing','two','empty','disabled','duplicate','unknown-name','buy-now-only','nested-two','nested-wrong-asin','other-item']){
+    await cleanupOperation();const f=await fixture();const op=await openOperation(directory,'current',asin);const events=[];
+    try{
+      await f.page.locator('#add-to-cart-button:visible').evaluate((button,scenario)=>{
+        const form=button.form,q=form.elements.namedItem('quantity');q.id='own-quantity';
+        form.insertAdjacentHTML('beforebegin','<form id="unrelated"><input id="quantity" name="quantity" value="1"></form>');
+        form.insertAdjacentHTML('beforeend','<input name="anti-csrftoken-a2z" value="SECRET_CSRF_VALUE"><input name="session-id" value="SECRET_SESSION_VALUE">');
+        if(['missing','buy-now-only'].includes(scenario))q.remove();
+        if(scenario==='two')q.innerHTML='<option value="2">2</option>';
+        if(scenario==='empty')q.innerHTML='<option value="">不明</option>';
+        if(scenario==='disabled')q.disabled=true;
+        if(scenario==='duplicate')form.insertAdjacentHTML('beforeend','<input name="quantity" value="1">');
+        if(scenario==='unknown-name')q.name='quantityBox';
+        if(scenario==='buy-now-only')form.insertAdjacentHTML('beforeend','<div id="buyNow"><script type="a-state" data-a-state=\'{"key":"turbo-checkout-product-state"}\'>{"lineItemInputs":[{"asin":"B012345678","quantity":"1"}]}</script></div>');
+        if(scenario.startsWith('nested-')||scenario==='other-item'){
+          q.name=scenario==='other-item'?'items[1.base][quantity]':'items[0.base][quantity]';
+          if(scenario==='nested-two')q.innerHTML='<option value="2">2</option>';
+          form.insertAdjacentHTML('beforeend',`<input name="items[0.base][asin]" value="${scenario==='nested-wrong-asin'?'B099999999':'B012345678'}">`);
+        }
+      },scenario);
+      await assert.rejects(runCartAddition({...f,operation:op,identity:'fixture',log:(event,data)=>events.push({event,...data})}),e=>e.code==='QUANTITY_UNVERIFIED',scenario);
+      assert.equal(f.posts,0);assert.deepEqual(f.clicked,[]);assert.equal(op.data.addition,'not_started');
+      const diagnostic=events.find(e=>e.event==='cart-add-form-check');assert.ok(diagnostic.quantity.reason);
+      assert.equal(diagnostic.pageQuantity[0].belongsToForm,false);
+      assert.equal(JSON.stringify(events).includes('SECRET_CSRF_VALUE'),false);assert.equal(JSON.stringify(events).includes('SECRET_SESSION_VALUE'),false);
+      if(scenario==='missing'){
+        assert.equal(diagnostic.quantity.reason,'missing');assert.equal(diagnostic.quantityControlCount,0);assert.deepEqual(diagnostic.quantity.fields,[]);
+      }
+    }finally{await op.release();await f.context.close();}
+  }
+});
+
+test('a quantity change immediately before mouse-down is diagnosed and remains unsubmitted',async()=>{
+  await cleanupOperation();const f=await fixture();const op=await openOperation(directory,'current',asin);const events=[];
+  try{
+    const mouse={click:async(locator,label,{beforeMouseDown})=>{
+      await locator.evaluate(button=>{button.form.elements.namedItem('quantity').innerHTML='<option value="2">2</option>';});
+      await beforeMouseDown();throw new Error('Must not reach mouse-down');
+    }};
+    await assert.rejects(runCartAddition({...f,mouse,operation:op,identity:'fixture',log:(event,data)=>events.push({event,...data})}),e=>e.code==='QUANTITY_UNVERIFIED');
+    const checks=events.filter(e=>e.event==='cart-add-form-check');
+    assert.equal(checks[0].quantity.quantity,1);assert.equal(checks[1].stage,'before_mouse_down');assert.equal(checks[1].quantity.reason,'not_one');
+    assert.equal(f.posts,0);assert.equal(op.data.addition,'not_started');
+  }finally{await op.release();await f.context.close();}
+});

@@ -43,10 +43,29 @@ export function allowNavigation(url, method, command) {
   if (['orders', 'orders-search', 'orders-results', 'orders-next', 'orders-resume'].includes(command) && isOrdersPath(url.pathname)) return true;
   return false;
 }
+// Inspect the actual successful controls of the selected submitter's form.
+// Never use a different form or a buy-now configuration to supply missing quantity.
+export function addQuantityEvidence(data, asin) {
+  const fields = [...data.entries()].filter(([key]) => /quantity|qty/i.test(key));
+  let reason = null;
+  if (!fields.length) reason = 'missing';
+  else if (fields.length !== 1) reason = 'ambiguous';
+  else {
+    const [name, value] = fields[0];
+    if (!/^quantity(?:\.\d+)?$/i.test(name) && name !== 'items[0.base][quantity]') reason = 'unsupported_field';
+    else if (value !== '1') reason = 'not_one';
+    else if (name === 'items[0.base][quantity]' &&
+      (data.getAll('items[0.base][asin]').length !== 1 || data.get('items[0.base][asin]')?.toUpperCase() !== asin)) reason = 'item_asin_mismatch';
+  }
+  return { source: 'submitter_form_data', fields, quantity: reason ? null : 1, reason };
+}
+
 export function addDataError(data, asin, action) {
   const asins = [...data.entries()].filter(([k]) => /^ASIN(?:\.\d+)?$/i.test(k)).map(([,v]) => v.toUpperCase());
-  const quantities = [...data.entries()].filter(([k]) => /^quantity(?:\.\d+)?$/i.test(k)).map(([,v]) => v);
-  if (asins.length !== 1 || asins[0] !== asin || quantities.length !== 1 || quantities[0] !== '1') return 'asin_or_quantity_mismatch';
+  const itemAsins = data.getAll('items[0.base][asin]').map(value => value.toUpperCase());
+  const otherItems = [...data.keys()].some(key => /^items\[/i.test(key) && !key.startsWith('items[0.base]['));
+  if (asins.length > 1 || itemAsins.length > 1 || asins.length + itemAsins.length === 0 ||
+    [...asins, ...itemAsins].some(value => value !== asin) || otherItems || addQuantityEvidence(data, asin).reason) return 'asin_or_quantity_mismatch';
   // Ordinary Amazon forms can contain isBuyNow=1. It is safe only with the
   // explicit add submitter AND the dedicated cart endpoint, never buy-box.
   const explicitAdd = /^\/cart\/add-to-cart(?:\/|$)/.test(action.pathname) && data.has('submit.add-to-cart');

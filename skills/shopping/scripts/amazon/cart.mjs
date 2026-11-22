@@ -1,7 +1,7 @@
 import { mkdir, open, readFile, readdir, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { authentication, isCartPath, isAddPath, productAsin, safeValue, addDataError } from './navigation.mjs';
+import { authentication, isCartPath, isAddPath, productAsin, safeValue, addDataError, addQuantityEvidence } from './navigation.mjs';
 import { readProductDetails } from './catalog.mjs';
 import { pause } from './motion.mjs';
 
@@ -153,25 +153,39 @@ export async function runCartAddition({ page, mouse, log, operation, attempt, id
     const button = page.locator('#add-to-cart-button:visible');
     await button.waitFor({ state: 'visible' });
     if (!await button.isEnabled()) throw new Error('カート追加ボタンが無効です');
-    async function verifyForm() {
+    async function verifyForm(stage = 'initial') {
       const form = await button.evaluate(button => {
         const form = button.form;
-        const quantity = document.querySelector('#quantity') ?? form?.elements.namedItem('quantity');
+        const entries = form ? [...new FormData(form, button)].map(([key, value]) => [key, typeof value === 'string' ? value : '']) : [];
+        const describe = element => ({ tag: element.tagName, id: element.id.slice(0, 120),
+          name: (element.name ?? '').slice(0, 120), type: element.type ?? null,
+          value: typeof element.value === 'string' ? element.value.slice(0, 100) : null,
+          disabled: element.matches(':disabled'), belongsToForm: !!form && element.form === form });
+        const controls = form ? [...form.elements].filter(element => /quantity|qty/i.test(element.name ?? '') || element.id === 'quantity') : [];
+        const pageQuantity = [...document.querySelectorAll('[id="quantity"]')];
         return { action: button.getAttribute('formaction') ? button.formAction : form?.action,
           method: (button.getAttribute('formmethod') ?? form?.method ?? '').toUpperCase(),
           target: button.getAttribute('formtarget') ?? form?.target ?? '',
           encoding: button.getAttribute('formenctype') ?? form?.enctype,
           ordinaryAdd: button.type === 'submit' && !button.closest('#sns-atc-container') &&
             /^(カートに入れる|Add to Cart|Add to Basket)$/i.test((button.value || button.textContent).trim()),
-          entries: form ? [...new FormData(form, button)].map(([key, value]) => [key, typeof value === 'string' ? value : '']) : [],
-          quantity: quantity?.value, asin: form?.elements.namedItem('ASIN')?.value ?? form?.elements.namedItem('ASIN.1')?.value };
+          entries, asin: entries.find(([key]) => /^ASIN(?:\.\d+)?$/i.test(key) || key === 'items[0.base][asin]')?.[1],
+          diagnostics: { formPresent: !!form, formId: form?.id?.slice(0, 120) ?? null,
+            submitterId: button.id, submitterName: button.name,
+            quantityControls: controls.slice(0, 20).map(describe), quantityControlCount: controls.length,
+            pageQuantity: pageQuantity.slice(0, 20).map(describe), pageQuantityCount: pageQuantity.length,
+            fieldNames: entries.map(([key]) => key.slice(0, 120)).slice(0, 100), fieldCount: entries.length } };
       });
+      const data = new URLSearchParams(form.entries);
+      const quantity = addQuantityEvidence(data, asin);
+      log('cart-add-form-check', { stage, asin, ...form.diagnostics,
+        quantity: { ...quantity, fields: quantity.fields.slice(0, 20).map(([key, value]) => [key.slice(0, 120), value.slice(0, 100)]) } });
       const action = new URL(form.action);
       if (form.asin?.toUpperCase() !== asin) throw new Error('カート追加フォームの商品ASINが一致しません');
-      if (form.quantity !== '1') throw new Error('数量が1であることを確認できません。数量変更や追加は行いません');
+      if (quantity.reason) throw Object.assign(new Error(`数量が1であることを確認できません。数量変更や追加は行いません (${quantity.reason})`), { code: 'QUANTITY_UNVERIFIED' });
       if (action.origin !== 'https://www.amazon.co.jp' || !isAddPath(action.pathname) || form.method !== 'POST' ||
         !form.ordinaryAdd || !['', '_self'].includes(form.target) || form.encoding !== 'application/x-www-form-urlencoded') throw new Error('未対応のカート追加フォームです');
-      const formError = addDataError(new URLSearchParams(form.entries), asin, action);
+      const formError = addDataError(data, asin, action);
       if (formError) throw new Error(`カート追加フォームを送信できません: ${formError}`);
       return action;
     }
@@ -179,7 +193,7 @@ export async function runCartAddition({ page, mouse, log, operation, attempt, id
     await operation.update({ title, browserIdentity: identity, quantity: 1, selection });
     log('quantity-confirmed', { asin, quantity: 1 });
     await mouse.click(button, 'add to cart', { beforeMouseDown: async () => {
-      if ((await verifyForm()).href !== action.href) throw new Error('クリック直前に追加先が変わりました');
+      if ((await verifyForm('before_mouse_down')).href !== action.href) throw new Error('クリック直前に追加先が変わりました');
       if (JSON.stringify(await verifySelection()) !== JSON.stringify(selection)) throw new Error('クリック直前に選択項目・価格が変わりました');
       // Record the point of no automatic retry BEFORE submitting any event.
       await operation.update({ addition: 'submitted', retryAdd: false, submittedAt: new Date().toISOString() });

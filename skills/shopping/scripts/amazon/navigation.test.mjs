@@ -78,3 +78,26 @@ test('CLI requires an ASIN and stable operation ID; attachment must be explicit 
   assert.throws(() => options(['cart','--tab-url','https://www.amazon.co.jp/cart']), /cdp/);
   assert.equal(options(['cart-add','--cdp','chrome','--asin','B012345678','--operation','one']).command, 'cart-add');
 });
+
+test('request guard binds nested quantity to the one target item and never defaults a missing quantity',()=>{
+  const action=new URL('https://www.amazon.co.jp/cart/add-to-cart');
+  const request=body=>({url:()=>action.href,method:()=>'POST',headers:()=>({'content-type':'application/x-www-form-urlencoded'}),postData:()=>body});
+  for(const [body,allowed] of [
+    ['ASIN=B012345678&quantity=1',true],
+    ['ASIN=B012345678&items[0.base][asin]=B012345678&items[0.base][quantity]=1',true],
+    ['items[0.base][asin]=B012345678&items[0.base][quantity]=1',true],
+    ['ASIN=B012345678',false],
+    ['ASIN=B012345678&quantity=2',false],
+    ['ASIN=B012345678&items[0.base][quantity]=1',false],
+    ['ASIN=B012345678&items[0.base][asin]=B099999999&items[0.base][quantity]=1',false],
+    ['ASIN=B012345678&quantity=1&items[0.base][quantity]=2',false],
+    ['ASIN=B012345678&quantity=1&items[1.base][asin]=B099999999',false],
+    ['ASIN=B012345678&quantity=1&quantity=1',false],
+    ['ASIN=B012345678&quantity=1&quantityBox=2',false],
+    ['ASIN=B012345678&qty=1',false],
+  ]){
+    const attempt={action:action.href,armed:true,consumed:false};
+    assert.equal(authorizeAdd(request(body),attempt,'B012345678'),allowed,body);
+    assert.equal(attempt.consumed,allowed);
+  }
+});
