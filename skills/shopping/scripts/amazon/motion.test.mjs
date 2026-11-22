@@ -1,7 +1,7 @@
 import {test,before,after} from 'node:test';
 import assert from 'node:assert/strict';
 import {chromium} from 'playwright';
-import {RandomMouse,typeSearchQuery} from './motion.mjs';
+import {RandomMouse,typeSearchQuery,activateTab} from './motion.mjs';
 let browser;
 before(async()=>{browser=await chromium.launch({channel:'chrome',headless:true});});
 after(async()=>{await browser?.close();});
@@ -100,16 +100,38 @@ test('input pacing rechecks focus after waits and never clears a newly focused u
 });
 
 
-test('tab visibility alone does not reject a working click',async()=>{
+test('an inactive tab is activated automatically without changing the focused input',async()=>{
   const p=await browser.newPage();
   try{
-    await p.setContent('<button onclick="window.clicks=(window.clicks||0)+1">test</button>');
-    await p.evaluate(()=>Object.defineProperty(document,'visibilityState',{get:()=> 'hidden'}));
-    const mouse=new RandomMouse(p,()=>{});let preflights=0;
-    mouse.moveTo=point=>p.mouse.move(point.x,point.y);
-    await mouse.click(p.locator('button'),'test',{beforeMouseDown:async()=>{preflights++;}});
-    assert.equal(preflights,1);assert.equal(await p.evaluate(()=>window.clicks),1);
+    await p.setContent('<input id="query" value="keep"><button onclick="window.clicks=(window.clicks||0)+1">test</button>');
+    await p.locator('#query').focus();
+    await p.evaluate(()=>Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'hidden'}));
+    const original=p.bringToFront.bind(p);let activations=0;
+    p.bringToFront=async()=>{activations++;await p.evaluate(()=>delete document.visibilityState);await original();};
+    const logs=[];await activateTab(p,(event,data)=>logs.push({event,...data}));
+    assert.equal(activations,1);assert.equal(await p.locator('#query').inputValue(),'keep');
+    assert.equal(await p.locator('#query').evaluate(e=>e===document.activeElement),true);
+    assert.equal(logs.find(e=>e.event==='tab-activation')?.success,true);
+    await activateTab(p,()=>{});assert.equal(activations,1);
   }finally{await p.close();}
+});
+
+test('activation failure initially or after movement stops before the mutation callback and mouse-down',async()=>{
+  for(const stage of ['initial','after-movement']){
+    const p=await browser.newPage();
+    try{
+      await p.setContent('<button onmousedown="window.downs=(window.downs||0)+1">test</button>');
+      const hide=()=>p.evaluate(()=>Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'hidden'}));
+      if(stage==='initial')await hide();
+      let activations=0,preflights=0,movements=0;
+      p.bringToFront=async()=>{activations++;};
+      const mouse=new RandomMouse(p,()=>{});
+      mouse.moveTo=async()=>{movements++;await hide();};
+      await assert.rejects(mouse.click(p.locator('button'),'test',{beforeMouseDown:async()=>{preflights++;}}),e=>e.code==='TAB_ACTIVATION_FAILED');
+      assert.equal(activations,1);assert.equal(movements,stage==='initial'?0:1);
+      assert.equal(preflights,0);assert.equal(await p.evaluate(()=>window.downs||0),0);
+    }finally{await p.close();}
+  }
 });
 
 test('paced moves do not wait for each acknowledgement and drain the last one before returning',async()=>{

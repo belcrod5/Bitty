@@ -6,7 +6,7 @@ import { resolve } from 'node:path';
 import { discoverBrowsers, chooseBrowser } from './browser.mjs';
 import { openOperation, readOperation, listOperations, runCartAddition, runCartRemoval, openCart } from './cart.mjs';
 import { runOrders } from './orders.mjs';
-import { typeSearchQuery, RandomMouse, pause } from './motion.mjs';
+import { typeSearchQuery, RandomMouse, pause, activateTab } from './motion.mjs';
 import { searchProductSelector, readSearchResults, nextSearchPage, readProductDetails } from './catalog.mjs';
 import { allowNavigation, createRouteHandler, isSearchPath, searchTerm, productAsin, isAuthPath, authentication, safeValue, safeURL } from './navigation.mjs';
 
@@ -223,6 +223,8 @@ export async function main(config, existingBrowser) {
       await screenshot('03-search-results.png');
       return products;
     }
+
+    if (!['search-results', 'detail-current', 'orders-results'].includes(command) && !await authentication(page)) await activateTab(page, log);
 
     if (cartCommand) {
       if (!cdp) {

@@ -11,11 +11,38 @@ export async function pause(log, reason, min = 500, max = 1000) {
   await sleep(milliseconds);
 }
 
+// Activate the same tab; never navigate, reconnect or replace a selected page.
+export async function activateTab(page, log) {
+  const read = () => page.evaluate(() => ({ visible: document.visibilityState === 'visible', focused: document.hasFocus() }));
+  const before = await read();
+  if (before.visible && before.focused) return;
+  let after = before;
+  try {
+    await page.bringToFront();
+    const deadline = performance.now() + 2000;
+    do {
+      after = await read();
+      if (after.visible && after.focused) break;
+      await sleep(50);
+    } while (performance.now() < deadline);
+    if (after.visible && after.focused) {
+      await pause(log, 'after activating tab');
+      after = await read();
+    }
+    if (!after.visible || !after.focused) throw new Error('Tab did not become active');
+  } catch (cause) {
+    log('tab-activation', { before, after, success: false });
+    throw Object.assign(new Error('対象タブを自動でアクティブにできませんでした。入力・クリックを送信せず停止します'), { code: 'TAB_ACTIVATION_FAILED', cause });
+  }
+  log('tab-activation', { before, after, success: true });
+}
+
 // ControlOrMeta+A did not select all text in the live extension session.
 // Select only the focused input's contents, then use real key events.
 export async function typeSearchQuery(page, input, query, log) {
   const focused = () => input.evaluate(element => document.activeElement === element);
   await pause(log, 'before editing search input', 750, 1500);
+  await activateTab(page, log);
   if (!await focused()) throw new Error('Search input did not receive focus');
   await input.evaluate(element => element.select());
   const selected = await input.evaluate(element => element.selectionStart === 0 && element.selectionEnd === element.value.length);
@@ -24,6 +51,7 @@ export async function typeSearchQuery(page, input, query, log) {
   if (await input.inputValue() !== '') throw new Error('Search input was not cleared');
   for (const { segment: character } of new Intl.Segmenter('ja', { granularity: 'grapheme' }).segment(query)) {
     await pause(log, 'before character');
+    await activateTab(page, log);
     if (!await focused()) throw new Error('Search input lost focus');
     await page.keyboard.type(character);
     log('typed-character', { character });
@@ -108,6 +136,7 @@ export class RandomMouse {
   }
 
   async click(locator, label, { beforeMouseDown } = {}) {
+    await activateTab(this.page, this.log);
     const clickStarted = performance.now();
     for (let reaim = 0; reaim < 2; reaim++) {
       await locator.waitFor({ state: 'visible' });
@@ -160,6 +189,7 @@ export class RandomMouse {
       await this.moveTo(point);
       this.log('mouse-move-complete', { label, attempt: reaim + 1, durationMs: Math.round(performance.now() - movementStarted) });
       await pause(this.log, `before clicking ${label}`);
+      await activateTab(this.page, this.log);
       // Do not click if an overlay or layout shift has replaced the intended target.
       const hit = await locator.evaluate((element, p) => {
         const target = document.elementFromPoint(p.x, p.y);
