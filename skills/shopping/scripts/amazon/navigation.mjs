@@ -42,16 +42,25 @@ export function allowNavigation(url, method, command) {
   return false;
 }
 export function authorizeAdd(request, attempt, asin) {
+  attempt.blockedReason = 'not_armed';
   if (!attempt.armed || attempt.consumed || request.method() !== 'POST') return false;
   const url = new URL(request.url());
+  attempt.blockedReason = 'form_action_mismatch';
   if (url.origin !== 'https://www.amazon.co.jp' || !isAddPath(url.pathname) || url.href !== attempt.action) return false;
   const type = request.headers()['content-type'] ?? '';
+  attempt.blockedReason = 'unsupported_content_type';
   if (!type.startsWith('application/x-www-form-urlencoded')) return false;
   const data = new URLSearchParams(request.postData() ?? '');
   const asins = [...data.entries()].filter(([k]) => /^ASIN(?:\.\d+)?$/i.test(k)).map(([,v]) => v.toUpperCase());
   const quantities = [...data.entries()].filter(([k]) => /^quantity(?:\.\d+)?$/i.test(k)).map(([,v]) => v);
+  attempt.blockedReason = 'asin_or_quantity_mismatch';
   if (asins.length !== 1 || asins[0] !== asin || quantities.length !== 1 || quantities[0] !== '1') return false;
-  if ([...data.keys()].some(k => /buy.?now|checkout/i.test(k))) return false;
+  // Amazon includes this hidden flag in ordinary add-to-cart forms as well.
+  // Accept only explicit inactive values; a buy-now submit button stays blocked.
+  attempt.blockedReason = 'purchase_control';
+  if ([...data.entries()].some(([key, value]) => /buy.?now|checkout/i.test(key) &&
+    !(key === 'isBuyNow' && ['0', 'false'].includes(value)))) return false;
+  attempt.blockedReason = null;
   attempt.consumed = true;
   attempt.armed = false;
   return true;
@@ -65,7 +74,8 @@ export function createRouteHandler(command, attempt, asin, log) {
     if (cartCommand && isAddPath(url.pathname) && request.method() === 'POST' && authorizeAdd(request, attempt, asin)) return route.fallback();
     const cartRead = cartCommand && ['GET', 'HEAD'].includes(request.method()) && allowNavigation(url, request.method(), command);
     if (forbiddenPath(url.pathname) && !cartRead) {
-      log('blocked-request', { method: request.method(), path: url.pathname });
+      log('blocked-request', { method: request.method(), path: url.pathname,
+        ...(cartCommand && isAddPath(url.pathname) && request.method() === 'POST' ? { reason: attempt.blockedReason } : {}) });
       return route.abort('blockedbyclient');
     }
     if (request.isNavigationRequest() && request.frame().parentFrame() === null && !allowNavigation(url, request.method(), command)) {

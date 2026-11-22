@@ -12,7 +12,7 @@ let browser, directory;
 before(async () => { directory = await mkdtemp(join(tmpdir(), 'shopping-test-')); browser = await chromium.launch({channel:'chrome',headless:true,args:['--host-resolver-rules=MAP www.amazon.co.jp ~NOTFOUND, MAP m.media-amazon.com ~NOTFOUND']}); });
 after(async () => { await browser?.close(); await rm(directory, {recursive:true,force:true}); });
 
-async function fixture({ challenge = false, lost = false, quantity = 1 } = {}) {
+async function fixture({ challenge = false, lost = false, quantity = 1, buyBox = false } = {}) {
   const context = await browser.newContext({serviceWorkers:'block'});
   const page = await context.newPage();
   page.setDefaultTimeout(1500);
@@ -22,7 +22,7 @@ async function fixture({ challenge = false, lost = false, quantity = 1 } = {}) {
   await context.route('**/*', async route => {
     const req = route.request(), url = new URL(req.url());
     let html='';
-    if (url.pathname.startsWith('/dp/')) html=`<h1 id="productTitle">Test apron</h1><form method="post" action="/cart/add-to-cart/ref=one"><input name="ASIN" value="${asin}"><select id="quantity" name="quantity"><option>${quantity}</option></select><button id="add-to-cart-button">カートに入れる</button></form><a id="nav-cart" href="/cart">カート</a>`;
+    if (url.pathname.startsWith('/dp/')) html=`<h1 id="productTitle">Test apron</h1><form method="post" action="${buyBox ? '/gp/product/handle-buy-box/ref=one' : '/cart/add-to-cart/ref=one'}"><input name="ASIN" value="${asin}"><select id="quantity" name="quantity"><option>${quantity}</option></select>${buyBox ? '<input type="hidden" name="isBuyNow" value="0"><button name="submit.buy-now" value="1">今すぐ買う</button>' : ''}<button id="add-to-cart-button" name="submit.add-to-cart" formaction="/cart/add-to-cart/ref=one">カートに入れる</button></form><a id="nav-cart" href="/cart">カート</a>`;
     else if (url.pathname.startsWith('/cart/add-to-cart')) {
       if (req.method()==='POST') {
         posts++;
@@ -49,6 +49,14 @@ test('quantity1 add is confirmed, then cart contents are read; journal precedes 
   try {
     const result=await runCartAddition({...f,operation:op,identity:'fixture',log:()=>{},timeout:1000});
     assert.equal(result.addition,'confirmed'); assert.equal(result.retryAdd,false); assert.equal(result.cart,'visible'); assert.equal(result.items[0].quantity,'1'); assert.equal(f.posts,1);
+    assert.deepEqual(f.clicked,['add to cart','cart link']);
+  } finally { await op.release(); await f.context.close(); }
+});
+test('buy-box form with inactive isBuyNow submits only the add button once', async () => {
+  await cleanupOperation(); const f=await fixture({buyBox:true}); const op=await openOperation(directory,'current',asin);
+  try {
+    const result=await runCartAddition({...f,operation:op,identity:'fixture',log:()=>{},timeout:1000});
+    assert.equal(result.addition,'confirmed'); assert.equal(result.cart,'visible'); assert.equal(f.posts,1);
     assert.deepEqual(f.clicked,['add to cart','cart link']);
   } finally { await op.release(); await f.context.close(); }
 });

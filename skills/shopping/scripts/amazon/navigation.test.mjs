@@ -39,6 +39,21 @@ test('URLs in nested records and Playwright errors lose credentials, query and h
   assert.equal(JSON.stringify(safe).includes('pass'), false);
   assert.equal(safe.nested[0], 'https://www.amazon.co.jp/cart');
 });
+
+test('inactive isBuyNow hidden field permits only the requested single-item add', () => {
+  const action = 'https://www.amazon.co.jp/cart/add-to-cart/ref=one';
+  const make = body => ({ url: () => action, method: () => 'POST', headers: () => ({'content-type':'application/x-www-form-urlencoded'}), postData: () => body });
+  for (const value of ['0', 'false']) {
+    const attempt = { action, armed: true, consumed: false };
+    assert.equal(authorizeAdd(make(`ASIN=B012345678&quantity=1&isBuyNow=${value}`), attempt, 'B012345678'), true);
+    assert.equal(authorizeAdd(make(`ASIN=B012345678&quantity=1&isBuyNow=${value}`), attempt, 'B012345678'), false);
+  }
+  for (const extra of ['isBuyNow=', 'isBuyNow=1', 'isBuyNow=true', 'isBuyNow=unknown', 'submit.buy-now=', 'checkout=0', 'isBuyNow=0&isBuyNow=1']) {
+    const attempt = { action, armed: true, consumed: false };
+    assert.equal(authorizeAdd(make(`ASIN=B012345678&quantity=1&${extra}`), attempt, 'B012345678'), false);
+    assert.equal(attempt.consumed, false);
+  }
+});
 test('CLI requires an ASIN and stable operation ID; attachment must be explicit and local', () => {
   assert.throws(() => options(['cart-add','--asin','B012345678']), /operation/);
   assert.throws(() => options(['cart-add','--operation','a']), /asin/);
