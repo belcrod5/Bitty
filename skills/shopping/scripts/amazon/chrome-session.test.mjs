@@ -58,3 +58,35 @@ test('permission wait can be stopped without accepting or retrying a connection'
   assert.equal(disconnected, true);
   await rm(directory, { recursive: true, force: true });
 });
+
+test('client timeout preserves the running command and result retrieval never reruns it or waits for a renderer title',async()=>{
+  const directory=await mkdtemp(join(tmpdir(),'shopping-result-'));const socket=join(directory,'session.sock');
+  let finish, calls=0, titleCalls=0;
+  const result=new Promise(resolve=>{finish=resolve;});
+  const browser={isConnected:()=>true,on:()=>{},close:async()=>{},contexts:()=>[{pages:()=>[{
+    url:()=> 'https://www.amazon.co.jp/cart?token=SECRET',
+    title:()=>{titleCalls++;return new Promise(()=>{});}
+  }]}]};
+  const session=await serveSession(socket,async()=>browser,{transport:'extension',run:async()=>{calls++;return result;}});
+  try{
+    await new Promise(r=>setImmediate(r));
+    const request={command:'run',requestId:'timeout-test',args:['cart-add','--asin','B012345678','--operation','test-add']};
+    const pending=await requestSession(socket,request,{timeoutMs:30});
+    assert.equal(pending.code,'COMMAND_PENDING');assert.equal(pending.exitCode,4);assert.equal(pending.requestId,'timeout-test');
+    const status=await requestSession(socket,{command:'status'},{timeoutMs:500});
+    assert.equal(status.busy,true);assert.equal(status.activeRequest.operation,'test-add');assert.equal(titleCalls,0);
+    assert.equal(JSON.stringify(status).includes('SECRET'),false);
+    assert.equal((await requestSession(socket,{command:'result',requestId:pending.requestId})).requestState,'running');
+    assert.equal((await requestSession(socket,request)).code,'COMMAND_PENDING');assert.equal(calls,1);
+    assert.equal((await requestSession(socket,{command:'stop'})).success,false);
+    assert.equal((await requestSession(socket,{command:'run',args:['cart']})).success,false);
+    finish({success:true,addition:'confirmed',retryAdd:false,exitCode:0});
+    for(let i=0;(await session.status()).busy&&i<100;i++)await new Promise(r=>setTimeout(r,5));
+    const completed=await requestSession(socket,{command:'result',requestId:pending.requestId});
+    assert.equal(completed.addition,'confirmed');assert.equal(completed.requestState,'completed');assert.equal(calls,1);
+    assert.equal((await requestSession(socket,request)).addition,'confirmed');assert.equal(calls,1);
+    assert.equal((await requestSession(socket,{command:'result'})).addition,'confirmed');
+    assert.equal((await requestSession(socket,{command:'result',requestId:'absent'})).code,'RESULT_NOT_FOUND');
+    const changed=await requestSession(socket,{...request,args:['cart']});assert.equal(changed.success,false);assert.equal(calls,1);
+  }finally{finish({success:false});await session.stop();await rm(directory,{recursive:true,force:true});}
+});

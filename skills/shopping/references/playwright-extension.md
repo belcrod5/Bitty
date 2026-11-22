@@ -32,6 +32,18 @@ npm run chrome -- search "ボールペン"
 
 停止は `npm run chrome -- stop`。自動の30分切断は行わない。Chrome終了などで切断されたら、実行中の操作の結果を確認し、`stop` → `start` で接続だけを作り直す。保存済みキーが有効なら接続ごとの確認は不要。失敗した検索・追加を自動再実行するものではない。拡張のキーを再発行した場合は初回設定をやり直す。
 
+## 応答待ち終了後の結果取得
+
+CLIの240秒の応答待ちを超えた場合、`COMMAND_PENDING`・終了コード4と `requestId` / `resultCommand` を返す。接続後に応答を失った場合は `COMMAND_RESULT_UNAVAILABLE`。いずれも裏の処理が止まったことや、追加失敗を意味しない。`resultCommand` は操作を再送せず、その実行の状態・完了結果だけを返す。
+
+```sh
+npm run chrome -- result <応答のrequestId>
+```
+
+処理中は `requestState: running`・終了コード4、完了後は元コマンドの結果JSON・終了コードと `requestState: completed` を返す。IDを省略した `result` は実行中、または直近のコマンドが対象。`status` も `busy`・`activeRequest`・`lastRequest` をブラウザへの問い合わせなしで返すため、ページ応答の遅延中にも使える。`status` のタブ情報はURLのみで、タイトル・画面内容は `browser-status` で読む。
+
+実行結果はワーカー内で直近20件まで保持し、再起動で消える。`RESULT_NOT_FOUND` は追加失敗を意味せず、完了時に保存された `artifacts/` の結果で調査できる。実行中は別コマンド・接続停止を受け付けず、CLIの待機終了をきっかけに処理を再送・キャンセルしない。同じ実行IDの再受信も、進行状態や完了結果の返信だけで処理を繰り返さない。
+
 ## 操作前の自動アクティブ化
 
 同じ対象タブが非表示またはフォーカスを失っていれば、[Playwrightの公開API `page.bringToFront()`](https://playwright.dev/docs/api/class-page#page-bring-to-front) を呼ぶ。表示状態とページフォーカスが戻ったことを確認してから操作する。移動・再読み込み・新しいタブへの置き換えは行わないため、詳細ページの選択や認証後の状態も保持する。

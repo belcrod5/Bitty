@@ -558,3 +558,81 @@ test('dual quantity aliases and ASIN association are rechecked immediately befor
     }finally{await op.release();await f.context.close();}
   }
 });
+
+test('a stalled confirmation read obeys the overall deadline and a late success cannot mutate its result', async()=>{
+  await cleanupOperation();const f=await fixture();const op=await openOperation(directory,'current',asin);const events=[];
+  const originalEvaluate=f.page.evaluate.bind(f.page);
+  let release, reads=0;
+  const pending=new Promise(resolve=>{release=resolve;});
+  try{
+    const mouse={click:async(...args)=>{
+      await f.mouse.click(...args);
+      if(args[1]==='add to cart')f.page.evaluate=()=>{reads++;return pending;};
+    }};
+    const started=performance.now();
+    const result=await runCartAddition({...f,mouse,operation:op,identity:'fixture',log:(event,data)=>events.push({event,...data}),timeout:40});
+    assert.ok(performance.now()-started<1500);
+    assert.equal(result.addition,'unknown');assert.equal(result.confirmationCode,'ADD_CONFIRMATION_TIMEOUT');
+    assert.equal(result.retryAdd,false);assert.equal(f.attempt.armed,false);assert.equal(f.posts,1);assert.equal(reads,1);
+    assert.deepEqual(f.clicked,['add to cart']);
+    assert.ok(events.some(e=>e.event==='browser-read-timeout'));
+    const updated=result.updatedAt;
+    release({pathname:'/cart/add-to-cart',verification:false,scopedConfirmed:true,bodyConfirmed:true});
+    await new Promise(r=>setImmediate(r));
+    assert.equal(op.data.addition,'unknown');assert.equal(op.data.updatedAt,updated);assert.equal(f.posts,1);
+    assert.ok(events.some(e=>e.event==='browser-read-end'&&e.late));
+  }finally{release?.({pathname:'/cart',verification:false});f.page.evaluate=originalEvaluate;await op.release();await f.context.close();}
+});
+
+test('confirmation read failures are logged without leaking browser error details or resending',async()=>{
+  await cleanupOperation();const f=await fixture();const op=await openOperation(directory,'current',asin);const events=[];
+  const originalEvaluate=f.page.evaluate.bind(f.page);
+  try{
+    const mouse={click:async(...args)=>{
+      await f.mouse.click(...args);
+      if(args[1]==='add to cart')f.page.evaluate=async()=>{throw new Error('https://www.amazon.co.jp/checkpoint/continue?token=SECRET');};
+    }};
+    const result=await runCartAddition({...f,mouse,operation:op,identity:'fixture',log:(event,data)=>events.push({event,...data}),timeout:100});
+    assert.equal(result.addition,'unknown');assert.equal(result.confirmationCode,'BROWSER_READ_FAILED');assert.equal(result.retryAdd,false);
+    assert.equal(f.posts,1);assert.equal(f.attempt.armed,false);assert.deepEqual(f.clicked,['add to cart']);
+    assert.ok(events.some(e=>e.event==='browser-read-error'));assert.equal(JSON.stringify(events).includes('SECRET'),false);
+  }finally{f.page.evaluate=originalEvaluate;await op.release();await f.context.close();}
+});
+
+test('confirmation snapshots do not accept a different product, a hidden success or an authentication page',async()=>{
+  for(const scenario of ['other-product','hidden','auth']){
+    await cleanupOperation();const f=await fixture();const op=await openOperation(directory,'current',asin);
+    try{
+      const mouse={click:async(...args)=>{
+        await f.mouse.click(...args);
+        if(args[1]==='add to cart')await f.page.setContent(scenario==='auth'
+          ? `<p>私は人間です</p><div id="sw-atc-details-single-container">カートに入れました<a href="/dp/${asin}">item</a></div>`
+          : `<div id="sw-atc-details-single-container" ${scenario==='hidden'?'hidden':''}>カートに入れました<a href="/dp/${scenario==='other-product'?'B099999999':asin}">item</a></div>`);
+      }};
+      const result=await runCartAddition({...f,mouse,operation:op,identity:'fixture',log:()=>{},timeout:80});
+      assert.equal(result.addition,'unknown',scenario);assert.equal(result.retryAdd,false);assert.equal(f.posts,1);
+      if(scenario==='auth')assert.equal(result.cart,'verification_required');
+    }finally{await op.release();await f.context.close();}
+  }
+});
+
+test('navigation context changes retry only the confirmation read within the original deadline',async()=>{
+  for(const scenario of ['once','persistent']){
+    await cleanupOperation();const f=await fixture();const op=await openOperation(directory,'current',asin);const events=[];
+    const originalEvaluate=f.page.evaluate.bind(f.page);let reads=0;
+    try{
+      const mouse={click:async(...args)=>{
+        await f.mouse.click(...args);
+        if(args[1]==='add to cart')f.page.evaluate=(...args)=>{
+          reads++;
+          if(scenario==='persistent'||reads===1)return Promise.reject(new Error('Execution context was destroyed, most likely because of a navigation'));
+          return originalEvaluate(...args);
+        };
+      }};
+      const result=await runCartAddition({...f,mouse,operation:op,identity:'fixture',log:(event,data)=>events.push({event,...data}),timeout:scenario==='once'?1000:60});
+      assert.equal(f.posts,1);assert.ok(events.some(e=>e.event==='confirmation-navigation-retry'));
+      if(scenario==='once'){assert.equal(result.addition,'confirmed');assert.ok(reads>=2);}
+      else {assert.equal(result.addition,'unknown');assert.equal(result.confirmationCode,'ADD_CONFIRMATION_TIMEOUT');assert.deepEqual(f.clicked,['add to cart']);}
+    }finally{f.page.evaluate=originalEvaluate;await op.release();await f.context.close();}
+  }
+});

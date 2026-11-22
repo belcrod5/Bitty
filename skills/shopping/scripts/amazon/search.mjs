@@ -287,7 +287,8 @@ export async function main(config, existingBrowser) {
         progressPath: config.ordersProgressPath ?? fileURLToPath(new URL('./.orders-progress.json', import.meta.url)) }) };
       await screenshot('04-order-history.png');
     }
-    summary = { ...summary, success: cartCommand ? summary.success : true, url: safeURL(page.url()), title: await page.title() };
+    summary = { ...summary, success: cartCommand ? summary.success : true, url: safeURL(page.url()),
+      ...(['unknown', 'submitted'].includes(summary.addition) || ['unknown', 'submitted'].includes(summary.removal) ? {} : { title: await page.title() }) };
     log(`${command}-completed`, summary);
     // Save immediately, including when --keep-open leaves the browser running.
     await save();

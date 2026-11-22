@@ -64,7 +64,7 @@ npm run chrome -- --direct start
 npm run chrome -- --direct status
 ```
 
-`start` は接続要求を別プロセスで保持する。Chromeの許可はユーザーが押す。`status` が `connected` になったら、表示されるAmazonタブのタイトル・URLから対象を特定する。`waiting_for_permission` の間は新しい接続を開始せず、許可を待つ。接続が有効な間、次のコマンドは同じPlaywright接続を使い、許可を再要求しない。
+`start` は接続要求を別プロセスで保持する。Chromeの許可はユーザーが押す。`status` が `connected` になったら、AmazonタブのURLから対象を特定する。タイトルや画面内容が必要な場合は `browser-status` を使う。`waiting_for_permission` の間は新しい接続を開始せず、許可を待つ。接続が有効な間、次のコマンドは同じPlaywright接続を使い、許可を再要求しない。
 
 ```sh
 npm run chrome -- --direct search "ボールペン" --tab-url <実際のタブURL>

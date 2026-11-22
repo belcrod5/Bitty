@@ -1,7 +1,7 @@
 import { mkdir, open, readFile, readdir, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { authentication, isCartPath, isAddPath, productAsin, safeValue, addDataError, addQuantityEvidence } from './navigation.mjs';
+import { authentication, isAuthPath, isCartPath, isAddPath, productAsin, safeValue, addDataError, addQuantityEvidence } from './navigation.mjs';
 import { readProductDetails } from './catalog.mjs';
 import { pause } from './motion.mjs';
 
@@ -112,26 +112,64 @@ export async function openCart(page, mouse, log, timeout = 20_000) {
   } while (Date.now() < deadline);
   throw new Error('カート内容・認証画面を確認できません（追加操作は再実行しません）');
 }
-async function additionConfirmed(page, asin) {
-  if (await authentication(page)) return false;
-  const productLink = `a[href*="/dp/${asin}"], a[href*="/gp/product/${asin}"]`;
-  const scopes = page.locator('#sw-atc-details-single-container, #huc-v2-order-row, #attach-added-to-cart-message');
-  for (let i = 0; i < await scopes.count(); i++) {
-    const scope = scopes.nth(i);
-    if (await scope.isVisible() && /カートに入れました|Added to Cart/i.test(await scope.innerText()) && await scope.locator(productLink).count()) return true;
-  }
-  if (!isAddPath(new URL(page.url()).pathname)) return false;
-  return /カートに入れました|Added to Cart/i.test(await page.locator('body').innerText()) && await page.locator(productLink).count() > 0;
+// Only synchronous DOM reads run behind this deadline. A late response cannot
+// click, navigate, update the journal or change a timed-out result.
+async function readAdditionState(page, asin, deadline, log) {
+  const started = performance.now();
+  const remainingMs = Math.max(0, deadline - started);
+  const timeoutError = () => Object.assign(new Error('追加成功の確認期限を超えました。追加の成否は不明です'), { code: 'ADD_CONFIRMATION_TIMEOUT' });
+  if (!remainingMs) throw timeoutError();
+  log('browser-read-start', { phase: 'cart-add-confirmation', api: 'page.evaluate', remainingMs: Math.round(remainingMs) });
+  let timer, expired = false;
+  const read = page.evaluate(asin => {
+    const text = document.body?.innerText ?? '';
+    const productLink = `a[href*="/dp/${asin}"], a[href*="/gp/product/${asin}"]`;
+    const scopes = [...document.querySelectorAll('#sw-atc-details-single-container, #huc-v2-order-row, #attach-added-to-cart-message')];
+    return {
+      pathname: location.pathname,
+      verification: /私は人間です|ロボットではないこと|not a robot|Enter the characters you see below/i.test(text) ||
+        !!document.querySelector('input#captchacharacters, iframe[src*="captcha"], iframe[src*="checkpoint"]'),
+      scopedConfirmed: scopes.some(scope => scope.getClientRects().length && getComputedStyle(scope).visibility !== 'hidden' &&
+        /カートに入れました|Added to Cart/i.test(scope.innerText) && !!scope.querySelector(productLink)),
+      bodyConfirmed: /カートに入れました|Added to Cart/i.test(text) && !!document.querySelector(productLink)
+    };
+  }, asin).then(snapshot => {
+    log('browser-read-end', { phase: 'cart-add-confirmation', api: 'page.evaluate', durationMs: Math.round(performance.now() - started), late: expired });
+    return snapshot;
+  }, error => {
+    const code = /Execution context was destroyed|Cannot find context with specified id|Execution context is not available/i.test(error.message)
+      ? 'CONFIRMATION_NAVIGATION_CHANGED' : 'BROWSER_READ_FAILED';
+    log('browser-read-error', { phase: 'cart-add-confirmation', api: 'page.evaluate', code, durationMs: Math.round(performance.now() - started), late: expired });
+    throw Object.assign(new Error('追加確認のブラウザ読み取りに失敗しました'), { code });
+  });
+  try {
+    const snapshot = await Promise.race([read, new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        expired = true;
+        log('browser-read-timeout', { phase: 'cart-add-confirmation', api: 'page.evaluate', durationMs: Math.round(performance.now() - started) });
+        reject(timeoutError());
+      }, remainingMs);
+    })]);
+    if (performance.now() >= deadline) throw timeoutError();
+    const auth = isAuthPath(snapshot.pathname) ? (snapshot.pathname.startsWith('/ap/') ? 'login_required' : 'verification_required')
+      : snapshot.verification ? 'verification_required' : null;
+    return { authentication: auth, confirmed: !auth && (snapshot.scopedConfirmed || isAddPath(snapshot.pathname) && snapshot.bodyConfirmed) };
+  } finally { clearTimeout(timer); }
 }
 export async function runCartAddition({ page, mouse, log, operation, attempt, identity, timeout = 20_000 }) {
   const { asin } = operation.data;
   if (operation.data.addition === 'submitted' || operation.data.addition === 'unknown') {
     // Recover only from the target's existing success display on this browser.
     // Merely finding an item in the cart is not proof of this submission.
-    if (!page || operation.data.browserIdentity !== identity || !await additionConfirmed(page, asin)) {
+    let confirmed = false;
+    if (page && operation.data.browserIdentity === identity) {
+      try { confirmed = (await readAdditionState(page, asin, performance.now() + timeout, log)).confirmed; }
+      catch (error) { log('confirmation-stopped', { code: error.code ?? 'BROWSER_READ_FAILED' }); }
+    }
+    if (!confirmed) {
       return operation.update({ addition: 'unknown', retryAdd: false, code: 'ADDITION_UNKNOWN' });
     }
-    await operation.update({ addition: 'confirmed', confirmedAt: new Date().toISOString(), retryAdd: false, code: null });
+    await operation.update({ addition: 'confirmed', confirmedAt: new Date().toISOString(), retryAdd: false, code: null, confirmationCode: null });
     log('addition-confirmed', { operation: operation.data.operation, asin, quantity: 1, source: 'existing-success-display' });
   }
   if (operation.data.addition !== 'confirmed') {
@@ -230,6 +268,7 @@ export async function runCartAddition({ page, mouse, log, operation, attempt, id
         attempt.action = action.href;
         attempt.armed = true;
       } });
+      log('cart-add-click-returned');
     } finally {
       if (explicitQuantity) {
         // A submitted page may still serialize asynchronously; retain its value.
@@ -237,18 +276,31 @@ export async function runCartAddition({ page, mouse, log, operation, attempt, id
         await explicitQuantity.dispose().catch(() => {});
       }
     }
-    const deadline = Date.now() + timeout;
-    let confirmed = false;
-    do {
-      if (await authentication(page)) break;
-      // Service Workers can hide the POST from page.route. Confirm the actual
-      // target's success display, rather than requiring an interception event.
-      if (await additionConfirmed(page, asin)) { confirmed = true; break; }
-      await sleep(200);
-    } while (Date.now() < deadline);
-    attempt.armed = false;
-    if (!confirmed) return operation.update({ addition: 'unknown', retryAdd: false, cart: await authentication(page) ?? 'not_opened', code: 'ADDITION_UNKNOWN' });
-    await operation.update({ addition: 'confirmed', confirmedAt: new Date().toISOString(), retryAdd: false, code: null });
+    const deadline = performance.now() + timeout;
+    let confirmed = false, confirmationAuth = null, confirmationCode = null;
+    log('confirmation-start', { timeoutMs: timeout });
+    try {
+      do {
+        let state;
+        try { state = await readAdditionState(page, asin, deadline, log); }
+        catch (error) {
+          if (error.code !== 'CONFIRMATION_NAVIGATION_CHANGED') throw error;
+          log('confirmation-navigation-retry', { remainingMs: Math.round(Math.max(0, deadline - performance.now())) });
+          await sleep(Math.min(200, Math.max(0, deadline - performance.now())));
+          continue;
+        }
+        confirmationAuth = state.authentication;
+        if (confirmationAuth) break;
+        if (state.confirmed) { confirmed = true; break; }
+        await sleep(Math.min(200, Math.max(0, deadline - performance.now())));
+      } while (performance.now() < deadline);
+      if (!confirmed && !confirmationAuth) confirmationCode = 'ADD_CONFIRMATION_TIMEOUT';
+    } catch (error) {
+      confirmationCode = error.code ?? 'BROWSER_READ_FAILED';
+    } finally { attempt.armed = false; }
+    log('confirmation-end', { confirmed, authentication: confirmationAuth, code: confirmationCode, durationMs: Math.round(performance.now() - (deadline - timeout)) });
+    if (!confirmed) return operation.update({ addition: 'unknown', retryAdd: false, cart: confirmationAuth ?? 'not_opened', code: 'ADDITION_UNKNOWN', confirmationCode });
+    await operation.update({ addition: 'confirmed', confirmedAt: new Date().toISOString(), retryAdd: false, code: null, confirmationCode: null });
     log('addition-confirmed', { operation: operation.data.operation, asin, quantity: 1 });
   }
   // A confirmed operation only resumes this read-only step, including after restart.

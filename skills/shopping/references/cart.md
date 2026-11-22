@@ -79,4 +79,14 @@ AIが「今追加した商品」を会話の文脈と現在のカートから特
 
 `/checkpoint/continue`、`/ap/`、CAPTCHAで停止する。認証の原因や今後の発生有無を断定しない。認証画面の画像・HTMLは保存せず、URLのクエリ・フラグメント・認証情報は結果と例外から除去する。
 
-終了コード0は必要な確認まで成功、1は通常エラー、2は認証、3は追加・削除成否不明。コマンドの結果JSONで、どの操作まで完了したかを報告する。
+終了コード0は必要な確認まで成功、1は通常エラー、2は認証、3は追加・削除成否不明、4はワーカーの応答未受信・処理中。コマンドの結果JSONで、どの操作まで完了したかを報告する。
+
+## 追加後の確認期限・診断
+
+追加後の認証・成功表示は、副作用のない同期DOM読み取り1回でまとめて確認する。読み取り待ちを含め、確認区間全体の期限は20秒。期限超過は `addition: unknown`・`retryAdd: false`・`confirmationCode: ADD_CONFIRMATION_TIMEOUT`、読み取りエラーは `confirmationCode: BROWSER_READ_FAILED`。これらは追加失敗の証明ではない。期限後に返った読み取り応答は結果や操作状態を変更せず、カートへの移動も開始しない。送信済みの追加要求を取り消す処理ではなく、クリック・遷移などの副作用処理を `Promise.race` で放置する実装ではない。
+
+遷移中の `CONFIRMATION_NAVIGATION_CHANGED` は残り期限内で読み取りだけを再試行し、追加クリックは繰り返さない。`confirmation-navigation-retry` に残り時間を記録する。
+
+`events.json` の `cart-add-click-returned`、`confirmation-start` / `confirmation-end`、`browser-read-start` / `browser-read-end` / `browser-read-error` / `browser-read-timeout` で確認段階・API・経過時間を調べられる。時間はミリ秒。`late: true` は期限後の読み取り応答で、後から届くログはワーカーの `session.log` にも出る。ページ本文・認証トークンは計測ログへ出さない。これだけでAmazon側と拡張側の遅延原因まで断定しない。
+
+CLIが先に応答待ちを終えた場合の結果取得は [playwright-extension.md](playwright-extension.md#応答待ち終了後の結果取得)。操作記録をAIが事前に読み込む手順は不要。

@@ -1,6 +1,6 @@
 import net from 'node:net';
 import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, open, chmod, unlink, realpath, stat, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
@@ -22,31 +22,52 @@ export async function sessionPaths(direct = false) {
   return { socket: join(directory, 'session.sock'), log: join(directory, 'session.log'), setup: join(directory, 'setup.json'), name: `shopping-${key}` };
 }
 
-export function requestSession(socket, request) {
+export function requestSession(socket, request, { timeoutMs = 240_000 } = {}) {
+  if (request.command === 'run') request = { ...request, requestId: request.requestId ?? randomUUID() };
   return new Promise((resolve, reject) => {
     const client = net.createConnection(socket);
     client.setEncoding('utf8');
-    let data = '';
-    client.setTimeout(240_000, () => client.destroy(new Error('操作の応答待ちがタイムアウトしました。結果を確認し、自動再実行しないでください')));
-    client.once('connect', () => client.write(JSON.stringify(request) + '\n'));
+    let data = '', sent = false;
+    const pending = code => ({ success: false, code, exitCode: 4, requestId: request.requestId, requestState: 'pending',
+      resultCommand: `npm run chrome -- result ${request.requestId}`,
+      message: '応答を受信できていません。追加失敗を意味しません。処理を再送せず、resultで実行状況・完了結果を確認できます。' });
+    client.setTimeout(timeoutMs, () => {
+      if (sent && request.command === 'run') { resolve(pending('COMMAND_PENDING')); client.destroy(); }
+      else client.destroy(Object.assign(new Error('接続の応答待ちがタイムアウトしました'), { code: 'SESSION_RESPONSE_TIMEOUT' }));
+    });
+    client.once('connect', () => { sent = true; client.write(JSON.stringify(request) + '\n'); });
     client.on('data', chunk => {
       data += chunk;
       if (!data.includes('\n')) return;
       try { const result = JSON.parse(data.slice(0, data.indexOf('\n'))); client.end(); resolve(result); }
       catch (error) { client.destroy(error); }
     });
-    client.once('error', reject);
-    client.once('end', () => { if (!data.includes('\n')) reject(new Error('接続が終了しました。追加操作は結果を確認してから判断してください')); });
+    client.once('error', error => sent && request.command === 'run' ? resolve(pending('COMMAND_RESULT_UNAVAILABLE')) : reject(error));
+    client.once('end', () => {
+      if (!data.includes('\n')) {
+        if (sent && request.command === 'run') resolve(pending('COMMAND_RESULT_UNAVAILABLE'));
+        else reject(new Error('接続が終了しました'));
+      }
+    });
   });
 }
 
-export async function serveSession(socket, connect = () => chromium.connectOverCDP('chrome', { timeout: 0, noDefaults: true }), { transport = 'direct', onStop = async () => {} } = {}) {
+export async function serveSession(socket, connect = () => chromium.connectOverCDP('chrome', { timeout: 0, noDefaults: true }), { transport = 'direct', onStop = async () => {}, run = main } = {}) {
   let browser, failure, busy = false, state = transport === 'extension' ? 'connecting' : 'waiting_for_permission', finish;
   const closed = new Promise(resolve => { finish = resolve; });
+  const requests = new Map();
+  let activeRequest, lastRequest;
+  const outcome = entry => entry.result
+    ? { ...entry.result, requestId: entry.info.requestId, requestState: 'completed' }
+    : { success: false, code: 'COMMAND_PENDING', exitCode: 4, ...entry.info,
+      resultCommand: `npm run chrome -- result ${entry.info.requestId}` };
+  // Status must remain available even if the renderer or extension is stalled.
+  // page.url() uses local state; page.title() would make another browser RPC.
   const status = async () => ({ success: state === 'connected', state, transport, busy, ...(failure ? { error: failure } : {}),
-    ...(browser?.isConnected() ? { tabs: await Promise.all(browser.contexts().flatMap(c => c.pages())
+    ...(activeRequest ? { activeRequest: activeRequest.info } : {}), ...(lastRequest ? { lastRequest: lastRequest.info } : {}),
+    ...(browser?.isConnected() ? { tabs: browser.contexts().flatMap(c => c.pages())
       .filter(p => { try { return new URL(p.url()).origin === 'https://www.amazon.co.jp'; } catch { return false; } })
-      .map(async p => ({ url: safeURL(p.url()), title: await p.title().catch(() => '') }))) } : {}) });
+      .map(p => ({ url: safeURL(p.url()) })) } : {}) });
   const stop = async () => {
     if (state === 'stopped') return;
     state = 'stopped';
@@ -65,24 +86,45 @@ export async function serveSession(socket, connect = () => chromium.connectOverC
       if (data.length > 16_384) { client.destroy(); return; }
       if (handled || !data.includes('\n')) return;
       handled = true; client.setTimeout(0);
-      const reply = result => client.end(JSON.stringify(safeValue(result)) + '\n');
+      const reply = result => { if (!client.destroyed) client.end(JSON.stringify(safeValue(result)) + '\n'); };
       try {
         const request = JSON.parse(data.slice(0, data.indexOf('\n')));
         if (request.command === 'status') return reply(await status());
+        if (request.command === 'result') {
+          const entry = request.requestId ? requests.get(request.requestId) : activeRequest ?? lastRequest;
+          return reply(entry ? outcome(entry) : { success: false, code: 'RESULT_NOT_FOUND', exitCode: 1,
+            message: 'このワーカーに該当する実行結果はありません。再起動前の結果はコマンドのartifactsから確認できます。' });
+        }
         if (request.command === 'stop') {
           if (busy) throw new Error('操作中のため停止できません。結果を待ってください');
           reply({ success: true, state: 'stopping' });
           await stop(); return;
         }
         if (request.command !== 'run' || !Array.isArray(request.args) || !request.args.every(a => typeof a === 'string') || !commands.includes(request.args[0])) throw new Error('未対応のコマンドです');
+        const requestId = request.requestId ?? randomUUID();
+        if (!/^[a-zA-Z0-9_-]{1,80}$/.test(requestId)) throw new Error('実行IDが不正です');
+        const existing = requests.get(requestId);
+        if (existing) {
+          if (JSON.stringify(existing.args) !== JSON.stringify(request.args)) throw new Error('同じ実行IDでコマンドを変更できません');
+          return reply(outcome(existing));
+        }
         if (state !== 'connected') throw new Error('Chromeへの接続が完了していません。statusで確認してください');
         if (busy) throw new Error('別の操作を実行中です。自動再実行せず結果を待ってください');
         if (request.args.some(a => /^--(?:cdp|profile|headless|keep-open)(?:=|$)/.test(a))) throw new Error('保持中の既存Chromeを使うため、接続先・プロファイルの変更は指定できません');
         const config = options([...request.args, '--cdp', 'chrome']);
         config.extensionConnection = transport === 'extension';
+        const entry = { args: request.args, info: { requestId, command: request.args[0],
+          ...(config.operationId ? { operation: config.operationId } : {}), requestState: 'running', startedAt: new Date().toISOString() } };
+        requests.set(requestId, entry); activeRequest = lastRequest = entry;
         busy = true;
-        try { reply(await main(config, browser)); }
-        finally { busy = false; }
+        try { entry.result = safeValue(await run(config, browser)); }
+        catch (error) { entry.result = { success: false, error: safeValue(error.message), exitCode: 1 }; }
+        finally {
+          entry.info = { ...entry.info, requestState: 'completed', completedAt: new Date().toISOString() };
+          busy = false; activeRequest = undefined;
+          while (requests.size > 20) requests.delete(requests.keys().next().value);
+        }
+        reply(outcome(entry));
       } catch (error) { reply({ success: false, error: error.message, exitCode: 1 }); }
     });
   });
@@ -154,7 +196,9 @@ async function cli(args) {
     console.log(JSON.stringify({ success: true, state: 'starting', log: paths.log, transport: config ? 'extension' : 'direct', message: config ? '登録済みの公式拡張に接続します。statusで結果を確認してください。' : 'Chromeの確認で許可してください。毎回の確認を省くには setup-extension で公式拡張を初回設定できます。' }, null, 2));
     return;
   }
-  const request = ['status', 'stop'].includes(command) ? { command } : { command: 'run', args: [command, ...args] };
+  if (command === 'result' && (args.length > 1 || args[0] && !/^[a-zA-Z0-9_-]{1,80}$/.test(args[0]))) throw new Error('result [実行ID] を指定してください');
+  const request = ['status', 'stop'].includes(command) ? { command } : command === 'result'
+    ? { command: 'result', requestId: args[0] } : { command: 'run', args: [command, ...args] };
   const result = await requestSession(paths.socket, request).catch(async error => {
     if (['ENOENT', 'ECONNREFUSED'].includes(error.code)) {
       if (command === 'status') return { success: false, state: 'stopped', extensionConfigured: !direct && !!(await readExtensionConfig()) };
@@ -162,6 +206,7 @@ async function cli(args) {
     }
     throw error;
   });
+  if (direct && result.resultCommand) result.resultCommand = result.resultCommand.replace('chrome -- result', 'chrome -- --direct result');
   console.log(JSON.stringify(result, null, 2));
   process.exitCode = result.exitCode ?? (result.success || result.state === 'waiting_for_permission' ? 0 : 1);
 }
