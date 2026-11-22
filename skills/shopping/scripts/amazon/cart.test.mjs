@@ -4,7 +4,7 @@ import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chromium } from 'playwright';
-import { openOperation, readOperation, runCartAddition, openCart } from './cart.mjs';
+import { openOperation, readOperation, runCartAddition, openCart, cartView } from './cart.mjs';
 import { createRouteHandler, authentication } from './navigation.mjs';
 
 const asin = 'B012345678';
@@ -49,6 +49,71 @@ async function fixture({ challenge = false, lost = false, quantity = 1, buyBox =
   return {context,page,attempt,mouse,clicked,get posts(){return posts;}};
 }
 async function cleanupOperation() { await rm(join(directory,'current.json'),{force:true}); }
+
+async function clothing(page) {
+  await page.locator('body').evaluate(body => body.insertAdjacentHTML('beforeend', `<div id="inline-twister-row-color_name"><span class="inline-twister-dim-title-value">ブラック</span></div><div id="variation_size_name"><span class="selection">L</span></div><div id="corePriceDisplay_desktop_feature_div"><span class="a-price"><span class="a-offscreen">￥1,648</span></span></div>`));
+}
+
+test('clothing requires exact selected color and size, checks price, and persists constraints for a read-only resume', async () => {
+  await cleanupOperation(); const f = await fixture();
+  let op = await openOperation(directory,'current',asin);
+  try {
+    await clothing(f.page);
+    await assert.rejects(runCartAddition({...f,operation:op,identity:'fixture',log:()=>{}}), /--color/);
+    assert.equal(f.posts,0); assert.equal(op.data.addition,'not_started');
+    await op.release();
+    op = await openOperation(directory,'current',asin,{color:'ブラック',size:'L',maxPrice:1648});
+    const result=await runCartAddition({...f,operation:op,identity:'fixture',log:()=>{},timeout:1000});
+    assert.equal(result.addition,'confirmed'); assert.equal(result.selection.size,'L'); assert.equal(f.posts,1);
+    await op.release();
+    await assert.rejects(openOperation(directory,'current',asin,{size:'M'}), /条件を変更/);
+    op=await openOperation(directory,'current',asin);
+    const resumed=await runCartAddition({...f,operation:op,identity:'fixture',log:()=>{},timeout:1000});
+    assert.equal(resumed.addition,'confirmed'); assert.equal(f.posts,1); assert.equal(resumed.constraints.maxPrice,1648);
+  } finally { await op.release(); await f.context.close(); }
+});
+
+test('wrong color or size, price increases, and selection changes during mouse movement never submit', async () => {
+  for (const constraints of [{color:'白',size:'L'}, {color:'ブラック',size:'M'}, {color:'ブラック',size:'L',maxPrice:1647}, {color:'ブラック',size:'L',maxPrice:1648}]) {
+    await cleanupOperation(); const f=await fixture(); const op=await openOperation(directory,'current',asin,constraints);
+    try {
+      await clothing(f.page);
+      const mouse={click:async (locator,label,{beforeMouseDown})=>{
+        await f.page.locator('#variation_size_name .selection').evaluate(e=>e.textContent='M');
+        await beforeMouseDown(); await locator.click();
+      }};
+      await assert.rejects(runCartAddition({...f,mouse,operation:op,identity:'fixture',log:()=>{}}), /一致しません|価格|変わりました/);
+      assert.equal(f.posts,0); assert.equal(op.data.addition,'not_started');
+    } finally {await op.release(); await f.context.close();}
+  }
+});
+
+test('omitted variation rows stop before submission rather than treating an unseen color as absent', async () => {
+  await cleanupOperation(); const f=await fixture(); const op=await openOperation(directory,'current',asin);
+  try {
+    await f.page.locator('body').evaluate(body => body.insertAdjacentHTML('beforeend', Array.from({length:6},(_,i)=>`<div id="variation_style_${i}"><span class="selection">style</span></div>`).join('')));
+    await clothing(f.page);
+    await assert.rejects(runCartAddition({...f,operation:op,identity:'fixture',log:()=>{}}), /省略/);
+    assert.equal(f.posts,0); assert.equal(op.data.addition,'not_started');
+  } finally { await op.release(); await f.context.close(); }
+});
+
+test('cart reads the current price and clean title, and prefers the header over a covered success-panel link', async () => {
+  const f=await fixture();
+  try {
+    await f.page.setContent(`<h1>カートに入れました</h1><a id="nav-cart" href="/cart">カート</a><a style="display:none" href="/cart">カートに移動</a>`);
+    const clicked=[];
+    await openCart(f.page,{click:async locator=>{clicked.push(await locator.getAttribute('id')); await locator.click();}},()=>{});
+    assert.deepEqual(clicked,['nav-cart']); assert.equal(f.posts,0);
+    await f.page.locator('.sc-list-item').evaluate(item=>{
+      item.setAttribute('data-producttitle','Black fleece LL');
+      item.insertAdjacentHTML('beforeend','<span data-feature-id="sc-item-price"><span class="a-price a-text-price"><span class="a-offscreen">￥9,999</span></span><span class="apex-price-to-pay-value"><span class="a-offscreen">￥1,648</span></span></span><li class="sc-product-variation">サイズ: LL</li><li class="sc-product-variation">色: 黒</li>');
+    });
+    const view=await cartView(f.page);
+    assert.equal(view.items[0].priceText,'￥1,648'); assert.equal(view.items[0].title,'Black fleece LL');
+    assert.deepEqual(view.items[0].variantText,['サイズ: LL','色: 黒']);
+  } finally { await f.context.close(); }
+});
 
 test('quantity1 add is confirmed, then cart contents are read; journal precedes POST', async () => {
   await cleanupOperation(); const f=await fixture(); const op=await openOperation(directory,'current',asin);

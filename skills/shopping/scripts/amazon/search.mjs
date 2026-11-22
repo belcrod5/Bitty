@@ -30,6 +30,8 @@ const help = `Amazon検索・カート操作コマンド（注文確定・購入
                                  接続先で操作する既存タブを指定
   --limit 10 --offset 0           商品JSONの取得件数（1〜20）・開始位置（0始まり）
   --screenshots                  ページ画像も保存（既定はJSONのみ）
+  --color <表示値> --size <表示値> --max-price <円>
+                                 cart-add直前の色・サイズ・表示価格上限を検査
   --headless                     画面を表示せず実行
   --profile                      専用ブラウザのログイン状態を使う
 要素が見つからない場合はエラーで停止します。`;
@@ -42,6 +44,7 @@ export function options(input = process.argv.slice(2)) {
     'keep-open': { type: 'boolean' }, headless: { type: 'boolean' }, profile: { type: 'boolean' },
     cdp: { type: 'string' }, 'tab-url': { type: 'string' }, operation: { type: 'string' },
     asin: { type: 'string' }, index: { type: 'string' }, help: { type: 'boolean', short: 'h' },
+    color: { type: 'string' }, size: { type: 'string' }, 'max-price': { type: 'string' },
   } });
   if (values.help) return { help: true };
   if (['search-next', 'search-results', 'orders', 'cart', 'cart-add', 'cart-status', 'browser-status'].includes(command) && positionals.length) throw new Error(`${command} は検索語を受け取りません`);
@@ -50,6 +53,16 @@ export function options(input = process.argv.slice(2)) {
   const index = values.index === undefined ? 1 : Number(values.index);
   if (values.index !== undefined && (command !== 'detail' || !/^\d+$/.test(values.index) || !Number.isSafeInteger(index) || index < 1)) throw new Error('--index はdetail専用の1以上の整数です');
   if (command === 'cart-add' && !values.asin) throw new Error('cart-add は --asin が必要です');
+  const constraints = {};
+  for (const key of ['color', 'size', 'max-price']) {
+    if (values[key] === undefined) continue;
+    if (command !== 'cart-add') throw new Error(`--${key} はcart-add専用です`);
+    if (!values[key].trim() || values[key].length > 120) throw new Error(`--${key} の値が不正です`);
+    if (key === 'max-price') {
+      if (!/^\d+$/.test(values[key]) || !Number.isSafeInteger(Number(values[key])) || Number(values[key]) < 1) throw new Error('--max-price は1以上の整数（円）です');
+      constraints.maxPrice = Number(values[key]);
+    } else constraints[key] = values[key].trim();
+  }
   if (command === 'cart-add' || command === 'cart-status' && values.operation !== undefined) {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/.test(values.operation ?? '')) throw new Error('--operation が必要です（英数字・ハイフン・下線、1〜80文字）');
   } else if (values.operation !== undefined) throw new Error('--operation はcart-add・cart-status用です');
@@ -71,7 +84,7 @@ export function options(input = process.argv.slice(2)) {
     const tab = new URL(values['tab-url']);
     if (tab.origin !== 'https://www.amazon.co.jp') throw new Error('--tab-url はAmazon.co.jpのタブを指定してください');
   }
-  return { command, limit, offset, screenshots: !!values.screenshots, operationId: values.operation, cdp: values.cdp, tabURL: values['tab-url'], query: positionals.join(' ').trim() || 'ボールペン', index, asin: values.asin?.toUpperCase(),
+  return { command, limit, offset, constraints, screenshots: !!values.screenshots, operationId: values.operation, cdp: values.cdp, tabURL: values['tab-url'], query: positionals.join(' ').trim() || 'ボールペン', index, asin: values.asin?.toUpperCase(),
     keepOpen: !!values['keep-open'], headless: !!values.headless, persistent: !!values.profile || ['orders', 'cart', 'cart-add'].includes(command) };
 }
 
@@ -101,7 +114,7 @@ export async function main(config, existingBrowser) {
   };
 
   try {
-    if (command === 'cart-add') operation = await openOperation(operations, operationId, asin);
+    if (command === 'cart-add') operation = await openOperation(operations, operationId, asin, config.constraints);
     const contextOptions = { viewport: { width: 1440, height: 1000 }, locale: 'ja-JP', serviceWorkers: 'block', acceptDownloads: false };
     if (cdp === 'auto') {
       const report = await discoverBrowsers();

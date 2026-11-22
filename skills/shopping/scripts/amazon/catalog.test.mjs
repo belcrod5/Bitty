@@ -15,7 +15,7 @@ after(async () => { await browser?.close(); });
 
 function resultsHTML(number = 1) {
   return `<title>検索結果</title>${Array.from({ length: 4 }, (_, index) => `<div data-component-type="s-search-result" data-asin="B0000000${number}${index}">
-    <h2>消しゴム ${number}-${index}</h2>${index ? '' : '<span class="puis-sponsored-label-text">スポンサー</span>'}
+    <h2>メーカー名</h2><a><h2 aria-label="消しゴム ${number}-${index}">消しゴム ${number}-${index}</h2></a>${index ? '' : '<span class="puis-sponsored-label-text">スポンサー</span>'}
     <span class="a-price a-text-price"><span class="a-offscreen">￥999</span></span>
     ${index === 2 ? '' : '<span class="a-price"><span class="a-offscreen">￥82</span></span>'}
     <span class="a-icon-alt">5つ星のうち4.2</span><a href="/dp/B000000010#customerReviews" aria-label="202 レーティング">(202)</a>
@@ -54,6 +54,7 @@ test('search JSON returns bounded current-page data, preserves ad order and dist
     assert.equal(first.hasNextPage, true); assert.equal(first.nextOffset, 2);
     assert.equal(first.products[0].sponsored, true); assert.equal(first.products[1].sponsored, false);
     assert.equal(first.products[0].asin, 'B000000010'); assert.equal(first.products[0].priceText, '￥82');
+    assert.equal(first.products[0].title, '消しゴム 1-0');
     assert.equal(first.products[0].ratingCountText, '202 レーティング');
     assert.equal(first.products[0].imageUrl.includes('SECRET'), false);
     const rest = await readSearchResults(f.page, { offset: 2, limit: 2 });
@@ -105,6 +106,36 @@ test('product JSON scopes price to the buy box, returns bounded text and rejects
 test('CLI bounds result size and requires an existing session for continuation commands', () => {
   assert.equal(options(['search', '消しゴム']).limit, 10);
   for (const args of [['search', '--limit', '0'], ['search', '--limit', '21'], ['search', '--offset', '-1'], ['detail', '--limit', '2'], ['search-next'], ['search-next', '別の検索', '--cdp', 'chrome']]) assert.throws(() => options(args));
+});
+
+test('clothing details expose child ASINs, selected labels, preloaded size charts and product facts as bounded JSON', async () => {
+  const f = await fixture();
+  try {
+    await f.page.goto('https://www.amazon.co.jp/dp/B000000010');
+    await f.page.locator('body').evaluate(body => body.insertAdjacentHTML('beforeend', `
+      <div id="inline-twister-row-color_name"><span class="inline-twister-dim-title-value">０１ブラック</span>
+      <li data-asin="B000000010" data-initiallyunavailable="false"><span class="a-button-selected"><input aria-checked="true"><img alt="０１ブラック"></span></li>
+      <li data-asin="B000000011" data-initiallyunavailable="true"><img alt="白"></li></div>
+      <div id="variation_size_name"><span class="selection">L</span><select><option value="-1">選択</option><option value="0,B000000012">M</option><option selected value="1,B000000010">L</option></select></div>
+      <div id="sizeChartV2Data_feature_div" hidden><div id="fit-sizechartv2-0"><h5>JP レギュラー</h5><table><tr><th>サイズ</th><th>身幅(cm)</th></tr><tr><th>L</th><td>54</td></tr></table></div></div>
+      <div id="productFactsDesktopExpander"><style>SECRET_CSS</style><script>SECRET_JS</script>素材 100%ポリエステル</div>`));
+    const detail = await readProductDetails(f.page, 'B000000010');
+    assert.equal(detail.variations[0].selected, '０１ブラック');
+    assert.equal(detail.variations[0].options[0].asin, 'B000000010');
+    assert.equal(detail.variations[0].options[1].availability, 'unavailable');
+    assert.equal(detail.variations[1].selected, 'L');
+    assert.equal(detail.variations[1].options[0].asin, 'B000000012');
+    assert.deepEqual(detail.sizeCharts[0], { caption: 'JP レギュラー', rows: [['サイズ', '身幅(cm)'], ['L', '54']], truncated: false });
+    assert.equal(detail.productFactsText, '素材 100%ポリエステル'); assert.equal(f.posts, 0);
+    await f.page.locator('#inline-twister-row-color_name').evaluate(row => row.insertAdjacentHTML('beforeend', Array.from({length:35},(_,i)=>`<li data-asin="B000000011"><img alt="色${i}"></li>`).join('')));
+    const bounded = await readProductDetails(f.page, 'B000000010');
+    assert.equal(bounded.variations[0].options.length, 30); assert.equal(bounded.contentTruncated, true);
+  } finally { await f.context.close(); }
+});
+
+test('cart selection arguments are explicit and cannot be used on other commands', () => {
+  assert.deepEqual(options(['cart-add','--asin','B000000010','--operation','trial','--color','黒','--size','L','--max-price','1648']).constraints, {color:'黒',size:'L',maxPrice:1648});
+  for (const args of [['detail','--color','黒'], ['cart-add','--asin','B000000010','--operation','trial','--size',' '], ['cart-add','--asin','B000000010','--operation','trial','--max-price','1.2']]) assert.throws(()=>options(args));
 });
 
 test('held extension session returns JSON, pages with random mouse and opens the chosen ASIN without screenshots by default', async () => {

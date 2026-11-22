@@ -2,6 +2,7 @@ import { mkdir, open, readFile, readdir, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { authentication, isCartPath, isAddPath, productAsin, safeValue, addDataError } from './navigation.mjs';
+import { readProductDetails } from './catalog.mjs';
 
 export async function readOperation(directory, id) {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/.test(id ?? '')) throw new Error('--operation は英数字・ハイフン・下線で1〜80文字を指定してください');
@@ -13,7 +14,7 @@ export async function listOperations(directory) {
   for (const file of files.filter(f => f.endsWith('.json')).sort()) records.push(await readOperation(directory, file.slice(0, -5)));
   return records;
 }
-export async function openOperation(directory, id, asin) {
+export async function openOperation(directory, id, asin, constraints = {}) {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/.test(id ?? '')) throw new Error('--operation を指定してください（英数字・ハイフン・下線、1〜80文字）');
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const lock = join(directory, `${id}.lock`);
@@ -28,6 +29,8 @@ export async function openOperation(directory, id, asin) {
     }
     if (data.operation !== id || !['not_started', 'submitted', 'unknown', 'confirmed'].includes(data.addition)) throw new Error('操作記録が不正です。追加せず停止します');
     if (data.asin !== asin || data.quantity !== 1) throw new Error('操作IDに記録されたASIN・数量が異なります');
+    if (Object.entries(constraints).some(([key, value]) => data.constraints?.[key] !== undefined ? data.constraints[key] !== value : data.addition !== 'not_started')) throw new Error('操作IDに記録された色・サイズ・価格条件を変更できません');
+    data.constraints = { ...data.constraints, ...constraints };
     async function update(fields) {
       data = safeValue({ ...data, ...fields, updatedAt: new Date().toISOString() });
       const temporary = join(directory, `${id}.json.tmp`);
@@ -52,8 +55,10 @@ export async function cartView(page) {
   if (!await root.count() || !await root.first().isVisible()) return null;
   const items = await page.locator('#sc-active-cart .sc-list-item[data-asin]').evaluateAll(elements => elements.map(e => ({
     asin: e.getAttribute('data-asin'),
-    title: e.querySelector('.sc-product-title')?.textContent?.trim() ?? '',
+    title: (e.getAttribute('data-producttitle') || e.querySelector('.sc-product-title .a-truncate-full, .sc-product-title')?.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 500),
     quantity: e.querySelector('select[name="quantity"], input[name="quantityBox"], input.sc-quantity-textfield')?.value ?? e.querySelector('[data-a-selector="value"]')?.textContent?.trim() ?? null,
+    priceText: e.querySelector('[data-feature-id="sc-item-price"] .apex-price-to-pay-value .a-offscreen, .sc-product-price')?.textContent?.replace(/\s+/g, ' ').trim() ?? null,
+    variantText: [...e.querySelectorAll('.sc-product-variation')].slice(0, 10).map(element => element.textContent.replace(/\s+/g, ' ').trim().slice(0, 300)),
   })));
   return { cart: 'visible', items };
 }
@@ -65,7 +70,8 @@ export async function openCart(page, mouse, log, timeout = 20_000) {
   view = await cartView(page);
   if (view) return view;
   const successLink = page.getByRole('link', { name: 'カートに移動', exact: true });
-  const link = await successLink.count() ? successLink.first() : page.locator('#nav-cart');
+  const header = page.locator('#nav-cart:visible');
+  const link = await header.count() ? header : successLink.first();
   const destination = new URL(await link.getAttribute('href'), page.url());
   if (destination.hostname !== 'www.amazon.co.jp' || !isCartPath(destination.pathname)) throw new Error('カートへのリンクを確認できません');
   await mouse.click(link, 'cart link');
@@ -105,6 +111,26 @@ export async function runCartAddition({ page, mouse, log, operation, attempt, id
     if (auth) return operation.update({ cart: auth, code: 'AUTH_REQUIRED' });
     if (productAsin(new URL(page.url()).pathname) !== asin) throw new Error('対象ASINの商品ページではありません');
     const title = (await page.locator('#productTitle:visible').innerText()).trim();
+    async function verifySelection() {
+      const detail = await readProductDetails(page, asin);
+      if (detail.variationsTruncated) throw new Error('バリエーション情報が省略されているため追加できません');
+      const constraints = operation.data.constraints ?? {};
+      const selected = {};
+      for (const [key, dimension] of [['color', 'color_name'], ['size', 'size_name']]) {
+        const rows = detail.variations.filter(row => row.dimension === dimension);
+        if (rows.length > 1) throw new Error(`${key} の選択状態が一意ではありません`);
+        const value = rows[0]?.selected ?? null;
+        if (rows.length && !constraints[key]) throw new Error(`色・サイズのある商品は --${key} に確認した表示値が必要です`);
+        if (constraints[key] && value?.normalize('NFKC') !== constraints[key].normalize('NFKC')) throw new Error(`${key} の選択値が指定条件と一致しません`);
+        selected[key] = value;
+      }
+      if (constraints.maxPrice !== undefined) {
+        const amount = detail.priceText?.match(/^[￥¥]\s*([\d,]+)$/)?.[1]?.replaceAll(',', '');
+        if (!amount || Number(amount) > constraints.maxPrice) throw new Error('表示価格を確認できないか、--max-price を超えています');
+      }
+      return { ...selected, priceText: detail.priceText };
+    }
+    const selection = await verifySelection();
     const button = page.locator('#add-to-cart-button:visible');
     await button.waitFor({ state: 'visible' });
     if (!await button.isEnabled()) throw new Error('カート追加ボタンが無効です');
@@ -131,10 +157,11 @@ export async function runCartAddition({ page, mouse, log, operation, attempt, id
       return action;
     }
     const action = await verifyForm();
-    await operation.update({ title, browserIdentity: identity, quantity: 1 });
+    await operation.update({ title, browserIdentity: identity, quantity: 1, selection });
     log('quantity-confirmed', { asin, quantity: 1 });
     await mouse.click(button, 'add to cart', { beforeMouseDown: async () => {
       if ((await verifyForm()).href !== action.href) throw new Error('クリック直前に追加先が変わりました');
+      if (JSON.stringify(await verifySelection()) !== JSON.stringify(selection)) throw new Error('クリック直前に色・サイズ・価格が変わりました');
       // Record the point of no automatic retry BEFORE submitting any event.
       await operation.update({ addition: 'submitted', retryAdd: false, submittedAt: new Date().toISOString() });
       attempt.action = action.href;
