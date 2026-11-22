@@ -6,10 +6,14 @@ import { resolve } from 'node:path';
 import { discoverBrowsers, chooseBrowser } from './browser.mjs';
 import { openOperation, readOperation, listOperations, runCartAddition, openCart } from './cart.mjs';
 import { pause, RandomMouse } from './motion.mjs';
+import { searchProductSelector, readSearchResults, nextSearchPage, readProductDetails } from './catalog.mjs';
 import { allowNavigation, createRouteHandler, isSearchPath, searchTerm, productAsin, isOrdersPath, isAuthPath, authentication, safeValue, safeURL } from './navigation.mjs';
 
 const help = `Amazon検索・カート操作コマンド（注文確定・購入操作なし）
   npm start -- "検索語" [--keep-open] [--profile]
+  npm run chrome -- search-next   今の検索結果の次ページをクリック（再検索なし）
+  npm run chrome -- search-results --offset 10 --limit 10
+                                 今のページの続きの商品JSONを取得（再検索なし）
   npm run detail -- "検索語" [--index 1] [--keep-open]
   npm run detail -- --asin B012345678 [--keep-open]
   npm run orders -- --keep-open   専用ブラウザのログイン状態で注文履歴を開く
@@ -24,20 +28,23 @@ const help = `Amazon検索・カート操作コマンド（注文確定・購入
   --cdp http://127.0.0.1:9222     明示した既存Chromeへ接続（未指定時は専用ブラウザ）
   --tab-url https://www.amazon.co.jp/dp/B012345678
                                  接続先で操作する既存タブを指定
+  --limit 10 --offset 0           商品JSONの取得件数（1〜20）・開始位置（0始まり）
+  --screenshots                  ページ画像も保存（既定はJSONのみ）
   --headless                     画面を表示せず実行
   --profile                      専用ブラウザのログイン状態を使う
 要素が見つからない場合はエラーで停止します。`;
 
 export function options(input = process.argv.slice(2)) {
   const args = [...input];
-  const command = ['search', 'detail', 'orders', 'cart', 'cart-add', 'cart-status', 'browser-status'].includes(args[0]) ? args.shift() : 'search';
+  const command = ['search', 'search-next', 'search-results', 'detail', 'orders', 'cart', 'cart-add', 'cart-status', 'browser-status'].includes(args[0]) ? args.shift() : 'search';
   const { values, positionals } = parseArgs({ args, allowPositionals: true, options: {
+    screenshots: { type: 'boolean' }, limit: { type: 'string' }, offset: { type: 'string' },
     'keep-open': { type: 'boolean' }, headless: { type: 'boolean' }, profile: { type: 'boolean' },
     cdp: { type: 'string' }, 'tab-url': { type: 'string' }, operation: { type: 'string' },
     asin: { type: 'string' }, index: { type: 'string' }, help: { type: 'boolean', short: 'h' },
   } });
   if (values.help) return { help: true };
-  if (['orders', 'cart', 'cart-add', 'cart-status', 'browser-status'].includes(command) && positionals.length) throw new Error(`${command} は検索語を受け取りません`);
+  if (['search-next', 'search-results', 'orders', 'cart', 'cart-add', 'cart-status', 'browser-status'].includes(command) && positionals.length) throw new Error(`${command} は検索語を受け取りません`);
   if (values.asin !== undefined && (!['detail', 'cart-add'].includes(command) || !/^[A-Z0-9]{10}$/i.test(values.asin))) throw new Error('--asin はdetail・cart-add用の10桁の英数字です');
   if (values.asin && (positionals.length || values.index)) throw new Error('--asin と検索語・--indexは同時指定できません');
   const index = values.index === undefined ? 1 : Number(values.index);
@@ -51,12 +58,20 @@ export function options(input = process.argv.slice(2)) {
     if (endpoint && (!['http:', 'https:', 'ws:', 'wss:'].includes(endpoint.protocol) || !['localhost', '127.0.0.1', '[::1]'].includes(endpoint.hostname) || endpoint.username || endpoint.password)) throw new Error('--cdp はローカルChromeの接続先を指定してください');
     if (values.headless || values.profile || values['keep-open']) throw new Error('--cdp は --headless・--profile・--keep-open と併用できません。既存ブラウザは開いたままです');
   }
+  const limit = values.limit === undefined ? 10 : Number(values.limit);
+  const offset = values.offset === undefined ? 0 : Number(values.offset);
+  if (values.limit !== undefined || values.offset !== undefined) {
+    if (!['search', 'search-next', 'search-results'].includes(command)) throw new Error('--limit・--offset は検索結果用です');
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20 || values.limit !== undefined && !/^\d+$/.test(values.limit)) throw new Error('--limit は1〜20の整数です');
+    if (!Number.isSafeInteger(offset) || offset < 0 || values.offset !== undefined && !/^\d+$/.test(values.offset)) throw new Error('--offset は0以上の整数です');
+  }
+  if (['search-next', 'search-results'].includes(command) && !values.cdp) throw new Error('続きの検索結果は既存接続で実行してください（npm run chrome -- search-next / search-results）');
   if (values['tab-url']) {
     if (!values.cdp) throw new Error('--tab-url は --cdp と併用してください');
     const tab = new URL(values['tab-url']);
     if (tab.origin !== 'https://www.amazon.co.jp') throw new Error('--tab-url はAmazon.co.jpのタブを指定してください');
   }
-  return { command, operationId: values.operation, cdp: values.cdp, tabURL: values['tab-url'], query: positionals.join(' ').trim() || 'ボールペン', index, asin: values.asin?.toUpperCase(),
+  return { command, limit, offset, screenshots: !!values.screenshots, operationId: values.operation, cdp: values.cdp, tabURL: values['tab-url'], query: positionals.join(' ').trim() || 'ボールペン', index, asin: values.asin?.toUpperCase(),
     keepOpen: !!values['keep-open'], headless: !!values.headless, persistent: !!values.profile || ['orders', 'cart', 'cart-add'].includes(command) };
 }
 
@@ -143,7 +158,7 @@ export async function main(config, existingBrowser) {
       const auth = await authentication(page);
       if (auth) { const e = new Error('Amazonが認証画面を表示しました'); e.code = auth === 'login_required' ? 'LOGIN_REQUIRED' : 'VERIFICATION_REQUIRED'; throw e; }
     };
-    const screenshot = async name => { await assertNoAuth(); await page.screenshot({ path: `${artifacts}/${name}` }); };
+    const screenshot = async name => { if (!config.screenshots) return; await assertNoAuth(); await page.screenshot({ path: `${artifacts}/${name}` }); };
 
     async function search() {
       if (cdp) await assertNoAuth();
@@ -173,7 +188,7 @@ export async function main(config, existingBrowser) {
       await mouse.click(submit, 'search button');
       await page.waitForURL(url => isAuthPath(url.pathname) || url.hostname === 'www.amazon.co.jp' && isSearchPath(url.pathname) && searchTerm(url) === query, { waitUntil: 'domcontentloaded', timeout: 30_000 });
       await assertNoAuth();
-      const products = page.locator('[data-component-type="s-search-result"][data-asin]:not([data-asin=""])');
+      const products = page.locator(searchProductSelector);
       await products.first().waitFor({ state: 'visible', timeout: 30_000 });
       await screenshot('03-search-results.png');
       return products;
@@ -195,9 +210,13 @@ export async function main(config, existingBrowser) {
       if (summary.cart === 'visible') await screenshot('04-cart.png');
       if (!summary.success) exitCode = summary.addition === 'unknown' ? 3 : ['login_required', 'verification_required'].includes(summary.cart) ? 2 : 1;
     } else if (command === 'search') {
-      const products = await search();
-      const titles = await products.locator('h2').allTextContents();
-      summary = { ...summary, query, productCount: await products.count(), firstProductTitles: titles.slice(0, 5).map(t => t.trim()) };
+      await search();
+      summary = { ...summary, ...await readSearchResults(page, config) };
+    } else if (['search-next', 'search-results'].includes(command)) {
+      await assertNoAuth();
+      const data = command === 'search-next' ? await nextSearchPage(page, mouse, assertNoAuth, config) : await readSearchResults(page, config);
+      summary = { ...summary, ...data };
+      await screenshot('03-search-results.png');
     } else if (command === 'detail') {
       let expectedAsin = asin;
       if (asin) {
@@ -220,10 +239,7 @@ export async function main(config, existingBrowser) {
         await page.waitForURL(url => isAuthPath(url.pathname) || productAsin(url.pathname) === expectedAsin.toUpperCase(), { waitUntil: 'domcontentloaded', timeout: 30_000 });
       }
       await assertNoAuth();
-      const productTitle = page.locator('#productTitle:visible');
-      await productTitle.waitFor({ state: 'visible', timeout: 30_000 });
-      if (productAsin(new URL(page.url()).pathname) !== expectedAsin.toUpperCase()) throw new Error('商品詳細のASINが一致しません');
-      summary = { ...summary, asin: expectedAsin, productTitle: (await productTitle.innerText()).trim(), ...(asin ? {} : { query, index }) };
+      summary = { ...summary, ...await readProductDetails(page, expectedAsin.toUpperCase()), ...(asin ? {} : { query, index }) };
       await screenshot('04-product-detail.png');
     } else {
       await page.goto('https://www.amazon.co.jp/', { waitUntil: 'domcontentloaded', timeout: 60_000 });

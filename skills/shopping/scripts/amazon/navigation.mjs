@@ -38,7 +38,7 @@ export function allowNavigation(url, method, command) {
   if (cartCommand && isAddPath(url.pathname) && ![...url.searchParams.keys()].some(k => /asin|quantity|offerlisting/i.test(k))) return true;
   if (forbiddenPath(url.pathname)) return false;
   if (url.pathname === '/') return true;
-  if (['search', 'detail'].includes(command) && isSearchPath(url.pathname)) return true;
+  if (['search', 'search-next', 'search-results', 'detail'].includes(command) && isSearchPath(url.pathname)) return true;
   if (['detail', 'cart-add'].includes(command) && (productAsin(url.pathname) || url.pathname === '/sspa/click')) return true;
   if (command === 'orders' && isOrdersPath(url.pathname)) return true;
   return false;

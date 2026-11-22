@@ -4,7 +4,7 @@ import { allowNavigation, safeValue, authorizeAdd } from './navigation.mjs';
 import { options } from './search.mjs';
 
 test('purchase, cart mutations and offsite navigation stay blocked in every command', () => {
-  for (const command of ['search', 'detail', 'orders', 'cart', 'cart-add']) {
+  for (const command of ['search', 'search-results', 'search-next', 'detail', 'orders', 'cart', 'cart-add']) {
     for (const path of ['/gp/buy/spc/handlers/display.html', '/hz/checkout', '/checkout/now', '/cart/delete', '/gp/cart/ajax-update.html']) {
       assert.equal(allowNavigation(new URL(path, 'https://www.amazon.co.jp'), 'GET', command), false, path);
       assert.equal(allowNavigation(new URL(path, 'https://www.amazon.co.jp'), 'POST', command), false, path);
