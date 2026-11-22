@@ -67,3 +67,31 @@ test('a failed tab returns its error even when DOM and screenshot APIs would nev
   const saved = JSON.parse(await readFile(join(result.artifacts, 'result.json'), 'utf8'));
   assert.equal(saved.error, result.error);
 });
+
+test('browser status distinguishes missing tabs, signed-in indications, sign-in prompts and verification without navigation',async()=>{
+  const browser=await chromium.launch({channel:'chrome',headless:true,args:['--host-resolver-rules=MAP www.amazon.co.jp ~NOTFOUND']});
+  try{
+    const context=await browser.newContext({serviceWorkers:'block'});
+    let body='<title>Status fixture</title>',requests=0;
+    await context.route('**/*',route=>{requests++;return route.fulfill({contentType:'text/html; charset=utf-8',body});});
+    const p=await context.newPage();
+    const config=options(['browser-status','--cdp','chrome']);
+    const empty=await main(config,browser);
+    assert.equal(empty.tabState,'missing');assert.deepEqual(empty.tabs,[]);assert.equal(requests,0);
+    for(const [path,html,expected] of [
+      ['/','<a id="nav-link-accountList">こんにちは、FixturePrivateNameさん</a>','signed_in'],
+      ['/','<a id="nav-link-accountList">こんにちは、ログイン</a>','signed_out'],
+      ['/','<div>Unknown layout</div>','unknown'],
+      ['/checkpoint/continue?token=SECRET','<a id="nav-link-accountList">こんにちは、FixturePrivateNameさん</a>','verification_required'],
+      ['/ap/signin','<form>ログイン</form>','login_required'],
+      ['/','<div>私は人間です</div>','verification_required'],
+    ]){
+      body='<title>Status fixture</title>'+html;
+      await p.goto('https://www.amazon.co.jp'+path);
+      const before=requests,result=await main(config,browser);
+      assert.equal(result.tabState,'available');assert.equal(result.tabs[0].loginState,expected);
+      assert.equal(requests,before);assert.equal(JSON.stringify(result).includes('FixturePrivateName'),false);
+      assert.equal(JSON.stringify(result).includes('SECRET'),false);
+    }
+  }finally{await browser.close();}
+});

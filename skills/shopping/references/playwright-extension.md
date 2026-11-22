@@ -13,6 +13,8 @@
 
 ## 通常の操作
 
+`status` は接続確認、`browser-status` はタブの表示内容の確認。接続中でもAmazonタブがなければ `browser-status` の `tabState: missing` となる。各タブの `loginState` は `signed_in`（画面上のログイン表示）、`signed_out`、`login_required`、`verification_required`、`unknown`。`signed_in` でも次の操作で追加認証が出ることはある。`unknown` やタブ不在をログアウトと断定しない。氏名やCookieは返さない。
+
 ```sh
 npm run chrome -- status
 npm run chrome -- start

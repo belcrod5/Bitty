@@ -139,7 +139,18 @@ export async function main(config, existingBrowser) {
       browser ??= await chromium.connectOverCDP(cdp, { timeout: 20_000, noDefaults: true });
       const amazonPages = browser.contexts().flatMap(c => c.pages()).filter(p => { try { return new URL(p.url()).origin === 'https://www.amazon.co.jp'; } catch { return false; } });
       if (command === 'browser-status') {
-        summary = { ...summary, success: true, browser: 'existing-chrome', tabs: await Promise.all(amazonPages.map(async p => ({ url: safeURL(p.url()), title: await p.title() }))) };
+        summary = { ...summary, success: true, browser: 'existing-chrome',
+          tabState: amazonPages.length ? 'available' : 'missing',
+          tabs: await Promise.all(amazonPages.map(async p => {
+            let loginState = await authentication(p);
+            if (!loginState) {
+              const account = await p.locator('#nav-link-accountList').innerText({ timeout: 1500 }).catch(() => '');
+              const signOut = await p.locator('#nav-item-signout').count();
+              loginState = /ログイン|sign in/i.test(account) ? 'signed_out'
+                : signOut || /こんにちは[、,\s]*.+さん|Hello[,\s]+\S+/i.test(account) ? 'signed_in' : 'unknown';
+            }
+            return { url: safeURL(p.url()), title: await p.title(), loginState };
+          })) };
         log('browser-status', summary);
         return { ...summary, exitCode: 0 };
       }

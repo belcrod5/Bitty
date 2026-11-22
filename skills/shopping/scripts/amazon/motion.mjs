@@ -107,15 +107,30 @@ export class RandomMouse {
       };
       const before = await locator.evaluate(readScrollPositions);
       const scrollStarted = performance.now();
-      if (needed) await locator.scrollIntoViewIfNeeded();
+      let after = before, movingSamples = 0;
+      if (needed) {
+        await locator.evaluate(element => element.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' }));
+        let stableSince = performance.now();
+        // Poll from Node so background-tab animation-frame throttling cannot hang this wait.
+        while (true) {
+          await sleep(50);
+          const current = await locator.evaluate(readScrollPositions);
+          if (JSON.stringify(current) !== JSON.stringify(after)) {
+            stableSince = performance.now();
+            movingSamples++;
+          }
+          after = current;
+          if (performance.now() - stableSince >= 200) break;
+          if (performance.now() - scrollStarted >= 5000) throw new Error(`${label}: scroll did not settle; stopped before click`);
+        }
+      }
       const durationMs = Math.round(performance.now() - scrollStarted);
-      const after = await locator.evaluate(readScrollPositions);
       const comparable = before.length === after.length;
       const deltas = comparable ? after.map((position, index) => ({
         ancestorIndex: index, x: position.x - before[index].x, y: position.y - before[index].y,
       })).filter(delta => delta.x !== 0 || delta.y !== 0) : null;
       this.log('scroll', { label, attempt: reaim + 1, needed,
-        scrolled: comparable ? deltas.length > 0 : null, before, after, deltas, durationMs });
+        scrolled: comparable ? deltas.length > 0 : null, behavior: needed ? 'smooth' : null, movingSamples, before, after, deltas, durationMs });
       if (needed) {
         await pause(this.log, `after scrolling ${label}`, 1000, 2000);
       }

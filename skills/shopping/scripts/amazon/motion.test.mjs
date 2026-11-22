@@ -37,6 +37,7 @@ test('scroll logs distinguish visible targets, document scrolling and nested scr
       await p.setContent(scenario==='visible'?button:scenario==='document'
         ?'<div style="height:1800px"></div>'+button
         :'<div id="scroller" style="height:250px;overflow:auto"><div style="height:1800px"></div>'+button+'</div>');
+      await p.evaluate(()=>{window.scrollPositions=[];document.addEventListener('scroll',event=>{const target=event.target===document?document.scrollingElement:event.target;window.scrollPositions.push(target.scrollTop);},true);});
       const logs=[],mouse=new RandomMouse(p,(event,data)=>logs.push({event,...data,time:performance.now()}));
       if(scenario!=='document')mouse.moveTo=point=>p.mouse.move(point.x,point.y);
       await mouse.click(p.locator('button'),'test');
@@ -53,6 +54,10 @@ test('scroll logs distinguish visible targets, document scrolling and nested scr
         assert.equal(wait,undefined);assert.deepEqual(scroll.deltas,[]);
       }else{
         assert.ok(scroll.deltas.some(d=>d.y>0));
+        assert.equal(scroll.behavior,'smooth');
+        const positions=await p.evaluate(()=>window.scrollPositions);
+        assert.ok(positions.some(y=>y>0&&y<Math.max(...positions)),JSON.stringify({scenario,positions,scroll}));
+        assert.ok(scroll.durationMs>=200);
         assert.ok(wait.milliseconds>=1000&&wait.milliseconds<=2000);
         assert.ok(movement.time-wait.time>=wait.milliseconds-10);
         if(scenario==='nested'){
@@ -62,4 +67,15 @@ test('scroll logs distinguish visible targets, document scrolling and nested scr
       }
     }finally{await p.close();}
   }
+});
+
+test('scrolling that does not settle stops before mouse-down',async()=>{
+  const p=await browser.newPage({viewport:{width:800,height:600}});
+  try{
+    await p.setContent('<div style="height:1800px"></div><button onmousedown="window.downs=(window.downs||0)+1">次へ</button><div style="height:2000px"></div>');
+    await p.locator('button').evaluate(e=>{e.scrollIntoView=()=>{let y=0;setInterval(()=>{y=y===100?200:100;window.scrollTo(0,y);},40);};});
+    const mouse=new RandomMouse(p,()=>{});
+    await assert.rejects(mouse.click(p.locator('button'),'test'),/scroll did not settle/);
+    assert.equal(await p.evaluate(()=>window.downs||0),0);
+  }finally{await p.close();}
 });
