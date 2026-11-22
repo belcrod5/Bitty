@@ -67,12 +67,3 @@ test('a failed tab returns its error even when DOM and screenshot APIs would nev
   const saved = JSON.parse(await readFile(join(result.artifacts, 'result.json'), 'utf8'));
   assert.equal(saved.error, result.error);
 });
-
-
-test('official extension rejects cart-add before reading a page or creating an operation', async () => {
-  const browser = { contexts: () => { throw new Error('Must not touch a page'); } };
-  const result = await main({ ...options(['cart-add', '--asin', 'B012345678', '--operation', 'extension-must-not-add', '--cdp', 'chrome']), extensionConnection: true }, browser);
-  assert.equal(result.success, false);
-  assert.equal(result.code, 'EXTENSION_CART_ADD_UNSUPPORTED');
-  assert.equal(result.exitCode, 1);
-});

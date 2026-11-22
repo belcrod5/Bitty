@@ -33,6 +33,8 @@ export function allowNavigation(url, method, command) {
   if (!['GET', 'HEAD'].includes(method)) return false;
   const cartCommand = ['cart', 'cart-add'].includes(command);
   if (cartCommand && isCartPath(url.pathname)) return true;
+  if (cartCommand && url.pathname === '/cart/smart-wagon') return true;
+  if (cartCommand && url.pathname === '/cart/ewc/compact') return true;
   if (cartCommand && isAddPath(url.pathname) && ![...url.searchParams.keys()].some(k => /asin|quantity|offerlisting/i.test(k))) return true;
   if (forbiddenPath(url.pathname)) return false;
   if (url.pathname === '/') return true;
@@ -40,6 +42,17 @@ export function allowNavigation(url, method, command) {
   if (['detail', 'cart-add'].includes(command) && (productAsin(url.pathname) || url.pathname === '/sspa/click')) return true;
   if (command === 'orders' && isOrdersPath(url.pathname)) return true;
   return false;
+}
+export function addDataError(data, asin, action) {
+  const asins = [...data.entries()].filter(([k]) => /^ASIN(?:\.\d+)?$/i.test(k)).map(([,v]) => v.toUpperCase());
+  const quantities = [...data.entries()].filter(([k]) => /^quantity(?:\.\d+)?$/i.test(k)).map(([,v]) => v);
+  if (asins.length !== 1 || asins[0] !== asin || quantities.length !== 1 || quantities[0] !== '1') return 'asin_or_quantity_mismatch';
+  // Ordinary Amazon forms can contain isBuyNow=1. It is safe only with the
+  // explicit add submitter AND the dedicated cart endpoint, never buy-box.
+  const explicitAdd = /^\/cart\/add-to-cart(?:\/|$)/.test(action.pathname) && data.has('submit.add-to-cart');
+  if ([...data.entries()].some(([key, value]) => /buy.?now|checkout/i.test(key) &&
+    !(key === 'isBuyNow' && (['0', 'false'].includes(value) || explicitAdd && ['1', 'true'].includes(value))))) return 'purchase_control';
+  return null;
 }
 export function authorizeAdd(request, attempt, asin) {
   attempt.blockedReason = 'not_armed';
@@ -51,16 +64,8 @@ export function authorizeAdd(request, attempt, asin) {
   attempt.blockedReason = 'unsupported_content_type';
   if (!type.startsWith('application/x-www-form-urlencoded')) return false;
   const data = new URLSearchParams(request.postData() ?? '');
-  const asins = [...data.entries()].filter(([k]) => /^ASIN(?:\.\d+)?$/i.test(k)).map(([,v]) => v.toUpperCase());
-  const quantities = [...data.entries()].filter(([k]) => /^quantity(?:\.\d+)?$/i.test(k)).map(([,v]) => v);
-  attempt.blockedReason = 'asin_or_quantity_mismatch';
-  if (asins.length !== 1 || asins[0] !== asin || quantities.length !== 1 || quantities[0] !== '1') return false;
-  // Amazon includes this hidden flag in ordinary add-to-cart forms as well.
-  // Accept only explicit inactive values; a buy-now submit button stays blocked.
-  attempt.blockedReason = 'purchase_control';
-  if ([...data.entries()].some(([key, value]) => /buy.?now|checkout/i.test(key) &&
-    !(key === 'isBuyNow' && ['0', 'false'].includes(value)))) return false;
-  attempt.blockedReason = null;
+  attempt.blockedReason = addDataError(data, asin, url);
+  if (attempt.blockedReason) return false;
   attempt.consumed = true;
   attempt.armed = false;
   return true;

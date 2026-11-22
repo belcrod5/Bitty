@@ -86,10 +86,6 @@ export async function main(config, existingBrowser) {
   };
 
   try {
-    if (config.extensionConnection && command === 'cart-add') {
-      const error = new Error('公式拡張ではカート追加に必要な通信制限を保証できません。追加は実行していません。直接接続のCLIを使ってください');
-      error.code = 'EXTENSION_CART_ADD_UNSUPPORTED'; throw error;
-    }
     if (command === 'cart-add') operation = await openOperation(operations, operationId, asin);
     const contextOptions = { viewport: { width: 1440, height: 1000 }, locale: 'ja-JP', serviceWorkers: 'block', acceptDownloads: false };
     if (cdp === 'auto') {
@@ -119,10 +115,9 @@ export async function main(config, existingBrowser) {
       // Keep page routes effective even when Amazon has a Service Worker.
       // This applies only to this CDP session and is removed by detach below.
       if (config.extensionConnection) {
-        // Official extension supports page input/routes but not a raw CDP session.
-        // Read-only commands still validate every navigation and clicked control;
-        // cart-add is rejected above because its one-POST guard needs full coverage.
-        log('service-worker-bypass-unavailable', { transport: 'playwright-extension', cartAdditionAllowed: false });
+        // Fixed controls, preflight form validation and the durable one-click
+        // journal apply on both transports. Page routing is supplementary here.
+        log('service-worker-bypass-unavailable', { transport: 'playwright-extension', cartAdditionAllowed: true });
       } else {
         networkSession = await context.newCDPSession(page);
         await networkSession.send('Network.enable');

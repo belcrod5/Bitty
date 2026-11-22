@@ -9,7 +9,7 @@ description: Amazon.co.jpの商品検索、検索結果からの商品詳細表�
 
 ## 実行
 
-普段使い・ログイン済み・既存Chromeを使う依頼では、先に [references/playwright-extension.md](references/playwright-extension.md) を読む。公式Playwright拡張の初回設定後は `npm run chrome -- start` で接続し、検索・詳細・履歴・カート表示を確認ボタンなしでプログラム実行できる。`npm run chrome -- status` で接続状態と方式を確認する。未設定のまま直接接続を繰り返して許可を求めない。カート追加は同資料に従って別途保持する直接接続を使う。ChatGPTの接続済みブラウザツールを使う既存方式は [references/extension.md](references/extension.md) にある。以下は専用ブラウザ等のCLIコマンド。
+普段使い・ログイン済み・既存Chromeを使う依頼では、先に [references/playwright-extension.md](references/playwright-extension.md) を読む。公式Playwright拡張の初回設定後は `npm run chrome -- start` で接続し、検索・詳細・履歴・カート表示・単品追加を接続確認ボタンなしでプログラム実行できる。`npm run chrome -- status` で接続状態と方式を確認する。未設定のまま直接接続を繰り返して許可を求めない。カート追加も同じ公式拡張接続を使い、直接接続へ切り替えない。ChatGPTの接続済みブラウザツールを使う既存方式は [references/extension.md](references/extension.md) にある。以下は専用ブラウザ等のCLIコマンド。
 
 このSKILL.mdと同じディレクトリを `<skill>` とする。リンク経由で利用でき、原本は `/Volumes/SSD-500GB-SanDisk/work/bitty-public/skills/shopping/` にある。
 
@@ -26,7 +26,7 @@ description: Amazon.co.jpの商品検索、検索結果からの商品詳細表�
 | 指定商品を数量1で単品追加 | `npm run cart-add -- --asin B012345678 --operation request-001` |
 | 追加操作の保存状態を確認 | `npm run cart-status -- --operation request-001` |
 
-公式Playwright拡張には検索・詳細・履歴・カート表示が対応し、カート追加は直接接続を使う。
+公式Playwright拡張でのブラウザ操作は `npm run chrome -- <コマンド>` で実行する。保存記録の `cart-status` は表のコマンドを使う。接続の再作成が必要な場合も登録済みキーで同じ方式に接続し、Chromeのリモートデバッグ許可を要求しない。
 
 **カート追加・カート確認では、実行前に [references/cart.md](references/cart.md) を読む。** 追加成功後の認証や成否不明を追加失敗と扱って再追加しない。同じ依頼の `--operation` を変更しない。
 
@@ -58,6 +58,6 @@ description: Amazon.co.jpの商品検索、検索結果からの商品詳細表�
 
 ## 操作範囲と保守
 
-ユーザーが単品追加を依頼したときだけ、対象ASIN・数量1のカート追加POSTを1回許可する。注文確定・購入・カート内の削除は行わない。直接接続のCLIではその他の購入系通信を遮断する。公式Playwright拡張ではService Workerの通信まで遮断できないためカート追加を受け付けない。拡張経路は検索・詳細・履歴・カート表示のみを受け付け、新規追加には使わない。認証画面には操作しない。この制限を外して依頼を実行しない。
+ユーザーが単品追加を依頼したときだけ、対象ASIN・数量1の通常追加ボタンを1回だけクリックする。注文確定・購入・カート内の削除は行わない。通常追加ボタンの表示・フォームのASIN・数量・送信先・購入用送信ボタンが含まれないことをクリック直前にも検査する。ページ通信の遮断は補助であり、公式拡張ではService Workerの通信まで遮断できない。追加成功は通信の捕捉ではなく対象ASINを含む成功表示で確認する。認証画面には操作しない。
 
 このスキルは指定された「買い物」オーケストレーターの `.agents/skills/shopping` から原本へのリンクで配置する。共通の `~/.codex/skills/` にコピーしない。保守は原本側で行い、コードを変更した場合は `scripts/amazon/` で `npm run check` と `npm test` を実行する。実行結果・操作記録 `.operations/`・ブラウザプロファイル・node_modulesはGit管理しない。

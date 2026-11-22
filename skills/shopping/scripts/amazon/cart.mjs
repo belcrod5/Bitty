@@ -1,7 +1,7 @@
 import { mkdir, open, readFile, readdir, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { authentication, isCartPath, isAddPath, productAsin, safeValue } from './navigation.mjs';
+import { authentication, isCartPath, isAddPath, productAsin, safeValue, addDataError } from './navigation.mjs';
 
 export async function readOperation(directory, id) {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/.test(id ?? '')) throw new Error('--operation は英数字・ハイフン・下線で1〜80文字を指定してください');
@@ -79,18 +79,25 @@ export async function openCart(page, mouse, log, timeout = 20_000) {
 }
 async function additionConfirmed(page, asin) {
   if (await authentication(page)) return false;
+  const productLink = `a[href*="/dp/${asin}"], a[href*="/gp/product/${asin}"]`;
   const scopes = page.locator('#sw-atc-details-single-container, #huc-v2-order-row, #attach-added-to-cart-message');
   for (let i = 0; i < await scopes.count(); i++) {
     const scope = scopes.nth(i);
-    if (await scope.isVisible() && /カートに入れました|Added to Cart/i.test(await scope.innerText()) && await scope.locator(`a[href*="/dp/${asin}"]`).count()) return true;
+    if (await scope.isVisible() && /カートに入れました|Added to Cart/i.test(await scope.innerText()) && await scope.locator(productLink).count()) return true;
   }
   if (!isAddPath(new URL(page.url()).pathname)) return false;
-  return /カートに入れました|Added to Cart/i.test(await page.locator('body').innerText()) && await page.locator(`a[href*="/dp/${asin}"]`).count() > 0;
+  return /カートに入れました|Added to Cart/i.test(await page.locator('body').innerText()) && await page.locator(productLink).count() > 0;
 }
 export async function runCartAddition({ page, mouse, log, operation, attempt, identity, timeout = 20_000 }) {
   const { asin } = operation.data;
   if (operation.data.addition === 'submitted' || operation.data.addition === 'unknown') {
-    return operation.update({ addition: 'unknown', retryAdd: false, code: 'ADDITION_UNKNOWN' });
+    // Recover only from the target's existing success display on this browser.
+    // Merely finding an item in the cart is not proof of this submission.
+    if (!page || operation.data.browserIdentity !== identity || !await additionConfirmed(page, asin)) {
+      return operation.update({ addition: 'unknown', retryAdd: false, code: 'ADDITION_UNKNOWN' });
+    }
+    await operation.update({ addition: 'confirmed', confirmedAt: new Date().toISOString(), retryAdd: false, code: null });
+    log('addition-confirmed', { operation: operation.data.operation, asin, quantity: 1, source: 'existing-success-display' });
   }
   if (operation.data.addition !== 'confirmed') {
     if (operation.data.browserIdentity && operation.data.browserIdentity !== identity) throw new Error('操作途中でブラウザ接続先が変わっています');
@@ -98,21 +105,36 @@ export async function runCartAddition({ page, mouse, log, operation, attempt, id
     if (auth) return operation.update({ cart: auth, code: 'AUTH_REQUIRED' });
     if (productAsin(new URL(page.url()).pathname) !== asin) throw new Error('対象ASINの商品ページではありません');
     const title = (await page.locator('#productTitle:visible').innerText()).trim();
-    const button = page.locator('#add-to-cart-button');
+    const button = page.locator('#add-to-cart-button:visible');
     await button.waitFor({ state: 'visible' });
     if (!await button.isEnabled()) throw new Error('カート追加ボタンが無効です');
-    const form = await button.evaluate(button => {
-      const form = button.form;
-      const quantity = document.querySelector('#quantity') ?? form?.elements.namedItem('quantity');
-      return { action: button.getAttribute('formaction') ? button.formAction : form?.action, method: (button.getAttribute('formmethod') ?? form?.method ?? '').toUpperCase(), quantity: quantity?.value, asin: form?.elements.namedItem('ASIN')?.value ?? form?.elements.namedItem('ASIN.1')?.value };
-    });
-    const action = new URL(form.action);
-    if (form.asin?.toUpperCase() !== asin) throw new Error('カート追加フォームの商品ASINが一致しません');
-    if (form.quantity !== '1') throw new Error('数量が1であることを確認できません。数量変更や追加は行いません');
-    if (action.origin !== 'https://www.amazon.co.jp' || !isAddPath(action.pathname) || form.method !== 'POST') throw new Error('未対応のカート追加フォームです');
+    async function verifyForm() {
+      const form = await button.evaluate(button => {
+        const form = button.form;
+        const quantity = document.querySelector('#quantity') ?? form?.elements.namedItem('quantity');
+        return { action: button.getAttribute('formaction') ? button.formAction : form?.action,
+          method: (button.getAttribute('formmethod') ?? form?.method ?? '').toUpperCase(),
+          target: button.getAttribute('formtarget') ?? form?.target ?? '',
+          encoding: button.getAttribute('formenctype') ?? form?.enctype,
+          ordinaryAdd: button.type === 'submit' && !button.closest('#sns-atc-container') &&
+            /^(カートに入れる|Add to Cart|Add to Basket)$/i.test((button.value || button.textContent).trim()),
+          entries: form ? [...new FormData(form, button)].map(([key, value]) => [key, typeof value === 'string' ? value : '']) : [],
+          quantity: quantity?.value, asin: form?.elements.namedItem('ASIN')?.value ?? form?.elements.namedItem('ASIN.1')?.value };
+      });
+      const action = new URL(form.action);
+      if (form.asin?.toUpperCase() !== asin) throw new Error('カート追加フォームの商品ASINが一致しません');
+      if (form.quantity !== '1') throw new Error('数量が1であることを確認できません。数量変更や追加は行いません');
+      if (action.origin !== 'https://www.amazon.co.jp' || !isAddPath(action.pathname) || form.method !== 'POST' ||
+        !form.ordinaryAdd || !['', '_self'].includes(form.target) || form.encoding !== 'application/x-www-form-urlencoded') throw new Error('未対応のカート追加フォームです');
+      const formError = addDataError(new URLSearchParams(form.entries), asin, action);
+      if (formError) throw new Error(`カート追加フォームを送信できません: ${formError}`);
+      return action;
+    }
+    const action = await verifyForm();
     await operation.update({ title, browserIdentity: identity, quantity: 1 });
     log('quantity-confirmed', { asin, quantity: 1 });
     await mouse.click(button, 'add to cart', { beforeMouseDown: async () => {
+      if ((await verifyForm()).href !== action.href) throw new Error('クリック直前に追加先が変わりました');
       // Record the point of no automatic retry BEFORE submitting any event.
       await operation.update({ addition: 'submitted', retryAdd: false, submittedAt: new Date().toISOString() });
       attempt.action = action.href;
@@ -122,7 +144,9 @@ export async function runCartAddition({ page, mouse, log, operation, attempt, id
     let confirmed = false;
     do {
       if (await authentication(page)) break;
-      if (attempt.consumed && await additionConfirmed(page, asin)) { confirmed = true; break; }
+      // Service Workers can hide the POST from page.route. Confirm the actual
+      // target's success display, rather than requiring an interception event.
+      if (await additionConfirmed(page, asin)) { confirmed = true; break; }
       await sleep(200);
     } while (Date.now() < deadline);
     attempt.armed = false;

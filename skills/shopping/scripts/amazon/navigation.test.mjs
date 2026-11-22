@@ -20,7 +20,11 @@ test('search, product, orders and cart redirects are permitted only for their co
   for (const path of ['/s?k=test', '/s/ref=nb_sb_noss_1?field-keywords=test']) assert.equal(allowNavigation(new URL(path, 'https://www.amazon.co.jp'), 'GET', 'search'), true);
   for (const path of ['/dp/B012345678', '/product-name/dp/B012345678/ref=test', '/gp/product/B012345678']) assert.equal(allowNavigation(new URL(path, 'https://www.amazon.co.jp'), 'GET', 'detail'), true);
   assert.equal(allowNavigation(new URL('https://www.amazon.co.jp/gp/css/order-history'), 'GET', 'orders'), true);
-  for (const path of ['/cart?ref_=sw_gtc', '/gp/cart/view.html', '/cart/add-to-cart/ref=dp_start']) assert.equal(allowNavigation(new URL(path, 'https://www.amazon.co.jp'), 'GET', 'cart-add'), true);
+  for (const path of ['/cart?ref_=sw_gtc', '/gp/cart/view.html', '/cart/add-to-cart/ref=dp_start', '/cart/smart-wagon']) assert.equal(allowNavigation(new URL(path, 'https://www.amazon.co.jp'), 'GET', 'cart-add'), true);
+  for (const command of ['cart','cart-add']) {
+    assert.equal(allowNavigation(new URL('https://www.amazon.co.jp/cart/ewc/compact'), 'GET', command), true);
+    assert.equal(allowNavigation(new URL('https://www.amazon.co.jp/cart/ewc/compact'), 'POST', command), false);
+  }
 });
 test('only the armed ASIN/quantity1 POST is allowed once', () => {
   const url = 'https://www.amazon.co.jp/cart/add-to-cart/ref=one';
@@ -52,6 +56,18 @@ test('inactive isBuyNow hidden field permits only the requested single-item add'
     const attempt = { action, armed: true, consumed: false };
     assert.equal(authorizeAdd(make(`ASIN=B012345678&quantity=1&${extra}`), attempt, 'B012345678'), false);
     assert.equal(attempt.consumed, false);
+  }
+});
+test('active isBuyNow is allowed only for an explicit add submitter on the dedicated cart endpoint', () => {
+  const action='https://www.amazon.co.jp/cart/add-to-cart/ref=one';
+  const make=(url,body)=>({url:()=>url,method:()=>'POST',headers:()=>({'content-type':'application/x-www-form-urlencoded'}),postData:()=>body});
+  for(const flag of ['1','true']) {
+    const body=`ASIN=B012345678&quantity=1&isBuyNow=${flag}&submit.add-to-cart=カートに入れる`;
+    assert.equal(authorizeAdd(make(action,body),{action,armed:true},'B012345678'),true);
+    const buyBox='https://www.amazon.co.jp/gp/product/handle-buy-box/ref=one';
+    assert.equal(authorizeAdd(make(buyBox,body),{action:buyBox,armed:true},'B012345678'),false);
+    assert.equal(authorizeAdd(make(action,body+'&submit.buy-now=1'),{action,armed:true},'B012345678'),false);
+    assert.equal(authorizeAdd(make(action,body.replace('quantity=1','quantity=2')),{action,armed:true},'B012345678'),false);
   }
 });
 test('CLI requires an ASIN and stable operation ID; attachment must be explicit and local', () => {

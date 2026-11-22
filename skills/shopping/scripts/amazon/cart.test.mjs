@@ -12,7 +12,7 @@ let browser, directory;
 before(async () => { directory = await mkdtemp(join(tmpdir(), 'shopping-test-')); browser = await chromium.launch({channel:'chrome',headless:true,args:['--host-resolver-rules=MAP www.amazon.co.jp ~NOTFOUND, MAP m.media-amazon.com ~NOTFOUND']}); });
 after(async () => { await browser?.close(); await rm(directory, {recursive:true,force:true}); });
 
-async function fixture({ challenge = false, lost = false, quantity = 1, buyBox = false } = {}) {
+async function fixture({ challenge = false, lost = false, quantity = 1, buyBox = false, opaqueAdd = false, smartWagon = false } = {}) {
   const context = await browser.newContext({serviceWorkers:'block'});
   const page = await context.newPage();
   page.setDefaultTimeout(1500);
@@ -22,14 +22,17 @@ async function fixture({ challenge = false, lost = false, quantity = 1, buyBox =
   await context.route('**/*', async route => {
     const req = route.request(), url = new URL(req.url());
     let html='';
-    if (url.pathname.startsWith('/dp/')) html=`<h1 id="productTitle">Test apron</h1><form method="post" action="${buyBox ? '/gp/product/handle-buy-box/ref=one' : '/cart/add-to-cart/ref=one'}"><input name="ASIN" value="${asin}"><select id="quantity" name="quantity"><option>${quantity}</option></select>${buyBox ? '<input type="hidden" name="isBuyNow" value="0"><button name="submit.buy-now" value="1">今すぐ買う</button>' : ''}<button id="add-to-cart-button" name="submit.add-to-cart" formaction="/cart/add-to-cart/ref=one">カートに入れる</button></form><a id="nav-cart" href="/cart">カート</a>`;
+    if (url.pathname.startsWith('/dp/')) html=`<h1 id="productTitle">Test apron</h1><form method="post" action="${buyBox ? '/gp/product/handle-buy-box/ref=one' : '/cart/add-to-cart/ref=one'}"><input name="ASIN" value="${asin}"><select id="quantity" name="quantity"><option>${quantity}</option></select>${buyBox ? '<input type="hidden" name="isBuyNow" value="1"><button name="submit.buy-now" value="1">今すぐ買う</button>' : ''}<button id="add-to-cart-button" name="submit.add-to-cart" formaction="/cart/add-to-cart/ref=one">カートに入れる</button></form><div id="sns-atc-container" hidden><button id="add-to-cart-button">定期おトク便をカートに追加</button></div><a id="nav-cart" href="/cart">カート</a>`;
     else if (url.pathname.startsWith('/cart/add-to-cart')) {
       if (req.method()==='POST') {
         posts++;
         assert.equal((await readOperation(directory, 'current')).addition, 'submitted');
         if (lost) return route.fulfill({status:502,contentType:'text/html',body:'Confirmation response unavailable'});
       }
+      if(smartWagon) return route.fulfill({contentType:'text/html',body:'<script>location.replace("/cart/smart-wagon")</script>'});
       html=`<div id="sw-atc-details-single-container">カートに入れました<a href="/dp/${asin}">Test apron</a></div><a href="/cart?ref_=sw_gtc">カートに移動</a>`;
+    } else if(url.pathname==='/cart/smart-wagon') {
+      html=`<div id="sw-atc-details-single-container"><h1>カートに入れました</h1><a href="/gp/product/${asin}/ref=sw_img_1">Test apron</a></div><a href="/cart">カートに移動</a>`;
     } else if (url.pathname==='/cart') {
       if (challenge) return route.fulfill({contentType:'text/html',body:'<script>location.replace("/checkpoint/continue?token=SECRET")</script>'});
       html=`<h1>ショッピングカート</h1><div id="sc-active-cart"><div class="sc-list-item" data-asin="${asin}"><span class="sc-product-title">Test apron</span><select name="quantity"><option>1</option></select></div></div>`;
@@ -37,7 +40,10 @@ async function fixture({ challenge = false, lost = false, quantity = 1, buyBox =
     else return route.abort('blockedbyclient');
     return route.fulfill({contentType:'text/html; charset=utf-8',body:`<!doctype html><html><body>${html}</body></html>`});
   });
-  await page.route('**/*',createRouteHandler('cart-add',attempt,asin,()=>{}));
+  const guard = createRouteHandler('cart-add',attempt,asin,()=>{});
+  // Model a POST that the Service Worker hides from page.route, without
+  // requiring a worker or an external Amazon request in this fixture.
+  await page.route('**/*', route => opaqueAdd && (route.request().method() === 'POST' || new URL(route.request().url()).pathname === '/cart/smart-wagon') ? route.fallback() : guard(route));
   const mouse={click:async (locator,label,{beforeMouseDown}={}) => { clicked.push(label); await beforeMouseDown?.(); await locator.click(); }};
   await page.goto(`https://www.amazon.co.jp/dp/${asin}`);
   return {context,page,attempt,mouse,clicked,get posts(){return posts;}};
@@ -52,12 +58,56 @@ test('quantity1 add is confirmed, then cart contents are read; journal precedes 
     assert.deepEqual(f.clicked,['add to cart','cart link']);
   } finally { await op.release(); await f.context.close(); }
 });
-test('buy-box form with inactive isBuyNow submits only the add button once', async () => {
+test('ordinary form with isBuyNow=1 selects the visible add button and not the hidden subscription button', async () => {
   await cleanupOperation(); const f=await fixture({buyBox:true}); const op=await openOperation(directory,'current',asin);
   try {
     const result=await runCartAddition({...f,operation:op,identity:'fixture',log:()=>{},timeout:1000});
     assert.equal(result.addition,'confirmed'); assert.equal(result.cart,'visible'); assert.equal(f.posts,1);
     assert.deepEqual(f.clicked,['add to cart','cart link']);
+  } finally { await op.release(); await f.context.close(); }
+});
+test('success confirmation does not depend on seeing a Service Worker POST, and retry cannot click again', async () => {
+  await cleanupOperation(); const f=await fixture({buyBox:true,opaqueAdd:true}); const op=await openOperation(directory,'current',asin);
+  try {
+    const result=await runCartAddition({...f,operation:op,identity:'fixture',log:()=>{},timeout:1000});
+    assert.equal(f.attempt.consumed,false); assert.equal(result.addition,'confirmed');
+    assert.equal(result.cart,'visible'); assert.equal(f.posts,1);
+    await runCartAddition({...f,operation:op,identity:'fixture',log:()=>{},timeout:1000});
+    assert.equal(f.posts,1); assert.equal(f.clicked.filter(x=>x==='add to cart').length,1);
+  } finally { await op.release(); await f.context.close(); }
+});
+test('smart-wagon success with a gp/product link confirms the target without depending on page routing', async () => {
+  await cleanupOperation(); const f=await fixture({buyBox:true,opaqueAdd:true,smartWagon:true}); const op=await openOperation(directory,'current',asin);
+  try {
+    const result=await runCartAddition({...f,operation:op,identity:'fixture',log:()=>{},timeout:1000});
+    assert.equal(result.addition,'confirmed'); assert.equal(result.cart,'visible'); assert.equal(f.posts,1);
+    // Recreate the observed unknown journal while leaving the target's success
+    // display in place. Recovery must read it without another add click.
+    await f.page.goto('https://www.amazon.co.jp/cart/smart-wagon');
+    await op.update({addition:'unknown',retryAdd:false,code:'ADDITION_UNKNOWN'});
+    const clicks=f.clicked.filter(x=>x==='add to cart').length;
+    const recovered=await runCartAddition({...f,operation:op,identity:'fixture',log:()=>{},timeout:1000});
+    assert.equal(recovered.addition,'confirmed'); assert.equal(recovered.cart,'visible');
+    assert.equal(f.posts,1); assert.equal(f.clicked.filter(x=>x==='add to cart').length,clicks);
+    await op.update({addition:'unknown',retryAdd:false});
+    const unproven=await runCartAddition({...f,operation:op,identity:'fixture',log:()=>{},timeout:1000});
+    assert.equal(unproven.addition,'unknown'); assert.equal(f.posts,1);
+  } finally { await op.release(); await f.context.close(); }
+});
+test('changed quantity during mouse movement and a buy-now submitter are rejected before submission', async () => {
+  await cleanupOperation(); const f=await fixture({buyBox:true}); const op=await openOperation(directory,'current',asin);
+  try {
+    await f.page.locator('#add-to-cart-button:visible').evaluate(e=>e.name='submit.buy-now');
+    await assert.rejects(runCartAddition({...f,operation:op,identity:'fixture',log:()=>{}}),/purchase_control/);
+    assert.equal(f.posts,0); assert.equal(op.data.addition,'not_started');
+    await f.page.locator('#add-to-cart-button:visible').evaluate(e=>e.name='submit.add-to-cart');
+    const changingMouse={click:async (locator,label,{beforeMouseDown})=>{
+      await f.page.locator('#quantity').evaluate(e=>e.add(new Option('2','2',true,true)));
+      await beforeMouseDown();
+      await locator.click();
+    }};
+    await assert.rejects(runCartAddition({...f,mouse:changingMouse,operation:op,identity:'fixture',log:()=>{}}),/数量が1/);
+    assert.equal(f.posts,0); assert.equal(op.data.addition,'not_started');
   } finally { await op.release(); await f.context.close(); }
 });
 test('challenge AFTER confirmation preserves addition; rerun never submits again', async () => {
@@ -156,7 +206,7 @@ test('CDP inspection keeps existing Chrome/tab alive, cleans routes and redacts 
   } finally { console.log=originalLog; process.exitCode=previousExit; await owned.close(); await rm(profile,{recursive:true,force:true}); }
 });
 
-test('full CLI over CDP records confirmed+verification and does not add again on rerun', async () => {
+for (const extensionConnection of [false,true]) test(`full CLI ${extensionConnection?'extension':'direct'} records confirmed+verification and does not add again on rerun`, async () => {
   const { main, options } = await import('./search.mjs');
   const profile = await mkdtemp(join(tmpdir(),'shopping-cli-'));
   const id='test-'+profile.split('/').at(-1);
@@ -177,7 +227,7 @@ test('full CLI over CDP records confirmed+verification and does not add again on
   const output=[], previousLog=console.log, previousExit=process.exitCode;
   try {
     console.log=(...v)=>output.push(v.join(' '));
-    const config=options(['cart-add','--asin',asin,'--operation',id,'--cdp',endpoint]);
+    const config={...options(['cart-add','--asin',asin,'--operation',id,'--cdp',endpoint]),extensionConnection};
     await main(config);
     const state=JSON.parse(await readFile(operationFile));
     assert.equal(state.addition,'confirmed',output.join('\n')); assert.equal(state.cart,'verification_required'); assert.equal(state.retryAdd,false); assert.equal(posts,1); assert.equal(process.exitCode,2);

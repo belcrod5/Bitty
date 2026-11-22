@@ -128,6 +128,7 @@ async function cli(args) {
   }
   if (command === '--worker') {
     const config = direct ? null : await readExtensionConfig();
+    if (!direct && !config) throw new Error('公式拡張が未設定です。setup-extensionで初回設定してください。直接接続には切り替えません');
     let extension;
     const connect = config ? async () => { extension = await connectExtension(config, paths.name); return extension.browser; } : undefined;
     const session = await serveSession(paths.socket, connect, { transport: config ? 'extension' : 'direct', onStop: async () => { await extension?.disconnect(); } });
@@ -137,7 +138,12 @@ async function cli(args) {
   }
   if (command === 'start') {
     const config = direct ? null : await readExtensionConfig();
-    try { console.log(JSON.stringify(await requestSession(paths.socket, { command: 'status' }), null, 2)); return; }
+    if (!direct && !config) throw new Error('公式拡張が未設定です。setup-extensionで初回設定してください。直接接続には切り替えません');
+    try {
+      const status = await requestSession(paths.socket, { command: 'status' });
+      if (!direct && status.transport !== 'extension') throw new Error('旧方式の接続が残っています。stop後にstartで公式拡張へ接続してください');
+      console.log(JSON.stringify(status, null, 2)); return;
+    }
     catch (error) {
       if (!['ENOENT', 'ECONNREFUSED'].includes(error.code)) throw error;
       if (error.code === 'ECONNREFUSED') await unlink(paths.socket);
