@@ -16,31 +16,53 @@ const marker = '.bitty-skill-install.json';
 async function fixture(t, target = 'codex') {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'bitty-skill-home-'));
   t.after(() => fs.rm(home, { recursive: true, force: true }));
+  // Isolate the checkout so testing live edits cannot modify the real skill.
+  const checkout = path.join(home, 'repository');
+  const source = path.join(checkout, 'skills', name);
+  const installer = path.join(checkout, 'scripts/skills/install-bitty-session.mjs');
+  await fs.mkdir(path.dirname(installer), { recursive: true });
+  await fs.copyFile(script, installer);
+  await fs.cp(path.join(repoRoot, 'skills', name), source, { recursive: true });
   const root = path.join(home, `.${target}`, 'skills', name);
   const run = async (...args) => {
-    try { return { code: 0, ...await execFile(process.execPath, [script, '--target', target, '--home', home, ...args]) }; }
+    try { return { code: 0, ...await execFile(process.execPath, [installer, '--target', target, '--home', home, ...args]) }; }
     catch (error) { return error; }
   };
-  return { home, root, run };
+  return { home, root, source, run };
 }
 
-for (const target of ['codex', 'claude']) test(`${target} dry-run writes nothing, apply installs exactly the canonical skill, sync is idempotent`, async t => {
+for (const target of ['codex', 'claude']) test(`${target} dry-run writes nothing, apply links the canonical skill, and source edits are visible without reinstalling`, async t => {
   const f = await fixture(t, target);
   const dry = await f.run(); assert.equal(dry.code, 0);
   assert.equal(JSON.parse(dry.stdout).mode, 'dry-run');
   await assert.rejects(fs.stat(path.join(f.home, `.${target}`)), { code: 'ENOENT' });
   const applied = await f.run('--apply'); assert.equal(applied.code, 0);
-  const state = JSON.parse(await fs.readFile(path.join(f.root, marker), 'utf8'));
-  assert.equal(state.name, name); assert.equal(state.version, JSON.parse(dry.stdout).version);
-  assert.ok(state.files['references/app-control.md']); assert.ok(state.files['scripts/bitty-session.mjs']); assert.ok(state.files['scripts/runner-control.mjs']);
-  assert.equal((await fs.readFile(path.join(f.root, 'SKILL.md'), 'utf8')), await fs.readFile(path.join(repoRoot, 'skills/bitty-session-orchestrator/SKILL.md'), 'utf8'));
+  assert.equal((await fs.lstat(f.root)).isSymbolicLink(), true);
+  assert.equal(await fs.readlink(f.root), await fs.realpath(f.source));
+  assert.equal(JSON.parse(applied.stdout).source, await fs.realpath(f.source));
+  assert.equal(JSON.parse(applied.stdout).version, JSON.parse(dry.stdout).version);
+  await fs.writeFile(path.join(f.source, 'SKILL.md'), 'updated original');
+  assert.equal(await fs.readFile(path.join(f.root, 'SKILL.md'), 'utf8'), 'updated original');
+  assert.equal(JSON.parse((await f.run()).stdout).unchanged, true);
   assert.equal(JSON.parse((await f.run('--apply')).stdout).unchanged, true);
+  assert.deepEqual(await fs.readdir(path.dirname(f.root)), [name]);
+  await assert.rejects(fs.stat(path.join(f.source, marker)), { code: 'ENOENT' });
 });
 
-test('unmanaged copy is never overwritten without exact reviewed digest, and adoption preserves original contents', async t => {
+for (const managed of [false, true]) test(`${managed ? 'legacy managed' : 'unmanaged'} copy requires an exact reviewed digest and is preserved when replaced with a link`, async t => {
   const f = await fixture(t);
-  await fs.mkdir(f.root, { recursive: true }); await fs.writeFile(path.join(f.root, 'SKILL.md'), 'my customized local skill');
+  await fs.cp(f.source, f.root, { recursive: true });
+  if (managed) {
+    const { createHash } = await import('node:crypto');
+    const files = { 'SKILL.md': createHash('sha256').update(await fs.readFile(path.join(f.root, 'SKILL.md'))).digest('hex') };
+    await fs.writeFile(path.join(f.root, marker), JSON.stringify({ name, files,
+      version: createHash('sha256').update(JSON.stringify(files)).digest('hex') }));
+  }
+  await fs.writeFile(path.join(f.root, 'SKILL.md'), 'my customized local skill');
   await fs.writeFile(path.join(f.root, 'local-notes.txt'), 'unmanaged notes');
+  await fs.writeFile(path.join(f.root, '__proto__'), 'local file must survive');
+  const unrelated = path.join(path.dirname(f.root), 'unrelated');
+  await fs.mkdir(unrelated); await fs.writeFile(path.join(unrelated, 'SKILL.md'), 'keep');
   const review = JSON.parse((await f.run()).stdout);
   assert.equal(review.adoptionRequired, true);
   assert.notEqual((await f.run('--apply')).code, 0);
@@ -49,8 +71,11 @@ test('unmanaged copy is never overwritten without exact reviewed digest, and ado
   const result = await f.run('--apply', '--adopt-reviewed', review.reviewedDigest);
   assert.equal(result.code, 0);
   const backup = JSON.parse(result.stdout).preservedBackup;
+  assert.equal((await fs.lstat(f.root)).isSymbolicLink(), true);
   assert.equal(await fs.readFile(path.join(backup, 'SKILL.md'), 'utf8'), 'my customized local skill');
   assert.equal(await fs.readFile(path.join(backup, 'local-notes.txt'), 'utf8'), 'unmanaged notes');
+  assert.equal(await fs.readFile(path.join(backup, '__proto__'), 'utf8'), 'local file must survive');
+  assert.equal(await fs.readFile(path.join(unrelated, 'SKILL.md'), 'utf8'), 'keep');
   await assert.rejects(fs.stat(path.join(f.root, 'local-notes.txt')), { code: 'ENOENT' });
 });
 
@@ -63,28 +88,7 @@ test('review digest becomes stale after local edits', async t => {
   assert.equal(await fs.readFile(path.join(f.root, 'SKILL.md'), 'utf8'), 'after');
 });
 
-test('managed local changes and extra files block sync rather than being deleted', async t => {
-  const f = await fixture(t); assert.equal((await f.run('--apply')).code, 0);
-  await fs.writeFile(path.join(f.root, 'references/app-control.md'), 'custom change');
-  assert.notEqual((await f.run('--apply')).code, 0);
-  assert.equal(await fs.readFile(path.join(f.root, 'references/app-control.md'), 'utf8'), 'custom change');
-});
-
-test('outdated but unmodified managed installation upgrades without losing unrelated skills', async t => {
-  const f = await fixture(t); assert.equal((await f.run('--apply')).code, 0);
-  const unrelated = path.join(path.dirname(f.root), 'unrelated'); await fs.mkdir(unrelated); await fs.writeFile(path.join(unrelated, 'SKILL.md'), 'keep');
-  // Make a valid older managed state, independent of how the current payload is written.
-  const { createHash } = await import('node:crypto'); const hash = value => createHash('sha256').update(value).digest('hex');
-  const state = JSON.parse(await fs.readFile(path.join(f.root, marker), 'utf8'));
-  await fs.writeFile(path.join(f.root, 'SKILL.md'), 'old shipped version');
-  state.files['SKILL.md'] = hash('old shipped version'); state.version = hash(JSON.stringify(state.files));
-  await fs.writeFile(path.join(f.root, marker), JSON.stringify(state));
-  assert.equal((await f.run('--apply')).code, 0);
-  assert.equal(await fs.readFile(path.join(unrelated, 'SKILL.md'), 'utf8'), 'keep');
-  assert.notEqual(await fs.readFile(path.join(f.root, 'SKILL.md'), 'utf8'), 'old shipped version');
-});
-
-test('target path traversal and symlinks at parent, skill and payload are refused', async t => {
+test('target path traversal and symlinks at parents, foreign skill and local payload are refused', async t => {
   const f = await fixture(t);
   const outside = path.join(f.home, 'outside'); await fs.mkdir(outside);
   await fs.symlink(outside, path.join(f.home, '.codex'));
@@ -98,21 +102,45 @@ test('target path traversal and symlinks at parent, skill and payload are refuse
   await assert.rejects(execFile(process.execPath, [script, '--target', '../elsewhere', '--home', f.home, '--apply']));
 });
 
-test('managed upgrade detects and preserves a local __proto__ file', async t => {
-  const f = await fixture(t); assert.equal((await f.run('--apply')).code, 0);
-  const { createHash } = await import('node:crypto');
-  const hash = value => createHash('sha256').update(value).digest('hex');
-  const state = JSON.parse(await fs.readFile(path.join(f.root, marker), 'utf8'));
-  await fs.writeFile(path.join(f.root, 'SKILL.md'), 'old shipped version');
-  state.files['SKILL.md'] = hash('old shipped version');
-  state.version = hash(JSON.stringify(state.files));
-  await fs.writeFile(path.join(f.root, marker), JSON.stringify(state));
-  await fs.writeFile(path.join(f.root, '__proto__'), 'local file must survive');
+test('a broken skill link is refused without replacing it', async t => {
+  const f = await fixture(t);
+  await fs.mkdir(path.dirname(f.root), { recursive: true });
+  const target = path.join(f.home, 'missing');
+  await fs.symlink(target, f.root);
   const result = await f.run('--apply');
-  assert.notEqual(result.code, 0);
-  assert.match(result.stderr, /local changes/);
-  assert.equal(await fs.readFile(path.join(f.root, '__proto__'), 'utf8'), 'local file must survive');
-  assert.equal(await fs.readFile(path.join(f.root, 'SKILL.md'), 'utf8'), 'old shipped version');
+  assert.notEqual(result.code, 0); assert.match(result.stderr, /links elsewhere/);
+  assert.equal(await fs.readlink(f.root), target);
+  await assert.rejects(fs.stat(target), { code: 'ENOENT' });
+});
+
+test('an existing relative link to the canonical skill is accepted without replacing it', async t => {
+  const f = await fixture(t);
+  await fs.mkdir(path.dirname(f.root), { recursive: true });
+  const target = path.relative(path.dirname(f.root), f.source);
+  await fs.symlink(target, f.root);
+  assert.equal(JSON.parse((await f.run('--apply')).stdout).unchanged, true);
+  assert.equal(await fs.readlink(f.root), target);
+  assert.notEqual((await f.run('--apply', '--adopt-reviewed', '0'.repeat(64))).code, 0);
+});
+
+test('unexpected source files and source payload symlinks are refused before installation', async t => {
+  const f = await fixture(t);
+  const secret = path.join(f.source, 'secret.txt');
+  await fs.writeFile(secret, 'must not be exposed');
+  assert.notEqual((await f.run('--apply')).code, 0);
+  await fs.unlink(secret);
+  await fs.unlink(path.join(f.source, 'SKILL.md'));
+  await fs.symlink(path.join(f.home, 'outside'), path.join(f.source, 'SKILL.md'));
+  assert.notEqual((await f.run('--apply')).code, 0);
+  await assert.rejects(fs.lstat(f.root), { code: 'ENOENT' });
+});
+
+test('an existing file at the installation path is preserved', async t => {
+  const f = await fixture(t);
+  await fs.mkdir(path.dirname(f.root), { recursive: true });
+  await fs.writeFile(f.root, 'keep');
+  assert.notEqual((await f.run('--apply')).code, 0);
+  assert.equal(await fs.readFile(f.root, 'utf8'), 'keep');
 });
 
 

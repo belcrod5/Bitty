@@ -13,7 +13,7 @@ Cloudflare Accessと初回接続QRを維持する。接続設定後、所有者�
 1. 対応版のRunner、iPhone / macOSアプリ、ローカルCLIを用意する。旧アプリとの認証互換猶予は設けない。
 2. MailjetのAPIキー、API secret、検証済み送信元をローカルの `private_runner/.env` 等へ設定する。変数名は `MJ_APIKEY_PUBLIC`、`MJ_APIKEY_PRIVATE`、`RUNNER_LOGIN_MAIL_FROM`。前2つは `MAILJET_API_KEY`、`MAILJET_API_SECRET` も読める。値をチャット、repo、コマンド引数、ログへ出さない。
 3. Cloudflare AccessのService Auth policyとTunnel転送先 `http://127.0.0.1:8788` を維持する。認証画面を公開するためのBypass等は追加しない。
-4. インストール済みの `bitty-session` skill、`bitty-history`、schedule CLIと子processも対応版にする。配布元は [install-bitty-session.mjs](../scripts/skills/install-bitty-session.mjs)。既存インストールの扱いは同コマンドのdry-run結果を確認する。旧HTTP URLへ戻るfallbackはない。
+4. `bitty-session` skill、`bitty-history`、schedule CLIと子processも対応版にする。[install-bitty-session.mjs](../scripts/skills/install-bitty-session.mjs) は `--target codex|claude` でリポジトリのスキル原本へのシンボリックリンクを作る。引数に `--apply` がなければ変更せず、既存コピーはdry-runの差分と `reviewedDigest` を確認して `--apply --adopt-reviewed <digest>` でバックアップ付きで切り替える。切替後は原本の編集が直接反映されるため、コピー同期は不要。リンク先のcheckoutは維持する。旧HTTP URLへ戻るfallbackはない。
 5. 常用Runnerを停止してから対象worktreeへ切り替える。同じmainのlogsを共有するRunnerを同時起動しない。本番設定変更と起動は所有者が行う。
 
 認証storeの既定は `private_runner/logs/runner-login`、ローカル制御socketの既定はlogsの実体directory内の `runner-control.sock`。socket pathは `RUNNER_CONTROL_SOCKET` に同じ絶対pathを渡す。logsと認証storeのdirectoryは0700、state / token / socketは0600で所有者を一致させる。長すぎるsocket pathは起動前に拒否する。

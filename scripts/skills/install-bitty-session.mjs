@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Install this repository's one managed Bitty skill, with review before adopting a local copy.
+// Link this repository's Bitty skill, preserving reviewed local copies as backups.
 import { createHash, randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 const name = 'bitty-session-orchestrator';
 const marker = '.bitty-skill-install.json';
-const source = fileURLToPath(new URL(`../../skills/${name}/`, import.meta.url));
+const source = await fs.realpath(fileURLToPath(new URL(`../../skills/${name}/`, import.meta.url)));
 const digest = value => createHash('sha256').update(value).digest('hex');
 const usage = 'node scripts/skills/install-bitty-session.mjs --target codex|claude [--home <directory>] [--apply] [--adopt-reviewed <digest>]';
 
@@ -55,11 +55,11 @@ async function main() {
   if (!homeStat.isDirectory() || homeStat.isSymbolicLink()) throw new Error('--home must be an existing real directory');
   home = await fs.realpath(path.resolve(home));
   const components = [`.${target}`, 'skills'];
-  await safeParents(home, [...components, name]);
+  await safeParents(home, components);
   const parent = path.join(home, ...components);
   const destination = path.join(parent, name);
   const sourceFiles = await filesAt(source);
-  // The shipped payload is intentionally limited; config and authentication files are never copied.
+  // Only the skill payload may be exposed through the link.
   for (const rel of Object.keys(sourceFiles)) {
     if (!(rel === 'SKILL.md' || ['scripts/bitty-session.mjs', 'scripts/runner-control.mjs'].includes(rel) || /^references\/[a-z-]+\.md$/.test(rel))) {
       throw new Error(`Unexpected source file: ${rel}`);
@@ -67,49 +67,44 @@ async function main() {
   }
   const version = digest(JSON.stringify(sourceFiles));
   const present = await exists(destination);
+  if (present?.isSymbolicLink()) {
+    const linkedSource = await fs.realpath(destination).catch(() => null);
+    if (linkedSource !== source) throw new Error(`Installed skill links elsewhere; preserve and review it manually: ${destination}`);
+    if (reviewed) throw new Error('--adopt-reviewed is only for an existing local copy');
+    return console.log(JSON.stringify({ target, destination, source, version, mode: apply ? 'apply' : 'dry-run',
+      changes: [], adoptionRequired: false, unchanged: true }));
+  }
+  if (present && !present.isDirectory()) throw new Error(`Installed skill must be a directory or the canonical link: ${destination}`);
   const existing = present ? await filesAt(destination) : {};
   const existingDigest = digest(JSON.stringify(existing));
-  let managed = false;
-  if (existing[marker]) {
-    const state = JSON.parse(await fs.readFile(path.join(destination, marker), 'utf8'));
-    if (!state || state.name !== name || !state.files || typeof state.files !== 'object' || Array.isArray(state.files)
-      || state.version !== digest(JSON.stringify(state.files))) throw new Error('Invalid installed manifest; preserve and review the local copy');
-    const actual = { ...existing }; delete actual[marker];
-    if (JSON.stringify(actual) !== JSON.stringify(state.files)) throw new Error('Installed skill has local changes; preserve and review them before syncing');
-    managed = true;
-  }
   const changes = [...new Set([...Object.keys(existing).filter(rel => rel !== marker), ...Object.keys(sourceFiles)])]
     .filter(rel => existing[rel] !== sourceFiles[rel])
     .map(rel => ({ path: rel, change: !existing[rel] ? 'add' : !sourceFiles[rel] ? 'remove' : 'update' }));
-  const adoptionRequired = Boolean(present && !managed);
-  const report = { target, destination, version, mode: apply ? 'apply' : 'dry-run', changes, adoptionRequired,
+  const adoptionRequired = Boolean(present);
+  const report = { target, destination, source, version, mode: apply ? 'apply' : 'dry-run', changes, adoptionRequired,
     ...(adoptionRequired ? { reviewedDigest: existingDigest } : {}) };
   if (!apply) return console.log(JSON.stringify(report));
-  if (adoptionRequired && reviewed !== existingDigest) throw new Error('Unmanaged installed skill: inspect dry-run changes, then use --adopt-reviewed with that exact digest; the original will be preserved as a backup');
-  if (!adoptionRequired && reviewed) throw new Error('--adopt-reviewed is only for an unmanaged installation');
-  if (managed && changes.length === 0) return console.log(JSON.stringify({ ...report, unchanged: true }));
+  if (adoptionRequired && reviewed !== existingDigest) throw new Error('Existing local copy: inspect dry-run changes, then use --adopt-reviewed with that exact digest; the original will be preserved as a backup');
+  if (!adoptionRequired && reviewed) throw new Error('--adopt-reviewed is only for an existing local copy');
   await safeParents(home, components, true);
-  const stage = await fs.mkdtemp(path.join(parent, `.${name}.stage-`));
   let backup;
-  try {
-    for (const rel of Object.keys(sourceFiles)) {
-      const file = path.join(stage, rel);
-      await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-      await fs.writeFile(file, await fs.readFile(path.join(source, rel)), { mode: rel.endsWith('.mjs') ? 0o755 : 0o644, flag: 'wx' });
+  if (present) {
+    const current = await exists(destination);
+    if (!current?.isDirectory() || JSON.stringify(await filesAt(destination)) !== JSON.stringify(existing)) {
+      throw new Error('Installed skill changed during review; rerun dry-run');
     }
-    await fs.writeFile(path.join(stage, marker), `${JSON.stringify({ name, version, files: sourceFiles })}\n`, { mode: 0o600, flag: 'wx' });
-    await safeParents(home, [...components, name]);
-    if (present) {
-      if (JSON.stringify(await filesAt(destination)) !== JSON.stringify(existing)) throw new Error('Installed skill changed during review; rerun dry-run');
-      backup = path.join(parent, `.${name}.backup-${randomUUID()}`);
-      await fs.rename(destination, backup);
-    } else if (await exists(destination)) throw new Error('Installation appeared during review; rerun dry-run');
-    try { await fs.rename(stage, destination); }
-    catch (error) { if (backup) await fs.rename(backup, destination); throw error; }
-    // Keep adopted local contents. A verified managed backup contains only our previous payload.
-    if (backup && managed) await fs.rm(backup, { recursive: true });
-    console.log(JSON.stringify({ ...report, ...(backup && !managed ? { preservedBackup: backup } : {}) }));
-  } finally { await fs.rm(stage, { recursive: true, force: true }); }
+    backup = path.join(parent, `.${name}.backup-${randomUUID()}`);
+    await fs.rename(destination, backup);
+  }
+  try { await fs.symlink(source, destination, 'dir'); }
+  catch (error) {
+    if (backup) {
+      if (!await exists(destination)) await fs.rename(backup, destination);
+      else error.message += `; original copy preserved at ${backup}`;
+    }
+    throw error;
+  }
+  console.log(JSON.stringify({ ...report, ...(backup ? { preservedBackup: backup } : {}) }));
 }
 
 main().catch(error => { console.error(error.message); process.exitCode = 1; });
