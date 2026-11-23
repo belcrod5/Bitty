@@ -7,6 +7,7 @@ type Options = Parameters<typeof useStreamingStt>[0] & {
   target: VoiceTarget;
   panelId?: string;
   busy: boolean;
+  startSignal?: AbortSignal;
   announce?: (signal: AbortSignal) => Promise<void>;
 };
 
@@ -39,6 +40,7 @@ export function useControlledStreamingStt(options: Options) {
         return reason === null;
       },
       controlVersion: () => latest.current.stt.controlVersion ?? 0,
+      startSignal: () => latest.current.options.startSignal,
       hasPermission: () => latest.current.stt.hasPermission?.() ?? Promise.resolve(false),
       disarm: () => latest.current.stt.disarm(),
       start: () => latest.current.stt.start(),

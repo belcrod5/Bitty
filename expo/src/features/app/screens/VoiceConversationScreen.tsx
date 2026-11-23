@@ -20,6 +20,8 @@ import { UserInputModal } from "../components/UserInputModal";
 import { useVoiceUserInput } from "../hooks/useVoiceUserInput";
 import { useChatScreen } from "../contexts/ChatScreenContext";
 import { useConversation } from "../contexts/ConversationContext";
+import { useChatComposer } from "../contexts/ChatComposerContext";
+import { useComposerDraftSync } from "../hooks/useComposerPersistence";
 import { useReduceMotionEnabled } from "../hooks/useReduceMotionEnabled";
 import { KeyboardAvoidingView } from "../keyboardController";
 import { useVoiceConversation } from "../hooks/useVoiceConversation";
@@ -48,6 +50,7 @@ export type VoiceConversationPlayback = {
 
 export function VoiceConversationScreen(props: VoiceConversationPlayback & { onClose: () => void; initialOrchestratorId?: string; initialControlSignal?: AbortSignal }) {
   const manager = useRunnerWebSocketManager();
+  const { runnerClientStateScopeId } = useChatComposer();
   const { connected, generation } = useRunnerWebSocketSnapshot();
   const [list, setList] = useState<{ orchestrators: VoiceOrchestrator[]; selectedId: string } | null>(null);
   const [selectedId, setSelectedId] = useState("");
@@ -102,7 +105,7 @@ export function VoiceConversationScreen(props: VoiceConversationPlayback & { onC
 
   return <>
     <UserInputModal request={userInput.request} onDecide={userInput.decide} />
-    {selected && list ? <VoiceConversationSession key={`${selected.id}-${revision}`} {...props}
+    {selected && list ? <VoiceConversationSession key={JSON.stringify([selected.id, revision, runnerClientStateScopeId])} {...props}
       orchestrator={selected} orchestrators={list.orchestrators} onSelect={select}
       onManage={() => setManagerOpen(true)} paused={managerOpen}
       historyExpanded={historyExpanded} setHistoryExpanded={setHistoryExpanded} /> : (
@@ -145,6 +148,9 @@ function VoiceConversationSession({
   paused: boolean; historyExpanded: boolean; setHistoryExpanded: (value: boolean | ((current: boolean) => boolean)) => void }) {
   const { runnerUrl, runnerToken } = useChatScreen();
   const { logSessionDiag } = useConversation();
+  const { composerDrafts, composerDraftsLoaded, runnerClientStateScopeId, setComposerDraft } = useChatComposer();
+  const savedDraft = composerDrafts.find((draft) => draft.backendId === "orchestrator"
+    && draft.sessionId === orchestrator.id);
   const reduceMotion = useReduceMotionEnabled();
   const { theme } = useVisualTheme();
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
@@ -167,7 +173,7 @@ function VoiceConversationSession({
   const footerDismissing = useSharedValue(false);
   const footerDismissDistance = useSharedValue(screenHeight);
   const footerStyle = useAnimatedStyle(() => ({ transform: [{ translateY: footerOffset.value }] }));
-  const [initialStartPending, setInitialStartPending] = useState(!initialControlSignal);
+  const [initialStartPending, setInitialStartPending] = useState(true);
   const [synthesisStarting, setSynthesisStarting] = useState(false);
   const [synthesisRequestSettled, setSynthesisRequestSettled] = useState(false);
   const [transitioning, setTransitioning] = useState(false);
@@ -181,7 +187,7 @@ function VoiceConversationSession({
   const manager = useRunnerWebSocketManager();
   const transitioningRef = useRef(false);
   const wasPausedRef = useRef(paused);
-  const startAnnouncedRef = useRef(Boolean(initialControlSignal));
+  const startAnnouncedRef = useRef(false);
   const voicePlaybackMessageIdRef = useRef("");
 
   useEffect(() => {
@@ -263,9 +269,11 @@ function VoiceConversationSession({
   }, [historyExpanded, voice.logicalConversationId]);
   const replyLoading = voice.turnStatus === "accepted" || voice.turnStatus === "running";
   const playbackActive = synthesisStarting || isTtsPlaybackActive;
-  const canStart = appActive && !paused && !transitioning && voice.ready && !replyLoading && voice.turnStatus !== "sending" && !playbackActive;
+  const canStart = appActive && !paused && !transitioning && !editingTranscript && composerDraftsLoaded
+    && voice.ready && !replyLoading && voice.turnStatus !== "sending" && !playbackActive;
   const streamingStt = useControlledStreamingStt({
     target: { kind: "orchestrator", orchestratorId: orchestrator.id },
+    startSignal: initialControlSignal,
     busy: replyLoading || voice.turnStatus === "sending",
     announce: async (signal) => {
       const messageId = `voice-start-${randomUUID()}`;
@@ -300,6 +308,15 @@ function VoiceConversationSession({
     replyLoading,
     ttsPlaybackActive: playbackActive,
     voiceInputDuringTtsAllowed: false,
+  });
+  useComposerDraftSync({
+    backendId: "orchestrator", sessionId: orchestrator.id, scopeId: runnerClientStateScopeId,
+    text: transcript, drafts: composerDrafts, loaded: composerDraftsLoaded, setDraft: setComposerDraft,
+    setText: (text) => {
+      setInitialStartPending(false);
+      streamingStt.stop();
+      setTranscript(text);
+    },
   });
   voiceSurfaceIdRef.current = streamingStt.surfaceId;
   useEffect(() => {
@@ -378,7 +395,6 @@ function VoiceConversationSession({
 
   const quietAudio = useCallback(async () => {
     await streamingStt.abort();
-    setTranscript("");
     setEditingTranscript(false);
     const messageId = voicePlaybackMessageIdRef.current;
     if (messageId) {
@@ -416,24 +432,40 @@ function VoiceConversationSession({
     if (wasPausedRef.current && !paused) {
       transitioningRef.current = false;
       setTransitioning(false);
-      setInitialStartPending(true);
+      setInitialStartPending(!transcript.trim() && !savedDraft?.text.trim());
     }
     wasPausedRef.current = paused;
-  }, [paused]);
+  }, [paused, savedDraft?.text, transcript]);
 
   useEffect(() => {
-    if (streamingStt.active) { setInitialStartPending(false); return; }
-    if (!initialStartPending || !canStart || streamingStt.remotePending()) return;
+    if (streamingStt.active) {
+      startAnnouncedRef.current = true;
+      setInitialStartPending(false);
+      return;
+    }
+    if (initialControlSignal && !startAnnouncedRef.current) {
+      const finishRemoteStart = () => {
+        startAnnouncedRef.current = true;
+        setInitialStartPending(false);
+      };
+      if (initialControlSignal.aborted || !streamingStt.remotePending()) finishRemoteStart();
+      else initialControlSignal.addEventListener("abort", finishRemoteStart, { once: true });
+      return () => initialControlSignal.removeEventListener("abort", finishRemoteStart);
+    }
+    if (!initialStartPending || savedDraft?.text.trim() || transcript.trim()
+      || !canStart || streamingStt.remotePending()) return;
     if (!startAnnouncedRef.current) {
       startAnnouncedRef.current = true;
+      let current = true;
       void streamingStt.claim().then((claimed) => {
-        if (claimed) return playSpeech(`${orchestrator.name}で音声入力を準備します`, `voice-start-${randomUUID()}`);
+        if (claimed && current) return playSpeech(`${orchestrator.name}で音声入力を準備します`, `voice-start-${randomUUID()}`);
       }).catch(() => voice.setError("音声入力を準備できませんでした。"));
-      return;
+      return () => { current = false; };
     }
     setInitialStartPending(false);
     streamingStt.start();
-  }, [canStart, initialStartPending, orchestrator.name, playSpeech, streamingStt.start, synthesisRequestSettled, initialControlSignal]);
+  }, [canStart, initialStartPending, orchestrator.name, playSpeech,
+    savedDraft?.text, streamingStt.active, streamingStt.start, synthesisRequestSettled, initialControlSignal, transcript]);
 
   useEffect(() => {
     if (synthesisStarting && (isTtsPlaybackActive || ttsUiStatus === "error"
@@ -466,6 +498,17 @@ function VoiceConversationSession({
       expectedMessageId: messageId,
     });
   }, [stopTtsPlayback]);
+
+  const beginTranscriptEdit = useCallback(() => {
+    setInitialStartPending(false);
+    streamingStt.stop();
+    setEditingTranscript(true);
+  }, [streamingStt.stop]);
+  const snapshot = streamingStt.getSnapshot();
+  const stopInputOnly = !replyLoading && voice.turnStatus !== "sending" && (initialStartPending
+    || (snapshot.desired === "listening" && !playbackActive));
+  const submitDisabled = !voice.ready || !composerDraftsLoaded || replyLoading || voice.turnStatus === "sending"
+    || transitioning || paused;
 
   const voiceStatus = editingTranscript || voice.error || transcript || (voice.reply && ttsUiStatus === "error")
     ? undefined : isTtsPlaying || ttsUiStatus === "playing" ? "speaking" : replyLoading ? "responding" : playbackActive ? "speaking" : undefined;
@@ -709,17 +752,15 @@ function VoiceConversationSession({
                     onDiscardCorrection={streamingStt.discardCorrection}
                     onChangeCorrectionText={streamingStt.setCorrectionText}
                     onChangeText={(text) => { streamingStt.cancelCorrection(); setTranscript(text); }}
-                    onFocus={() => {
-                      streamingStt.cancelCorrection();
-                      setInitialStartPending(false);
-                      setEditingTranscript(true);
-                      streamingStt.stop();
-                    }}
+                    onFocus={beginTranscriptEdit}
+                    onRequestEdit={beginTranscriptEdit}
+                    submitDisabled={submitDisabled}
                     onBlur={() => setEditingTranscript(false)}
                     onSubmit={async (text, onAccepted) => {
+                      if (submitDisabled) return;
                       try {
                         await streamingStt.sendManualTranscript(text, () => {
-                          if (!onAccepted()) return false;
+                          if (!mountedRef.current || !onAccepted()) return false;
                           setEditingTranscript(false);
                           return true;
                         });
@@ -728,7 +769,14 @@ function VoiceConversationSession({
                       }
                     }}
                     onCancelSpeaking={cancelSpeaking}
+                    stopLabel={stopInputOnly ? "音声入力を停止" : "オーケストレーターを閉じる"}
                     onStop={() => {
+                      if (stopInputOnly) {
+                        setInitialStartPending(false);
+                        streamingStt.stop();
+                        if (initialStartPending && !initialControlSignal) cancelSpeaking();
+                        return;
+                      }
                       voice.interrupt();
                       streamingStt.stop();
                       onClose();

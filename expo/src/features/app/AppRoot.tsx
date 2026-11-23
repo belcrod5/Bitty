@@ -6008,6 +6008,9 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     },
     preflight: async (target) => {
       if (target.kind === "orchestrator") {
+        if (!composerDraftsLoaded) return "draft_conflict";
+        if (composerDrafts.some((draft) => draft.backendId === "orchestrator"
+          && draft.sessionId === target.orchestratorId && draft.text.trim())) return "draft_conflict";
         const { orchestrators } = await getVoiceOrchestrators(runnerWebSocketManager);
         if (!orchestrators.some((item) => item.id === target.orchestratorId)) return "target_not_found";
         const opened = await runnerWebSocketManager.request({ channel: "agent", op: "voice.open", payload: { orchestratorId: target.orchestratorId } });

@@ -20,16 +20,16 @@ function fixture() {
   } as unknown as RunnerWebSocketManager;
   const control = new VoiceControl(manager);
   const navigation = { preflight: jest.fn(async (_target: VoiceTarget): Promise<string | null> => null),
-    open: jest.fn(async (_target: VoiceTarget): Promise<false | { panelId?: string }> => ({ panelId: "popup" })),
+    open: jest.fn(async (_target: VoiceTarget, _signal?: AbortSignal): Promise<false | { panelId?: string }> => ({ panelId: "popup" })),
     announce: jest.fn(async () => {}), releaseSpeech: jest.fn(async (_target: VoiceTarget, _panelId?: string) => {}), diag: jest.fn((_operationId: string, _stage: string, _reason?: string) => {}) };
   control.configure(navigation);
   const stop = control.start();
-  const surface = (id: string, target: VoiceTarget, panelId?: string) => {
-    const state = { target, draft: "", busy: false, canStart: true,
+  const surface = (id: string, target: VoiceTarget, panelId?: string, startSignal?: AbortSignal) => {
+    const state = { target, draft: "", busy: false, canStart: true, startSignal,
       snapshot: { desired: "stopped", observed: "stopped" } as VoiceSnapshot };
     const value: VoiceSurface = { id, panelId, target: () => state.target, snapshot: () => state.snapshot,
       draft: () => state.draft, busy: () => state.busy, canStart: () => state.canStart,
-      controlVersion: () => 1, hasPermission: jest.fn(async () => true),
+      controlVersion: () => 1, startSignal: () => state.startSignal, hasPermission: jest.fn(async () => true),
       disarm: jest.fn(async () => { state.snapshot = { desired: "stopped", observed: "stopped" }; }),
       start: jest.fn(async () => { state.snapshot = { desired: "listening", observed: "recording" }; }),
       announce: jest.fn(async () => {}), notice: jest.fn() };
@@ -166,6 +166,43 @@ test.each(["stop", "expiry", "background", "disconnect", "cancel"])("%s cancels 
   await settle(100);
   expect(f.source.value.start).toHaveBeenCalledTimes(1);
   expect(f.source.state.snapshot.observed).toBe("stopped");
+  f.stop();
+});
+
+test.each(["register", "ready wait"])("stopping a handoff destination during %s cancels its exact pending start", async (stage) => {
+  const f = fixture(); await f.begin();
+  let destination!: ReturnType<typeof f.surface>;
+  f.navigation.open.mockImplementation(async (_target, signal) => {
+    destination = f.surface("destination", b, "popup", signal);
+    destination.state.canStart = false;
+    if (stage === "register") await f.control.stopSurface("destination");
+    return { panelId: "popup" };
+  });
+  const id = f.command("handoff"); await settle();
+  expect(destination.value.start).not.toHaveBeenCalled();
+  if (stage === "ready wait") await f.control.stopSurface("destination");
+  destination.state.canStart = true; await settle(100);
+  expect(f.result(id)).toMatchObject({ status: "failed", reason: "operation_cancelled" });
+  expect(destination.value.start).not.toHaveBeenCalled();
+  expect(destination.state.snapshot.desired).toBe("stopped");
+  f.stop();
+});
+
+test("stopping another panel of the same target leaves the pending handoff destination intact", async () => {
+  const f = fixture(); await f.begin();
+  const hidden = f.surface("hidden", b, "other-panel");
+  let destination!: ReturnType<typeof f.surface>;
+  f.navigation.open.mockImplementation(async (_target, signal) => {
+    destination = f.surface("destination", b, "popup", signal);
+    destination.state.canStart = false;
+    return { panelId: "popup" };
+  });
+  const id = f.command("handoff"); await settle();
+  await f.control.stopSurface(hidden.value.id);
+  destination.state.canStart = true; await settle(100);
+  expect(f.result(id)).toMatchObject({ status: "applied", target: b });
+  expect(destination.value.start).toHaveBeenCalledTimes(1);
+  expect(hidden.value.start).not.toHaveBeenCalled();
   f.stop();
 });
 

@@ -1,4 +1,5 @@
 jest.mock("../components/ImageViewer", () => ({ ImageViewer: () => null }));
+import type { ComposerDraft } from "../hooks/useComposerPersistence";
 import { useState, type ReactElement, type ReactNode } from "react";
 import { act, fireEvent, render as testingRender, waitFor, within } from "@testing-library/react-native";
 import { AppState, Dimensions, Platform, ScrollView, StyleSheet, View, type AppStateStatus } from "react-native";
@@ -18,6 +19,17 @@ const mockSynthesizeSpeechStream = jest.fn(async (_text: string, _target: { mess
 let mockMainTts: { ttsProvider: string; voiceId: string } | null = null;
 let mockTurnTts: unknown;
 const mockOnClose = jest.fn();
+let mockComposerDrafts: ComposerDraft[] = [];
+let mockComposerDraftsLoaded = true;
+let mockRunnerScope = "runner-one";
+const mockComposerListeners = new Set<() => void>();
+const mockSetComposerDraft = jest.fn((sessionId: string, text: string, backendId?: string) => {
+  mockComposerDrafts = [
+    ...(text.trim() ? [{ backendId, sessionId, text, updatedAt: Date.now() }] : []),
+    ...mockComposerDrafts.filter((draft) => draft.backendId !== backendId || draft.sessionId !== sessionId),
+  ];
+  for (const listener of mockComposerListeners) listener();
+});
 const mockRequest = jest.fn(async (message: { op: string; payload?: { orchestratorId?: string } }, _options?: { timeoutMs?: number }) => {
   if (message.op === "voice.orchestrators.list") return { op: "voice.orchestrators.list.result",
     payload: { orchestrators: [{ id: "main", name: "メイン", icon: "", ...mockMainTts },
@@ -72,7 +84,7 @@ const mockVoice = {
     _decision: "clear" | "keep") => undefined),
   refreshHistory: jest.fn(async () => undefined),
   setError: jest.fn(),
-  sendTranscript: jest.fn(async (_text?: string, _onAccepted?: () => void) => undefined),
+  sendTranscript: jest.fn(async (_text?: string, _onAccepted?: () => void): Promise<void> => undefined),
   interrupt: jest.fn(),
 };
 const mockStt = {
@@ -89,7 +101,7 @@ const mockStt = {
     parts: { kind: "same"; text: string }[] } | null,
   sendManualTranscript: jest.fn(async (_text: string, onAccepted: () => boolean) => { onAccepted(); }),
   abort: mockAbort,
-  disarm: () => mockAbort(),
+  disarm: () => { mockStt.active = false; mockStt.phase = "idle"; return mockAbort(); },
   getSnapshot: () => ({ desired: mockStt.active ? "listening" : "stopped", observed: mockStt.phase === "recording" ? "recording" : "stopped" }),
   getDraft: () => "",
   controlVersion: 0,
@@ -107,13 +119,13 @@ const mockNativeStt = {
   start: jest.fn(async (_url: string, _headers: Record<string, string>) => undefined),
   commit: jest.fn(async (_revision: number) => true),
   stop: jest.fn(async () => undefined),
-  abort: jest.fn(async () => undefined),
+  abort: jest.fn(async (): Promise<void> => undefined),
   addListener: jest.fn((name: string, listener: (event: any) => void) => {
     mockNativeSttListeners.set(name, listener);
     return { remove: () => mockNativeSttListeners.delete(name) };
   }),
 };
-let mockLastSttOptions: { ttsPlaybackActive: boolean; onDiagnostic: (event: string, payload: Record<string, unknown>) => void } | null = null;
+let mockLastSttOptions: { announce?: (signal: AbortSignal) => Promise<void>; ttsPlaybackActive: boolean; onDiagnostic: (event: string, payload: Record<string, unknown>) => void } | null = null;
 type MockFooterProps = {
   voiceContextStats?: unknown;
   transcript: string;
@@ -124,6 +136,9 @@ type MockFooterProps = {
   phase: string;
   onStop: () => void;
   onFocus?: () => void;
+  onRequestEdit?: () => void;
+  submitDisabled?: boolean;
+  stopLabel?: string;
   onBlur?: () => void;
   onChangeText?: (text: string) => void;
   onEditCorrection?: () => void;
@@ -243,6 +258,17 @@ jest.mock("react-native-gesture-handler", () => ({
 jest.mock("../contexts/ChatScreenContext", () => ({
   useChatScreen: () => ({ runnerUrl: "http://runner.test", runnerToken: "token" }),
 }));
+jest.mock("../contexts/ChatComposerContext", () => ({
+  useChatComposer: () => {
+    const ReactModule = require("react");
+    const drafts = ReactModule.useSyncExternalStore((listener: () => void) => {
+      mockComposerListeners.add(listener);
+      return () => mockComposerListeners.delete(listener);
+    }, () => mockComposerDrafts);
+    return { composerDrafts: drafts, composerDraftsLoaded: mockComposerDraftsLoaded,
+      runnerClientStateScopeId: mockRunnerScope, setComposerDraft: mockSetComposerDraft };
+  },
+}));
 jest.mock("../contexts/ConversationContext", () => ({
   useConversation: () => ({ logSessionDiag: mockLogSessionDiag }),
 }));
@@ -299,6 +325,10 @@ beforeEach(() => {
   mockMainTts = null;
   mockTurnTts = null;
   mockStt.active = false;
+  mockStt.phase = "idle";
+  mockComposerDrafts = [];
+  mockComposerDraftsLoaded = true;
+  mockRunnerScope = "runner-one";
   mockStt.correctionPreview = null;
   mockVoice.ready = true;
   mockVoice.logicalConversationId = "conversation-one";
@@ -427,7 +457,7 @@ test("waits for existing chat playback before announcing and starting the microp
   await screen.unmount();
 });
 
-test("closing during the start announcement stops only that speech and prevents a late microphone start", async () => {
+test("stopping during the start announcement keeps the screen and prevents a late microphone start", async () => {
   let finishSynthesis!: () => void;
   mockSynthesizeSpeechStream.mockImplementationOnce(() => new Promise<void>((resolve) => {
     finishSynthesis = resolve;
@@ -437,10 +467,12 @@ test("closing during the start announcement stops only that speech and prevents 
   expect(mockStt.start).not.toHaveBeenCalled();
   await fireEvent.press(screen.getByTestId("streaming-stt-stop"));
   expect(mockStopTtsPlayback).toHaveBeenCalledWith({
-    interruptStream: true, reason: "voice_screen_closed", expectedMessageId: announcementTarget.messageId,
+    interruptStream: true, reason: "voice_speaking_tapped", expectedMessageId: announcementTarget.messageId,
   });
   await act(async () => { finishSynthesis(); });
   expect(mockStt.start).not.toHaveBeenCalled();
+  expect(mockOnClose).not.toHaveBeenCalled();
+  expect(screen.getByTestId("streaming-stt-footer")).toBeTruthy();
   await screen.unmount();
 });
 
@@ -1444,33 +1476,66 @@ test("shows only the shared footer immediately and starts recording once voice.o
   await screen.unmount();
 });
 
-test("stopping before voice.open is ready closes the footer and prevents recording", async () => {
+test("stopping preparation before voice.open keeps the screen stopped until the next stop closes it", async () => {
   mockVoice.ready = false;
   const screen = await render(<ClosableVoiceScreen />);
   await fireEvent.press(screen.getByTestId("streaming-stt-stop"));
-
   expect(mockAbort).toHaveBeenCalled();
-  expect(mockOnClose).toHaveBeenCalledTimes(1);
-  expect(screen.queryByTestId("streaming-stt-footer")).toBeNull();
-  expect(screen.queryByTestId("voice-conversation-transition")).toBeNull();
-  expect(mockAbort).toHaveBeenCalled();
-  expect(mockStopTtsPlayback).not.toHaveBeenCalled();
-
+  expect(mockOnClose).not.toHaveBeenCalled();
+  expect(mockVoice.interrupt).not.toHaveBeenCalled();
+  expect(mockFooterProps?.stopLabel).toBe("オーケストレーターを閉じる");
   mockVoice.ready = true;
   await screen.rerender(<ClosableVoiceScreen />);
   expect(mockStt.start).not.toHaveBeenCalled();
   expect(mockSynthesizeSpeechStream).not.toHaveBeenCalled();
+  await fireEvent.press(screen.getByTestId("streaming-stt-stop"));
+  expect(mockVoice.interrupt).toHaveBeenCalledTimes(1);
+  expect(mockOnClose).toHaveBeenCalledTimes(1);
+  expect(screen.queryByTestId("streaming-stt-footer")).toBeNull();
 });
 
-test("stopping active recording closes the footer immediately", async () => {
+test("stopping recording preserves its text and the second stop closes the screen", async () => {
   mockStt.active = true;
+  mockStt.phase = "recording";
   const screen = await render(<ClosableVoiceScreen />);
+  await act(async () => { mockFooterProps?.onChangeText?.("unfinished speech"); });
   await fireEvent.press(screen.getByTestId("streaming-stt-stop"));
-
   expect(mockAbort).toHaveBeenCalled();
+  expect(mockVoice.interrupt).not.toHaveBeenCalled();
+  expect(mockFooterProps?.draftTranscript).toBe("unfinished speech");
+  expect(screen.getByTestId("streaming-stt-footer")).toBeTruthy();
+  await screen.rerender(<ClosableVoiceScreen />);
+  await fireEvent.press(screen.getByTestId("streaming-stt-stop"));
   expect(mockVoice.interrupt).toHaveBeenCalledTimes(1);
+  expect(mockOnClose).toHaveBeenCalledTimes(1);
   expect(screen.queryByTestId("streaming-stt-footer")).toBeNull();
-  expect(mockAbort).toHaveBeenCalled();
+});
+
+test.each(["sending", "accepted", "running"])("stop closes a %s turn even while STT awaits its reply", async (status) => {
+  mockVoice.turnStatus = status;
+  mockStt.active = true;
+  mockStt.phase = "connecting";
+  const screen = await render(<ClosableVoiceScreen />);
+  expect(mockFooterProps?.stopLabel).toBe("オーケストレーターを閉じる");
+  await fireEvent.press(screen.getByTestId("streaming-stt-stop"));
+  expect(mockOnClose).toHaveBeenCalledTimes(1);
+  expect(mockVoice.interrupt).toHaveBeenCalledTimes(1);
+});
+
+test("a second stop closes during native microphone release without waiting for teardown", async () => {
+  mockUseActualStreamingStt = true;
+  jest.spyOn(require("expo-modules-core"), "requireOptionalNativeModule").mockReturnValue(mockNativeStt);
+  let finishAbort!: () => void;
+  mockNativeStt.abort.mockImplementationOnce(() => new Promise<void>((resolve) => { finishAbort = resolve; }));
+  const screen = await render(<ClosableVoiceScreen />);
+  await waitFor(() => expect(mockNativeStt.start).toHaveBeenCalledTimes(1));
+  await fireEvent.press(screen.getByTestId("streaming-stt-stop"));
+  expect(mockFooterProps?.stopLabel).toBe("オーケストレーターを閉じる");
+  expect(mockOnClose).not.toHaveBeenCalled();
+  await fireEvent.press(screen.getByTestId("streaming-stt-stop"));
+  expect(mockOnClose).toHaveBeenCalledTimes(1);
+  expect(screen.queryByTestId("streaming-stt-footer")).toBeNull();
+  await act(async () => { finishAbort(); });
 });
 
 test("editing before voice is ready prevents late auto-start and sends only the typed draft", async () => {
@@ -1486,6 +1551,100 @@ test("editing before voice is ready prevents late auto-start and sends only the 
   expect(mockSynthesizeSpeechStream).not.toHaveBeenCalled();
   await act(async () => { await mockFooterProps?.onSubmit?.("typed draft", () => true); });
   expect(mockStt.sendManualTranscript).toHaveBeenCalledWith("typed draft", expect.any(Function));
+  await screen.unmount();
+});
+
+test.each(["sending", "accepted", "running"])("allows typing during a %s turn without sending or losing the next draft", async (status) => {
+  mockVoice.turnStatus = status;
+  mockStt.active = true;
+  mockStt.phase = "connecting";
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { mockFooterProps?.onRequestEdit?.(); });
+  expect(mockAbort).toHaveBeenCalled();
+  expect(mockFooterProps?.voiceStatus).toBeUndefined();
+  await act(async () => { mockFooterProps?.onChangeText?.("next question"); });
+  expect(mockFooterProps?.submitDisabled).toBe(true);
+  await act(async () => { await mockFooterProps?.onSubmit?.("next question", () => true); });
+  expect(mockStt.sendManualTranscript).not.toHaveBeenCalled();
+  await act(async () => { mockFooterProps?.onBlur?.(); });
+  mockVoice.turnStatus = "completed";
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(mockFooterProps?.submitDisabled).toBe(false);
+  expect(mockFooterProps?.draftTranscript).toBe("next question");
+  expect(mockComposerDrafts).toEqual([expect.objectContaining({
+    backendId: "orchestrator", sessionId: "main", text: "next question",
+  })]);
+  expect(mockStt.start).not.toHaveBeenCalled();
+  expect(mockVoice.interrupt).not.toHaveBeenCalled();
+  await screen.unmount();
+});
+
+test("restores orchestrator drafts after loading without recording or using an ordinary chat draft", async () => {
+  mockComposerDraftsLoaded = false;
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(mockStt.start).not.toHaveBeenCalled();
+  expect(mockSynthesizeSpeechStream).not.toHaveBeenCalled();
+  mockComposerDrafts = [{ backendId: "codex", sessionId: "main", text: "ordinary chat", updatedAt: 1 },
+    { backendId: "orchestrator", sessionId: "main", text: "saved question", updatedAt: 2 }];
+  mockComposerDraftsLoaded = true;
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(mockFooterProps?.draftTranscript).toBe("saved question");
+  expect(mockStt.start).not.toHaveBeenCalled();
+  expect(mockSynthesizeSpeechStream).not.toHaveBeenCalled();
+  expect(mockStt.sendManualTranscript).not.toHaveBeenCalled();
+  await screen.unmount();
+  const reopened = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(mockFooterProps?.draftTranscript).toBe("saved question");
+  expect(mockStt.start).not.toHaveBeenCalled();
+  await reopened.unmount();
+});
+
+test("switching and management preserve each orchestrator draft", async () => {
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { mockFooterProps?.onFocus?.(); mockFooterProps?.onChangeText?.("main draft"); });
+  await fireEvent.press(screen.getByTestId("voice-orchestrator-floating"));
+  await fireEvent.press(screen.getByTestId("voice-orchestrator-other"));
+  expect(mockFooterProps?.draftTranscript).toBe("");
+  await act(async () => { mockFooterProps?.onFocus?.(); mockFooterProps?.onChangeText?.("other draft"); });
+  await fireEvent.press(screen.getByTestId("voice-orchestrator-main"));
+  expect(mockFooterProps?.draftTranscript).toBe("main draft");
+  const starts = mockStt.start.mock.calls.length;
+  await fireEvent(screen.getByTestId("voice-orchestrator-strip"), "longPress");
+  expect(mockFooterProps?.draftTranscript).toBe("main draft");
+  await act(async () => { mockManagerOnClose?.(); });
+  expect(mockFooterProps?.draftTranscript).toBe("main draft");
+  expect(mockStt.start).toHaveBeenCalledTimes(starts);
+  expect(mockComposerDrafts).toEqual(expect.arrayContaining([
+    expect.objectContaining({ backendId: "orchestrator", sessionId: "main", text: "main draft" }),
+    expect.objectContaining({ backendId: "orchestrator", sessionId: "other", text: "other draft" }),
+  ]));
+  await screen.unmount();
+});
+
+test("changing Runner scope drops the old composer binding without saving it into the new Runner", async () => {
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { mockFooterProps?.onFocus?.(); mockFooterProps?.onChangeText?.("old runner draft"); });
+  mockSetComposerDraft.mockClear();
+  mockComposerDrafts = [{ backendId: "orchestrator", sessionId: "main", text: "new runner draft", updatedAt: 2 }];
+  mockRunnerScope = "runner-two";
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(mockFooterProps?.draftTranscript).toBe("new runner draft");
+  expect(mockSetComposerDraft).not.toHaveBeenCalled();
+  await screen.unmount();
+});
+
+test("stopping while microphone ownership is pending ignores a late claim", async () => {
+  const { getVoiceControl } = jest.requireActual("../../appControl/voiceControl");
+  let finishClaim!: (value: boolean) => void;
+  jest.spyOn(getVoiceControl(mockManager), "acquire").mockImplementationOnce(() => new Promise<boolean>((resolve) => {
+    finishClaim = resolve;
+  }));
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await fireEvent.press(screen.getByTestId("streaming-stt-stop"));
+  await act(async () => { finishClaim(true); });
+  expect(mockSynthesizeSpeechStream).not.toHaveBeenCalled();
+  expect(mockStt.start).not.toHaveBeenCalled();
+  expect(mockOnClose).not.toHaveBeenCalled();
   await screen.unmount();
 });
 
@@ -1508,23 +1667,23 @@ test("routes inline correction editing through the shared STT hook", async () =>
   await screen.unmount();
 });
 
-test("keeps the typed draft and shows a send error before voice.open is ready", async () => {
+test("keeps a draft and blocks sending until the conversation and drafts are ready", async () => {
   mockVoice.ready = false;
-  mockStt.sendManualTranscript.mockRejectedValueOnce(new Error("音声会話を送信できません。"));
   const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
-  await act(async () => { mockFooterProps?.onFocus?.(); });
-  await act(async () => { mockFooterProps?.onChangeText?.("typed draft"); });
+  await act(async () => { mockFooterProps?.onFocus?.(); mockFooterProps?.onChangeText?.("typed draft"); });
   const onAccepted = jest.fn(() => true);
-
   await act(async () => { await mockFooterProps?.onSubmit?.("typed draft", onAccepted); });
-
+  expect(mockFooterProps?.submitDisabled).toBe(true);
+  expect(mockStt.sendManualTranscript).not.toHaveBeenCalled();
   expect(onAccepted).not.toHaveBeenCalled();
-  expect(mockVoice.setError).toHaveBeenCalledWith("音声会話を送信できません。");
   expect(mockFooterProps?.draftTranscript).toBe("typed draft");
-  mockVoice.error = "音声会話を送信できません。";
+  mockVoice.ready = true;
+  mockComposerDraftsLoaded = false;
   await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
-  expect(mockFooterProps?.statusText).toBe("音声会話を送信できません。");
-  expect(mockFooterProps?.draftTranscript).toBe("typed draft");
+  expect(mockFooterProps?.submitDisabled).toBe(true);
+  mockComposerDraftsLoaded = true;
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(mockFooterProps?.submitDisabled).toBe(false);
   await screen.unmount();
 });
 
@@ -1610,7 +1769,8 @@ test("attaches voice playback before completion and shows speaking during genera
   }));
 });
 
-test("tapping while speaking cancels playback without closing or interrupting the voice turn", async () => {
+test("tapping speech then the response status opens editing without interrupting the voice turn", async () => {
+  mockVoice.turnStatus = "running";
   const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
   await act(async () => { mockOnJob?.("voice-job", "voice-operation-1"); });
   await screen.rerender(<VoiceConversationScreen {...playback} isTtsPlaybackActive isTtsPlaying
@@ -1630,6 +1790,13 @@ test("tapping while speaking cancels playback without closing or interrupting th
   });
   expect(mockVoice.interrupt).not.toHaveBeenCalled();
   expect(mockOnClose).not.toHaveBeenCalled();
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(mockFooterProps?.voiceStatus).toBe("responding");
+  await act(async () => { mockFooterProps?.onRequestEdit?.(); });
+  expect(mockFooterProps?.voiceStatus).toBeUndefined();
+  expect(mockFooterProps?.submitDisabled).toBe(true);
+  await act(async () => { mockFooterProps?.onChangeText?.("next question"); });
+  expect(mockFooterProps?.draftTranscript).toBe("next question");
   await screen.unmount();
 });
 
@@ -1779,6 +1946,40 @@ test("voice conversation uses the shared continuation transport and merges resum
   await screen.unmount();
 });
 
+test("editing during a voice reply protects the persisted next draft from late acceptance and microphone restart", async () => {
+  mockUseActualStreamingStt = true;
+  jest.spyOn(require("expo-modules-core"), "requireOptionalNativeModule").mockReturnValue(mockNativeStt);
+  let accept!: () => void;
+  let finishSend!: () => void;
+  mockVoice.sendTranscript.mockImplementationOnce((_text, onAccepted) => new Promise<void>((resolve) => {
+    accept = onAccepted!;
+    finishSend = resolve;
+  }));
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await waitFor(() => expect(mockNativeStt.start).toHaveBeenCalledTimes(1));
+  await act(async () => {
+    mockNativeSttListeners.get("BittyStreamingSttMessage")?.({ data: JSON.stringify({ type: "ready" }) });
+    mockNativeSttListeners.get("BittyStreamingSttMessage")?.({ data: JSON.stringify({ type: "transcript", text: "spoken question", isFinal: true }) });
+  });
+  await act(async () => {
+    mockNativeSttListeners.get("BittyStreamingSttMessage")?.({ data: JSON.stringify({ type: "candidate", revision: 1 }) });
+  });
+  expect(mockVoice.sendTranscript).toHaveBeenCalledTimes(1);
+  mockVoice.turnStatus = "running";
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { mockFooterProps?.onRequestEdit?.(); });
+  await act(async () => { mockFooterProps?.onChangeText?.("next typed question"); });
+  await act(async () => { accept(); finishSend(); });
+  expect(mockFooterProps?.draftTranscript).toBe("next typed question");
+  await act(async () => { mockFooterProps?.onBlur?.(); });
+  mockVoice.turnStatus = "completed";
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(mockFooterProps?.draftTranscript).toBe("next typed question");
+  expect(mockComposerDrafts).toEqual([expect.objectContaining({ text: "next typed question" })]);
+  expect(mockNativeStt.start).toHaveBeenCalledTimes(1);
+  await screen.unmount();
+});
+
 test("a widget voice target waits for foreground before announcing and recording once", async () => {
   AppState.currentState = "background";
   let changeState: ((state: AppStateStatus) => void) | undefined;
@@ -1811,6 +2012,78 @@ test("a remote handoff destination never auto-starts after a rejected operation 
   await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose}
     initialOrchestratorId="other" initialControlSignal={controller.signal} />);
   expect(mockStt.start).not.toHaveBeenCalled();
+  expect(mockSynthesizeSpeechStream).not.toHaveBeenCalled();
+  expect(mockFooterProps?.stopLabel).toBe("オーケストレーターを閉じる");
+  expect(mockFooterProps?.statusText).toContain("音声入力は停止しています");
+  await screen.unmount();
+});
+
+test.each(["ready wait", "announcement"])("stopping remote %s cancels input first and closes only on the next stop", async (stage) => {
+  const { getVoiceControl } = jest.requireActual("../../appControl/voiceControl");
+  const controller = new AbortController();
+  const control = getVoiceControl(mockManager);
+  jest.spyOn(control, "pendingTarget").mockImplementation(() => !controller.signal.aborted);
+  jest.spyOn(control, "stopSurface").mockImplementation(async () => {
+    controller.abort();
+    await mockStt.disarm();
+  });
+  mockVoice.ready = stage !== "ready wait";
+  const props = { ...playback, onClose: mockOnClose, initialOrchestratorId: "other", initialControlSignal: controller.signal };
+  const screen = await render(<VoiceConversationScreen {...props} />);
+  let finishAnnouncement: (() => void) | undefined;
+  if (stage === "announcement") {
+    mockSynthesizeSpeechStream.mockImplementationOnce(() => new Promise<void>((resolve) => { finishAnnouncement = resolve; }));
+    await act(async () => { void mockLastSttOptions?.announce?.(controller.signal); });
+    expect(mockFooterProps?.voiceStatus).toBe("speaking");
+  }
+  expect(mockFooterProps?.stopLabel).toBe("音声入力を停止");
+  await fireEvent.press(screen.getByTestId("streaming-stt-stop"));
+  expect(controller.signal.aborted).toBe(true);
+  if (stage === "announcement") {
+    expect(mockStopTtsPlayback).toHaveBeenCalledTimes(1);
+    expect(mockStopTtsPlayback).toHaveBeenCalledWith(expect.objectContaining({ reason: "voice_control_cancelled" }));
+  }
+  expect(mockOnClose).not.toHaveBeenCalled();
+  expect(mockVoice.interrupt).not.toHaveBeenCalled();
+  expect(mockFooterProps?.stopLabel).toBe("オーケストレーターを閉じる");
+  await act(async () => { finishAnnouncement?.(); });
+  mockVoice.ready = true;
+  await screen.rerender(<VoiceConversationScreen {...props} />);
+  expect(mockStt.start).not.toHaveBeenCalled();
+  await fireEvent.press(screen.getByTestId("streaming-stt-stop"));
+  expect(mockOnClose).toHaveBeenCalledTimes(1);
+  expect(mockVoice.interrupt).toHaveBeenCalledTimes(1);
+  await screen.unmount();
+});
+
+test("external cancellation settles remote preparation immediately and never starts when readiness arrives", async () => {
+  const { getVoiceControl } = jest.requireActual("../../appControl/voiceControl");
+  const controller = new AbortController();
+  jest.spyOn(getVoiceControl(mockManager), "pendingTarget").mockImplementation(() => !controller.signal.aborted);
+  mockVoice.ready = false;
+  const props = { ...playback, onClose: mockOnClose, initialOrchestratorId: "other", initialControlSignal: controller.signal };
+  const screen = await render(<VoiceConversationScreen {...props} />);
+  expect(mockFooterProps?.stopLabel).toBe("音声入力を停止");
+  await act(async () => { controller.abort(); });
+  expect(mockFooterProps?.stopLabel).toBe("オーケストレーターを閉じる");
+  expect(mockFooterProps?.statusText).toContain("音声入力は停止しています");
+  mockVoice.ready = true;
+  await screen.rerender(<VoiceConversationScreen {...props} />);
+  expect(mockStt.start).not.toHaveBeenCalled();
+  expect(mockSynthesizeSpeechStream).not.toHaveBeenCalled();
+  await screen.unmount();
+});
+
+test("a completed remote start still resumes input after returning from management", async () => {
+  const controller = new AbortController();
+  mockStt.active = true;
+  mockStt.phase = "recording";
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose}
+    initialOrchestratorId="other" initialControlSignal={controller.signal} />);
+  await fireEvent(screen.getByTestId("voice-orchestrator-strip"), "longPress");
+  expect(mockManagerVisible).toBe(true);
+  await act(async () => { mockManagerOnClose?.(); });
+  expect(mockStt.start).toHaveBeenCalledTimes(1);
   expect(mockSynthesizeSpeechStream).not.toHaveBeenCalled();
   await screen.unmount();
 });
