@@ -54,7 +54,7 @@ export function calendarConversationDynamicTools() {
   return [{
     type: "namespace",
     name: CALENDAR_DYNAMIC_TOOLS_NAMESPACE,
-    description: "カレンダーの予定を読み取るツール。iCloud接続中は読み取り専用、それ以外の変更は端末で確認する",
+    description: "カレンダーの予定を取得・作成・更新・削除する。変更前にユーザーへ確認する。iCloud未接続時の変更は端末でも確認する",
     tools,
   }];
 }
@@ -84,7 +84,10 @@ export function createCalendarToolDispatcher({ cloudService }) {
         .some((id) => typeof id === "string" && id.startsWith("icloud:"));
       if (!status.enabled && !cloudIds) return null;
       if (!status.enabled) throw Object.assign(new Error(), { code: "icloud_not_connected" });
-      const data = await cloudService.execute(tool, input, signal);
+      const write = /_(create|update|delete)_event$/.test(tool);
+      if (write && (typeof request.params.callId !== "string" || !request.params.callId.trim())) throw Object.assign(new Error(), { code: "invalid_arguments" });
+      const requestId = write ? calendarToolRequestId([request.params.threadId, request.params.turnId, request.params.callId]) : undefined;
+      const data = await cloudService.execute(tool, input, signal, requestId);
       return result({ ok: true, data });
     } catch (failure) {
       const code = Object.hasOwn(ICLOUD_MESSAGES, failure?.code) ? failure.code : "icloud_connection_failed";

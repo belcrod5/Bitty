@@ -150,7 +150,7 @@ export function calendarDynamicTools(mode: "conversation" | "schedule" = "conver
   return [{
     type: "namespace" as const,
     name: CALENDAR_DYNAMIC_TOOLS_NAMESPACE,
-    description: "カレンダーの予定を読み取るツール。iCloud接続中は読み取り専用、それ以外の変更は端末で確認する",
+    description: mode === "schedule" ? "カレンダーの予定を読み取る" : "カレンダーの予定を取得・作成・更新・削除する。変更前にユーザーへ確認する。iCloud未接続時の変更は端末でも確認する",
     tools: mode === "schedule" ? tools.slice(0, 3) : tools,
   }];
 }

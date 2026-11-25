@@ -1,6 +1,6 @@
 import { constants, promises as fs } from "node:fs";
 import path from "node:path";
-import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
 import { runnerLoginKey } from "./runner-login-store.mjs";
 
 export const ICLOUD_MESSAGES = {
@@ -13,7 +13,12 @@ export const ICLOUD_MESSAGES = {
   icloud_storage_unavailable: "iCloudの認証情報を安全に保存・読み取りできません。RunnerのKeychainと保存先の権限を確認してください。",
   icloud_test_required: "入力した情報で接続テストをやり直してください。",
   icloud_not_connected: "iCloudカレンダーが有効になっていません。設定で接続してください。",
-  icloud_read_only: "iCloudカレンダーは読み取り専用です。予定の変更はカレンダーアプリで行ってください。",
+  calendar_read_only: "指定したカレンダーは書き込みできません。",
+  event_changed: "予定が確認時から変更されています。再取得して確認してください。",
+  event_version_unavailable: "予定の更新日時を確認できないため操作できません。",
+  recurring_event_write_unsupported: "繰り返し予定は変更・削除できません。カレンダーアプリで編集してください。",
+  request_conflict: "同じ要求に異なる内容が届いたため実行しませんでした。",
+  result_unknown: "予定の変更結果を確認できません。自動再試行は行いません。",
   invalid_date_range: "日時の範囲が正しくありません。最大31日間を指定してください。",
   request_cancelled: "カレンダーの要求を中止しました。",
   invalid_arguments: "入力内容が正しくありません。",
@@ -147,20 +152,73 @@ export function createICloudCalendarService({ directory, clientFactory, ownerSub
       });
     },
     disconnect() { return change(async () => { await write(null); drafts.clear(); return status(); }); },
-    async execute(tool, input, signal) {
-      await initialize(); await queue; checkOwner();
-      if (!state?.enabled) throw iCloudError("icloud_not_connected");
-      const snapshot = state;
-      const client = clientFactory({ account: snapshot.account, password: snapshot.password });
-      let result;
-      if (tool === "calendar_list_calendars") result = await client.listCalendars(signal);
-      else if (tool === "calendar_search_events") result = await client.searchEvents(input, signal);
-      else if (tool === "calendar_get_event") result = await client.getEvent(input, signal);
-      else throw iCloudError("icloud_read_only");
-      await queue; checkOwner();
-      if (signal?.aborted) throw iCloudError("request_cancelled", 408);
-      if (state !== snapshot || !state?.enabled) throw iCloudError("icloud_not_connected");
-      return result;
+    async execute(tool, input, signal, requestId) {
+      const method = {
+        calendar_list_calendars: "listCalendars", calendar_search_events: "searchEvents", calendar_get_event: "getEvent",
+        calendar_create_event: "createEvent", calendar_update_event: "updateEvent", calendar_delete_event: "deleteEvent",
+      }[tool];
+      if (!method) throw iCloudError("invalid_arguments");
+      const isWrite = /_(create|update|delete)_event$/.test(tool);
+      const run = async () => {
+        checkOwner();
+        if (!state?.enabled) throw iCloudError("icloud_not_connected");
+        if (signal?.aborted) throw iCloudError("request_cancelled", 408);
+        const snapshot = state, client = clientFactory({ account: snapshot.account, password: snapshot.password });
+        if (isWrite) {
+          if (typeof requestId !== "string" || !/^[a-f0-9]{64}$/.test(requestId)) throw iCloudError("invalid_arguments");
+          await validate(directory, "directory", 0o700);
+          const hash = (value) => createHash("sha256").update(value).digest("hex");
+          const identity = hash(JSON.stringify([owner(), snapshot.account, requestId]));
+          const argumentsHash = hash(JSON.stringify([tool, input], (_key, value) => value && typeof value === "object" && !Array.isArray(value)
+            ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))) : value));
+          const receipt = path.join(root, `write-${identity}.json`);
+          let handle;
+          try { handle = await fs.open(receipt, "wx", 0o600); }
+          catch (error) {
+            if (error.code !== "EEXIST") throw iCloudError("icloud_storage_unavailable", 503);
+            let saved;
+            try {
+              if ((await validate(receipt, "file", 0o600)).size > 65536) throw new Error();
+              const previous = await fs.open(receipt, constants.O_RDONLY | constants.O_NOFOLLOW);
+              try { saved = JSON.parse(await previous.readFile("utf8")); } finally { await previous.close(); }
+            } catch { throw iCloudError("result_unknown"); }
+            if (saved.argumentsHash !== argumentsHash) throw iCloudError("request_conflict");
+            if (!saved.result) throw iCloudError("result_unknown");
+            checkOwner();
+            if (saved.result.error) throw iCloudError(saved.result.error);
+            return saved.result.data;
+          }
+          try { await handle.writeFile(JSON.stringify({ argumentsHash })); await handle.sync(); }
+          catch { throw iCloudError("icloud_storage_unavailable", 503); }
+          finally { await handle.close(); }
+          const parent = await fs.open(root, "r");
+          try { await parent.sync(); } finally { await parent.close(); }
+          let result;
+          try { checkOwner(); result = { data: await client[method](input, signal, requestId) }; }
+          catch (error) { result = { error: Object.hasOwn(ICLOUD_MESSAGES, error?.code) ? error.code : "result_unknown" }; }
+          const temporary = path.join(root, `${randomUUID()}.tmp`);
+          try {
+            const output = await fs.open(temporary, "wx", 0o600);
+            try { await output.writeFile(JSON.stringify({ argumentsHash, result })); await output.sync(); }
+            finally { await output.close(); }
+            await fs.rename(temporary, receipt);
+            const parent = await fs.open(root, "r");
+            try { await parent.sync(); } finally { await parent.close(); }
+          } catch { throw iCloudError("result_unknown", 503); }
+          finally { await fs.unlink(temporary).catch(() => {}); }
+          checkOwner();
+          if (result.error) throw iCloudError(result.error);
+          return result.data;
+        }
+        const result = method === "listCalendars" ? await client[method](signal) : await client[method](input, signal);
+        await queue; checkOwner();
+        if (signal?.aborted) throw iCloudError("request_cancelled", 408);
+        if (state !== snapshot || !state?.enabled) throw iCloudError("icloud_not_connected");
+        return result;
+      };
+      if (isWrite) return change(run);
+      await initialize(); await queue;
+      return run();
     },
   };
 }

@@ -78,7 +78,7 @@ export function createCalendarRelayService({
     rememberClosed(relay, request.id);
     if (reason === "timeout" || reason === "interrupt") sendCancel(request, reason);
     const write = /_(create|update|delete)_event$/.test(request.tool);
-    sendResponse(relay, request, error(request.cloud ? "request_cancelled" : reason === "no_owner" ? (write ? "foreground_required" : "device_unavailable") : reason === "owner_disconnect" ? (write ? "result_unknown" : "device_unavailable") : (reason === "interrupt" ? "request_cancelled" : (write ? "result_unknown" : "device_unavailable"))));
+    sendResponse(relay, request, error(request.cloud ? (write ? "result_unknown" : "request_cancelled") : reason === "no_owner" ? (write ? "foreground_required" : "device_unavailable") : reason === "owner_disconnect" ? (write ? "result_unknown" : "device_unavailable") : (reason === "interrupt" ? "request_cancelled" : (write ? "result_unknown" : "device_unavailable"))));
   };
   const setTurnOwner = (relay, owner) => { relay.calendarOwner = owner || null; };
   const terminateOwnerRequests = (relay, ws, reason = "owner_disconnect") => {

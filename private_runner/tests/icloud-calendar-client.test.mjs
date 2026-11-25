@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import ICAL from "ical.js";
 import { createICloudCalendarClient, iCloudUrl } from "../src/icloud-calendar-client.mjs";
 
 const CAL = "urn:ietf:params:xml:ns:caldav";
@@ -8,15 +9,15 @@ const zone = "BEGIN:VCALENDAR\r\nBEGIN:VTIMEZONE\r\nTZID:Asia/Tokyo\r\nBEGIN:STA
 const xml = (value) => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 const resource = (href, properties, status = "200 OK") => `<x:response><x:href>${xml(href)}</x:href><x:propstat><x:prop>${properties}</x:prop><x:status>HTTP/1.1 ${status}</x:status></x:propstat></x:response>`;
 const document = (...items) => `<x:multistatus xmlns:x="DAV:" xmlns:y="${CAL}">${items.join("")}</x:multistatus>`;
-const data = (href, ics) => resource(href, `<y:calendar-data>${xml(ics)}</y:calendar-data>`);
+const data = (href, ics, etag = '"v1"') => resource(href, `<x:getetag>${xml(etag)}</x:getetag><y:calendar-data>${xml(ics)}</y:calendar-data>`);
 const ics = (...events) => `BEGIN:VCALENDAR\r\nVERSION:2.0\r\n${events.join("\r\n")}\r\nEND:VCALENDAR\r\n`;
 const event = (uid, start, end, extra = "") => `BEGIN:VEVENT\r\nUID:${uid}\r\nDTSTART${start}\r\nDTEND${end}\r\n${extra}END:VEVENT`;
-function fixture() {
+function fixture(privileges = "<x:privilege><x:write/></x:privilege>") {
   const requests = [];
   const responses = [
     document(resource("/", '<x:current-user-principal><x:href>/user/</x:href></x:current-user-principal>')),
     document(resource("/user/", `<y:calendar-home-set><x:href>https://p01-caldav.icloud.com/user/</x:href></y:calendar-home-set>`)),
-    document(resource(calendarUrl, `<x:displayname>Work &amp; Life</x:displayname><x:resourcetype><y:calendar/></x:resourcetype><y:supported-calendar-component-set><y:comp name="VEVENT"/></y:supported-calendar-component-set><y:calendar-timezone>${xml(zone)}</y:calendar-timezone>`),
+    document(resource(calendarUrl, `<x:displayname>Work &amp; Life</x:displayname><x:resourcetype><y:calendar/></x:resourcetype><y:supported-calendar-component-set><y:comp name="VEVENT"/></y:supported-calendar-component-set><y:calendar-timezone>${xml(zone)}</y:calendar-timezone><x:current-user-privilege-set>${privileges}</x:current-user-privilege-set>`),
       resource("https://evil.invalid/", '<x:resourcetype><y:calendar/></x:resourcetype>', "404 Not Found")),
   ];
   const client = createICloudCalendarClient({ account: "test@example.invalid", password: "abcd-efgh-ijkl-mnop", fetchImpl: async (url, options) => {
@@ -30,13 +31,13 @@ function fixture() {
 }
 const range = { start: "2026-11-14T15:00:00.000Z", end: "2026-11-17T15:00:00.000Z" };
 
-test("namespace-correct discovery and folded/escaped event details use the read-only tool contract", async () => {
+test("namespace-correct discovery and folded/escaped event details use the common tool contract", async () => {
   const f = fixture();
   const item = ics(event("one", ":20261115T010000Z", ":20261115T020000Z", "SUMMARY:Long\\, title\r\n  folded\r\nDESCRIPTION:Line one\\nLine two\\; fine\r\nLOCATION:Room\\, A\r\nLAST-MODIFIED:20261101T000000Z\r\n"));
   f.responses.push(document(data(calendarUrl + "one.ics", item)), document(data(calendarUrl + "one.ics", item)));
   const result = await f.client.searchEvents(range);
   assert.equal(result.events[0].title, "Long, title folded");
-  assert.equal(result.events[0].allowsModifications, false);
+  assert.equal(result.events[0].allowsModifications, true);
   assert.equal(result.events[0].calendarTitle, "Work & Life");
   assert.equal(result.events[0].timeZone, "UTC");
   assert.equal(result.events[0].lastModifiedAt, "2026-11-01T00:00:00.000Z");
@@ -187,4 +188,147 @@ test("oversized responses stop before XML parsing", async () => {
   f.responses[0] = new Response("x".repeat(8 * 1024 * 1024 + 1), { status: 207 });
   await assert.rejects(f.client.listCalendars(), { code: "icloud_response_too_large" });
   assert.equal(f.requests.length, 1);
+});
+
+const createInput = { title: "Meeting, one", start: "2026-11-25T09:00:00+09:00", end: "2026-11-25T10:00:00+09:00", allDay: false, timeZone: "Asia/Tokyo" };
+const eventId = (uid = "one", resource = calendarUrl + "one.ics") => `icloud:event:${Buffer.from(JSON.stringify({ calendar: calendarUrl, resource, uid })).toString("base64url")}`;
+const version = "2026-11-01T00:00:00.000Z";
+const writableEvent = (extra = "") => ics(event("one", ":20261125T000000Z", ":20261125T010000Z", `SUMMARY:Original\r\nLAST-MODIFIED:20261101T000000Z\r\n${extra}`));
+
+test("DAV privileges determine writable calendars and the first writable calendar is the default", async () => {
+  for (const [privileges, writable] of [["<x:privilege><x:all/></x:privilege>", true], ["<x:privilege><x:write/></x:privilege>", true],
+    ["<x:privilege><x:bind/><x:unbind/><x:write-content/></x:privilege>", true], ["<x:privilege><x:read/></x:privilege>", false], ["", false]]) {
+    const f = fixture(privileges), result = await f.client.listCalendars();
+    assert.equal(result.calendars[0].allowsModifications, writable);
+    assert.equal(result.calendars[0].isDefault, writable);
+    if (!writable) {
+      await assert.rejects(f.client.createEvent({ ...createInput, calendarId: result.calendars[0].id }), { code: "calendar_read_only" });
+      assert.equal(f.requests.length, 3);
+    }
+  }
+});
+
+test("create, get and update round trip UTC instants, text, alarms and untouched properties", async () => {
+  const f = fixture();
+  let stored;
+  const put = (_url, options) => {
+    assert.equal(options.headers[stored ? "If-Match" : "If-None-Match"], stored ? '"v1"' : "*");
+    assert.equal(options.headers["Content-Type"], "text/calendar; charset=utf-8");
+    stored = options.body;
+    f.responses.unshift(document(data(_url, stored)));
+    return new Response(null, { status: 200 });
+  };
+  f.responses.push(put);
+  const created = await f.client.createEvent({ ...createInput, notes: "Line one\nLine two; fine", alarms: [{ minutesBefore: 15 }] }, undefined, "a".repeat(64));
+  const component = new ICAL.Component(ICAL.parse(stored)).getFirstSubcomponent("vevent");
+  assert.equal(component.getFirstPropertyValue("uid"), `bitty-${"a".repeat(64)}`);
+  assert.equal(component.getFirstSubcomponent("valarm").getFirstPropertyValue("trigger").toSeconds(), -900);
+  const resource = f.requests.find((value) => value.method === "PUT").url;
+  f.responses.push(document(data(resource, stored)));
+  const { event: detail } = await f.client.getEvent({ eventId: created.eventId });
+  assert.equal(detail.start, "2026-11-25T00:00:00.000Z");
+  assert.equal(detail.timeZone, "UTC");
+  assert.equal(detail.notes, "Line one\nLine two; fine");
+  assert.equal(detail.lastModifiedAt, created.lastModifiedAt);
+  stored = stored.replace("END:VEVENT", "X-OTHER:keep\r\nEND:VEVENT");
+  f.responses.push(document(data(resource, stored)), put);
+  const updated = await f.client.updateEvent({ eventId: created.eventId, expectedLastModifiedAt: detail.lastModifiedAt, changes: { title: "Changed", start: "2026-11-25T11:00:00+09:00", end: "2026-11-25T12:00:00+09:00", timeZone: "Asia/Tokyo" } });
+  assert.equal(updated.eventId, created.eventId);
+  const changed = new ICAL.Component(ICAL.parse(stored)).getFirstSubcomponent("vevent");
+  assert.equal(changed.getFirstPropertyValue("dtstart").toString(), "2026-11-25T02:00:00Z");
+  assert.equal(changed.getFirstPropertyValue("x-other"), "keep");
+  assert.equal(changed.getFirstPropertyValue("description"), detail.notes);
+  assert.equal(changed.getAllSubcomponents("valarm").length, 1);
+  f.responses.push(document(data(resource, stored)), put);
+  await f.client.updateEvent({ eventId: created.eventId, expectedLastModifiedAt: updated.lastModifiedAt, changes: { start: "2026-11-25T04:00:00Z", end: "2026-11-25T05:00:00Z" } });
+});
+
+test("all-day creation keeps exclusive DATE end and validates dates and timed offsets before any PUT", async () => {
+  const f = fixture();
+  f.responses.push(new Response(null, { status: 201 }), new Response(null, { status: 500 }));
+  await f.client.createEvent({ title: "Day", start: "2026-11-25", end: "2026-11-27", allDay: true });
+  const component = new ICAL.Component(ICAL.parse(f.requests.find((value) => value.method === "PUT").body)).getFirstSubcomponent("vevent");
+  assert.equal(component.getFirstPropertyValue("dtstart").isDate, true);
+  assert.equal(component.getFirstPropertyValue("dtend").toString(), "2026-11-27");
+  for (const input of [{ ...createInput, timeZone: undefined }, { ...createInput, start: "2026-11-25T09:00:00Z" },
+    { ...createInput, title: null }, { ...createInput, start: "2026-02-30T09:00:00+09:00" }, { ...createInput, alarms: [{ minutesBefore: -1 }] },
+    { title: "Bad date", start: "2026-02-30", end: "2026-03-02", allDay: true },
+    { title: "Bad zone", start: "2026-11-25", end: "2026-11-26", allDay: true, timeZone: "UTC" }]) {
+    await assert.rejects(f.client.createEvent(input), { code: "invalid_arguments" });
+  }
+  assert.equal(f.requests.filter((request) => request.method === "PUT").length, 1);
+});
+
+test("updates and deletes require a fresh timestamp and strong ETag and enforce If-Match", async () => {
+  for (const [method, status] of [["updateEvent", 200], ["deleteEvent", 200], ["deleteEvent", 204], ["deleteEvent", 412]]) {
+    const f = fixture();
+    f.responses.push(document(data(calendarUrl + "one.ics", writableEvent())), new Response(null, { status }));
+    if (method === "updateEvent") f.responses.push(document(data(calendarUrl + "one.ics", writableEvent())));
+    const pending = f.client[method]({ eventId: eventId(), expectedLastModifiedAt: version, ...(method === "updateEvent" ? { changes: { notes: null, alarms: [] } } : {}) });
+    if (status === 412) await assert.rejects(pending, { code: "event_changed" });
+    else assert.ok(await pending);
+    const write = f.requests.find((value) => ["PUT", "DELETE"].includes(value.method));
+    assert.equal(write.headers["If-Match"], '"v1"');
+    if (method === "updateEvent") assert.ok(!write.body.includes("DESCRIPTION:"));
+  }
+  for (const [expected, etag, extra, code] of [["2026-10-01T00:00:00.000Z", '"v1"', "", "event_changed"],
+    [version, "", "", "event_version_unavailable"], [null, '"v1"', "", "event_version_unavailable"],
+    [version, 'W/"weak"', "", "event_version_unavailable"], [version, '"v1"', "RRULE:FREQ=DAILY\r\n", "recurring_event_write_unsupported"]]) {
+    const f = fixture(); f.responses.push(document(data(calendarUrl + "one.ics", writableEvent(extra), etag)));
+    await assert.rejects(f.client.deleteEvent({ eventId: eventId(), expectedLastModifiedAt: expected }), { code });
+    assert.equal(f.requests.filter((request) => ["PUT", "DELETE"].includes(request.method)).length, 0);
+  }
+});
+
+test("patches preserve all-day and alarm state, reject moves, implicit offset changes and multi-event resources", async () => {
+  for (const changes of [{ calendarId: "another-calendar" }, { allDay: true }, { start: "2026-11-25T12:00:00+09:00", end: "2026-11-25T13:00:00+09:00" }, { title: null }, { start: null }, { end: null }, { timeZone: null }]) {
+    const f = fixture(); f.responses.push(document(data(calendarUrl + "one.ics", writableEvent())));
+    await assert.rejects(f.client.updateEvent({ eventId: eventId(), expectedLastModifiedAt: version, changes }), { code: "invalid_arguments" });
+    assert.equal(f.requests.length, 4);
+  }
+  const f = fixture(); f.responses.push(document(data(calendarUrl + "one.ics", ics(event("one", ":20261125T000000Z", ":20261125T010000Z"), event("other", ":20261125T000000Z", ":20261125T010000Z")))));
+  await assert.rejects(f.client.deleteEvent({ eventId: eventId(), expectedLastModifiedAt: version }), { code: "icloud_response_invalid" });
+  const forged = fixture();
+  await assert.rejects(forged.client.deleteEvent({ eventId: eventId("one", "https://p01-caldav.icloud.com/other/one.ics"), expectedLastModifiedAt: version }), { code: "invalid_arguments" });
+  assert.equal(forged.requests.length, 3);
+});
+
+test("write transport reports uncertain sent requests without retries and rejects authorization and redirects", async () => {
+  for (const [response, code] of [[() => { throw new Error("private network failure"); }, "result_unknown"], [new Response(null, { status: 500 }), "result_unknown"],
+    [new Response(null, { status: 403 }), "icloud_access_denied"], [new Response(null, { status: 307, headers: { location: "https://evil.invalid/" } }), "icloud_response_invalid"]]) {
+    const f = fixture(); f.responses.push(response);
+    await assert.rejects(f.client.createEvent(createInput), { code });
+    assert.equal(f.requests.length, 4);
+  }
+  const f = fixture(), controller = new AbortController();
+  await f.client.listCalendars();
+  controller.abort();
+  await assert.rejects(f.client.createEvent(createInput, controller.signal), { code: "request_cancelled" });
+  assert.equal(f.requests.length, 3);
+});
+
+test("all-day conversion requires an explicit timed timezone and floating event patches retain the calendar instant", async () => {
+  const allDay = fixture();
+  allDay.responses.push(document(data(calendarUrl + "one.ics", ics(event("one", ";VALUE=DATE:20261125", ";VALUE=DATE:20261126", "SUMMARY:Day\r\nLAST-MODIFIED:20261101T000000Z\r\n")))));
+  await assert.rejects(allDay.client.updateEvent({ eventId: eventId(), expectedLastModifiedAt: version, changes: { allDay: false, start: "2026-11-25T00:00:00Z", end: "2026-11-25T01:00:00Z" } }), { code: "invalid_arguments" });
+  assert.equal(allDay.requests.length, 4);
+  const f = fixture();
+  f.responses.push(document(data(calendarUrl + "one.ics", ics(event("one", ":20261125T090000", ":20261125T100000", "SUMMARY:Floating\r\nLAST-MODIFIED:20261101T000000Z\r\n")))), new Response(null, { status: 204 }), new Response(null, { status: 500 }));
+  const result = await f.client.updateEvent({ eventId: eventId(), expectedLastModifiedAt: version, changes: { end: "2026-11-25T11:00:00+09:00" } });
+  assert.equal(result.lastModifiedAt, null);
+  const written = new ICAL.Component(ICAL.parse(f.requests.find((value) => value.method === "PUT").body)).getFirstSubcomponent("vevent");
+  assert.equal(written.getFirstPropertyValue("dtstart").toString(), "2026-11-25T00:00:00Z");
+  assert.equal(written.getFirstPropertyValue("dtend").toString(), "2026-11-25T02:00:00Z");
+});
+
+test("patching an untitled event preserves the absent summary and keeps unspecified all-day dates and alarms", async () => {
+  const f = fixture();
+  const original = ics(event("one", ";VALUE=DATE:20261125", ";VALUE=DATE:20261127", "LAST-MODIFIED:20261101T000000Z\r\nBEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT15M\r\nDESCRIPTION:Existing\r\nEND:VALARM\r\n"));
+  f.responses.push(document(data(calendarUrl + "one.ics", original)), new Response(null, { status: 204 }), new Response(null, { status: 500 }));
+  await f.client.updateEvent({ eventId: eventId(), expectedLastModifiedAt: version, changes: { notes: "Added" } });
+  const updated = new ICAL.Component(ICAL.parse(f.requests.find((value) => value.method === "PUT").body)).getFirstSubcomponent("vevent");
+  assert.equal(updated.hasProperty("summary"), false);
+  assert.equal(updated.getFirstPropertyValue("dtstart").toString(), "2026-11-25");
+  assert.equal(updated.getFirstPropertyValue("dtend").toString(), "2026-11-27");
+  assert.equal(updated.getFirstSubcomponent("valarm").getFirstPropertyValue("trigger").toSeconds(), -900);
 });
