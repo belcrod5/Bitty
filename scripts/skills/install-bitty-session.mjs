@@ -6,11 +6,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const name = 'bitty-session-orchestrator';
+const skillNames = ['bitty-session-orchestrator', 'bitty-browser-input'];
 const marker = '.bitty-skill-install.json';
-const source = await fs.realpath(fileURLToPath(new URL(`../../skills/${name}/`, import.meta.url)));
 const digest = value => createHash('sha256').update(value).digest('hex');
-const usage = 'node scripts/skills/install-bitty-session.mjs --target codex|claude [--home <directory>] [--apply] [--adopt-reviewed <digest>]';
+const usage = 'node scripts/skills/install-bitty-session.mjs --target codex|claude [--skill bitty-session-orchestrator|bitty-browser-input] [--home <directory>] [--apply] [--adopt-reviewed <digest>]';
 
 async function filesAt(root, relative = '') {
   const files = Object.create(null);
@@ -39,18 +38,21 @@ async function safeParents(home, components, create = false) {
 async function main() {
   const args = process.argv.slice(2);
   if (args.includes('--help')) return console.log(usage);
-  let target, home = os.homedir(), apply = false, reviewed;
+  let target, home = os.homedir(), apply = false, reviewed, skill;
   while (args.length) {
     const flag = args.shift();
     if (flag === '--apply' && !apply) { apply = true; continue; }
     const value = args.shift();
     if (!value || value.startsWith('--')) throw new Error(usage);
-    if (flag === '--target' && !target) target = value;
+    if (flag === '--skill' && !skill) skill = value;
+    else if (flag === '--target' && !target) target = value;
     else if (flag === '--home') home = value;
     else if (flag === '--adopt-reviewed' && !reviewed) reviewed = value;
     else throw new Error(usage);
   }
-  if (!['codex', 'claude'].includes(target) || (reviewed && !/^[a-f0-9]{64}$/.test(reviewed))) throw new Error(usage);
+  const name = skill || skillNames[0];
+  if (!skillNames.includes(name) || !['codex', 'claude'].includes(target) || (reviewed && !/^[a-f0-9]{64}$/.test(reviewed))) throw new Error(usage);
+  const source = await fs.realpath(fileURLToPath(new URL(`../../skills/${name}/`, import.meta.url)));
   const homeStat = await fs.lstat(path.resolve(home));
   if (!homeStat.isDirectory() || homeStat.isSymbolicLink()) throw new Error('--home must be an existing real directory');
   home = await fs.realpath(path.resolve(home));
@@ -61,7 +63,10 @@ async function main() {
   const sourceFiles = await filesAt(source);
   // Only the skill payload may be exposed through the link.
   for (const rel of Object.keys(sourceFiles)) {
-    if (!(rel === 'SKILL.md' || ['scripts/bitty-session.mjs', 'scripts/runner-control.mjs'].includes(rel) || /^references\/[a-z-]+\.md$/.test(rel))) {
+    const supported = name === 'bitty-session-orchestrator'
+      ? ['scripts/bitty-session.mjs', 'scripts/runner-control.mjs'].includes(rel) || /^references\/[a-z-]+\.md$/.test(rel)
+      : rel === 'scripts/bitty-browser-input.mjs';
+    if (!(rel === 'SKILL.md' || supported)) {
       throw new Error(`Unexpected source file: ${rel}`);
     }
   }

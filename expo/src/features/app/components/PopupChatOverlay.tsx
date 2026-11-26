@@ -12,6 +12,8 @@ import {
 import { usePanelRuntimeController } from "../contexts/PanelRuntimeControllerContext";
 import { useReduceMotionEnabled } from "../hooks/useReduceMotionEnabled";
 import { ChatScreen } from "../screens/ChatScreen";
+import { useChatControlSurface } from "../../appControl/useChatControlSurface";
+import type { VoiceTarget } from "../../appControl/voiceControl";
 import { CHAT_CONTENT_MAX_WIDTH } from "../styles/layoutConstants";
 import type { PopupChatPresentation, PopupChatSourceRect, PopupChatCloseTarget } from "./popupChatTypes";
 import { useVisualTheme } from "../theme/VisualThemeContext";
@@ -27,6 +29,7 @@ import {
 } from "./popupChatTransitions";
 
 type PopupChatOverlayProps = {
+  target?: VoiceTarget;
   visible: boolean;
   panelId: string;
   cycleId?: string;
@@ -48,6 +51,7 @@ const HEADER_DISMISS_VELOCITY = 0.85;
 const ANIMATION_FAIL_OPEN_BUFFER_MS = 250;
 
 export function PopupChatOverlay({
+  target,
   visible,
   panelId,
   cycleId = "",
@@ -57,6 +61,7 @@ export function PopupChatOverlay({
   onRequestClose,
   playThemeSfx,
 }: PopupChatOverlayProps) {
+  useChatControlSurface(visible ? target || null : null, panelId);
   const { theme, themeId } = useVisualTheme();
   const popupChatOverlayStyles = popupChatOverlayStylesByTheme[themeId];
   const reduceMotion = useReduceMotionEnabled();

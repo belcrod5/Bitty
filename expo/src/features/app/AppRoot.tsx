@@ -1,5 +1,7 @@
 import { getVoiceOrchestrators } from "./utils/voiceOrchestratorClient";
 import { getVoiceControl } from "../appControl/voiceControl";
+import { useBrowserSecretInput } from "./hooks/useBrowserSecretInput";
+import { BrowserInputContext } from "./contexts/BrowserInputContext";
 import { RunnerLoginScreen } from "./screens/RunnerLoginScreen";
 import { useRunnerSessionLifecycle } from "./hooks/useRunnerSessionLifecycle";
 import { WidgetSnapshotPublisher } from "./components/WidgetSnapshotPublisher";
@@ -595,6 +597,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   const [runnerWebSocketManager] = useState(() => new RunnerWebSocketManager({
     bootstrapReady: false, url: codexWsUrl, token: runnerToken,
   }));
+  const browserSecretInput = useBrowserSecretInput(runnerWebSocketManager);
   // 毎レンダーの新規arrowを渡すとsaveRunnerToken経由でAppSettingsContextのmemoが
   // 全レンダーで無効化されるため、必ず安定したcallbackにする。
   const retryRunnerWsConnection = useCallback(() => {
@@ -6164,6 +6167,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
         onDiagEvent={handleRunnerWsDiagEvent}
         manager={runnerWebSocketManager}
       >
+      <BrowserInputContext.Provider value={browserSecretInput}>
       <AppProviders
         appShell={appShellContextValue}
         appSettings={appSettingsContextValue}
@@ -6227,6 +6231,10 @@ function AppContent({ onReady }: { onReady?: () => void }) {
             safeAreaStyle={styles.drawerPopupSafeArea}
           >
             <PopupChatOverlay
+              target={questionPopupSnapshot ? { kind: "session", sessionRef: {
+                backendId: questionPopupSnapshot.backendId || "codex",
+                nativeSessionId: questionPopupSnapshot.sessionMaterialized === false ? null : questionPopupSnapshot.selectedSessionId || null,
+              }, cwd: questionPopupSnapshot.selectedDirectoryPath } : undefined}
               visible={drawerSessionPopupVisible}
               panelId={drawerSessionPopupPanelId}
               cycleId={drawerSessionPopupCycleId}
@@ -6244,6 +6252,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
       </AppModalHost>
       </KeyboardProvider>
       </AppProviders>
+      </BrowserInputContext.Provider>
       </RunnerWebSocketProvider>
       <ThemeSplash ready={settingsLoaded} onReady={onReady} />
       </GestureHandlerRootView>

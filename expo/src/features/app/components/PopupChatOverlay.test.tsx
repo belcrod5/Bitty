@@ -11,6 +11,7 @@ let mockReduceMotion = false;
 const mockStartStandardPopupTransition = jest.fn();
 const mockStartCyberpunkPopupTransition = jest.fn();
 const mockStartPopupMinimizeTransition = jest.fn();
+jest.mock("../../appControl/useChatControlSurface", () => ({ useChatControlSurface: jest.fn() }));
 
 function mockAnimation(): Animated.CompositeAnimation {
   return {

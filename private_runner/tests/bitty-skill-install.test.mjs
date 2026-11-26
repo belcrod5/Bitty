@@ -13,19 +13,20 @@ const repoRoot = fileURLToPath(new URL('../../', import.meta.url));
 const script = path.join(repoRoot, 'scripts/skills/install-bitty-session.mjs');
 const name = 'bitty-session-orchestrator';
 const marker = '.bitty-skill-install.json';
-async function fixture(t, target = 'codex') {
+async function fixture(t, target = 'codex', skill = name) {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'bitty-skill-home-'));
   t.after(() => fs.rm(home, { recursive: true, force: true }));
   // Isolate the checkout so testing live edits cannot modify the real skill.
   const checkout = path.join(home, 'repository');
-  const source = path.join(checkout, 'skills', name);
+  const source = path.join(checkout, 'skills', skill);
   const installer = path.join(checkout, 'scripts/skills/install-bitty-session.mjs');
   await fs.mkdir(path.dirname(installer), { recursive: true });
   await fs.copyFile(script, installer);
-  await fs.cp(path.join(repoRoot, 'skills', name), source, { recursive: true });
-  const root = path.join(home, `.${target}`, 'skills', name);
+  await fs.cp(path.join(repoRoot, 'skills', skill), source, { recursive: true });
+  if (skill === 'bitty-browser-input') await fs.cp(path.join(repoRoot, 'skills', name), path.join(checkout, 'skills', name), { recursive: true });
+  const root = path.join(home, `.${target}`, 'skills', skill);
   const run = async (...args) => {
-    try { return { code: 0, ...await execFile(process.execPath, [installer, '--target', target, '--home', home, ...args]) }; }
+    try { return { code: 0, ...await execFile(process.execPath, [installer, '--target', target, '--home', home, ...(skill !== name ? ['--skill', skill] : []), ...args]) }; }
     catch (error) { return error; }
   };
   return { home, root, source, run };
@@ -47,6 +48,16 @@ for (const target of ['codex', 'claude']) test(`${target} dry-run writes nothing
   assert.equal(JSON.parse((await f.run('--apply')).stdout).unchanged, true);
   assert.deepEqual(await fs.readdir(path.dirname(f.root)), [name]);
   await assert.rejects(fs.stat(path.join(f.source, marker)), { code: 'ENOENT' });
+});
+
+for (const target of ['codex', 'claude']) test(`${target} browser input skill installs independently and resolves its shared control helper`, async t => {
+  const f = await fixture(t, target, 'bitty-browser-input');
+  assert.equal((await f.run('--apply')).code, 0);
+  assert.equal((await fs.lstat(f.root)).isSymbolicLink(), true);
+  const result = await execFile(process.execPath, [path.join(f.root, 'scripts/bitty-browser-input.mjs'), '--help'], { cwd: f.home });
+  assert.match(result.stdout, /--cdp-url/);
+  assert.deepEqual(await fs.readdir(path.dirname(f.root)), ['bitty-browser-input']);
+  assert.notEqual((await f.run('--skill', '../other')).code, 0);
 });
 
 for (const managed of [false, true]) test(`${managed ? 'legacy managed' : 'unmanaged'} copy requires an exact reviewed digest and is preserved when replaced with a link`, async t => {

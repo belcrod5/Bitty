@@ -55,6 +55,22 @@ const settle = async (ms = 0) => { await jest.advanceTimersByTimeAsync(ms); };
 beforeEach(() => { jest.useFakeTimers(); });
 afterEach(() => { jest.clearAllTimers(); jest.useRealTimers(); });
 
+test("typed chats need no microphone and first session materialization preserves the chat lease", async () => {
+  const f = fixture(); await Promise.resolve();
+  f.source.unregister();
+  const draft: VoiceTarget = { kind: "session", sessionRef: { backendId: "codex", nativeSessionId: null }, cwd: "/repo" };
+  let target = draft;
+  const stop = f.control.registerChat({ id: "typed-chat", panelId: "popup", target: () => target });
+  const first = f.control.origin("popup", draft)!;
+  expect(first).toMatchObject({ chatId: "typed-chat", surfaceId: "typed-chat" });
+  target = { ...draft, sessionRef: { ...draft.sessionRef, nativeSessionId: "resolved" } };
+  const resolved = f.control.origin("popup", target)!;
+  expect(resolved.chatGeneration).toBe(first.chatGeneration);
+  stop();
+  expect(f.control.origin("popup", target)).toBeUndefined();
+  f.stop();
+});
+
 test("stop disarms a reply wait immediately and ACKs only after native release; same surface keeps TTS", async () => {
   const f = fixture(); await f.begin();
   f.source.state.snapshot = { desired: "listening", observed: "waiting" };

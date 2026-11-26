@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, type RefObject } from "react";
 import type { LegendListRef, OnViewableItemsChanged } from "@legendapp/list";
-import type { ConversationMessage } from "../types/appTypes";
 import { findPreviousUserMessageIndex } from "../utils/chatScroll";
 import type { SessionDeepLinkJumpTarget } from "../utils/sessionDeepLink";
 
+type ChatScrollItem = { id: string; role?: "user" | "assistant" };
 type ChatScrollNavigationParams = {
-  messages: readonly ConversationMessage[];
+  messages: readonly ChatScrollItem[];
   listRef: RefObject<LegendListRef | null>;
   isAtBottomRef: RefObject<boolean>;
   interactionActiveRef: RefObject<boolean>;
@@ -42,7 +42,7 @@ export function useChatScrollNavigation({
   const firstVisibleMessageRef = useRef<{ id: string; index: number } | null>(null);
   const pendingPreviousUserTargetRef = useRef<PendingPreviousUserTarget | null>(null);
 
-  const scrollToMessage = useCallback((message: ConversationMessage, viewPosition?: number) => {
+  const scrollToMessage = useCallback((message: ChatScrollItem, viewPosition?: number) => {
     const list = listRef.current;
     if (!list) return false;
     pauseAutoScroll();
@@ -72,7 +72,7 @@ export function useChatScrollNavigation({
     return () => cancelAnimationFrame(frame);
   }, [deepLinkTarget, listRef, messages, onDeepLinkHandled, scrollToMessage, sessionId]);
 
-  const handleViewableItemsChanged = useCallback<NonNullable<OnViewableItemsChanged<ConversationMessage>>>(({
+  const handleViewableItemsChanged = useCallback<NonNullable<OnViewableItemsChanged<ChatScrollItem>>>(({
     viewableItems,
   }) => {
     const pendingTarget = pendingPreviousUserTargetRef.current;

@@ -7,6 +7,8 @@ import { CHAT_CONTENT_MAX_WIDTH } from "../styles/layoutConstants";
 import { VisualThemeProvider } from "../theme/VisualThemeContext";
 import { VISUAL_THEMES } from "../theme/visualThemes";
 import type { ConversationMessage } from "../types/appTypes";
+import { BrowserInputContext } from "../contexts/BrowserInputContext";
+import type { BrowserSecretInputRequest } from "../hooks/useBrowserSecretInput";
 
 let mockImageResolver: ((url: string) => any) | undefined;
 const mockStartStreamingStt = jest.fn(async () => undefined);
@@ -550,6 +552,32 @@ describe("ChatScreen voice input", () => {
 
   afterEach(() => {
     if (platformOSDescriptor) Object.defineProperty(Platform, "OS", platformOSDescriptor);
+  });
+
+  it("renders only the original session's browser cards in timeline order and keeps values out of chat state", async () => {
+    mockPanelConversationMessages = [{ id: "before", role: "user", content: "before", at: "2026-11-26T00:00:00Z" },
+      { id: "after", role: "assistant", content: "after", at: "2026-11-26T00:02:00Z" }];
+    const original = JSON.stringify(mockPanelConversationMessages);
+    const card = (id: string, session: string): BrowserSecretInputRequest => ({ requestId: id, status: "pending", label: "Private field",
+      createdAt: "2026-11-26T00:01:00Z", destinationOrigin: "https://example.com", topOrigin: "https://example.com",
+      target: { kind: "session", sessionRef: { backendId: "codex", nativeSessionId: session }, cwd: "/workspace" } });
+    const controller = { requests: [card("one", "session-1"), card("two", "session-2")], drafts: new Map<string, string>(), submit: jest.fn(async () => {}), cancel: jest.fn() };
+    const chat = () => <BrowserInputContext.Provider value={controller}><ChatScreen mode="mini_board_popup" panelId="panel-a" /></BrowserInputContext.Provider>;
+    const screen = await render(chat());
+    expect(mockLegendListProps.current?.data.map((item: { id: string }) => item.id)).toEqual(["before", "browser-input:one", "after"]);
+    const row = await render(<BrowserInputContext.Provider value={controller}>{mockLegendListProps.current?.renderItem({ item: mockLegendListProps.current.data[1], index: 1 })}</BrowserInputContext.Provider>);
+    await fireEvent.changeText(row.getByLabelText("ブラウザへの入力内容"), "private browser value");
+    await fireEvent.press(row.getByText("ブラウザへ入力"));
+    expect(controller.submit).toHaveBeenCalledWith("one", "private browser value");
+    expect(mockSendReplyTranscriptForPanel).not.toHaveBeenCalled();
+    expect(JSON.stringify(mockPanelConversationMessages)).toBe(original);
+    expect(JSON.stringify(mockStreamingSttOptions.current?.correctionContext)).not.toContain("Private field");
+    expect(JSON.stringify(mockLogSessionDiag.mock.calls)).not.toContain("private browser value");
+    mockPanelSessionId = "session-2"; await screen.rerender(chat());
+    expect(mockLegendListProps.current?.data[1].id).toBe("browser-input:two");
+    mockPanelSessionId = "session-1"; await screen.rerender(chat());
+    expect(mockLegendListProps.current?.data[1].id).toBe("browser-input:one");
+    await row.unmount(); await screen.unmount();
   });
 
   it("shows the shared running count and omits the raw thread status", async () => {

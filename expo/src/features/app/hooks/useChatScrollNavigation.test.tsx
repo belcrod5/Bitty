@@ -1,6 +1,19 @@
 import { act, renderHook } from "@testing-library/react-native";
 import { useChatScrollNavigation } from "./useChatScrollNavigation";
 
+it("scrolls to the original message's visual index when browser cards are interleaved", async () => {
+  const before = { id: "user", role: "user" as const, content: "before" };
+  const card = { id: "browser-input:one" };
+  const after = { id: "assistant", role: "assistant" as const, content: "search result" };
+  const scrollToIndex = jest.fn();
+  const scrollItemIntoView = jest.fn(() => { throw new Error("not yet measured"); });
+  const view = await renderHook(() => useChatScrollNavigation({ messages: [before, card, after],
+    listRef: { current: { scrollToIndex, scrollItemIntoView } } as never,
+    isAtBottomRef: { current: false }, interactionActiveRef: { current: false }, pauseAutoScroll() {}, resumeAutoScroll() {}, scrollToBottom() {} }));
+  await act(() => view.result.current.scrollToMessage(after, 0.2));
+  expect(scrollToIndex).toHaveBeenCalledWith({ index: 2, animated: true, viewPosition: 0.2 });
+});
+
 it("scrolls an externally linked message with the existing chat navigation", async () => {
   jest.spyOn(global, "requestAnimationFrame").mockImplementation((callback) => {
     callback(0);
@@ -11,7 +24,7 @@ it("scrolls an externally linked message with the existing chat navigation", asy
   const pauseAutoScroll = jest.fn();
   const onDeepLinkHandled = jest.fn();
   await renderHook(() => useChatScrollNavigation({
-    messages: [{ id: "message-1", role: "user", content: "before" }, item],
+    messages: [{ id: "message-1", role: "user" }, item],
     listRef: { current: { scrollItemIntoView } } as never,
     isAtBottomRef: { current: true },
     interactionActiveRef: { current: false },
