@@ -211,6 +211,13 @@ export class VoiceControl {
     return { clientInstanceId: this.manager.getSnapshot().clientInstanceId, connectionGeneration: this.connection,
       surfaceId: entry.surface.id, ownerGeneration: entry.generation, target: entry.target };
   }
+  matchesOrigin(origin: AppControlOrigin) {
+    const entry = this.entries.get(origin.surfaceId);
+    if (!entry || !this.foreground || origin.connectionGeneration !== this.connection
+      || origin.clientInstanceId !== this.manager.getSnapshot().clientInstanceId) return false;
+    this.refresh(entry);
+    return entry.generation === origin.ownerGeneration && sameVoiceTarget(entry.target, origin.target);
+  }
   allowsSpeech(id?: string, target?: VoiceTarget, panelId?: string) {
     if (!this.interaction) return true;
     if (id) return this.interaction.id === id && (!target || sameVoiceTarget(this.interaction.target, target));

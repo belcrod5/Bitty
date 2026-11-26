@@ -4,6 +4,7 @@ import { createRunnerLoginMailer } from "./runner-login-mail.mjs";
 import { createRunnerLoginHttp, RUNNER_AUTHENTICATION, runnerBearerToken } from "./runner-login-http.mjs";
 import { startRunnerControlListener } from "./runner-control-listener.mjs";
 import { createAppControlService, createAppControlHttpHandler } from "./app-control-service.mjs";
+import { createBrowserSecretInputService, createBrowserSecretInputHttp } from "./browser-secret-input.mjs";
 import { createAppStatusSnapshot } from "./app-status-snapshot.mjs";
 import { createWidgetRefreshNotifier } from "./widget-refresh-notifier.mjs";
 import { createClientAppLogWriter } from "./client-app-log-writer.mjs";
@@ -1657,6 +1658,8 @@ const appControlService = createAppControlService({
 });
 const appControlHttpHandler = createAppControlHttpHandler({ service: appControlService,
   json, readJsonBody, subjectId: agentOwnerSubjectId });
+const browserSecretInputService = createBrowserSecretInputService({ appControl: appControlService, sendEnvelope: sendRunnerWsEnvelope });
+const browserSecretInputHttp = createBrowserSecretInputHttp({ service: browserSecretInputService, json, readJsonBody });
 const codexRawSessionOwnership = createCodexRawSessionOwnership({
   bindSession: bindAgentSession,
   getSessionBinding: getAgentSessionBinding,
@@ -5954,6 +5957,7 @@ const handleRunnerRequest = async (req, res) => {
   if (await googleCloudHttpHandler(req, res, pathname)) return;
   if (await sttSettingsHttpHandler(req, res, pathname)) return;
   if (await sttCorrectionHttpHandler(req, res, pathname)) return;
+  if (await browserSecretInputHttp(req, res, pathname)) return;
 
   if (req.method === "GET" && pathname === "/health") {
     let llmFileRoot = "";
@@ -7649,7 +7653,8 @@ runnerWsServer.on("connection", (ws, req) => {
     }
 
     const message = parsed.message;
-    if (appControlService.handleMessage(ws, message)) return;
+    if (appControlService.handleMessage(ws, message)) { browserSecretInputService.reconcile(ws); return; }
+    if (browserSecretInputService.handleMessage(ws, message, req[RUNNER_AUTHENTICATION]?.local === false)) return;
     if (message.channel === "control" && message.op === "orchestrator_activity_snapshot") {
       sendRunnerWsEnvelope(ws, { channel: "control", op: "orchestrator_activity_snapshot",
         requestId: message.requestId || "", payload: orchestratorActivity.snapshot() });
@@ -8070,6 +8075,7 @@ runnerWsServer.on("connection", (ws, req) => {
 
   ws.on("close", () => {
     voiceRequests.close();
+    browserSecretInputService.disconnect(ws);
     appControlService.disconnect(ws);
     agentConnection.detach();
     detachRunnerWsTtsJobs();
@@ -10223,6 +10229,7 @@ if (!RUNNER_SKIP_SERVER_START) {
   const shutdownRuntime = () => {
     if (shutdown) return shutdown;
     stopRequested = true;
+    browserSecretInputService.close();
     server.close(); localHttpsServer?.close();
     server.closeAllConnections(); localHttpsServer?.closeAllConnections();
     codexScheduleService.stop(); codexAuthService.markUnready();

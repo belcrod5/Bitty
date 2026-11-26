@@ -1,5 +1,7 @@
 import { getVoiceOrchestrators } from "./utils/voiceOrchestratorClient";
 import { getVoiceControl } from "../appControl/voiceControl";
+import { useBrowserSecretInput } from "./hooks/useBrowserSecretInput";
+import { BrowserSecretInputModal } from "./components/BrowserSecretInputModal";
 import { RunnerLoginScreen } from "./screens/RunnerLoginScreen";
 import { useRunnerSessionLifecycle } from "./hooks/useRunnerSessionLifecycle";
 import { WidgetSnapshotPublisher } from "./components/WidgetSnapshotPublisher";
@@ -595,6 +597,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   const [runnerWebSocketManager] = useState(() => new RunnerWebSocketManager({
     bootstrapReady: false, url: codexWsUrl, token: runnerToken,
   }));
+  const browserSecretInput = useBrowserSecretInput(runnerWebSocketManager);
   // 毎レンダーの新規arrowを渡すとsaveRunnerToken経由でAppSettingsContextのmemoが
   // 全レンダーで無効化されるため、必ず安定したcallbackにする。
   const retryRunnerWsConnection = useCallback(() => {
@@ -6217,6 +6220,8 @@ function AppContent({ onReady }: { onReady?: () => void }) {
         onDecide={calendarWriteController.decide}
       />
       <UserInputModal request={userInputController.request} onDecide={userInputController.decide} />
+      <BrowserSecretInputModal request={browserSecretInput.request} sending={browserSecretInput.sending}
+        onSubmit={browserSecretInput.submit} onCancel={browserSecretInput.cancel} />
       </SafeAreaView>
       </View>
         </AppDrawerLayout>

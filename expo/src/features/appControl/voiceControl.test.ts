@@ -55,6 +55,22 @@ const settle = async (ms = 0) => { await jest.advanceTimersByTimeAsync(ms); };
 beforeEach(() => { jest.useFakeTimers(); });
 afterEach(() => { jest.clearAllTimers(); jest.useRealTimers(); });
 
+test("device forms match the exact registered surface and lose ownership after target change or reconnect", async () => {
+  const f = fixture(); await f.begin();
+  const origin = f.control.origin(undefined, a)!;
+  expect(f.control.matchesOrigin(origin)).toBe(true);
+  expect(f.control.matchesOrigin({ ...origin, clientInstanceId: "another-phone" })).toBe(false);
+  expect(f.control.matchesOrigin({ ...origin, ownerGeneration: origin.ownerGeneration + 1 })).toBe(false);
+  expect(f.control.matchesOrigin({ ...origin, connectionGeneration: "previous-connection" })).toBe(false);
+  f.source.state.target = b;
+  expect(f.control.matchesOrigin(origin)).toBe(false);
+  const current = f.control.origin(undefined, b)!;
+  expect(f.control.matchesOrigin(current)).toBe(true);
+  f.updateConnection({ connected: false });
+  expect(f.control.matchesOrigin(current)).toBe(false);
+  f.stop();
+});
+
 test("stop disarms a reply wait immediately and ACKs only after native release; same surface keeps TTS", async () => {
   const f = fixture(); await f.begin();
   f.source.state.snapshot = { desired: "listening", observed: "waiting" };

@@ -39,12 +39,19 @@ jobs:
         working-directory: expo
         run: npx jest --runInBand --silent src/features/app/screens/ICloudCalendarSettingsScreen.test.tsx src/features/calendar/icloudCalendarClient.test.ts src/features/calendar/calendarToolHandler.test.ts src/features/app/utils/runnerSettingsRequest.test.ts
 
+      - name: Test private browser input UI and ownership
+        working-directory: expo
+        run: npx jest --runInBand --silent src/features/app/hooks/useBrowserSecretInput.test.tsx src/features/app/components/BrowserSecretInputModal.test.tsx src/features/appControl/voiceControl.test.ts
+
       - name: Install private runner dependencies
         working-directory: private_runner
         run: npm ci
 
       - name: Test Runner authentication and local control
         run: node --test private_runner/tests/runner-login.test.mjs private_runner/tests/runner-login-cli.test.mjs private_runner/tests/runner-login-location.test.mjs private_runner/tests/runner-local-https.test.mjs private_runner/tests/runner-control-cli.test.mjs private_runner/tests/runner-websocket-upgrade.test.mjs
+
+      - name: Test private browser input boundary and skill installation
+        run: node --test private_runner/tests/browser-secret-input.test.mjs private_runner/tests/browser-secret-cdp.test.mjs private_runner/tests/browser-secret-cli.test.mjs private_runner/tests/app-control-service.test.mjs private_runner/tests/bitty-skill-install.test.mjs
 
       - name: Test orchestrator runtime permissions
         run: node --test private_runner/tests/codex-app-server-client.test.mjs private_runner/tests/voice-orchestrator-service.test.mjs

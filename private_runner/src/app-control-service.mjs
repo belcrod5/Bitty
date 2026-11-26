@@ -183,6 +183,13 @@ export function createAppControlService({ sendEnvelope, validateTarget, now = Da
       snapshot: connections.get(ctx.ws)?.surfaces.get(ctx.origin.surfaceId) || null,
       expiresAt: new Date(ctx.expiresMs).toISOString() };
   }
+  // Device requests share the originating turn's connection and surface ownership.
+  function resolveActiveContext(subjectId, id) {
+    const view = getContext(subjectId, id);
+    if (view.status !== "ready") throw failure(view.status, 409);
+    const ctx = contexts.get(id);
+    return { ws: ctx.ws, origin: { ...ctx.origin } };
+  }
   async function submit(subjectId, body) {
     prune();
     if (!keys(body, ["operationId", "context", "action", "expectedGeneration", "target"]) || !text(body.operationId, 100)
@@ -240,7 +247,7 @@ export function createAppControlService({ sendEnvelope, validateTarget, now = Da
     const op = operations.get(id);
     return op && op.subjectId === subjectId ? publicResult(op) : { operationId: id, status: "operation_status_unknown" };
   }
-  return { handleMessage, disconnect, acceptTurn, getContext, submit, getResult,
+  return { handleMessage, disconnect, acceptTurn, getContext, resolveActiveContext, submit, getResult,
     close() { for (const op of operations.values()) clearTimeout(op.timer); connections.clear(); contexts.clear(); operations.clear(); } };
 }
 
