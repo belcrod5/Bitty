@@ -8,13 +8,13 @@ import { RUNNER_AUTHENTICATION } from "../src/runner-login-http.mjs";
 const target = { cdpUrl: "ws://127.0.0.1:9222/devtools/page/TAB", selector: "#password", origin: "https://example.com", label: "Password" };
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 function fixture(t, options = {}) {
-  const { initialSessionId = "chat", ...serviceOptions } = options;
+  const { initialSessionId = "chat", backendId = "claude", ...serviceOptions } = options;
   const sent = []; const filled = []; const ws = {}; let closed = 0;
   const sendEnvelope = (socket, message) => { sent.push({ ws: socket, ...message }); return true; };
   const appControl = createAppControlService({ sendEnvelope });
   appControl.handleMessage(ws, { channel: "control", op: "app.control.register", payload: { version: 1, clientInstanceId: "phone" } });
   const connectionGeneration = sent.at(-1).payload.connectionGeneration;
-  const session = { kind: "session", sessionRef: { backendId: "claude", nativeSessionId: initialSessionId }, cwd: "/repo" };
+  const session = { kind: "session", sessionRef: { backendId, nativeSessionId: initialSessionId }, cwd: "/repo" };
   const snapshot = ({ generation = 1, foreground = true, surfaceId = "panel", chatTarget = session, withChat = true } = {}) => appControl.handleMessage(ws, {
     channel: "control", op: "app.control.update", payload: { connectionGeneration, foreground,
       surfaces: surfaceId ? [{ surfaceId, generation, target: session, desired: "stopped", observed: "stopped" }] : [],
@@ -50,7 +50,6 @@ test("typed chat survives microphone teardown/remount while old voice commands s
   // The stable conversation exists before any replacement microphone is mounted.
   assert.equal((await f.service.request("owner", f.body)).status, "pending");
   f.snapshot({ surfaceId: "new-microphone" });
-  f.service.reconcile(f.ws);
   assert.equal(f.appControl.getContext("owner", f.body.context).status, "owner_changed");
   assert.equal(f.service.getResult("owner", f.body.requestId).status, "pending");
   assert.equal((await f.respond({ requestId: f.body.requestId, value: "direct private input" })).status, "completed");
@@ -78,41 +77,51 @@ test("a new typed turn can request private input without any microphone registra
   assert.equal((await f.appControl.submit("owner", { context, operationId: `${view.epoch}.${randomUUID()}`, action: "stop", expectedGeneration: 1 })).status, "owner_changed");
 });
 
-test("real chat switch then switch-back, close and next turn cannot resurrect an old input lease", async (t) => {
-  for (const change of [
-    (f) => { f.snapshot({ chatTarget: { ...f.session, cwd: "/another-repo" } }); f.snapshot(); },
-    (f) => { f.snapshot({ withChat: false }); f.snapshot(); },
-    (f) => {
-      f.snapshot({ surfaceId: "new-microphone" });
-      assert.ok(f.appControl.acceptTurn(f.ws, { ...f.origin, surfaceId: "new-microphone" }, { subjectId: "owner", callerOperationId: "next-turn", target: f.session }));
-    },
-  ]) {
-    const f = fixture(t); await f.service.request("owner", f.body);
-    change(f); f.service.reconcile(f.ws);
-    assert.equal(f.service.getResult("owner", f.body.requestId).status, "cancelled");
-    assert.equal((await f.respond({ requestId: f.body.requestId, value: "must not fill" })).status, "request_unavailable");
-    assert.deepEqual(f.filled, []);
+test("cards survive chat switches, new turns, turn completion and more than two minutes", async (t) => {
+  let now = Date.now();
+  const f = fixture(t, { now: () => now });
+  await f.service.request("owner", f.body);
+  f.snapshot({ chatTarget: { ...f.session, cwd: "/another-repo" } });
+  f.control.finish(); now += 20 * 60_000;
+  f.snapshot();
+  assert.ok(f.appControl.acceptTurn(f.ws, f.origin, { subjectId: "owner", callerOperationId: "next-user-turn", target: f.session }));
+  assert.equal(f.service.getResult("owner", f.body.requestId).status, "pending");
+  assert.equal((await f.respond({ requestId: f.body.requestId, value: "later input" })).status, "completed");
+});
+
+test("creation follows an active accepted turn even after switching chats and resolving a first session", async (t) => {
+  for (const backendId of ["codex", "claude"]) {
+    const f = fixture(t, { initialSessionId: null, backendId });
+    f.snapshot({ chatTarget: { ...f.session, cwd: "/another-chat" } });
+    const other = f.appControl.acceptTurn(f.ws, { ...f.origin, target: { ...f.session, cwd: "/another-chat" } }, {
+      subjectId: "owner", target: { ...f.session, cwd: "/another-chat" }, callerOperationId: "other-turn",
+    });
+    assert.ok(other);
+    const resolved = { backendId, nativeSessionId: "new-native-session" };
+    f.control.bindResolvedSession(resolved, "/repo");
+    assert.equal((await f.service.request("owner", f.body)).status, "pending");
+    const request = f.sent.find((event) => event.op === "browser.input.request");
+    assert.deepEqual(request.payload.target.sessionRef, resolved);
+    f.control.finish();
+    assert.equal((await f.respond({ requestId: f.body.requestId, value: "private" })).status, "completed");
   }
 });
 
-test("first native session resolution works while microphone remains unmounted", async (t) => {
-  const f = fixture(t, { initialSessionId: null });
-  f.snapshot({ surfaceId: "" });
-  const resolved = { backendId: "claude", nativeSessionId: "new-native-session" };
-  f.control.bindResolvedSession(resolved, "/repo");
-  assert.throws(() => f.appControl.resolveActiveContext("owner", f.body.context), { code: "pending_session_resolution" });
-  f.session.sessionRef = resolved;
-  f.snapshot({ surfaceId: "" });
-  assert.equal((await f.service.request("owner", f.body)).status, "pending");
-  assert.equal((await f.respond({ requestId: f.body.requestId, value: "private" })).status, "completed");
+test("creation rejects finished, foreign, disconnected and unresolved turn bindings", async (t) => {
+  const f = fixture(t); f.control.finish();
+  await assert.rejects(f.service.request("owner", f.body), { code: "context_expired" });
+  const g = fixture(t, { initialSessionId: null });
+  await assert.rejects(g.service.request("owner", g.body), { code: "session_unresolved" });
+  await assert.rejects(g.service.request("other", g.body), { code: "context_expired" });
+  g.appControl.disconnect(g.ws);
+  await assert.rejects(g.service.request("owner", g.body), { code: "client_offline" });
 });
 
-test("old voice-only clients keep voice control but cannot request private browser input", async (t) => {
-  const f = fixture(t);
-  f.snapshot({ withChat: false });
+test("voice-only clients cannot create browser input without an accepted chat origin", async (t) => {
+  const f = fixture(t); f.snapshot({ withChat: false });
   const { chatId, chatGeneration, ...voiceOnly } = f.origin;
-  const voice = f.appControl.acceptTurn(f.ws, voiceOnly, { subjectId: "owner", target: f.session, callerOperationId: "old-client" });
-  const context = voice.instruction.match(/ctx_[a-f0-9-]+/)[0];
+  const control = f.appControl.acceptTurn(f.ws, voiceOnly, { subjectId: "owner", target: f.session, callerOperationId: "old-client" });
+  const context = control.instruction.match(/ctx_[a-f0-9-]+/)[0];
   assert.equal(f.appControl.getContext("owner", context).status, "ready");
   await assert.rejects(f.service.request("owner", { ...f.body, context }), { code: "capability_unsupported" });
 });
@@ -131,7 +140,7 @@ test("origin-only request goes to the same device; exact value never appears in 
   assert.equal(pending.status, "pending");
   const request = f.sent.find((entry) => entry.op === "browser.input.request");
   assert.equal(request.ws, f.ws);
-  assert.equal(request.payload.origin.target.sessionRef.backendId, "claude");
+  assert.equal(request.payload.target.sessionRef.backendId, "claude");
   assert.equal(request.payload.destinationOrigin, target.origin);
   assert.equal(request.payload.selector, undefined);
   const value = "  PRIVATE whitespace\n";
@@ -156,35 +165,29 @@ test("another device, local agent connection and another subject cannot submit/r
   assert.equal(f.service.getResult("owner", f.body.requestId).status, "pending");
 });
 
-test("chat owner changes, background, turn end and disconnect cancel without filling", async (t) => {
-  for (const change of [(f) => f.update(2), (f) => f.update(1, false), (f) => f.control.finish(), (f) => f.service.disconnect(f.ws)]) {
-    const f = fixture(t); await f.service.request("owner", f.body);
-    change(f); f.service.reconcile(f.ws);
-    assert.equal((await f.respond({ requestId: f.body.requestId, value: "PRIVATE" })).status, "request_unavailable");
-    assert.equal(f.service.getResult("owner", f.body.requestId).status, "cancelled");
-    assert.deepEqual(f.filled, []);
-  }
-});
-
-test("user cancellation, expiry and a second concurrent form are bounded", async (t) => {
-  const f = fixture(t, { timeoutMs: 20 });
+test("multiple cards are independent and invalidation/disconnect safely terminate their browser bindings", async (t) => {
+  const invalidators = [];
+  const f = fixture(t, { prepare: async (_target, { onInvalidated }) => {
+    invalidators.push(onInvalidated); return { fill: async () => {}, close() {} };
+  } });
   await f.service.request("owner", f.body);
-  await assert.rejects(f.service.request("owner", { ...f.body, requestId: randomUUID() }), { code: "input_busy" });
-  assert.equal((await f.respond({ requestId: f.body.requestId, cancel: true })).status, "cancelled");
   const next = { ...f.body, requestId: randomUUID() };
   await f.service.request("owner", next);
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  invalidators[0]();
+  assert.equal(f.service.getResult("owner", f.body.requestId).status, "invalidated");
+  assert.equal(f.service.getResult("owner", next.requestId).status, "pending");
+  f.service.disconnect(f.ws);
   assert.equal(f.service.getResult("owner", next.requestId).status, "expired");
-  assert.deepEqual(f.filled, []);
+  assert.equal((await f.respond({ requestId: next.requestId, value: "must not fill" })).status, "request_unavailable");
 });
 
 test("late preparation and cancelled in-flight fills close the browser and never report success", async (t) => {
   let prepared; let closed = 0;
   const f = fixture(t, { prepare: () => new Promise((resolve) => { prepared = resolve; }) });
   const starting = f.service.request("owner", f.body);
-  f.control.finish(); f.service.reconcile(f.ws);
+  f.service.disconnect(f.ws);
   prepared({ fill: async () => { throw new Error("should not fill"); }, close: () => { closed++; } });
-  assert.equal((await starting).status, "cancelled");
+  assert.equal((await starting).status, "expired");
   assert.equal(closed, 1);
 
   let fillDone;

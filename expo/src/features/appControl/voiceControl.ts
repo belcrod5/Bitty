@@ -243,13 +243,6 @@ export class VoiceControl {
       surfaceId: entry.surface.id, ownerGeneration: entry.generation, target: entry.target,
       ...(chat ? { chatId: chat.surface.id, chatGeneration: chat.generation } : {}) };
   }
-  matchesChatOrigin(origin: AppControlOrigin) {
-    const entry = this.chats.get(origin.chatId || "");
-    if (!entry || !this.foreground || origin.connectionGeneration !== this.connection
-      || origin.clientInstanceId !== this.manager.getSnapshot().clientInstanceId) return false;
-    this.refreshChat(entry);
-    return entry.generation === origin.chatGeneration && !!entry.target && sameVoiceTarget(entry.target, origin.target);
-  }
   allowsSpeech(id?: string, target?: VoiceTarget, panelId?: string) {
     if (!this.interaction) return true;
     if (id) return this.interaction.id === id && (!target || sameVoiceTarget(this.interaction.target, target));

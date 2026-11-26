@@ -1,7 +1,7 @@
 import { getVoiceOrchestrators } from "./utils/voiceOrchestratorClient";
 import { getVoiceControl } from "../appControl/voiceControl";
 import { useBrowserSecretInput } from "./hooks/useBrowserSecretInput";
-import { BrowserSecretInputModal } from "./components/BrowserSecretInputModal";
+import { BrowserInputContext } from "./contexts/BrowserInputContext";
 import { RunnerLoginScreen } from "./screens/RunnerLoginScreen";
 import { useRunnerSessionLifecycle } from "./hooks/useRunnerSessionLifecycle";
 import { WidgetSnapshotPublisher } from "./components/WidgetSnapshotPublisher";
@@ -6167,6 +6167,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
         onDiagEvent={handleRunnerWsDiagEvent}
         manager={runnerWebSocketManager}
       >
+      <BrowserInputContext.Provider value={browserSecretInput}>
       <AppProviders
         appShell={appShellContextValue}
         appSettings={appSettingsContextValue}
@@ -6220,8 +6221,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
         onDecide={calendarWriteController.decide}
       />
       <UserInputModal request={userInputController.request} onDecide={userInputController.decide} />
-      <BrowserSecretInputModal request={browserSecretInput.request} sending={browserSecretInput.sending}
-        onSubmit={browserSecretInput.submit} onCancel={browserSecretInput.cancel} />
       </SafeAreaView>
       </View>
         </AppDrawerLayout>
@@ -6253,6 +6252,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
       </AppModalHost>
       </KeyboardProvider>
       </AppProviders>
+      </BrowserInputContext.Provider>
       </RunnerWebSocketProvider>
       <ThemeSplash ready={settingsLoaded} onReady={onReady} />
       </GestureHandlerRootView>

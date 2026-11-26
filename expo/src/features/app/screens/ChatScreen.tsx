@@ -25,6 +25,9 @@ import { Ionicons } from "@expo/vector-icons";
 import { KeyboardAvoidingView } from "../keyboardController";
 import { WebView } from "react-native-webview";
 import type { ConversationMessage } from "../types/appTypes";
+import { useBrowserInputRequests } from "../contexts/BrowserInputContext";
+import { browserInputTimeline, type BrowserInputTimelineCard } from "../utils/browserInputTimeline";
+import { BrowserInputCard } from "../components/BrowserInputCard";
 import type { DirectoryMarkerColor } from "../types/directorySessions";
 import { useAppStyles } from "../styles";
 import { DIRECTORY_MARKER_COLORS } from "../theme/directoryMarkerColors";
@@ -524,7 +527,7 @@ export function ChatScreen({
   const isAtBottomRef = useRef(true);
   const chatAutoScrollPausedRef = useRef(false);
   const chatScrollDragActiveRef = useRef(false);
-  const lastConversationMessageForViewRef = useRef<ConversationMessage | null>(null);
+  const lastConversationMessageForViewRef = useRef<ConversationMessage | BrowserInputTimelineCard | null>(null);
   const lastConversationMessageIndexForViewRef = useRef(-1);
   const chatScrollDiagnosticRef = useRef<ChatScrollDiagnosticState>({
     contentHeight: 0,
@@ -621,6 +624,11 @@ export function ChatScreen({
     ].join("|")
     : "";
   const conversationMessagesForView = allConversationMessagesForView;
+  const browserInputs = useBrowserInputRequests({ kind: "session", sessionRef: {
+    backendId: backendIdForView, nativeSessionId: selectedSessionIdForView || null,
+  }, cwd: selectedDirectoryPathForView });
+  const timelineItems = useMemo(() => browserInputTimeline(conversationMessagesForView, browserInputs), [conversationMessagesForView, browserInputs]);
+  const messageIndexById = useMemo(() => new Map(conversationMessagesForView.map((message, index) => [message.id, index])), [conversationMessagesForView]);
   const showMessagesSkeletonForView = isMiniBoardPopupMode && (showPopupMessagesSkeleton || panelHydrating);
   const connectionDataSync = useMemo<RunnerWsDataSyncStatus>(() => {
     const selectedSessionIdForSync = isPanelSnapshotView
@@ -710,8 +718,8 @@ export function ChatScreen({
     panelSnapshot.selectedSessionId,
     selectedLlmSessionId,
   ]);
-  lastConversationMessageForViewRef.current = conversationMessagesForView[conversationMessagesForView.length - 1] ?? null;
-  lastConversationMessageIndexForViewRef.current = conversationMessagesForView.length - 1;
+  lastConversationMessageForViewRef.current = timelineItems[timelineItems.length - 1] ?? null;
+  lastConversationMessageIndexForViewRef.current = timelineItems.length - 1;
   const chatListRefForView = isMiniBoardPopupMode ? popupChatListRef : embeddedChatListRef;
   const handleChatTouchStartForView = isMiniBoardPopupMode ? undefined : onChatTouchStart;
   const handleChatTouchEndForView = isMiniBoardPopupMode ? undefined : onChatTouchEnd;
@@ -836,7 +844,7 @@ export function ChatScreen({
     scrollToPreviousUser: scrollChatListToPreviousUser,
     shouldKeepAutoScrollPaused,
   } = useChatScrollNavigation({
-    messages: conversationMessagesForView,
+    messages: timelineItems,
     listRef: chatListRefForView,
     isAtBottomRef,
     interactionActiveRef: chatScrollDragActiveRef,
@@ -913,7 +921,7 @@ export function ChatScreen({
     }
   }, [chatFindCurrentIndex, chatFindMatches.length]);
 
-  const chatListExtraData = `${chatListLayoutVersion}|find:${chatFindOpen ? activeChatFindMatch?.messageId || "" : ""}:${activeChatFindMatch?.offset ?? -1}`;
+  const chatListExtraData = `${chatListLayoutVersion}|find:${chatFindOpen ? activeChatFindMatch?.messageId || "" : ""}:${activeChatFindMatch?.offset ?? -1}|browser:${browserInputs.map((request) => `${request.requestId}:${request.status}`).join(",")}`;
   const scrollChatListToBottomSettled = useCallback((animated = false) => {
     clearPendingBottomScrollFrames();
     const scrollToBottomOnNextFrame = (nextAnimated: boolean) => {
@@ -1327,13 +1335,13 @@ export function ChatScreen({
     clearPendingBottomScrollFrames();
   }, [clearPendingBottomScrollFrames, conversationScrollResetKey, resetChatScrollNavigation]);
   useEffect(() => {
-    if (showMessagesSkeletonForView || conversationMessagesForView.length <= 0) return;
+    if (showMessagesSkeletonForView || timelineItems.length <= 0) return;
     if (didInitialScrollRef.current) return;
     didInitialScrollRef.current = true;
     initialSettlingRef.current = true;
     isAtBottomRef.current = true;
-    previousMessageCountRef.current = conversationMessagesForView.length;
-    previousLastMessageIdRef.current = conversationMessagesForView[conversationMessagesForView.length - 1]?.id || "";
+    previousMessageCountRef.current = timelineItems.length;
+    previousLastMessageIdRef.current = timelineItems[timelineItems.length - 1]?.id || "";
     scrollChatListToBottomSettled(false);
     if (initialSettleTimerRef.current !== null) {
       clearTimeout(initialSettleTimerRef.current);
@@ -1342,11 +1350,11 @@ export function ChatScreen({
       initialSettlingRef.current = false;
       initialSettleTimerRef.current = null;
     }, CHAT_INITIAL_SCROLL_SETTLE_MS);
-  }, [conversationMessagesForView.length, conversationScrollResetKey, scrollChatListToBottomSettled, showMessagesSkeletonForView]);
+  }, [timelineItems.length, conversationScrollResetKey, scrollChatListToBottomSettled, showMessagesSkeletonForView]);
   useEffect(() => {
-    const currentMessageCount = conversationMessagesForView.length;
+    const currentMessageCount = timelineItems.length;
     const previousMessageCount = previousMessageCountRef.current;
-    const currentLastMessage = conversationMessagesForView[currentMessageCount - 1];
+    const currentLastMessage = timelineItems[currentMessageCount - 1];
     const currentLastMessageId = currentLastMessage?.id || "";
     const previousLastMessageId = previousLastMessageIdRef.current;
     previousMessageCountRef.current = currentMessageCount;
@@ -1363,7 +1371,7 @@ export function ChatScreen({
     }
     if (chatAutoScrollPausedRef.current) return;
     scrollChatListToBottom(true);
-  }, [conversationMessagesForView.length, conversationScrollResetKey, scrollChatListToBottom]);
+  }, [timelineItems.length, conversationScrollResetKey, scrollChatListToBottom]);
   useEffect(() => () => {
     if (initialSettleTimerRef.current !== null) {
       clearTimeout(initialSettleTimerRef.current);
@@ -2170,8 +2178,9 @@ export function ChatScreen({
               key={conversationScrollResetKey}
               ref={chatListRefForView}
               style={styles.chatScroll}
-              data={conversationMessagesForView}
-              renderItem={renderConversationMessage}
+              data={timelineItems}
+              renderItem={({ item }) => "browserInput" in item ? <BrowserInputCard key={item.id} request={item.browserInput} />
+                : renderConversationMessage({ item, index: messageIndexById.get(item.id) ?? 0 })}
               keyExtractor={(message) => message.id}
               maintainVisibleContentPosition
               onStartReached={requestOlderSessionHistory}
@@ -2179,8 +2188,8 @@ export function ChatScreen({
               estimatedItemSize={CHAT_ESTIMATED_ITEM_SIZE}
               estimatedListSize={estimatedChatListSize}
               extraData={chatListExtraData}
-              getItemType={getConversationMessageItemType}
-              getEstimatedItemSize={getEstimatedConversationMessageSize}
+              getItemType={(item) => "browserInput" in item ? "browser_input" : getConversationMessageItemType(item)}
+              getEstimatedItemSize={(index, item, type) => "browserInput" in item ? 280 : getEstimatedConversationMessageSize(index, item, type)}
               suggestEstimatedItemSize={__DEV__}
               waitForInitialLayout
               contentContainerStyle={styles.chatScrollContent}
@@ -2201,7 +2210,7 @@ export function ChatScreen({
               scrollEventThrottle={16}
               onContentSizeChange={handleChatContentSizeChangeForView}
               onItemSizeChanged={handleChatItemSizeChangedForView}
-              ListEmptyComponent={conversationMessagesForView.length === 0 && !replyLoadingForView ? (
+              ListEmptyComponent={timelineItems.length === 0 && !replyLoadingForView ? (
                 <Text style={styles.chatEmpty}>まだ会話がありません。下の入力欄から送信してください。</Text>
               ) : null}
               ListHeaderComponent={sessionHistoryPagingState ? (

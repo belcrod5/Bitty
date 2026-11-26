@@ -63,6 +63,25 @@ test("navigation, abort and raw CDP exceptions fail without exposing browser err
   }
 });
 
+test("navigation and unexpected browser close invalidate once, intentional abort does not", async (t) => {
+  for (const mode of ["navigation", "close", "malformed", "abort"]) {
+    let socket;
+    const f = await peer(t, (_message, connection) => { socket = connection; });
+    let invalidations = 0;
+    const controller = new AbortController();
+    const browser = await prepareBrowserSecretInput(f.target, { signal: controller.signal, onInvalidated: () => { invalidations++; } });
+    t.after(browser.close);
+    if (mode === "navigation") {
+      socket.send(JSON.stringify({ method: "Page.frameNavigated", params: {} }));
+      socket.send(JSON.stringify({ method: "Page.frameDetached", params: {} }));
+    } else if (mode === "close") socket.terminate();
+    else if (mode === "malformed") socket.send("{");
+    else controller.abort();
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    assert.equal(invalidations, mode === "abort" ? 0 : 1);
+  }
+});
+
 test("real Chromium fills exact text, dispatches events and rejects changed documents/elements", {
   skip: !process.env.BITTY_TEST_CHROMIUM_EXECUTABLE, timeout: 40_000,
 }, async (t) => {

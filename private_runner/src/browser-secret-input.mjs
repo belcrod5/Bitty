@@ -3,24 +3,17 @@ import { prepareBrowserSecretInput, validateBrowserInputTarget } from "./browser
 
 const failure = (code) => Object.assign(new Error(code), { code });
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const statuses = new Set(["completed", "cancelled", "expired", "failed", "input_status_unknown"]);
+const statuses = new Set(["completed", "cancelled", "expired", "invalidated", "failed", "input_status_unknown"]);
 
 // Only non-secret request metadata and terminal status survive a submission.
 // Secret values never enter agent actions, an event ledger, or persistent storage.
-export function createBrowserSecretInputService({ appControl, sendEnvelope, prepare = prepareBrowserSecretInput,
-  now = Date.now, timeoutMs = 120_000 } = {}) {
+export function createBrowserSecretInputService({ appControl, sendEnvelope, prepare = prepareBrowserSecretInput, now = Date.now } = {}) {
   const entries = new Map();
-  function result(entry) { return { requestId: entry.id, status: entry.status, expiresAt: new Date(entry.expires).toISOString() }; }
-  function current(entry) {
-    const context = appControl.resolveActiveContext(entry.subjectId, entry.context);
-    if (context.ws !== entry.ws || JSON.stringify(context.origin) !== JSON.stringify(entry.origin)) throw failure("stale_origin");
-    return context;
-  }
+  function result(entry) { return { requestId: entry.id, status: entry.status }; }
   function finish(entry, status) {
     if (statuses.has(entry.status)) return;
     entry.status = status;
     entry.finishedAt = now();
-    clearTimeout(entry.timer);
     entry.controller.abort();
     entry.browser?.close();
     entry.browser = null;
@@ -43,20 +36,21 @@ export function createBrowserSecretInputService({ appControl, sendEnvelope, prep
     }
     if (entries.size >= 128 || [...entries.values()].filter((entry) => !statuses.has(entry.status)).length >= 8) throw failure("capacity_exceeded");
     const context = appControl.resolveActiveContext(subjectId, body.context);
-    if ([...entries.values()].some((entry) => entry.ws === context.ws && !statuses.has(entry.status))) throw failure("input_busy");
-    const entry = { id: body.requestId, subjectId, context: body.context, canonical, ...context,
-      status: "preparing", expires: now() + timeoutMs, controller: new AbortController(), browser: null };
+    const conversation = context.origin.target;
+    if (conversation.kind === "session" && !conversation.sessionRef.nativeSessionId) throw failure("session_unresolved");
+    // Capture the authenticated chat/device binding once. The card then outlives its turn and screen.
+    const entry = { id: body.requestId, subjectId, canonical, ws: context.ws, conversation,
+      status: "preparing", createdAt: new Date(now()).toISOString(), controller: new AbortController(), browser: null };
     entries.set(entry.id, entry);
-    entry.timer = setTimeout(() => finish(entry, entry.status === "filling" ? "input_status_unknown" : "expired"), timeoutMs);
     try {
-      entry.browser = await prepare(target, { signal: entry.controller.signal });
+      entry.browser = await prepare(target, { signal: entry.controller.signal,
+        onInvalidated: () => finish(entry, entry.status === "filling" ? "input_status_unknown" : "invalidated") });
       if (entry.controller.signal.aborted) { entry.browser.close(); entry.browser = null; return result(entry); }
-      current(entry);
       entry.status = "pending";
       if (sendEnvelope(entry.ws, { channel: "control", op: "browser.input.request", payload: {
-        requestId: entry.id, origin: entry.origin, destinationOrigin: target.origin,
+        ...result(entry), target: entry.conversation, destinationOrigin: target.origin,
         topOrigin: entry.browser.topOrigin || target.origin,
-        label: target.label, expiresAt: new Date(entry.expires).toISOString(),
+        label: target.label, createdAt: entry.createdAt,
       } }) === false) finish(entry, "failed");
     } catch { finish(entry, "failed"); }
     return result(entry);
@@ -65,16 +59,11 @@ export function createBrowserSecretInputService({ appControl, sendEnvelope, prep
     prune();
     const entry = entries.get(id);
     if (!entry || entry.subjectId !== subjectId) return { requestId: id, status: "not_found" };
-    if (!statuses.has(entry.status)) {
-      try { current(entry); } catch { finish(entry, entry.status === "filling" ? "input_status_unknown" : "cancelled"); }
-    }
     return result(entry);
   }
   async function respond(ws, payload, userDevice) {
     const entry = entries.get(payload?.requestId);
     if (!userDevice || !entry || entry.ws !== ws || entry.status !== "pending") return { status: "request_unavailable" };
-    try { current(entry); } catch { finish(entry, "cancelled"); return result(entry); }
-    if (now() >= entry.expires) { finish(entry, "expired"); return result(entry); }
     if (!payload || Object.keys(payload).some((key) => !["requestId", "value", "cancel"].includes(key))) return { status: "invalid_response" };
     if (payload.cancel === true && payload.value === undefined) { finish(entry, "cancelled"); return result(entry); }
     if (payload.cancel !== undefined || typeof payload.value !== "string" || !payload.value.length || payload.value.length > 4096) return { status: "invalid_response" };
@@ -85,14 +74,8 @@ export function createBrowserSecretInputService({ appControl, sendEnvelope, prep
     } catch { finish(entry, "input_status_unknown"); }
     return result(entry);
   }
-  function reconcile(ws) {
-    for (const entry of entries.values()) {
-      if (entry.ws !== ws || statuses.has(entry.status)) continue;
-      try { current(entry); } catch { finish(entry, entry.status === "filling" ? "input_status_unknown" : "cancelled"); }
-    }
-  }
   return {
-    request, getResult, reconcile,
+    request, getResult,
     handleMessage(ws, message, userDevice) {
       if (message.channel !== "control" || message.op !== "browser.input.respond") return false;
       void respond(ws, message.payload, userDevice).then((payload) => {
@@ -103,7 +86,7 @@ export function createBrowserSecretInputService({ appControl, sendEnvelope, prep
       return true;
     },
     disconnect(ws) {
-      for (const entry of entries.values()) if (entry.ws === ws) finish(entry, entry.status === "filling" ? "input_status_unknown" : "cancelled");
+      for (const entry of entries.values()) if (entry.ws === ws) finish(entry, entry.status === "filling" ? "input_status_unknown" : "expired");
     },
     close() { for (const entry of entries.values()) finish(entry, entry.status === "filling" ? "input_status_unknown" : "cancelled"); entries.clear(); },
   };

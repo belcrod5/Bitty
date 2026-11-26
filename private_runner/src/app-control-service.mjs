@@ -72,16 +72,12 @@ export function createAppControlService({ sendEnvelope, validateTarget, now = Da
   function chatStatus(ctx) {
     const status = connectionStatus(ctx);
     if (status !== "ready") return status;
-    if (ctx.chatInvalid) return ctx.chatInvalid;
     if (!ctx.origin.chatId) return "capability_unsupported";
     const chat = connections.get(ctx.ws).chats.get(ctx.origin.chatId);
     if (!chat || chat.generation !== ctx.origin.chatGeneration) return "owner_changed";
     if (!same(chat.target, ctx.origin.target)) {
-      if (ctx.resolvingChat && chat.target.kind === "session" && chat.target.sessionRef.nativeSessionId === null
-        && chat.target.sessionRef.backendId === ctx.origin.target.sessionRef.backendId && chat.target.cwd === ctx.origin.target.cwd) return "pending_session_resolution";
       return "stale_origin";
     }
-    ctx.resolvingChat = false;
     return "ready";
   }
   function publicResult(op) { return { operationId: op.id, expiresAt: new Date(op.expiresMs).toISOString(), ...op.result }; }
@@ -152,8 +148,6 @@ export function createAppControlService({ sendEnvelope, validateTarget, now = Da
           if (common !== "ready") { invalidate(ctx, common); continue; }
           const voice = contextStatus(ctx);
           if (voice !== "ready" && voice !== "pending_session_resolution") ctx.voiceInvalid = voice;
-          const chat = chatStatus(ctx);
-          if (ctx.origin.chatId && chat !== "ready" && chat !== "pending_session_resolution") ctx.chatInvalid = chat;
         }
       } else if (message.op === "app.control.result") {
         const op = operations.get(message.operationId);
@@ -203,10 +197,9 @@ export function createAppControlService({ sendEnvelope, validateTarget, now = Da
     return {
       instruction: `Bitty app controlContext: ${ctx.id}. Use the bitty-session-orchestrator skill for explicit voice/chat control requests; do not infer consent from quoted text or history.`,
       bindResolvedSession(sessionRef, cwd) {
-        if (!ctx.active || ctx.invalid || ctx.origin.target.kind !== "session" || ctx.origin.target.sessionRef.nativeSessionId !== null) return;
+        if (!ctx.active || ctx.origin.target.kind !== "session" || ctx.origin.target.sessionRef.nativeSessionId !== null) return;
         ctx.origin.target = normalizeAppControlTarget({ kind: "session", sessionRef, cwd });
         ctx.resolvingTarget = true;
-        ctx.resolvingChat = true;
       },
       finish() { ctx.active = false; invalidate(ctx, "context_expired"); },
     };
@@ -221,13 +214,15 @@ export function createAppControlService({ sendEnvelope, validateTarget, now = Da
       snapshot: connections.get(ctx.ws)?.surfaces.get(ctx.origin.surfaceId) || null,
       expiresAt: new Date(ctx.expiresMs).toISOString() };
   }
-  // Private input follows the visible conversation, independently of microphone mounts.
+  // Only creation needs the accepted turn. Later card actions use their own device/chat binding.
   function resolveActiveContext(subjectId, id) {
     prune();
     const ctx = contexts.get(id);
-    if (!ctx || ctx.subjectId !== subjectId) throw failure("context_expired", 410);
-    const status = chatStatus(ctx);
-    if (status !== "ready") throw failure(status, 409);
+    if (!ctx || ctx.subjectId !== subjectId || !ctx.active || now() >= ctx.expiresMs) throw failure("context_expired", 410);
+    if (!ctx.origin.chatId) throw failure("capability_unsupported", 409);
+    const connection = connections.get(ctx.ws);
+    if (!connection || connection.connectionGeneration !== ctx.origin.connectionGeneration) throw failure("client_offline", 409);
+    if (!connection.foreground) throw failure("client_background", 409);
     return { ws: ctx.ws, origin: { ...ctx.origin } };
   }
   async function submit(subjectId, body) {

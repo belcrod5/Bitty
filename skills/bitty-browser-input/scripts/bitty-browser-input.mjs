@@ -40,7 +40,7 @@ async function main() {
     if (!response.ok) throw new Error("Browser input request unavailable");
     // Do not forward arbitrary server response fields to the model.
     if (result.requestId !== (body?.requestId || pathname.split("/").at(-1))
-      || !["preparing", "pending", "filling", "completed", "cancelled", "expired", "failed", "input_status_unknown", "not_found"].includes(result.status)) throw new Error("Invalid browser input status");
+      || !["preparing", "pending", "filling", "completed", "cancelled", "expired", "invalidated", "failed", "input_status_unknown", "not_found"].includes(result.status)) throw new Error("Invalid browser input status");
     return { requestId: result.requestId, status: result.status };
   };
   if (command === "status") {
@@ -50,17 +50,12 @@ async function main() {
   }
   const id = randomUUID();
   console.log(JSON.stringify({ requestId: id, status: "requesting" }));
-  let result = await request("/browser-input/requests", {
+  const result = await request("/browser-input/requests", {
     requestId: id, context: options["--context"], target: {
       cdpUrl: options["--cdp-url"], origin: options["--origin"], selector: options["--selector"], label: options["--label"],
       ...(options["--frame-id"] ? { frameId: options["--frame-id"] } : {}),
     },
   });
-  const deadline = Date.now() + 125_000;
-  while (["preparing", "pending", "filling"].includes(result.status) && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    result = await request(`/browser-input/requests/${id}`);
-  }
   console.log(JSON.stringify(result));
 }
 main().catch(() => { console.error("Browser input unavailable. Use --help for usage; recover an issued request with status --request UUID."); process.exitCode = 1; });

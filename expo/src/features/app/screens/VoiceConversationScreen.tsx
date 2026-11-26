@@ -7,6 +7,7 @@ import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Reanimated, { cancelAnimation, FadeIn, FadeOut, runOnJS, useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
 import { useControlledStreamingStt } from "../../appControl/useControlledStreamingStt";
 import { useChatControlSurface } from "../../appControl/useChatControlSurface";
+import { useBrowserInputRequests } from "../contexts/BrowserInputContext";
 import { getVoiceControl } from "../../appControl/voiceControl";
 import { StreamingSttFooter, type StreamingSttFooterHandle } from "../components/StreamingSttFooter";
 import { VoiceHistoryBackdrop, getMacVoiceBlurView } from "../components/VoiceHistoryBackdrop";
@@ -518,6 +519,7 @@ function VoiceConversationSession({
     : voice.reply && ttsUiStatus === "error" ? "音声再生に失敗しました。"
       : voiceStatus ? undefined
           : initialStartPending ? "録音を準備しています…" : !streamingStt.active ? "音声入力は停止しています。再開するには画面を開き直してください。" : "");
+  const browserInputs = useBrowserInputRequests({ kind: "orchestrator", orchestratorId: orchestrator.id });
   const historyMessages = useMemo(() => {
     if (!voice.ready) return [];
     const reply = voice.reply;
@@ -528,7 +530,8 @@ function VoiceConversationSession({
   }, [voice.history, voice.ready, voice.reply]);
   const lastHistoryMessage = historyMessages[historyMessages.length - 1];
   const historyContentKey = JSON.stringify([voice.logicalConversationId, historyMessages.length,
-    lastHistoryMessage?.clientOperationId, lastHistoryMessage?.role, lastHistoryMessage?.text]);
+    lastHistoryMessage?.clientOperationId, lastHistoryMessage?.role, lastHistoryMessage?.text,
+    browserInputs.map((request) => [request.requestId, request.status])]);
   useLayoutEffect(() => {
     if (historyMounted && historyExpanded && voice.ready && historyAtBottomRef.current) {
       historyScrollRef.current?.scrollToEnd({ animated: false });
@@ -613,10 +616,10 @@ function VoiceConversationSession({
                     ? <Text style={{ color: "#ffffff", textAlign: "center" }}>履歴を読み込み中…</Text>
                     : voice.historyError
                       ? <Text style={{ color: "#fecaca" }}>{voice.historyError}</Text>
-                      : !historyMessages.length
+                      : !historyMessages.length && !browserInputs.length
                         ? <Text style={{ color: "#ffffff", textAlign: "center" }}>履歴はまだありません</Text>
                         : null}
-                  <VoiceConversationMessages messages={historyMessages} orchestratorId={orchestrator.id}
+                  <VoiceConversationMessages messages={historyMessages} browserInputs={browserInputs} orchestratorId={orchestrator.id}
                     learningPaused={paused || !historyExpanded}
                     onRead={(message) => { void playSpeech(message.text, message.clientOperationId); }}
                     speakingMessageId={isTtsPlaybackActive ? voicePlaybackMessageIdRef.current : ""} onStopReading={cancelSpeaking} />

@@ -7653,7 +7653,7 @@ runnerWsServer.on("connection", (ws, req) => {
     }
 
     const message = parsed.message;
-    if (appControlService.handleMessage(ws, message)) { browserSecretInputService.reconcile(ws); return; }
+    if (appControlService.handleMessage(ws, message)) return;
     if (browserSecretInputService.handleMessage(ws, message, req[RUNNER_AUTHENTICATION]?.local === false)) return;
     if (message.channel === "control" && message.op === "orchestrator_activity_snapshot") {
       sendRunnerWsEnvelope(ws, { channel: "control", op: "orchestrator_activity_snapshot",

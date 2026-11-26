@@ -41,7 +41,7 @@ jobs:
 
       - name: Test private browser input UI and ownership
         working-directory: expo
-        run: npx jest --runInBand --silent src/features/app/hooks/useBrowserSecretInput.test.tsx src/features/app/components/BrowserSecretInputModal.test.tsx src/features/appControl/voiceControl.test.ts src/features/appControl/useChatControlSurface.test.tsx src/features/appControl/useControlledStreamingStt.test.tsx src/features/app/components/PopupChatOverlay.test.tsx src/features/app/screens/VoiceConversationScreen.test.tsx
+        run: npx jest --runInBand --silent src/features/app/hooks/useBrowserSecretInput.test.tsx src/features/app/components/BrowserInputCard.test.tsx src/features/app/utils/browserInputTimeline.test.ts src/features/app/hooks/useChatScrollNavigation.test.tsx src/features/app/screens/ChatScreen.autoRecordingPanel.test.tsx src/features/appControl/voiceControl.test.ts src/features/appControl/useChatControlSurface.test.tsx src/features/appControl/useControlledStreamingStt.test.tsx src/features/app/components/PopupChatOverlay.test.tsx src/features/app/screens/VoiceConversationScreen.test.tsx
 
       - name: Install private runner dependencies
         working-directory: private_runner

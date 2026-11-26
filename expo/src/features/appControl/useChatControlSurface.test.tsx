@@ -36,9 +36,9 @@ test("conversation registration follows the stable parent through rerenders, res
   const published = f.sent.at(-1)?.payload as { chats: { generation: number; target: VoiceTarget }[]; surfaces: unknown[] };
   expect(published.chats[0]).toMatchObject({ generation: origin.chatGeneration, target: resolved });
   expect(published.surfaces).toEqual([]);
-  expect(f.control.matchesChatOrigin(origin)).toBe(true);
+  expect(f.control.origin("popup", resolved)?.chatGeneration).toBe(origin.chatGeneration);
   await view.unmount();
-  expect(f.control.matchesChatOrigin(origin)).toBe(false);
+  expect(f.control.origin("popup", resolved)).toBeUndefined();
   f.stop();
 });
 
@@ -48,9 +48,9 @@ test("real hide or target switch cannot revive an earlier conversation lease", a
   const view = await renderHook(({ selected }: { selected: VoiceTarget | null }) => useChatControlSurface(selected), { initialProps: { selected: target } });
   const origin = f.control.origin(undefined, target)!;
   await view.rerender({ selected: null });
-  expect(f.control.matchesChatOrigin(origin)).toBe(false);
+  expect(f.control.origin(undefined, target)).toBeUndefined();
   await view.rerender({ selected: target });
-  expect(f.control.matchesChatOrigin(origin)).toBe(false);
+  expect(f.control.origin(undefined, target)?.chatGeneration).not.toBe(origin.chatGeneration);
   await act(async () => { jest.advanceTimersByTime(50); });
   expect(f.control.origin(undefined, target)?.chatGeneration).not.toBe(origin.chatGeneration);
   await view.unmount(); f.stop();

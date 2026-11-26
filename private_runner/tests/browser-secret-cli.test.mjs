@@ -27,18 +27,19 @@ async function fixture(t, handle) {
 }
 
 test("CLI requests a form using non-secret metadata and returns only status through Unix socket", async (t) => {
-  let body; let posts = 0;
+  let body; let posts = 0; let reads = 0;
   const run = await fixture(t, (req, res, input) => {
     if (req.method === "POST") { posts++; body = input; assert.equal(req.url, "/browser-input/requests"); }
-    else assert.equal(req.url, `/browser-input/requests/${body.requestId}`);
+    else { reads++; assert.equal(req.url, `/browser-input/requests/${body.requestId}`); }
     res.end(JSON.stringify({ requestId: body.requestId, status: req.method === "POST" ? "pending" : "completed", unexpected: "PRIVATE_UNEXPECTED_FIELD" }));
   });
   const result = await run("request", "--context", "ctx_current", "--cdp-url", "ws://127.0.0.1:9222/devtools/page/TAB", "--origin", "https://example.com", "--selector", "#password", "--label", "Password");
   assert.equal(posts, 1);
+  assert.equal(reads, 0);
   assert.deepEqual(Object.keys(body).sort(), ["context", "requestId", "target"]);
   assert.deepEqual(body.target, { cdpUrl: "ws://127.0.0.1:9222/devtools/page/TAB", origin: "https://example.com", selector: "#password", label: "Password" });
   const lines = result.stdout.trim().split("\n").map(JSON.parse);
-  assert.deepEqual(lines.map((line) => line.status), ["requesting", "completed"]);
+  assert.deepEqual(lines.map((line) => line.status), ["requesting", "pending"]);
   assert.equal(result.stdout.includes("PRIVATE"), false);
 });
 

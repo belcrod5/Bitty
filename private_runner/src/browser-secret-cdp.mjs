@@ -22,28 +22,32 @@ export function validateBrowserInputTarget(input) {
 
 // This connection never enables console, network, DOM snapshots or screenshots.
 // Browser errors can contain field values, so only our fixed error leaves it.
-export async function prepareBrowserSecretInput(target, { signal, timeoutMs = 5000 } = {}) {
+export async function prepareBrowserSecretInput(target, { signal, timeoutMs = 5000, onInvalidated } = {}) {
   target = validateBrowserInputTarget(target);
   const socket = new WebSocket(target.cdpUrl, { followRedirects: false, maxPayload: 1024 * 1024 });
   const pending = new Map();
   let sequence = 0;
   let stopped = false;
   let invalidated = false;
-  const close = () => {
+  const close = (unexpected = false) => {
     if (stopped) return;
     stopped = true;
     for (const { reject, timer } of pending.values()) { clearTimeout(timer); reject(fail()); }
     pending.clear();
     socket.terminate();
     signal?.removeEventListener("abort", close);
+    if (unexpected === true && !signal?.aborted && !invalidated) { invalidated = true; onInvalidated?.(); }
   };
   signal?.addEventListener("abort", close, { once: true });
-  socket.on("error", close);
-  socket.on("close", close);
+  socket.on("error", () => close(true));
+  socket.on("close", () => close(true));
   socket.on("message", (data) => {
     let message;
-    try { message = JSON.parse(String(data)); } catch { return close(); }
-    if (["Page.frameNavigated", "Page.navigatedWithinDocument", "Page.frameDetached", "Runtime.executionContextsCleared"].includes(message.method)) invalidated = true;
+    try { message = JSON.parse(String(data)); } catch { return close(true); }
+    if (!invalidated && ["Page.frameNavigated", "Page.navigatedWithinDocument", "Page.frameDetached", "Runtime.executionContextsCleared"].includes(message.method)) {
+      invalidated = true;
+      onInvalidated?.();
+    }
     const waiting = pending.get(message.id);
     if (!waiting) return;
     pending.delete(message.id);

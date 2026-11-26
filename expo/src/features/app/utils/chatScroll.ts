@@ -1,7 +1,5 @@
-import type { ConversationMessage } from "../types/appTypes";
-
 export function findPreviousUserMessageIndex(
-  messages: readonly ConversationMessage[],
+  messages: readonly { role?: "user" | "assistant" }[],
   firstVisibleIndex: number
 ) {
   const startIndex = Math.min(Math.max(0, Math.floor(firstVisibleIndex)) - 1, messages.length - 1);
