@@ -24,7 +24,7 @@ const emit = (payload = form()) => handlers.get("browser.input.request")?.({ cha
 beforeEach(() => {
   AppState.currentState = "active"; connected = true; owns = true;
   handlers.clear(); listeners.clear(); send.mockClear(); request.mockClear();
-  (getVoiceControl as jest.Mock).mockReturnValue({ matchesOrigin: () => owns });
+  (getVoiceControl as jest.Mock).mockReturnValue({ matchesChatOrigin: () => owns });
 });
 afterEach(() => { AppState.currentState = originalState; jest.useRealTimers(); });
 

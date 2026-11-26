@@ -6,6 +6,7 @@ import { AppState, Platform, Pressable, SafeAreaView, ScrollView, StyleSheet, Te
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Reanimated, { cancelAnimation, FadeIn, FadeOut, runOnJS, useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
 import { useControlledStreamingStt } from "../../appControl/useControlledStreamingStt";
+import { useChatControlSurface } from "../../appControl/useChatControlSurface";
 import { getVoiceControl } from "../../appControl/voiceControl";
 import { StreamingSttFooter, type StreamingSttFooterHandle } from "../components/StreamingSttFooter";
 import { VoiceHistoryBackdrop, getMacVoiceBlurView } from "../components/VoiceHistoryBackdrop";
@@ -56,6 +57,7 @@ export function VoiceConversationScreen(props: VoiceConversationPlayback & { onC
   const [selectedId, setSelectedId] = useState("");
   const [revision, setRevision] = useState(0);
   const [managerOpen, setManagerOpen] = useState(false);
+  useChatControlSurface(selectedId && !managerOpen ? { kind: "orchestrator", orchestratorId: selectedId } : null);
   const [historyExpanded, setHistoryExpanded] = useState(Boolean(props.initialOrchestratorId));
   const consumedInitialTargetRef = useRef("");
   useEffect(() => { if (props.initialOrchestratorId) setHistoryExpanded(true); }, [props.initialOrchestratorId]);

@@ -8,22 +8,26 @@ import { RUNNER_AUTHENTICATION } from "../src/runner-login-http.mjs";
 const target = { cdpUrl: "ws://127.0.0.1:9222/devtools/page/TAB", selector: "#password", origin: "https://example.com", label: "Password" };
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 function fixture(t, options = {}) {
+  const { initialSessionId = "chat", ...serviceOptions } = options;
   const sent = []; const filled = []; const ws = {}; let closed = 0;
   const sendEnvelope = (socket, message) => { sent.push({ ws: socket, ...message }); return true; };
   const appControl = createAppControlService({ sendEnvelope });
   appControl.handleMessage(ws, { channel: "control", op: "app.control.register", payload: { version: 1, clientInstanceId: "phone" } });
   const connectionGeneration = sent.at(-1).payload.connectionGeneration;
-  const session = { kind: "session", sessionRef: { backendId: "claude", nativeSessionId: "chat" }, cwd: "/repo" };
-  const update = (generation = 1, foreground = true) => appControl.handleMessage(ws, {
+  const session = { kind: "session", sessionRef: { backendId: "claude", nativeSessionId: initialSessionId }, cwd: "/repo" };
+  const snapshot = ({ generation = 1, foreground = true, surfaceId = "panel", chatTarget = session, withChat = true } = {}) => appControl.handleMessage(ws, {
     channel: "control", op: "app.control.update", payload: { connectionGeneration, foreground,
-      surfaces: [{ surfaceId: "panel", generation, target: session, desired: "stopped", observed: "stopped" }] },
-  });
+      surfaces: surfaceId ? [{ surfaceId, generation, target: session, desired: "stopped", observed: "stopped" }] : [],
+      chats: withChat ? [{ chatId: "conversation", generation, target: chatTarget }] : [],
+  } });
+  const update = (generation = 1, foreground = true) => snapshot({ generation, foreground });
   update();
-  const control = appControl.acceptTurn(ws, { clientInstanceId: "phone", connectionGeneration, surfaceId: "panel", ownerGeneration: 1, target: session },
+  const origin = { clientInstanceId: "phone", connectionGeneration, surfaceId: "panel", ownerGeneration: 1, target: session, chatId: "conversation", chatGeneration: 1 };
+  const control = appControl.acceptTurn(ws, origin,
     { subjectId: "owner", callerOperationId: "turn", target: session });
   const context = control.instruction.match(/ctx_[a-f0-9-]+/)[0];
   const prepare = async () => ({ fill: async (value) => { filled.push(value); }, close: () => { closed++; } });
-  const service = createBrowserSecretInputService({ appControl, sendEnvelope, prepare, ...options });
+  const service = createBrowserSecretInputService({ appControl, sendEnvelope, prepare, ...serviceOptions });
   t.after(() => { service.close(); appControl.close(); });
   const body = { requestId: randomUUID(), context, target };
   const respond = async (payload, socket = ws, device = true) => {
@@ -36,8 +40,90 @@ function fixture(t, options = {}) {
     }
     return null;
   };
-  return { service, body, ws, sent, filled, update, control, respond, closed: () => closed };
+  return { service, appControl, body, ws, sent, filled, update, snapshot, origin, session, control, respond, closed: () => closed };
 }
+
+test("typed chat survives microphone teardown/remount while old voice commands stay invalid", async (t) => {
+  const f = fixture(t);
+  f.snapshot({ surfaceId: "" });
+  assert.equal(f.appControl.getContext("owner", f.body.context).status, "owner_changed");
+  // The stable conversation exists before any replacement microphone is mounted.
+  assert.equal((await f.service.request("owner", f.body)).status, "pending");
+  f.snapshot({ surfaceId: "new-microphone" });
+  f.service.reconcile(f.ws);
+  assert.equal(f.appControl.getContext("owner", f.body.context).status, "owner_changed");
+  assert.equal(f.service.getResult("owner", f.body.requestId).status, "pending");
+  assert.equal((await f.respond({ requestId: f.body.requestId, value: "direct private input" })).status, "completed");
+  assert.deepEqual(f.filled, ["direct private input"]);
+  const context = f.appControl.getContext("owner", f.body.context);
+  for (const action of ["stop", "handoff"]) {
+    const voice = await f.appControl.submit("owner", { context: f.body.context, operationId: `${context.epoch}.${randomUUID()}`, action, expectedGeneration: 1,
+      ...(action === "handoff" ? { target: f.session } : {}) });
+    assert.equal(voice.status, "owner_changed");
+  }
+});
+
+test("a new typed turn can request private input without any microphone registration", async (t) => {
+  const f = fixture(t);
+  f.snapshot({ surfaceId: "" });
+  const control = f.appControl.acceptTurn(f.ws, { ...f.origin, surfaceId: "conversation" }, {
+    subjectId: "owner", target: f.session, callerOperationId: "typed-without-microphone",
+  });
+  assert.ok(control);
+  const context = control.instruction.match(/ctx_[a-f0-9-]+/)[0];
+  assert.equal((await f.service.request("owner", { ...f.body, context })).status, "pending");
+  assert.equal((await f.respond({ requestId: f.body.requestId, value: "typed private value" })).status, "completed");
+  assert.deepEqual(f.filled, ["typed private value"]);
+  const view = f.appControl.getContext("owner", context);
+  assert.equal((await f.appControl.submit("owner", { context, operationId: `${view.epoch}.${randomUUID()}`, action: "stop", expectedGeneration: 1 })).status, "owner_changed");
+});
+
+test("real chat switch then switch-back, close and next turn cannot resurrect an old input lease", async (t) => {
+  for (const change of [
+    (f) => { f.snapshot({ chatTarget: { ...f.session, cwd: "/another-repo" } }); f.snapshot(); },
+    (f) => { f.snapshot({ withChat: false }); f.snapshot(); },
+    (f) => {
+      f.snapshot({ surfaceId: "new-microphone" });
+      assert.ok(f.appControl.acceptTurn(f.ws, { ...f.origin, surfaceId: "new-microphone" }, { subjectId: "owner", callerOperationId: "next-turn", target: f.session }));
+    },
+  ]) {
+    const f = fixture(t); await f.service.request("owner", f.body);
+    change(f); f.service.reconcile(f.ws);
+    assert.equal(f.service.getResult("owner", f.body.requestId).status, "cancelled");
+    assert.equal((await f.respond({ requestId: f.body.requestId, value: "must not fill" })).status, "request_unavailable");
+    assert.deepEqual(f.filled, []);
+  }
+});
+
+test("first native session resolution works while microphone remains unmounted", async (t) => {
+  const f = fixture(t, { initialSessionId: null });
+  f.snapshot({ surfaceId: "" });
+  const resolved = { backendId: "claude", nativeSessionId: "new-native-session" };
+  f.control.bindResolvedSession(resolved, "/repo");
+  assert.throws(() => f.appControl.resolveActiveContext("owner", f.body.context), { code: "pending_session_resolution" });
+  f.session.sessionRef = resolved;
+  f.snapshot({ surfaceId: "" });
+  assert.equal((await f.service.request("owner", f.body)).status, "pending");
+  assert.equal((await f.respond({ requestId: f.body.requestId, value: "private" })).status, "completed");
+});
+
+test("old voice-only clients keep voice control but cannot request private browser input", async (t) => {
+  const f = fixture(t);
+  f.snapshot({ withChat: false });
+  const { chatId, chatGeneration, ...voiceOnly } = f.origin;
+  const voice = f.appControl.acceptTurn(f.ws, voiceOnly, { subjectId: "owner", target: f.session, callerOperationId: "old-client" });
+  const context = voice.instruction.match(/ctx_[a-f0-9-]+/)[0];
+  assert.equal(f.appControl.getContext("owner", context).status, "ready");
+  await assert.rejects(f.service.request("owner", { ...f.body, context }), { code: "capability_unsupported" });
+});
+
+test("forged chat generation cannot borrow a valid microphone origin or supersede a real chat turn", async (t) => {
+  const f = fixture(t);
+  assert.equal(f.appControl.acceptTurn(f.ws, { ...f.origin, chatGeneration: 99 }, {
+    subjectId: "owner", target: f.session, callerOperationId: "forged-turn",
+  }), null);
+  assert.equal((await f.service.request("owner", f.body)).status, "pending");
+});
 
 test("origin-only request goes to the same device; exact value never appears in status, events or replay", async (t) => {
   const f = fixture(t);

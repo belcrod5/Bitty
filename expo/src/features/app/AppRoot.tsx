@@ -6232,6 +6232,10 @@ function AppContent({ onReady }: { onReady?: () => void }) {
             safeAreaStyle={styles.drawerPopupSafeArea}
           >
             <PopupChatOverlay
+              target={questionPopupSnapshot ? { kind: "session", sessionRef: {
+                backendId: questionPopupSnapshot.backendId || "codex",
+                nativeSessionId: questionPopupSnapshot.sessionMaterialized === false ? null : questionPopupSnapshot.selectedSessionId || null,
+              }, cwd: questionPopupSnapshot.selectedDirectoryPath } : undefined}
               visible={drawerSessionPopupVisible}
               panelId={drawerSessionPopupPanelId}
               cycleId={drawerSessionPopupCycleId}

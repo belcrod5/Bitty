@@ -20,7 +20,7 @@ export function useBrowserSecretInput(manager: RunnerWebSocketManager) {
   const clear = useCallback(() => { pending.current = null; submitting.current = false; setRequest(null); setSending(false); }, []);
   const current = useCallback((next: BrowserSecretInputRequest) => AppState.currentState === "active"
     && manager.getSnapshot().connected && Date.parse(next.expiresAt) > Date.now()
-    && getVoiceControl(manager).matchesOrigin(next.origin), [manager]);
+    && getVoiceControl(manager).matchesChatOrigin(next.origin), [manager]);
   const cancel = useCallback(() => {
     const next = pending.current;
     clear();

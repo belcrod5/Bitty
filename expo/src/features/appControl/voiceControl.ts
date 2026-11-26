@@ -5,7 +5,8 @@ import type { RunnerWsMessage } from "../runnerWs/types";
 export type VoiceTarget = { kind: "session"; sessionRef: { backendId: string; nativeSessionId: string | null }; cwd: string }
   | { kind: "orchestrator"; orchestratorId: string };
 export type VoiceSnapshot = { desired: "stopped" | "listening"; observed: "stopped" | "waiting" | "starting" | "recording" | "unknown" };
-export type AppControlOrigin = { clientInstanceId: string; connectionGeneration: string; surfaceId: string; ownerGeneration: number; target: VoiceTarget };
+export type AppControlOrigin = { clientInstanceId: string; connectionGeneration: string; surfaceId: string; ownerGeneration: number; target: VoiceTarget; chatId?: string; chatGeneration?: number };
+export type ChatSurface = { id: string; panelId?: string; target: () => VoiceTarget | null };
 export type VoiceSurface = {
   id: string;
   panelId?: string;
@@ -23,6 +24,7 @@ export type VoiceSurface = {
   notice: (message: string) => void;
 };
 type Entry = { surface: VoiceSurface; generation: number; target: VoiceTarget };
+type ChatEntry = { surface: ChatSurface; generation: number; target: VoiceTarget | null };
 type Result = VoiceSnapshot & { status: string; generation?: number; target?: VoiceTarget; reason?: string };
 type Execution = { id: string; sourceId: string; connection: string; expires: number; cancelled: boolean; transferred: boolean; controller: AbortController; ownedGeneration?: number; target?: VoiceTarget; timer: ReturnType<typeof setTimeout> };
 type Navigation = {
@@ -48,6 +50,8 @@ function isTarget(value: unknown): value is VoiceTarget {
 // One device microphone owner. This registry outlives every screen and source turn.
 export class VoiceControl {
   private entries = new Map<string, Entry>();
+  private chats = new Map<string, ChatEntry>();
+  private chatGeneration = 0;
   private owner: string | null = null;
   private interaction: { id: string; target: VoiceTarget } | null = null;
   private connection = "";
@@ -139,6 +143,25 @@ export class VoiceControl {
       this.publish(true);
     };
   }
+  registerChat(surface: ChatSurface) {
+    const entry = { surface, generation: ++this.chatGeneration, target: surface.target() };
+    this.chats.set(surface.id, entry);
+    this.publish(true);
+    return () => {
+      if (this.chats.get(surface.id) !== entry) return;
+      this.chats.delete(surface.id);
+      this.publish(true);
+    };
+  }
+  private refreshChat(entry: ChatEntry) {
+    const target = entry.surface.target();
+    if (entry.target === target || (entry.target && target && sameVoiceTarget(entry.target, target))) return;
+    const resolved = entry.target?.kind === "session" && target?.kind === "session"
+      && entry.target.sessionRef.nativeSessionId === null && !!target.sessionRef.nativeSessionId
+      && entry.target.cwd === target.cwd && entry.target.sessionRef.backendId === target.sessionRef.backendId;
+    entry.target = target;
+    if (!resolved) entry.generation = ++this.chatGeneration;
+  }
   private refresh(entry: Entry) {
     const target = entry.surface.target();
     if (sameVoiceTarget(entry.target, target)) return;
@@ -193,15 +216,23 @@ export class VoiceControl {
   }
   origin(panelId: string | undefined, target: VoiceTarget): AppControlOrigin | undefined {
     if (!this.connection || !this.foreground) return;
+    for (const chat of this.chats.values()) this.refreshChat(chat);
+    const matchingChats = Array.from(this.chats.values()).filter((chat) => chat.surface.panelId === panelId
+      && chat.target && sameVoiceTarget(chat.target, target));
+    const chat = matchingChats.length === 1 ? matchingChats[0] : undefined;
+    const chatOrigin = chat ? { clientInstanceId: this.manager.getSnapshot().clientInstanceId, connectionGeneration: this.connection,
+      surfaceId: chat.surface.id, ownerGeneration: chat.generation, target: chat.target!, chatId: chat.surface.id, chatGeneration: chat.generation } : undefined;
     for (const candidate of this.entries.values()) this.refresh(candidate);
+    // Publish the exact chat lease before its turn can be sent on this connection.
+    this.publish();
     const matches = Array.from(this.entries.values()).filter((candidate) => candidate.surface.panelId === panelId && sameVoiceTarget(candidate.target, target));
-    if (matches.length !== 1 || matches[0].surface.controlVersion() !== 1) return;
+    if (matches.length !== 1 || matches[0].surface.controlVersion() !== 1) return chatOrigin;
     const entry = matches[0];
     if (this.owner !== entry.surface.id) {
       const previous = this.owner ? this.entries.get(this.owner) : undefined;
       // A typed request may name its own stopped screen, but cannot take another live microphone.
-      if (previous && previous.surface.snapshot().observed !== "stopped") return;
-      if (previous?.surface.snapshot().desired === "listening") return;
+      if (previous && previous.surface.snapshot().observed !== "stopped") return chatOrigin;
+      if (previous?.surface.snapshot().desired === "listening") return chatOrigin;
       if (previous) previous.generation = ++this.generation;
       entry.generation = ++this.generation;
       this.owner = entry.surface.id;
@@ -209,14 +240,15 @@ export class VoiceControl {
       this.publish(true);
     }
     return { clientInstanceId: this.manager.getSnapshot().clientInstanceId, connectionGeneration: this.connection,
-      surfaceId: entry.surface.id, ownerGeneration: entry.generation, target: entry.target };
+      surfaceId: entry.surface.id, ownerGeneration: entry.generation, target: entry.target,
+      ...(chat ? { chatId: chat.surface.id, chatGeneration: chat.generation } : {}) };
   }
-  matchesOrigin(origin: AppControlOrigin) {
-    const entry = this.entries.get(origin.surfaceId);
+  matchesChatOrigin(origin: AppControlOrigin) {
+    const entry = this.chats.get(origin.chatId || "");
     if (!entry || !this.foreground || origin.connectionGeneration !== this.connection
       || origin.clientInstanceId !== this.manager.getSnapshot().clientInstanceId) return false;
-    this.refresh(entry);
-    return entry.generation === origin.ownerGeneration && sameVoiceTarget(entry.target, origin.target);
+    this.refreshChat(entry);
+    return entry.generation === origin.chatGeneration && !!entry.target && sameVoiceTarget(entry.target, origin.target);
   }
   allowsSpeech(id?: string, target?: VoiceTarget, panelId?: string) {
     if (!this.interaction) return true;
@@ -227,7 +259,11 @@ export class VoiceControl {
   private publish(force = false) {
     if (!this.connection) return;
     for (const e of this.entries.values()) this.refresh(e);
+    for (const chat of this.chats.values()) this.refreshChat(chat);
     const payload = { connectionGeneration: this.connection, foreground: this.foreground,
+      chats: Array.from(this.chats.values()).filter((chat) => chat.target).map((chat) => ({
+        chatId: chat.surface.id, generation: chat.generation, target: chat.target,
+      })),
       surfaces: Array.from(this.entries.values()).filter((e) => e.surface.controlVersion() === 1).map((e) => ({
         surfaceId: e.surface.id, generation: e.generation, target: e.target, ...e.surface.snapshot(),
       })) };
