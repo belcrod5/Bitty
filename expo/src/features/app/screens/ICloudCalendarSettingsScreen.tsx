@@ -67,7 +67,7 @@ export function ICloudCalendarSettingsScreen({ onBack }: { onBack: () => void })
             <Ionicons name="cloud-outline" size={22} color={theme.colors.controlAccent} />
             <View style={styles.settingsRowLabelWrap}>
               <Text style={styles.settingsRowLabel}>{status ? configured ? status.enabled ? "接続済み・有効" : "接続済み・無効" : "未接続" : "接続状態を確認中…"}</Text>
-              <Text style={styles.settingsRowDescription}>{configured ? status.account : "iCloudの予定をRunnerから読み取ります"}</Text>
+              <Text style={styles.settingsRowDescription}>{configured ? status.account : "iCloudの予定をRunnerから読み書きします"}</Text>
             </View>
           </View>
           {configured ? <>
@@ -75,7 +75,7 @@ export function ICloudCalendarSettingsScreen({ onBack }: { onBack: () => void })
               <Ionicons name="calendar-outline" size={22} color={theme.colors.controlTextPrimary} />
               <View style={styles.settingsRowLabelWrap}>
                 <Text style={styles.settingsRowLabel}>iCloudカレンダーを使用</Text>
-                <Text style={styles.settingsRowDescription}>読み取り専用</Text>
+                <Text style={styles.settingsRowDescription}>予定の読み取り・作成・更新・削除</Text>
               </View>
               <Switch accessibilityLabel="iCloudカレンダーを使用" value={status.enabled} disabled={busy} onValueChange={() => void run(async (current) => {
                 const next = await requestICloudCalendar<ICloudCalendarStatus>(runnerUrl, runnerToken, "connection", { method: "PATCH", body: JSON.stringify({ enabled: !status.enabled }) });
@@ -92,7 +92,7 @@ export function ICloudCalendarSettingsScreen({ onBack }: { onBack: () => void })
             </TouchableOpacity>
           </> : null}
         </View>
-        <Text style={styles.settingsFooterText}>MacのRunnerが起動していれば、アプリを閉じても利用できます。読み取り専用・iCloudの予定のみ（端末内・Google・Exchangeは対象外）。</Text>
+        <Text style={styles.settingsFooterText}>MacのRunnerが起動していれば、アプリを閉じても利用できます。iCloudの予定を読み取り、単発予定を作成・更新・削除できます。変更前に会話で確認します（端末内・Google・Exchangeは対象外）。</Text>
       </View>
 
       <View style={styles.settingsSection}>

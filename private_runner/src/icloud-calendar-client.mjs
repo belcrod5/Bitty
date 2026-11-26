@@ -1,6 +1,7 @@
+import { randomUUID } from "node:crypto";
 import { DOMParser } from "@xmldom/xmldom";
 import ICAL from "ical.js";
-import { iCloudError } from "./icloud-calendar-service.mjs";
+import { ICLOUD_MESSAGES, iCloudError } from "./icloud-calendar-service.mjs";
 
 const DAV = "DAV:", CAL = "urn:ietf:params:xml:ns:caldav";
 const START = "https://caldav.icloud.com/";
@@ -98,13 +99,17 @@ export function createICloudCalendarClient({ account, password, fetchImpl = fetc
   const authorization = `Basic ${Buffer.from(`${account}:${password}`).toString("base64")}`;
   let discovered;
   const deadline = (signal) => AbortSignal.any([AbortSignal.timeout(30000), ...(signal ? [signal] : [])]);
-  const request = async (target, method, body, depth, signal) => {
+  const request = async (target, method, body, depth, signal, headers = {}) => {
+    const mutation = method === "PUT" || method === "DELETE";
+    let sent = false;
     let url = iCloudUrl(START, target);
     try {
       for (let redirects = 0; redirects <= 3; redirects++) {
+        signal?.throwIfAborted();
+        sent = true;
         const response = await fetchImpl(url, { method, body, redirect: "manual", signal,
-          headers: { Authorization: authorization, "Content-Type": "application/xml; charset=utf-8", Depth: String(depth) } });
-        if ([301, 302, 307, 308].includes(response.status)) {
+          headers: { Authorization: authorization, "Content-Type": mutation ? "text/calendar; charset=utf-8" : "application/xml; charset=utf-8", ...(depth === undefined ? {} : { Depth: String(depth) }), ...headers } });
+        if (!mutation && [301, 302, 307, 308].includes(response.status)) {
           const location = response.headers.get("location");
           await response.body?.cancel();
           if (!location) throw iCloudError("icloud_response_invalid", 502);
@@ -113,6 +118,12 @@ export function createICloudCalendarClient({ account, password, fetchImpl = fetc
         if (response.status !== 207) await response.body?.cancel();
         if (response.status === 401) throw iCloudError("icloud_authentication_failed", 401);
         if (response.status === 403) throw iCloudError("icloud_access_denied", 403);
+        if (mutation) {
+          if (response.status === 412) throw iCloudError("event_changed", 409);
+          if (response.status === 404) throw iCloudError("event_not_found", 404);
+          if (![200, 201, 204].includes(response.status)) throw iCloudError(response.status >= 500 ? "result_unknown" : "icloud_response_invalid", 502);
+          return { url };
+        }
         if (response.status !== 207 || !response.body) throw iCloudError("icloud_response_invalid", 502);
         const reader = response.body.getReader(), chunks = [];
         let size = 0;
@@ -135,8 +146,9 @@ export function createICloudCalendarClient({ account, password, fetchImpl = fetc
       }
       throw iCloudError("icloud_response_invalid", 502);
     } catch (error) {
+      if (error?.code && Object.hasOwn(ICLOUD_MESSAGES, error.code)) throw error;
+      if (mutation && sent) throw iCloudError("result_unknown", 502);
       if (signal?.aborted) throw iCloudError("request_cancelled", 408);
-      if (error?.code && typeof error.code === "string" && (error.code.startsWith("icloud_") || error.code === "request_cancelled")) throw error;
       throw iCloudError("icloud_connection_failed", 502);
     }
   };
@@ -153,7 +165,7 @@ export function createICloudCalendarClient({ account, password, fetchImpl = fetc
     if (!discovered) discovered = (async () => {
       const principal = await discoverHref(START, DAV, "current-user-principal", signal);
       const home = await discoverHref(principal, CAL, "calendar-home-set", signal);
-      const result = await request(home, "PROPFIND", `<d:propfind xmlns:d="${DAV}" xmlns:c="${CAL}"><d:prop><d:displayname/><d:resourcetype/><c:supported-calendar-component-set/><c:calendar-timezone/></d:prop></d:propfind>`, 1, signal);
+      const result = await request(home, "PROPFIND", `<d:propfind xmlns:d="${DAV}" xmlns:c="${CAL}"><d:prop><d:displayname/><d:resourcetype/><c:supported-calendar-component-set/><c:calendar-timezone/><d:current-user-privilege-set/></d:prop></d:propfind>`, 1, signal);
       const values = [];
       for (const response of result.responses) {
         const prop = properties(response);
@@ -166,7 +178,9 @@ export function createICloudCalendarClient({ account, password, fetchImpl = fetc
           try { timeZone = new ICAL.Component(ICAL.parse(timezone)).getFirstSubcomponent("vtimezone")?.getFirstPropertyValue("tzid") || ""; }
           catch { throw iCloudError("icloud_response_invalid", 502); }
         }
-        values.push({ id: id("calendar", url), url, title: text(prop, DAV, "displayname").slice(0, 500), timezone, timeZone });
+        const privileges = children(child(prop, DAV, "current-user-privilege-set"), DAV, "privilege");
+        const allowsModifications = ["write-content", "bind", "unbind"].every((name) => privileges.some((value) => child(value, DAV, name) || child(value, DAV, "write") || child(value, DAV, "all")));
+        values.push({ id: id("calendar", url), url, allowsModifications, title: text(prop, DAV, "displayname").slice(0, 500), timezone, timeZone });
       }
       return values;
     })();
@@ -178,11 +192,11 @@ export function createICloudCalendarClient({ account, password, fetchImpl = fetc
     const url = iCloudUrl(result.url, href);
     const base = new URL(calendar.url), target = new URL(url);
     if (base.origin !== target.origin || !target.pathname.startsWith(base.pathname.endsWith("/") ? base.pathname : base.pathname + "/")) throw iCloudError("icloud_response_invalid", 502);
-    return { url, document: calendarDocument(data, calendar) };
+    return { url, etag: text(prop, DAV, "getetag"), document: calendarDocument(data, calendar) };
   });
   const multiget = async (calendar, urls, signal) => {
     const hrefs = urls.map((url) => `<d:href>${new URL(iCloudUrl(calendar.url, url)).pathname.replaceAll("&", "&amp;")}</d:href>`).join("");
-    return resources(await request(calendar.url, "REPORT", `<c:calendar-multiget xmlns:d="${DAV}" xmlns:c="${CAL}"><d:prop><c:calendar-data/></d:prop>${hrefs}</c:calendar-multiget>`, 1, signal), calendar);
+    return resources(await request(calendar.url, "REPORT", `<c:calendar-multiget xmlns:d="${DAV}" xmlns:c="${CAL}"><d:prop><d:getetag/><c:calendar-data/></d:prop>${hrefs}</c:calendar-multiget>`, 1, signal), calendar);
   };
   const query = async (calendar, range, signal) => resources(await request(calendar.url, "REPORT", `<c:calendar-query xmlns:d="${DAV}" xmlns:c="${CAL}"><d:prop><c:calendar-data><c:expand start="${timestamp(range.start)}" end="${timestamp(range.end)}"/></c:calendar-data></d:prop><c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT"><c:time-range start="${timestamp(range.start)}" end="${timestamp(range.end)}"/></c:comp-filter></c:comp-filter></c:filter></c:calendar-query>`, 1, signal), calendar);
   const summaries = (expanded, raw, calendar) => {
@@ -207,17 +221,108 @@ export function createICloudCalendarClient({ account, password, fetchImpl = fetc
         instanceStart: recurring ? start : null, calendarId: calendar.id, calendarTitle: calendar.title,
         title: String(component.getFirstPropertyValue("summary") || "").slice(0, 500), start, end,
         allDay: event.startDate.isDate, timeZone: event.startDate.isDate ? null : source.getFirstProperty("dtstart")?.getParameter("tzid") || (source.getFirstPropertyValue("dtstart")?.zone.tzid === "UTC" ? "UTC" : calendar.timeZone || null),
-        recurring, detached: Boolean(exception), allowsModifications: false,
+        recurring, detached: Boolean(exception), allowsModifications: calendar.allowsModifications,
         lastModifiedAt: modified ? eventTime(modified, source, calendar) : null,
         location: String(component.getFirstPropertyValue("location") || "").slice(0, 1000) || null,
         notes: String(component.getFirstPropertyValue("description") || "").slice(0, 8000) || null });
     }
     return values;
   };
+  const findResource = async (eventId, operation) => {
+    const identity = decodeId(eventId, "event");
+    const calendar = (await calendars(operation)).find((value) => value.url === identity?.calendar);
+    if (!calendar || typeof identity.resource !== "string" || typeof identity.uid !== "string") throw iCloudError("event_not_found");
+    const resource = iCloudUrl(calendar.url, identity.resource), base = new URL(calendar.url), target = new URL(resource);
+    if (base.origin !== target.origin || !target.pathname.startsWith(base.pathname.endsWith("/") ? base.pathname : base.pathname + "/")) throw iCloudError("invalid_arguments");
+    const raw = (await multiget(calendar, [resource], operation)).find((value) => value.url === resource);
+    if (!raw) throw iCloudError("event_not_found");
+    return { identity, calendar, resource, raw };
+  };
+  const writableResource = async (input, operation) => {
+    if (typeof input.eventId !== "string" || (input.expectedLastModifiedAt !== null && typeof input.expectedLastModifiedAt !== "string")) throw iCloudError("invalid_arguments");
+    const found = await findResource(input.eventId, operation);
+    const components = found.raw.document.getAllSubcomponents("vevent");
+    if (components.some((item) => item.hasProperty("rrule") || item.hasProperty("rdate") || item.hasProperty("recurrence-id"))) throw iCloudError("recurring_event_write_unsupported");
+    if (components.length !== 1 || components[0].getFirstPropertyValue("uid") !== found.identity.uid) throw iCloudError("icloud_response_invalid", 502);
+    const component = components[0], modified = component.getFirstPropertyValue("last-modified");
+    if (!modified || !input.expectedLastModifiedAt || !/^"[\x21\x23-\x7e\x80-\xff]*"$/.test(found.raw.etag)) throw iCloudError("event_version_unavailable");
+    if (eventTime(modified, component, found.calendar) !== input.expectedLastModifiedAt) throw iCloudError("event_changed");
+    if (!found.calendar.allowsModifications) throw iCloudError("calendar_read_only");
+    return { ...found, component };
+  };
+  const savedVersion = async (eventId, operation) => {
+    try {
+      const { raw, calendar, identity } = await findResource(eventId, operation);
+      const component = raw.document.getAllSubcomponents("vevent").find((value) => value.getFirstPropertyValue("uid") === identity.uid);
+      const value = component?.getFirstPropertyValue("last-modified");
+      return value ? eventTime(value, component, calendar) : null;
+    } catch { return null; }
+  };
+  const setFields = (component, input, calendar, creating = false) => {
+    if (!input || typeof input !== "object" || Array.isArray(input)
+      || Object.keys(input).some((key) => !["calendarId", "title", "start", "end", "allDay", "timeZone", "location", "notes", "alarms"].includes(key))) throw iCloudError("invalid_arguments");
+    const current = creating ? null : new ICAL.Event(component);
+    if (["start", "end", "timeZone"].some((key) => input[key] !== undefined && typeof input[key] !== "string")) throw iCloudError("invalid_arguments");
+    if (input.allDay !== undefined && typeof input.allDay !== "boolean") throw iCloudError("invalid_arguments");
+    if (!creating && input.allDay !== undefined && (input.start === undefined || input.end === undefined)) throw iCloudError("invalid_arguments");
+    const allDay = input.allDay ?? current?.startDate.isDate;
+    if (input.title !== undefined && typeof input.title !== "string") throw iCloudError("invalid_arguments");
+    const title = input.title ?? (creating ? undefined : String(component.getFirstPropertyValue("summary") || ""));
+    if (typeof title !== "string" || (creating && !title.trim()) || title.length > 10000 || typeof allDay !== "boolean") throw iCloudError("invalid_arguments");
+    if (input.title !== undefined || creating) component.updatePropertyWithValue("summary", creating ? title.trim() : title);
+    for (const [key, property] of [["location", "location"], ["notes", "description"]]) {
+      if (input[key] !== undefined) {
+        if ((creating || input[key] !== null) && typeof input[key] !== "string") throw iCloudError("invalid_arguments");
+        component.removeAllProperties(property);
+        if (input[key] !== null) component.addPropertyWithValue(property, input[key]);
+      }
+    }
+    if (creating || ["start", "end", "allDay", "timeZone"].some((key) => input[key] !== undefined)) {
+      const zone = input.timeZone ?? (creating || allDay || current.startDate.isDate ? undefined
+        : component.getFirstProperty("dtstart")?.getParameter("tzid") || (current.startDate.zone.tzid === "UTC" ? "UTC" : calendar.timeZone));
+      const values = [input.start ?? (current && eventTime(current.startDate, component, calendar)), input.end ?? (current && eventTime(current.endDate, component, calendar))];
+      const dates = values.map((value, index) => {
+        if (typeof value !== "string") throw iCloudError("invalid_arguments");
+        if (allDay) {
+          if (input.timeZone !== undefined || !/^\d{4}-\d{2}-\d{2}$/.test(value) || !Number.isFinite(+new Date(value)) || new Date(value).toISOString().slice(0, 10) !== value) throw iCloudError("invalid_arguments");
+          return ICAL.Time.fromDateString(value);
+        }
+        const match = /([+-])(\d{2}):(\d{2})$/.exec(value), date = new Date(value);
+        if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.test(value) || !Number.isFinite(+date) || new Date(value.slice(0, 10)).toISOString().slice(0, 10) !== value.slice(0, 10) || typeof zone !== "string" || !zone) throw iCloudError("invalid_arguments");
+        try {
+          const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).formatToParts(date).map((part) => [part.type, part.value]));
+          const offset = Math.round((Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute, +parts.second) - +date) / 60000);
+          if (input[index === 0 ? "start" : "end"] !== undefined && (match ? (match[1] === "+" ? 1 : -1) * (+match[2] * 60 + +match[3]) : 0) !== offset) throw new Error();
+        } catch { throw iCloudError("invalid_arguments"); }
+        return ICAL.Time.fromJSDate(date, true);
+      });
+      if (dates[1].compare(dates[0]) <= 0) throw iCloudError("invalid_arguments");
+      component.removeAllProperties("duration");
+      for (const [index, name] of ["dtstart", "dtend"].entries()) {
+        component.removeAllProperties(name);
+        component.addPropertyWithValue(name, dates[index]);
+      }
+    }
+    if (input.alarms !== undefined) {
+      if (!Array.isArray(input.alarms) || input.alarms.length > 5 || input.alarms.some((item) => !item || Object.keys(item).some((key) => key !== "minutesBefore") || !Number.isInteger(item.minutesBefore) || item.minutesBefore < 0 || item.minutesBefore > 40320)) throw iCloudError("invalid_arguments");
+      component.removeAllSubcomponents("valarm");
+      for (const alarm of input.alarms) {
+        const value = new ICAL.Component("valarm");
+        value.addPropertyWithValue("action", "DISPLAY");
+        value.addPropertyWithValue("description", title);
+        value.addPropertyWithValue("trigger", ICAL.Duration.fromSeconds(-alarm.minutesBefore * 60));
+        component.addSubcomponent(value);
+      }
+    }
+    const modified = ICAL.Time.fromJSDate(new Date(), true);
+    component.updatePropertyWithValue("dtstamp", modified);
+    component.updatePropertyWithValue("last-modified", modified);
+    component.updatePropertyWithValue("sequence", Number(component.getFirstPropertyValue("sequence") || 0) + 1);
+  };
   return {
     async listCalendars(signal) {
       const values = await calendars(deadline(signal));
-      return { calendars: values.map((value) => ({ id: value.id, title: value.title, sourceName: "iCloud", allowsModifications: false, isDefault: false })) };
+      return { calendars: values.map((value) => ({ id: value.id, title: value.title, sourceName: "iCloud", allowsModifications: value.allowsModifications, isDefault: value === values.find((item) => item.allowsModifications) })) };
     },
     async searchEvents(input, signal) {
       if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some((key) => !["start", "end", "calendarIds"].includes(key))) throw iCloudError("invalid_arguments");
@@ -255,16 +360,44 @@ export function createICloudCalendarClient({ account, password, fetchImpl = fetc
       }
       return { events: result, truncated };
     },
+    async createEvent(input, signal, requestId = randomUUID()) {
+      if (typeof requestId !== "string" || !/^[a-z0-9-]{1,80}$/i.test(requestId)) throw iCloudError("invalid_arguments");
+      const operation = deadline(signal), all = await calendars(operation);
+      if (input?.calendarId !== undefined && typeof input.calendarId !== "string") throw iCloudError("invalid_arguments");
+      const calendar = input?.calendarId === undefined ? all.find((value) => value.allowsModifications) : all.find((value) => value.id === input.calendarId);
+      if (!calendar) throw iCloudError("calendar_not_found");
+      if (!calendar.allowsModifications) throw iCloudError("calendar_read_only");
+      const document = new ICAL.Component("vcalendar"), component = new ICAL.Component("vevent");
+      document.addPropertyWithValue("version", "2.0");
+      document.addPropertyWithValue("prodid", "-//Bitty//Calendar//EN");
+      document.addSubcomponent(component);
+      const uid = `bitty-${requestId}`;
+      component.addPropertyWithValue("uid", uid);
+      setFields(component, input, calendar, true);
+      const resource = iCloudUrl(calendar.url.endsWith("/") ? calendar.url : calendar.url + "/", `${uid}.ics`);
+      await request(resource, "PUT", document.toString(), undefined, operation, { "If-None-Match": "*" });
+      const eventId = id("event", { calendar: calendar.url, resource, uid });
+      return { eventId, lastModifiedAt: await savedVersion(eventId, operation) };
+    },
+    async updateEvent(input, signal) {
+      if (!input || Object.keys(input).some((key) => !["eventId", "expectedLastModifiedAt", "changes"].includes(key)) || !input.changes || !Object.keys(input.changes).length) throw iCloudError("invalid_arguments");
+      const operation = deadline(signal), found = await writableResource(input, operation);
+      if (input.changes.calendarId !== undefined && input.changes.calendarId !== found.calendar.id) throw iCloudError("invalid_arguments");
+      setFields(found.component, input.changes, found.calendar);
+      await request(found.resource, "PUT", found.raw.document.toString(), undefined, operation, { "If-Match": found.raw.etag });
+      return { eventId: input.eventId, lastModifiedAt: await savedVersion(input.eventId, operation) };
+    },
+    async deleteEvent(input, signal) {
+      if (!input || Object.keys(input).some((key) => !["eventId", "expectedLastModifiedAt"].includes(key))) throw iCloudError("invalid_arguments");
+      const operation = deadline(signal), found = await writableResource(input, operation);
+      await request(found.resource, "DELETE", undefined, undefined, operation, { "If-Match": found.raw.etag });
+      return { deletedEventId: input.eventId };
+    },
     async getEvent(input, signal) {
       if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some((key) => !["eventId", "instanceStart", "detached"].includes(key))
         || (input.detached !== undefined && typeof input.detached !== "boolean")) throw iCloudError("invalid_arguments");
-      const identity = decodeId(input.eventId, "event"), operation = deadline(signal);
-      const calendar = (await calendars(operation)).find((value) => value.url === identity?.calendar);
-      if (!calendar || typeof identity.resource !== "string" || typeof identity.uid !== "string") throw iCloudError("event_not_found");
-      const resource = iCloudUrl(calendar.url, identity.resource), base = new URL(calendar.url), target = new URL(resource);
-      if (base.origin !== target.origin || !target.pathname.startsWith(base.pathname.endsWith("/") ? base.pathname : base.pathname + "/")) throw iCloudError("invalid_arguments");
-      const raw = (await multiget(calendar, [resource], operation)).find((value) => value.url === resource);
-      if (!raw) throw iCloudError("event_not_found");
+      const operation = deadline(signal);
+      const { identity, calendar, resource, raw } = await findResource(input.eventId, operation);
       const components = raw.document.getAllSubcomponents("vevent").filter((item) => item.getFirstPropertyValue("uid") === identity.uid);
       const recurring = components.some((item) => item.hasProperty("rrule") || item.hasProperty("rdate") || item.hasProperty("recurrence-id"));
       let expanded = raw;

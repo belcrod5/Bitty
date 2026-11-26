@@ -3,7 +3,7 @@ import test from "node:test";
 import { createCalendarRelayService } from "../src/calendar-relay-service.mjs";
 import { createCalendarToolDispatcher } from "../src/calendar-tool-service.mjs";
 
-const tool = (name = "calendar_list_calendars") => ({ id: "cloud-call", method: "item/tool/call", params: { namespace: "calendar", tool: name, arguments: {}, threadId: "thread", turnId: "turn" } });
+const tool = (name = "calendar_list_calendars") => ({ id: "cloud-call", method: "item/tool/call", params: { namespace: "calendar", tool: name, arguments: {}, threadId: "thread", turnId: "turn", callId: "call-1" } });
 const result = { success: true, contentItems: [{ type: "inputText", text: '{"ok":true,"data":{"calendars":[]}}' }] };
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 function fixture(t, dispatchTool) {
@@ -61,10 +61,10 @@ test("cloud-disabled local writes without a device need foreground; cloud-enable
   local.relay.calendarOwner = null; local.relay.clients.clear();
   local.send(tool("calendar_create_event")); await flush();
   assert.equal(JSON.parse(local.sent[0].result.contentItems[0].text).error.code, "foreground_required");
-  const dispatch = createCalendarToolDispatcher({ cloudService: { status: async () => ({ enabled: true }), execute: async () => { throw Object.assign(new Error(), { code: "icloud_read_only" }); } } });
+  const dispatch = createCalendarToolDispatcher({ cloudService: { status: async () => ({ enabled: true }), execute: async () => ({ eventId: "icloud:event:created" }) } });
   const cloud = fixture(t, dispatch);
   cloud.send(tool("calendar_create_event")); await flush();
-  assert.equal(JSON.parse(cloud.sent[0].result.contentItems[0].text).error.code, "icloud_read_only");
+  assert.equal(JSON.parse(cloud.sent[0].result.contentItems[0].text).data.eventId, "icloud:event:created");
   assert.deepEqual(cloud.devices, []);
 });
 
@@ -95,3 +95,16 @@ test("raw cloud access requires known relay identity or an explicitly pending tu
   f.send(); await flush();
   assert.equal(calls, 1);
 });
+
+for (const reason of ["timeout", "interrupt"]) {
+  test(`cloud write ${reason} reports an unknown outcome and never forwards to a device`, async (t) => {
+    let resolve;
+    const f = fixture(t, () => new Promise((done) => { resolve = done; }));
+    f.send(tool("calendar_create_event")); await flush();
+    f.service.terminate(f.relay, f.relay.calendarRequests.get("s:cloud-call"), reason);
+    assert.equal(JSON.parse(f.sent[0].result.contentItems[0].text).error.code, "result_unknown");
+    resolve(result); await flush();
+    assert.equal(f.sent.length, 1);
+    assert.deepEqual(f.devices, []);
+  });
+}
