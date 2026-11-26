@@ -87,7 +87,7 @@ export function SettingsScreen() {
       <View style={styles.settingsSection}><View style={styles.settingsGroup}>
         <TouchableOpacity style={styles.settingsRow} onPress={() => setICloudOpen(true)} accessibilityRole="button" accessibilityLabel="iCloudを認証">
           <View style={styles.settingsRowLabelWrap}><Text style={styles.settingsRowLabel}>iCloudカレンダー</Text>
-            <Text style={styles.settingsRowDescription}>アプリを閉じている間も予定を読み取る</Text></View>
+            <Text style={styles.settingsRowDescription}>アプリを閉じている間も予定を読み書きする</Text></View>
           <Text style={styles.settingsActionText}>iCloudを認証 ›</Text>
         </TouchableOpacity>
       </View></View>

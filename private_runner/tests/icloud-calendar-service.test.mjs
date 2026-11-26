@@ -19,6 +19,9 @@ async function fixture(t) {
       async listCalendars() { calls.push({ tool: "list", credentials }); if (failure) throw failure; return { calendars: [{ id: "icloud:calendar:one" }] }; },
       async searchEvents() { calls.push({ tool: "search", credentials }); if (failure) throw failure; return { events: [] }; },
       async getEvent() { return { event: { id: "icloud:event:one" } }; },
+      async createEvent(args, signal, requestId) { calls.push({ tool: "create", args, requestId }); if (failure) throw failure; return { eventId: "icloud:event:created", lastModifiedAt: null }; },
+      async updateEvent(args) { calls.push({ tool: "update", args }); if (failure) throw failure; return { eventId: "icloud:event:updated", lastModifiedAt: null }; },
+      async deleteEvent(args) { calls.push({ tool: "delete", args }); if (failure) throw failure; return { deletedEventId: "icloud:event:deleted" }; },
     }) };
   const service = createICloudCalendarService(options);
   const connect = async () => service.save(await service.test(input, context), context);
@@ -91,7 +94,7 @@ test("storage rejects insecure modes, symlinks, corrupt encryption, and changed 
 
 test("cloud dispatch runs with no device and never forwards cloud errors or writes to EventKit", async (t) => {
   const f = await fixture(t), dispatch = createCalendarToolDispatcher({ cloudService: f.service });
-  const request = (tool, args = {}) => ({ method: "item/tool/call", params: { namespace: "calendar", tool, arguments: args, threadId: "thread", turnId: "turn" } });
+  const request = (tool, args = {}) => ({ method: "item/tool/call", params: { namespace: "calendar", tool, arguments: args, threadId: "thread", turnId: "turn", callId: tool } });
   assert.equal(await dispatch(request("calendar_search_events")), null);
   const disconnected = await dispatch(request("calendar_get_event", { eventId: "icloud:event:old" }));
   assert.equal(JSON.parse(disconnected.contentItems[0].text).error.code, "icloud_not_connected");
@@ -100,7 +103,7 @@ test("cloud dispatch runs with no device and never forwards cloud errors or writ
   const result = JSON.parse((await coldDispatch(request("calendar_list_calendars"))).contentItems[0].text);
   assert.equal(result.ok, true);
   for (const tool of ["calendar_create_event", "calendar_update_event", "calendar_delete_event"]) {
-    assert.equal(JSON.parse((await dispatch(request(tool))).contentItems[0].text).error.code, "icloud_read_only");
+    assert.equal(JSON.parse((await dispatch(request(tool))).contentItems[0].text).ok, true);
   }
   f.fail(new Error("credential contents must never escape"));
   const failure = JSON.parse((await dispatch(request("calendar_search_events"))).contentItems[0].text);
@@ -135,4 +138,96 @@ test("disabling cloud while a read is pending suppresses data from the previous 
   await service.setEnabled(false);
   release();
   await assert.rejects(pending, { code: "icloud_not_connected" });
+});
+
+const writeId = "a".repeat(64);
+test("write receipts deduplicate concurrent/restarted calls, canonicalize arguments and reject conflicts", async (t) => {
+  const f = await fixture(t); await f.connect();
+  const args = { title: "private event", nested: { b: 2, a: 1 } };
+  const results = await Promise.all([f.service.execute("calendar_create_event", args, undefined, writeId), f.service.execute("calendar_create_event", args, undefined, writeId)]);
+  assert.deepEqual(results[0], results[1]);
+  const restarted = createICloudCalendarService(f.options);
+  assert.deepEqual(await restarted.execute("calendar_create_event", { nested: { a: 1, b: 2 }, title: "private event" }, undefined, writeId), results[0]);
+  assert.equal(f.calls.filter((call) => call.tool === "create").length, 1);
+  await assert.rejects(restarted.execute("calendar_create_event", { title: "different" }, undefined, writeId), { code: "request_conflict" });
+  await assert.rejects(restarted.execute("calendar_delete_event", args, undefined, writeId), { code: "request_conflict" });
+  const receipt = (await fs.readdir(f.directory)).find((value) => value.startsWith("write-"));
+  const saved = await fs.readFile(path.join(f.directory, receipt), "utf8");
+  assert.ok(!saved.includes(args.title));
+  assert.equal((await fs.stat(path.join(f.directory, receipt))).mode & 0o777, 0o600);
+  await f.service.disconnect(); await f.connect();
+  assert.deepEqual(await f.service.execute("calendar_create_event", args, undefined, writeId), results[0]);
+  assert.equal(f.calls.filter((call) => call.tool === "create").length, 1);
+});
+
+test("unfinished and failed writes survive restarts and are never automatically sent again", async (t) => {
+  const f = await fixture(t); await f.connect();
+  let release, started, calls = 0;
+  const ready = new Promise((resolve) => { started = resolve; });
+  const options = { ...f.options, clientFactory: () => ({ async createEvent() {
+    calls++; started(); await new Promise((resolve) => { release = resolve; }); throw iCloudError("result_unknown");
+  } }) };
+  const service = createICloudCalendarService(options);
+  const pending = service.execute("calendar_create_event", {}, undefined, writeId);
+  await ready;
+  await assert.rejects(createICloudCalendarService(options).execute("calendar_create_event", {}, undefined, writeId), { code: "result_unknown" });
+  release();
+  await assert.rejects(pending, { code: "result_unknown" });
+  await assert.rejects(createICloudCalendarService(options).execute("calendar_create_event", {}, undefined, writeId), { code: "result_unknown" });
+  assert.equal(calls, 1);
+});
+
+test("write execution and disconnect are serialized and an owner change suppresses the result", async (t) => {
+  const f = await fixture(t); await f.connect();
+  let release, started, currentOwner = owner;
+  const ready = new Promise((resolve) => { started = resolve; });
+  const service = createICloudCalendarService({ ...f.options, ownerSubjectId: () => currentOwner, clientFactory: () => ({ async createEvent() {
+    started(); await new Promise((resolve) => { release = resolve; }); return { eventId: "private-result" };
+  } }) });
+  const pending = service.execute("calendar_create_event", {}, undefined, writeId);
+  await ready;
+  currentOwner = "owner:other";
+  release();
+  await assert.rejects(pending, { code: "icloud_storage_unavailable" });
+  currentOwner = owner;
+  assert.deepEqual(await service.execute("calendar_create_event", {}, undefined, writeId), { eventId: "private-result" });
+  await service.disconnect();
+  assert.equal((await service.status()).enabled, false);
+});
+
+test("cloud writes require call identity, keep error details private and scope receipts to the account", async (t) => {
+  const f = await fixture(t); await f.connect();
+  const dispatch = createCalendarToolDispatcher({ cloudService: f.service });
+  const request = { method: "item/tool/call", params: { namespace: "calendar", tool: "calendar_create_event", arguments: {}, threadId: "thread", turnId: "turn" } };
+  assert.equal(JSON.parse((await dispatch(request)).contentItems[0].text).error.code, "invalid_arguments");
+  assert.equal(f.calls.filter((call) => call.tool === "create").length, 0);
+  request.params.callId = "create-1";
+  f.fail(new Error("credentials must never escape"));
+  const failure = await dispatch(request);
+  assert.equal(JSON.parse(failure.contentItems[0].text).error.code, "result_unknown");
+  assert.ok(!JSON.stringify(failure).includes("credentials"));
+  f.fail(null);
+  await f.service.save(await f.service.test({ ...input, account: "other@example.invalid" }, context), context);
+  assert.equal(JSON.parse((await dispatch(request)).contentItems[0].text).ok, true);
+  assert.equal(f.calls.filter((call) => call.tool === "create").length, 2);
+});
+
+test("connection changes wait for executing writes and receipt corruption fails closed", async (t) => {
+  const f = await fixture(t); await f.connect();
+  let release, started, disconnected = false;
+  const ready = new Promise((resolve) => { started = resolve; });
+  const service = createICloudCalendarService({ ...f.options, clientFactory: () => ({ async createEvent() {
+    started(); await new Promise((resolve) => { release = resolve; }); return { eventId: "created" };
+  } }) });
+  const write = service.execute("calendar_create_event", {}, undefined, writeId);
+  await ready;
+  const disconnect = service.disconnect().then(() => { disconnected = true; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(disconnected, false);
+  release(); await write; await disconnect;
+  await f.connect();
+  const receipt = (await fs.readdir(f.directory)).find((value) => value.startsWith("write-"));
+  await fs.writeFile(path.join(f.directory, receipt), "corrupt");
+  await assert.rejects(f.service.execute("calendar_create_event", {}, undefined, writeId), { code: "result_unknown" });
+  assert.equal(f.calls.filter((call) => call.tool === "create").length, 0);
 });
