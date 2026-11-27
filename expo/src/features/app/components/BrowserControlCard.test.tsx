@@ -218,6 +218,45 @@ test("pinch zoom is local, keeps its center, and transforms later taps without a
   await f.view.unmount();
 });
 
+test.each([40, 180, 360])("an incremental outward pinch starts directly with one anchored finger and %spt spacing", async (spacing) => {
+  const f = await touchFixture();
+  await fireEvent(f.view.getByTestId("browser-control-screen"), "layout", { nativeEvent: { layout: { width: 600, height: 450 } } });
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 30, 75), finger(1, 30 + spacing, 75)]);
+  for (const movement of [4, 8, 12, 20, 40]) {
+    await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 30, 75), finger(1, 30 + spacing + movement, 75)]);
+    expect(f.controller.input).not.toHaveBeenCalled();
+  }
+  expect(StyleSheet.flatten(f.view.getByLabelText("ブラウザの画面").props.style).width).toBeCloseTo(600 * (spacing + 40) / spacing);
+  await f.touch(TouchEventType.TOUCHES_UP, [finger(0, 30, 75), finger(1, 70 + spacing, 75)], undefined, 0);
+  await f.state("pan", State.END, State.ACTIVE); await f.click();
+  expect(f.controller.input).not.toHaveBeenCalled(); await f.view.unmount();
+});
+
+test("an incremental inward pinch also waits for distance evidence instead of becoming a scroll", async () => {
+  const f = await touchFixture();
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75), finger(1, 150, 75)]);
+  await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 0, 75), finger(1, 200, 75)]);
+  await f.touch(TouchEventType.TOUCHES_UP, [finger(0, 0, 75), finger(1, 200, 75)], undefined, 0); await f.state("pan", State.END, State.ACTIVE);
+  await fireEvent(f.view.getByTestId("browser-control-screen"), "layout", { nativeEvent: { layout: { width: 600, height: 450 } } });
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 30, 75), finger(1, 390, 75)]);
+  for (const movement of [4, 8, 12, 20, 40]) {
+    await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 30, 75), finger(1, 390 - movement, 75)]);
+    expect(f.controller.input).not.toHaveBeenCalled();
+  }
+  expect(StyleSheet.flatten(f.view.getByLabelText("ブラウザの画面").props.style).width).toBeCloseTo(1200 * 320 / 360);
+  await f.view.unmount();
+});
+
+test("parallel two-finger motion still scrolls with small finger-distance jitter", async () => {
+  const f = await touchFixture();
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 10, 75), finger(1, 190, 75)]);
+  await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 10, 69), finger(1, 191, 69)]);
+  await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 10, 63), finger(1, 190, 63)]);
+  expect(f.controller.input.mock.calls.map((call) => call[1].type)).toEqual(["scroll", "scroll"]);
+  expect(StyleSheet.flatten(f.view.getByLabelText("ブラウザの画面").props.style).width).toBe(200);
+  await f.view.unmount();
+});
+
 test("pinch can move the enlarged view, clamps its edges, and does not turn into page scrolling", async () => {
   const f = await touchFixture();
   await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75), finger(1, 150, 75)]);

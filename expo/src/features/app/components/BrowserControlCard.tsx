@@ -152,7 +152,8 @@ export function BrowserControlCard({ request }: { request: BrowserControlRequest
         let mode = previous.mode;
         if (mode === "pending") {
           if (distanceChange >= Math.max(6, previous.startDistance * 0.08) && distanceChange > translation * 0.65) mode = "pinch";
-          else if (translation >= 5) mode = "scroll";
+          // A changing finger distance can reach the scroll threshold before the pinch threshold.
+          else if (translation >= 5 && distanceChange <= translation * 0.65) mode = "scroll";
           else return;
         }
         if (mode === "pinch") {
