@@ -1,5 +1,6 @@
-import { useCallback, useContext, useEffect, useRef, useState } from "react";
-import { Image, PanResponder, StyleSheet, Text, TextInput, TouchableOpacity, View, type GestureResponderEvent } from "react-native";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { Image, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { Gesture, GestureDetector, type TouchData } from "react-native-gesture-handler";
 import type { BrowserControlFrame, BrowserControlInput, BrowserControlRequest } from "../hooks/useBrowserControl";
 import { BrowserControlContext } from "../contexts/BrowserControlContext";
 import { useVisualTheme } from "../theme/VisualThemeContext";
@@ -23,8 +24,9 @@ export function BrowserControlCard({ request }: { request: BrowserControlRequest
   const latestFrame = useRef<BrowserControlFrame | null>(null);
   const imageEpoch = useRef(0);
   const previousStatus = useRef(request.status);
+  const canTap = useRef(false);
   const gesture = useRef<{ x: number; y: number; touches: number; moved: boolean; mode: "scroll" | "drag"; twoFinger: boolean } | null>(null);
-  const clear = useCallback(() => { imageEpoch.current++; latestFrame.current = null; setFrame(null); setDisplayedId(0); displayed.current = null; draft.current = ""; setValue(""); gesture.current = null; }, []);
+  const clear = useCallback(() => { imageEpoch.current++; latestFrame.current = null; setFrame(null); setDisplayedId(0); displayed.current = null; draft.current = ""; setValue(""); gesture.current = null; canTap.current = false; }, []);
   useEffect(() => {
     if (!opened || !controller) return;
     const stop = controller.watch(request.requestId, (next) => {
@@ -36,7 +38,7 @@ export function BrowserControlCard({ request }: { request: BrowserControlRequest
         controller.ack(request.requestId, next.frameId); return;
       }
       if (shown && (shown.width !== next.width || shown.height !== next.height)) {
-        displayed.current = null; setDisplayedId(0); gesture.current = null;
+        displayed.current = null; setDisplayedId(0); gesture.current = null; canTap.current = false;
       }
       latestFrame.current = next; setFrame(next);
     });
@@ -58,13 +60,12 @@ export function BrowserControlCard({ request }: { request: BrowserControlRequest
     if (!draft.current || !displayed.current || request.status !== "active") return;
     const text = draft.current; draft.current = ""; setValue(""); return send({ type: "text", text });
   };
-  const point = (event: GestureResponderEvent) => {
+  const point = (touches: Pick<TouchData, "x" | "y">[]) => {
     const drawn = displayed.current;
-    if (!drawn || !width.current) return null;
-    const touches = event.nativeEvent.touches;
-    const count = touches?.length ?? 1;
-    const x = count && touches ? touches.reduce((sum, touch) => sum + touch.locationX, 0) / count : event.nativeEvent.locationX;
-    const y = count && touches ? touches.reduce((sum, touch) => sum + touch.locationY, 0) / count : event.nativeEvent.locationY;
+    if (!drawn || !width.current || !touches.length) return null;
+    const count = touches.length;
+    const x = touches.reduce((sum, touch) => sum + touch.x, 0) / count;
+    const y = touches.reduce((sum, touch) => sum + touch.y, 0) / count;
     const height = width.current * drawn.height / drawn.width;
     return { x: Math.max(0, Math.min(1, x / width.current)), y: Math.max(0, Math.min(1, y / height)), touches: count };
   };
@@ -74,29 +75,32 @@ export function BrowserControlCard({ request }: { request: BrowserControlRequest
     const previous = gesture.current;
     if (!previous) return false;
     if (p.touches >= 2 && !previous.twoFinger) {
+      canTap.current = false;
       if (previous.mode === "drag" && previous.moved) current.current.send({ type: "up", x: previous.x, y: previous.y });
       gesture.current = { ...p, moved: true, mode: "scroll", twoFinger: true }; return true;
     }
     if (p.touches !== previous.touches) { gesture.current = { ...previous, ...p }; return true; }
     return false;
   };
-  const responder = useRef(PanResponder.create({
-    onStartShouldSetPanResponder: () => !!displayed.current && current.current.status === "active",
-    onMoveShouldSetPanResponder: () => !!displayed.current && current.current.status === "active",
-    onPanResponderTerminationRequest: () => false,
-    onPanResponderGrant: (event) => {
-      const p = current.current.point(event); if (!p) return;
+  const ready = request.status === "active" && displayedId > 0;
+  const touchGesture = useMemo(() => {
+    // A native recognizer owns the touch before the enclosing chat ScrollView starts scrolling.
+    const pan = Gesture.Pan().enabled(ready).minDistance(0).runOnJS(true).withTestId(`browser-control-pan-${request.requestId}`)
+    .onTouchesDown((event) => {
+      const p = current.current.point(event.allTouches); if (!p || current.current.status !== "active") return;
+      if (gesture.current) { changeTouches(p); return; }
+      if (event.numberOfTouches !== event.changedTouches.length) { canTap.current = false; return; }
       const twoFinger = p.touches >= 2, mode = twoFinger ? "scroll" : current.current.mode;
+      canTap.current = !twoFinger;
       current.current.flush(); gesture.current = { ...p, moved: twoFinger, mode, twoFinger };
-    },
-    onPanResponderStart: (event) => { const p = current.current.point(event); if (p) changeTouches(p); },
-    onPanResponderEnd: (event) => { const p = current.current.point(event); if (p) changeTouches(p); },
-    onPanResponderMove: (event) => {
-      const p = current.current.point(event); if (!p || changeTouches(p)) return;
+    })
+    .onTouchesMove((event) => {
+      const p = current.current.point(event.allTouches); if (!p || changeTouches(p)) return;
       const previous = gesture.current;
       if (!previous || previous.twoFinger && p.touches < 2) return;
       const drawn = displayed.current!;
       if (!previous.moved && Math.hypot((p.x - previous.x) * width.current, (p.y - previous.y) * width.current * drawn.height / drawn.width) < 5) return;
+      canTap.current = false;
       if (previous.mode === "drag") {
         if (!previous.moved) current.current.send({ type: "down", x: previous.x, y: previous.y });
         current.current.send({ type: "move", x: p.x, y: p.y });
@@ -106,21 +110,30 @@ export function BrowserControlCard({ request }: { request: BrowserControlRequest
           deltaY: Math.max(-2000, Math.min(2000, (previous.y - p.y) * drawn.height)) });
       }
       gesture.current = { ...previous, ...p, moved: true };
-    },
-    onPanResponderRelease: (event) => {
-      const p = current.current.point(event); const previous = gesture.current;
-      gesture.current = null; if (!p || !previous) return;
-      if (previous.twoFinger) return;
-      if (previous.mode === "drag" && previous.moved) current.current.send({ type: "up", x: p.x, y: p.y });
-      else if (!previous.moved) { current.current.send({ type: "down", x: p.x, y: p.y }); current.current.send({ type: "up", x: p.x, y: p.y }); }
-    },
-    onPanResponderTerminate: () => { const previous = gesture.current; gesture.current = null; if (previous?.mode === "drag" && previous.moved) current.current.send({ type: "up", x: previous.x, y: previous.y }); },
-  })).current;
+    })
+    .onTouchesUp((event) => {
+      // iOS allTouches still contains the lifted pointers in an UP event.
+      const remaining = event.allTouches.filter((touch) => !event.changedTouches.some((changed) => changed.id === touch.id));
+      if (remaining.length) { const p = current.current.point(remaining); if (p) changeTouches(p); return; }
+      const p = current.current.point(event.changedTouches); const previous = gesture.current;
+      gesture.current = null;
+      if (p && previous?.mode === "drag" && previous.moved && !previous.twoFinger) current.current.send({ type: "up", x: p.x, y: p.y });
+    })
+    .onFinalize(() => { const previous = gesture.current; gesture.current = null; if (previous?.mode === "drag" && previous.moved && !previous.twoFinger) current.current.send({ type: "up", x: previous.x, y: previous.y }); });
+    // A stationary pan can fail before its raw UP arrives; native Tap owns click recognition.
+    const tap = Gesture.Tap().enabled(ready).maxDistance(5).runOnJS(true).withTestId(`browser-control-tap-${request.requestId}`)
+      .onEnd((event, success) => {
+        if (!success || !canTap.current) return;
+        canTap.current = false;
+        const p = current.current.point([event]); if (!p) return;
+        current.current.send({ type: "down", x: p.x, y: p.y }); current.current.send({ type: "up", x: p.x, y: p.y });
+      }).onFinalize(() => { canTap.current = false; });
+    return Gesture.Simultaneous(pan, tap);
+  }, [ready, request.requestId]);
   if (!controller) return null;
   const text = { color: theme.colors.textPrimary };
   const button = (label: string, onPress: () => void, disabled = false) => <TouchableOpacity key={label} accessibilityRole="button" accessibilityLabel={label}
     accessibilityState={{ disabled }} disabled={disabled} onPress={onPress} style={styles.button}><Text style={{ color: theme.colors.controlAccent, opacity: disabled ? 0.4 : 1 }}>{label}</Text></TouchableOpacity>;
-  const ready = request.status === "active" && displayedId > 0;
   return <View testID={`browser-control-${request.requestId}`} style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.borderStrong }]}>
     <Text style={[styles.title, text]}>ブラウザを操作 · {formatMessageTimestampLabel(request.createdAt)}</Text>
     <Text style={text}>{request.origin}</Text><Text style={text}>{request.label}</Text>
@@ -130,12 +143,12 @@ export function BrowserControlCard({ request }: { request: BrowserControlRequest
         {button("ブラウザを開く", () => { setOpened(true); })}</View>
     </>}
     {opened && ["pending", "starting", "active"].includes(request.status) && <>
-      <View testID="browser-control-screen" onLayout={(event) => { width.current = event.nativeEvent.layout.width; }}
-        style={[styles.screen, { aspectRatio: frame ? frame.width / frame.height : 4 / 3, borderColor: theme.colors.borderStrong }]} {...responder.panHandlers}>
+      <GestureDetector gesture={touchGesture}><View testID="browser-control-screen" onLayout={(event) => { width.current = event.nativeEvent.layout.width; }}
+        style={[styles.screen, { aspectRatio: frame ? frame.width / frame.height : 4 / 3, borderColor: theme.colors.borderStrong }]}>
         {frame ? <Image key={`${imageEpoch.current}:${frame.width}x${frame.height}`} accessibilityLabel="ブラウザの画面" source={{ uri: `data:image/jpeg;base64,${frame.data}` }} style={StyleSheet.absoluteFill}
           resizeMode="stretch" onLoad={() => { if (latestFrame.current !== frame) return; displayed.current = frame; setDisplayedId(frame.frameId); controller.ack(request.requestId, frame.frameId); }}
           onError={() => { if (latestFrame.current !== frame) return; clear(); controller.failDisplay(request.requestId, "render_failed"); }} /> : <Text style={text}>{request.status === "active" ? "画面を読み込み中…" : "ブラウザに接続中…"}</Text>}
-      </View>
+      </View></GestureDetector>
       <Text style={text}>二本指でもスクロールできます。</Text>
       <View style={styles.keys}>{button(mode === "scroll" ? "スクロール中" : "ドラッグ中", () => { setMode(mode === "scroll" ? "drag" : "scroll"); })}
         {button("Tab", () => { flush(); send({ type: "key", key: "Tab" }); }, !ready)}

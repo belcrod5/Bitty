@@ -124,6 +124,7 @@ jest.mock("react-native-reanimated", () => {
     default: { View: (props: Record<string, unknown>) => ReactModule.createElement(View, props),
       createAnimatedComponent: (Component: unknown) => Component },
     useSharedValue: (initial: number) => ReactModule.useRef({ value: initial }).current,
+    useEvent: () => undefined,
     useAnimatedStyle: (callback: () => unknown) => callback(),
     withTiming: (value: number) => value,
     withRepeat: (value: number) => value,

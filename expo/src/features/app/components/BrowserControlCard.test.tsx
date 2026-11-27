@@ -1,4 +1,7 @@
-import { PanResponder } from "react-native";
+import { State, PointerType, type TouchData } from "react-native-gesture-handler";
+const { getByGestureTestId }: typeof import("react-native-gesture-handler/lib/typescript/jestUtils") = require("react-native-gesture-handler/lib/commonjs/jestUtils");
+const { onGestureHandlerEvent }: typeof import("react-native-gesture-handler/lib/typescript/handlers/gestures/eventReceiver") = require("react-native-gesture-handler/lib/commonjs/handlers/gestures/eventReceiver");
+const { TouchEventType }: typeof import("react-native-gesture-handler/lib/typescript/TouchEventType") = require("react-native-gesture-handler/lib/commonjs/TouchEventType");
 import { act, fireEvent, render } from "@testing-library/react-native";
 import { BrowserControlContext, useBrowserControlRequests } from "../contexts/BrowserControlContext";
 import type { BrowserControlFrame, BrowserControlInput, BrowserControlRequest } from "../hooks/useBrowserControl";
@@ -87,54 +90,95 @@ test("a current image decode failure reports a fixed display failure", async () 
   expect(JSON.stringify(view.toJSON())).not.toContain("PRIVATE_ERROR"); await view.unmount();
 });
 
-test("scaled touch coordinates preserve text-before-click and drag/scroll ordering", async () => {
-  const spy = jest.spyOn(PanResponder, "create").mockImplementation((config) => ({ panHandlers: { onResponderGrant: config.onPanResponderGrant, onResponderMove: config.onPanResponderMove, onResponderRelease: config.onPanResponderRelease } } as never));
-  const f = fixture(); const content = (status: BrowserControlRequest["status"]) => <BrowserControlContext.Provider value={f.controller}><BrowserControlCard request={{ ...card, status }} /></BrowserControlContext.Provider>;
-  const view = await render(content("pending")); await fireEvent.press(view.getByText("ブラウザを開く")); await view.rerender(content("active")); await act(async () => f.emit(frame));
-  await fireEvent(view.getByLabelText("ブラウザの画面"), "load"); const screen = view.getByTestId("browser-control-screen");
-  await fireEvent(screen, "layout", { nativeEvent: { layout: { width: 200 } } });
-  await fireEvent.changeText(view.getByLabelText("ブラウザへ入力するテキスト"), "dummy text");
-  const touch = (x: number, y: number) => ({ nativeEvent: { locationX: x, locationY: y } });
-  await fireEvent(screen, "responderGrant", touch(50, 75)); await fireEvent(screen, "responderRelease", touch(50, 75));
-  expect(f.controller.input.mock.calls.slice(0, 3)).toEqual([["one", { type: "text", text: "dummy text" }, 1], ["one", { type: "down", x: 0.25, y: 0.5 }, 1], ["one", { type: "up", x: 0.25, y: 0.5 }, 1]]);
-  await fireEvent(screen, "responderGrant", touch(50, 75)); await fireEvent(screen, "responderMove", touch(50, 25)); await fireEvent(screen, "responderRelease", touch(50, 25));
-  expect(f.controller.input.mock.calls[3][1].type).toBe("scroll"); expect(f.controller.input).toHaveBeenCalledTimes(4);
-  await fireEvent.press(view.getByText("スクロール中"));
-  await fireEvent(screen, "responderGrant", touch(50, 75)); await fireEvent(screen, "responderMove", touch(150, 75)); await fireEvent(screen, "responderRelease", touch(150, 75));
-  expect(f.controller.input.mock.calls.slice(-3)).toEqual([["one", { type: "down", x: 0.25, y: 0.5 }, 1], ["one", { type: "move", x: 0.75, y: 0.5 }, 1], ["one", { type: "up", x: 0.75, y: 0.5 }, 1]]);
-  await view.unmount(); spy.mockRestore();
+// Exercise the real GestureDetector registry and RNGH event receiver, with only the native bridge mocked.
+async function touchFixture() {
+  const f = fixture();
+  const content = (status: BrowserControlRequest["status"]) => <BrowserControlContext.Provider value={f.controller}><BrowserControlCard request={{ ...card, status }} /></BrowserControlContext.Provider>;
+  const view = await render(content("pending")); await fireEvent.press(view.getByText("ブラウザを開く")); await view.rerender(content("active"));
+  const pan = () => getByGestureTestId("browser-control-pan-one");
+  const tap = () => getByGestureTestId("browser-control-tap-one");
+  expect(pan().config.enabled).toBe(false);
+  await act(async () => f.emit(frame)); await fireEvent(view.getByLabelText("ブラウザの画面"), "load");
+  await fireEvent(view.getByTestId("browser-control-screen"), "layout", { nativeEvent: { layout: { width: 200 } } });
+  expect(pan().config).toMatchObject({ enabled: true, minDist: 0, runOnJS: true, needsPointerData: true });
+  expect(tap().config).toMatchObject({ enabled: true, maxDist: 5, runOnJS: true });
+  const state = async (kind: "pan" | "tap", state: number, oldState: number, x = 50, y = 75) => {
+    await act(async () => onGestureHandlerEvent({ handlerTag: (kind === "pan" ? pan() : tap()).handlerTag,
+      state, oldState, numberOfPointers: 1, pointerType: PointerType.TOUCH, x, y } as Parameters<typeof onGestureHandlerEvent>[0]));
+  };
+  const touch = async (eventType: typeof TouchEventType[keyof typeof TouchEventType], allTouches: TouchData[], changedTouches = allTouches, numberOfTouches = allTouches.length) => {
+    await act(async () => onGestureHandlerEvent({ handlerTag: pan().handlerTag, state: State.ACTIVE, eventType,
+      numberOfTouches, allTouches, changedTouches, pointerType: PointerType.TOUCH }));
+  };
+  const click = async (panFirst = true) => {
+    await state("tap", State.BEGAN, State.UNDETERMINED);
+    if (panFirst) await state("pan", State.FAILED, State.BEGAN);
+    await state("tap", State.ACTIVE, State.BEGAN); await state("tap", State.END, State.ACTIVE);
+    if (!panFirst) await state("pan", State.FAILED, State.BEGAN);
+  };
+  return { ...f, view, pan, tap, state, touch, click };
+}
+const finger = (id: number, x: number, y: number): TouchData => ({ id, x, y, absoluteX: x + 100, absoluteY: y + 200 });
+test.each([true, false])("native taps survive stationary pan failure before/after recognition: %s", async (panFirst) => {
+  const f = await touchFixture(); await fireEvent.changeText(f.view.getByLabelText("ブラウザへ入力するテキスト"), "dummy text");
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75)]); await f.click(panFirst);
+  expect(f.controller.input.mock.calls).toEqual([["one", { type: "text", text: "dummy text" }, 1], ["one", { type: "down", x: 0.25, y: 0.5 }, 1], ["one", { type: "up", x: 0.25, y: 0.5 }, 1]]);
+  await f.view.unmount();
 });
-test("two fingers scroll in drag mode and lifting one finger never turns into a click", async () => {
-  jest.spyOn(PanResponder, "create").mockImplementation((config) => ({ panHandlers: { onResponderGrant: config.onPanResponderGrant, onResponderMove: config.onPanResponderMove,
-    onResponderRelease: config.onPanResponderRelease, onResponderStart: config.onPanResponderStart, onResponderEnd: config.onPanResponderEnd, onResponderTerminate: config.onPanResponderTerminate } } as never));
-  const f = fixture(); const content = (status: BrowserControlRequest["status"]) => <BrowserControlContext.Provider value={f.controller}><BrowserControlCard request={{ ...card, status }} /></BrowserControlContext.Provider>;
-  const view = await render(content("pending")); await fireEvent.press(view.getByText("ブラウザを開く")); await view.rerender(content("active")); await act(async () => f.emit(frame));
-  await fireEvent(view.getByLabelText("ブラウザの画面"), "load"); const screen = view.getByTestId("browser-control-screen");
-  await fireEvent(screen, "layout", { nativeEvent: { layout: { width: 200 } } }); await fireEvent.press(view.getByText("スクロール中"));
-  const touch = (...points: Array<[number, number]>) => ({ nativeEvent: { touches: points.map(([locationX, locationY]) => ({ locationX, locationY })), locationX: points[0]?.[0] || 0, locationY: points[0]?.[1] || 0 } });
-  await fireEvent(screen, "responderGrant", touch([30, 75], [70, 75])); await fireEvent(screen, "responderMove", touch([30, 25], [70, 25]));
-  const scroll = f.controller.input.mock.calls[0]; expect(scroll[1]).toMatchObject({ type: "scroll", x: 0.25, deltaX: 0 }); expect((scroll[1] as { deltaY: number }).deltaY).toBeCloseTo(200);
-  await fireEvent(screen, "responderEnd", touch([30, 25])); await fireEvent(screen, "responderMove", touch([100, 100])); await fireEvent(screen, "responderRelease", touch());
-  expect(f.controller.input).toHaveBeenCalledTimes(1);
-  // A second finger added without a move must also cancel the pending one-finger gesture.
-  await fireEvent(screen, "responderGrant", touch([50, 75])); await fireEvent(screen, "responderStart", touch([50, 75], [150, 75]));
-  await fireEvent(screen, "responderEnd", touch([50, 75])); await fireEvent(screen, "responderRelease", touch());
-  expect(f.controller.input).toHaveBeenCalledTimes(1);
-  // A drag that already moved is completed once before switching to two-finger scrolling.
-  await fireEvent(screen, "responderGrant", touch([50, 75])); await fireEvent(screen, "responderMove", touch([75, 75]));
-  await fireEvent(screen, "responderStart", touch([75, 75], [125, 75])); await fireEvent(screen, "responderMove", touch([75, 25], [125, 25]));
-  await fireEvent(screen, "responderEnd", touch([75, 25])); await fireEvent(screen, "responderRelease", touch());
-  expect(f.controller.input.mock.calls.slice(1).map((call) => call[1].type)).toEqual(["down", "move", "up", "scroll"]);
-  f.controller.input.mockClear();
-  await fireEvent(screen, "responderGrant", touch([50, 75])); await fireEvent(screen, "responderTerminate", touch());
-  expect(f.controller.input).not.toHaveBeenCalled();
-  await fireEvent(screen, "responderGrant", touch([50, 75])); await fireEvent(screen, "responderMove", touch([75, 75])); await fireEvent(screen, "responderTerminate", touch());
-  expect(f.controller.input.mock.calls.map((call) => call[1].type)).toEqual(["down", "move", "up"]);
-  f.controller.input.mockClear();
-  await fireEvent(screen, "responderGrant", touch([50, 75])); await fireEvent(screen, "responderMove", touch([75, 75]));
-  await act(async () => f.emit({ ...frame, frameId: 2, width: 1600, height: 1200 }));
-  await fireEvent(screen, "responderRelease", touch());
-  // The CDP viewport invalidation ends the held drag; the view cannot send another old-coordinate up.
-  expect(f.controller.input.mock.calls.map((call) => call[1].type)).toEqual(["down", "move"]);
-  await view.unmount();
+test("native continuous touch dispatch scrolls and drags, with one mouse release", async () => {
+  const f = await touchFixture(); await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75)]);
+  await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 50, 25)]); await f.touch(TouchEventType.TOUCHES_UP, [finger(0, 50, 25)], undefined, 0);
+  await f.state("pan", State.END, State.ACTIVE); await f.click();
+  expect(f.controller.input).toHaveBeenCalledTimes(1); expect(f.controller.input.mock.calls[0][1]).toMatchObject({ type: "scroll", x: 0.25, y: 1 / 6, deltaX: 0 }); expect((f.controller.input.mock.calls[0][1] as { deltaY: number }).deltaY).toBeCloseTo(200);
+  await fireEvent.press(f.view.getByText("スクロール中")); const tag = f.pan().handlerTag;
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75)]); await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 150, 75)]);
+  await act(async () => f.emit({ ...frame, frameId: 2 })); expect(f.pan().handlerTag).toBe(tag);
+  await f.touch(TouchEventType.TOUCHES_UP, [finger(0, 150, 75)], undefined, 0); await f.state("pan", State.END, State.ACTIVE); await f.click();
+  expect(f.controller.input.mock.calls.slice(-3)).toEqual([["one", { type: "down", x: 0.25, y: 0.5 }, 1], ["one", { type: "move", x: 0.75, y: 0.5 }, 1], ["one", { type: "up", x: 0.75, y: 0.5 }, 2]]);
+  await f.view.unmount();
+});
+test.each([false, true])("batched two-finger touch scrolls in either mode without a click: drag=%s", async (drag) => {
+  const f = await touchFixture(); if (drag) await fireEvent.press(f.view.getByText("スクロール中"));
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 30, 75), finger(1, 70, 75)]);
+  await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 30, 25), finger(1, 70, 25)]);
+  expect(f.controller.input.mock.calls[0][1]).toMatchObject({ type: "scroll", x: 0.25, deltaX: 0 }); expect((f.controller.input.mock.calls[0][1] as { deltaY: number }).deltaY).toBeCloseTo(200);
+  // Native iOS UP retains the lifted pointer in allTouches.
+  await f.touch(TouchEventType.TOUCHES_UP, [finger(0, 30, 25), finger(1, 70, 25)], [finger(1, 70, 25)], 1);
+  await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 100, 100)]); await f.touch(TouchEventType.TOUCHES_UP, [finger(0, 100, 100)], undefined, 0);
+  await f.click(); expect(f.controller.input).toHaveBeenCalledTimes(1); await f.view.unmount();
+});
+test("adding a second finger finishes an existing drag and never resumes it on finger lift", async () => {
+  const f = await touchFixture(); await fireEvent.press(f.view.getByText("スクロール中"));
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75)]); await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 75, 75)]);
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 75, 75), finger(1, 125, 75)], [finger(1, 125, 75)]);
+  await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 75, 25), finger(1, 125, 25)]);
+  await f.touch(TouchEventType.TOUCHES_UP, [finger(0, 75, 25), finger(1, 125, 25)], [finger(1, 125, 25)], 1);
+  await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 150, 25)]); await f.touch(TouchEventType.TOUCHES_UP, [finger(0, 150, 25)], undefined, 0); await f.click();
+  expect(f.controller.input.mock.calls.map((call) => call[1].type)).toEqual(["down", "move", "up", "scroll"]); await f.view.unmount();
+});
+test("native cancellation releases drag; frame invalidation cannot restart held fingers", async () => {
+  const f = await touchFixture(); await fireEvent.press(f.view.getByText("スクロール中"));
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75)]); await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 75, 75)]);
+  await f.state("pan", State.CANCELLED, State.ACTIVE); await f.state("tap", State.CANCELLED, State.BEGAN);
+  expect(f.controller.input.mock.calls.map((call) => call[1].type)).toEqual(["down", "move", "up"]); f.controller.input.mockClear();
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75)]); await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 75, 75)]);
+  await act(async () => f.emit(null)); expect(f.pan().config.enabled).toBe(false);
+  await act(async () => f.emit({ ...frame, frameId: 2 })); await fireEvent(f.view.getByLabelText("ブラウザの画面"), "load");
+  await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 100, 75)]);
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 100, 75), finger(1, 150, 75)], [finger(1, 150, 75)]);
+  await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 100, 25), finger(1, 150, 25)]); await f.click();
+  expect(f.controller.input.mock.calls.map((call) => call[1].type)).toEqual(["down", "move"]); await f.view.unmount();
+});
+test("a second finger without any movement cannot become a native tap", async () => {
+  const f = await touchFixture();
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75)]);
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75), finger(1, 100, 75)], [finger(1, 100, 75)]);
+  await f.touch(TouchEventType.TOUCHES_UP, [finger(0, 50, 75), finger(1, 100, 75)], [finger(1, 100, 75)], 1);
+  await f.touch(TouchEventType.TOUCHES_UP, [finger(0, 50, 75)], undefined, 0); await f.click();
+  expect(f.controller.input).not.toHaveBeenCalled(); await f.view.unmount();
+});
+test("a cancelled stationary native tap never clicks", async () => {
+  const f = await touchFixture(); await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75)]);
+  await f.state("pan", State.CANCELLED, State.BEGAN); await f.state("tap", State.CANCELLED, State.BEGAN);
+  expect(f.controller.input).not.toHaveBeenCalled(); await f.view.unmount();
 });
