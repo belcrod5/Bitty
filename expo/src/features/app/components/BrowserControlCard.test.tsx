@@ -2,11 +2,18 @@ import { State, PointerType, type TouchData } from "react-native-gesture-handler
 const { getByGestureTestId }: typeof import("react-native-gesture-handler/lib/typescript/jestUtils") = require("react-native-gesture-handler/lib/commonjs/jestUtils");
 const { onGestureHandlerEvent }: typeof import("react-native-gesture-handler/lib/typescript/handlers/gestures/eventReceiver") = require("react-native-gesture-handler/lib/commonjs/handlers/gestures/eventReceiver");
 const { TouchEventType }: typeof import("react-native-gesture-handler/lib/typescript/TouchEventType") = require("react-native-gesture-handler/lib/commonjs/TouchEventType");
+import { AppState } from "react-native";
+import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import { act, fireEvent, render } from "@testing-library/react-native";
 import { BrowserControlContext, useBrowserControlRequests } from "../contexts/BrowserControlContext";
-import type { BrowserControlFrame, BrowserControlInput, BrowserControlRequest } from "../hooks/useBrowserControl";
+import { useBrowserControl, type BrowserControlFocus, BrowserControlFrame, BrowserControlInput, BrowserControlRequest } from "../hooks/useBrowserControl";
 import { BrowserControlCard } from "./BrowserControlCard";
 import { VoiceConversationMessages } from "./VoiceConversationMessages";
+jest.mock("expo-crypto", () => ({ randomUUID: () => "00000000-0000-4000-8000-000000000001" }));
+jest.mock("expo-modules-core", () => ({
+  requireOptionalNativeModule: (name: string) => name === "BittyBrowserKeyboard" ? {} : null,
+  requireNativeViewManager: () => { const React = require("react"); const { View } = require("react-native"); return (props: unknown) => React.createElement(View, props); },
+}));
 jest.mock("./MarkdownText", () => ({ MarkdownText: ({ content }: { content: string }) => { const { Text } = require("react-native"); return <Text>{content}</Text>; } }));
 jest.mock("@expo/vector-icons", () => ({ Ionicons: () => null }));
 jest.mock("./AnswerLearningDetails", () => ({ AnswerLearningDetails: () => null }));
@@ -15,8 +22,9 @@ const card: BrowserControlRequest = { requestId: "one", origin: "https://example
 const frame = { frameId: 1, data: "aW1hZ2U=", width: 800, height: 600 };
 function fixture() {
   let listener: ((frame: BrowserControlFrame | null) => void) | undefined;
-  const controller = { requests: [card], command: jest.fn(async () => {}), input: jest.fn(async (_requestId: string, _input: BrowserControlInput, _frameId: number) => {}), ack: jest.fn(), failDisplay: jest.fn(), watch: jest.fn((_id: string, handler: (frame: BrowserControlFrame | null) => void) => { listener = handler; return () => { handler(null); }; }) };
-  return { controller, emit: (next: BrowserControlFrame | null) => listener?.(next) };
+  let keyboard: ((focus: BrowserControlFocus | null) => void) | undefined;
+  const controller = { requests: [card], command: jest.fn(async (_requestId: string, _action: string) => {}), input: jest.fn(async (_requestId: string, _input: BrowserControlInput, _frameId: number) => {}), ack: jest.fn(), failDisplay: jest.fn(), watch: jest.fn((_id: string, handler: (frame: BrowserControlFrame | null) => void, onFocus?: (focus: BrowserControlFocus | null) => void) => { listener = handler; keyboard = onFocus; return () => { handler(null); keyboard?.(null); }; }) };
+  return { controller, emit: (next: BrowserControlFrame | null) => listener?.(next), emitFocus: (next: BrowserControlFocus | null) => keyboard?.(next) };
 }
 afterEach(() => jest.restoreAllMocks());
 test("already displayed identical frames acknowledge new IDs without another native load", async () => {
@@ -27,10 +35,11 @@ test("already displayed identical frames acknowledge new IDs without another nat
   await act(async () => f.emit({ ...frame, frameId: 2 }));
   expect(f.controller.ack.mock.calls).toEqual([["one", 1], ["one", 2]]);
   await act(async () => oldLoad()); expect(f.controller.ack).toHaveBeenCalledTimes(2);
-  await fireEvent.changeText(view.getByLabelText("ブラウザへ入力するテキスト"), "dummy"); await fireEvent.press(view.getByText("入力"));
-  expect(f.controller.input).toHaveBeenLastCalledWith("one", { type: "text", text: "dummy" }, 2);
+  await act(async () => f.emitFocus({ editable: true, multiline: false, kind: "text", focusRevision: "focus-1" }));
+  await fireEvent(view.getByTestId("browser-control-keyboard"), "input", { nativeEvent: { text: "dummy", focusRevision: "focus-1" } });
+  expect(f.controller.input).toHaveBeenLastCalledWith("one", { type: "text", text: "dummy", focusRevision: "focus-1" }, 2);
   await act(async () => f.emit({ ...frame, frameId: 3, width: 1600, height: 1200 }));
-  expect(f.controller.ack).toHaveBeenCalledTimes(2); expect(view.getByLabelText("Tab").props.accessibilityState.disabled).toBe(true);
+  expect(f.controller.ack).toHaveBeenCalledTimes(2); expect(view.getByTestId("browser-control-keyboard").props.focusRevision).toBeNull();
   await fireEvent(view.getByLabelText("ブラウザの画面"), "load");
   expect(f.controller.ack).toHaveBeenLastCalledWith("one", 3);
   const priorLoad = view.getByLabelText("ブラウザの画面").props.onLoad;
@@ -46,7 +55,7 @@ test("identical frames before the first native load are not acknowledged early",
   await act(async () => { f.emit(frame); f.emit({ ...frame, frameId: 2 }); }); expect(f.controller.ack).not.toHaveBeenCalled();
   await fireEvent(view.getByLabelText("ブラウザの画面"), "load"); expect(f.controller.ack.mock.calls).toEqual([["one", 2]]); await view.unmount();
 });
-test("opening is explicit, visible text uses dedicated input, and leaving clears both image and draft", async () => {
+test("opening is explicit and the native keyboard forwards committed input without a chat field", async () => {
   const f = fixture();
   function Chat({ selected, status = "pending" }: { selected: string; status?: BrowserControlRequest["status"] }) { return <>{useBrowserControlRequests({ kind: "orchestrator", orchestratorId: selected }).map((r) => <BrowserControlCard key={r.requestId} request={{ ...r, status }} />)}</>; }
   const content = (selected: string, status: BrowserControlRequest["status"] = "pending") => <BrowserControlContext.Provider value={f.controller}><Chat selected={selected} status={status} /></BrowserControlContext.Provider>;
@@ -54,10 +63,16 @@ test("opening is explicit, visible text uses dedicated input, and leaving clears
   await fireEvent.press(view.getByText("ブラウザを開く")); expect(view.queryByText("操作を開始")).toBeNull(); expect(f.controller.watch).toHaveBeenCalledTimes(1); expect(f.controller.command).toHaveBeenCalledWith("one", "start");
   await view.rerender(content("main", "active")); await act(async () => f.emit(frame));
   await fireEvent(view.getByLabelText("ブラウザの画面"), "load"); expect(f.controller.ack).toHaveBeenCalledWith("one", 1);
-  const input = view.getByLabelText("ブラウザへ入力するテキスト"); expect(input.props.secureTextEntry).not.toBe(true);
-  await fireEvent.changeText(input, "日本語 PRIVATE"); await fireEvent.press(view.getByText("入力")); expect(f.controller.input).toHaveBeenCalledWith("one", { type: "text", text: "日本語 PRIVATE" }, 1);
-  await fireEvent.changeText(view.getByLabelText("ブラウザへ入力するテキスト"), "discard me"); await view.rerender(content("other")); await view.rerender(content("main"));
-  expect(view.queryByLabelText("ブラウザの画面")).toBeNull(); expect(view.queryByLabelText("ブラウザへ入力するテキスト")).toBeNull(); expect(JSON.stringify(view.toJSON())).not.toContain("discard me");
+  for (const label of ["ブラウザへ入力するテキスト", "Tab", "⌫", "Enter", "Esc", "↑", "↓", "←", "→"]) expect(view.queryByLabelText(label)).toBeNull();
+  expect(view.queryByText("入力")).toBeNull(); expect(view.queryByText("スクロール中")).toBeNull(); expect(view.queryByText("ドラッグ中")).toBeNull();
+  await act(async () => f.emitFocus({ editable: true, multiline: false, kind: "text", focusRevision: "focus-1" }));
+  const keyboard = view.getByTestId("browser-control-keyboard"); expect(keyboard.props.focusRevision).toBe("focus-1");
+  await fireEvent(keyboard, "input", { nativeEvent: { text: "日本語 PRIVATE", focusRevision: "focus-1" } });
+  expect(f.controller.input).toHaveBeenCalledWith("one", { type: "text", text: "日本語 PRIVATE", focusRevision: "focus-1" }, 1);
+  expect(JSON.stringify(view.toJSON())).not.toContain("日本語 PRIVATE");
+  await view.rerender(content("other")); await view.rerender(content("main"));
+  expect(view.queryByLabelText("ブラウザの画面")).toBeNull(); expect(view.queryByTestId("browser-control-keyboard")).toBeNull();
+
 });
 test("a late Image load after navigation cannot restore old input coordinates or ACK", async () => {
   const f = fixture(); const view = await render(<BrowserControlContext.Provider value={f.controller}><BrowserControlCard request={{ ...card, status: "active" }} /></BrowserControlContext.Provider>);
@@ -120,25 +135,25 @@ async function touchFixture() {
 }
 const finger = (id: number, x: number, y: number): TouchData => ({ id, x, y, absoluteX: x + 100, absoluteY: y + 200 });
 test.each([true, false])("native taps survive stationary pan failure before/after recognition: %s", async (panFirst) => {
-  const f = await touchFixture(); await fireEvent.changeText(f.view.getByLabelText("ブラウザへ入力するテキスト"), "dummy text");
+  const f = await touchFixture();
   await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75)]); await f.click(panFirst);
-  expect(f.controller.input.mock.calls).toEqual([["one", { type: "text", text: "dummy text" }, 1], ["one", { type: "down", x: 0.25, y: 0.5 }, 1], ["one", { type: "up", x: 0.25, y: 0.5 }, 1]]);
+  expect(f.controller.input.mock.calls).toEqual([["one", { type: "down", x: 0.25, y: 0.5 }, 1], ["one", { type: "up", x: 0.25, y: 0.5 }, 1]]);
   await f.view.unmount();
 });
 test("native continuous touch dispatch scrolls and drags, with one mouse release", async () => {
-  const f = await touchFixture(); await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75)]);
-  await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 50, 25)]); await f.touch(TouchEventType.TOUCHES_UP, [finger(0, 50, 25)], undefined, 0);
+  const f = await touchFixture(); await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 30, 75), finger(1, 70, 75)]);
+  await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 30, 25), finger(1, 70, 25)]); await f.touch(TouchEventType.TOUCHES_UP, [finger(0, 30, 25), finger(1, 70, 25)], undefined, 0);
   await f.state("pan", State.END, State.ACTIVE); await f.click();
   expect(f.controller.input).toHaveBeenCalledTimes(1); expect(f.controller.input.mock.calls[0][1]).toMatchObject({ type: "scroll", x: 0.25, y: 1 / 6, deltaX: 0 }); expect((f.controller.input.mock.calls[0][1] as { deltaY: number }).deltaY).toBeCloseTo(200);
-  await fireEvent.press(f.view.getByText("スクロール中")); const tag = f.pan().handlerTag;
+  const tag = f.pan().handlerTag;
   await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75)]); await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 150, 75)]);
   await act(async () => f.emit({ ...frame, frameId: 2 })); expect(f.pan().handlerTag).toBe(tag);
   await f.touch(TouchEventType.TOUCHES_UP, [finger(0, 150, 75)], undefined, 0); await f.state("pan", State.END, State.ACTIVE); await f.click();
   expect(f.controller.input.mock.calls.slice(-3)).toEqual([["one", { type: "down", x: 0.25, y: 0.5 }, 1], ["one", { type: "move", x: 0.75, y: 0.5 }, 1], ["one", { type: "up", x: 0.75, y: 0.5 }, 2]]);
   await f.view.unmount();
 });
-test.each([false, true])("batched two-finger touch scrolls in either mode without a click: drag=%s", async (drag) => {
-  const f = await touchFixture(); if (drag) await fireEvent.press(f.view.getByText("スクロール中"));
+test("batched two-finger touch scrolls without a mode switch or a click", async () => {
+  const f = await touchFixture();
   await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 30, 75), finger(1, 70, 75)]);
   await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 30, 25), finger(1, 70, 25)]);
   expect(f.controller.input.mock.calls[0][1]).toMatchObject({ type: "scroll", x: 0.25, deltaX: 0 }); expect((f.controller.input.mock.calls[0][1] as { deltaY: number }).deltaY).toBeCloseTo(200);
@@ -148,7 +163,7 @@ test.each([false, true])("batched two-finger touch scrolls in either mode withou
   await f.click(); expect(f.controller.input).toHaveBeenCalledTimes(1); await f.view.unmount();
 });
 test("adding a second finger finishes an existing drag and never resumes it on finger lift", async () => {
-  const f = await touchFixture(); await fireEvent.press(f.view.getByText("スクロール中"));
+  const f = await touchFixture();
   await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75)]); await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 75, 75)]);
   await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 75, 75), finger(1, 125, 75)], [finger(1, 125, 75)]);
   await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 75, 25), finger(1, 125, 25)]);
@@ -157,7 +172,7 @@ test("adding a second finger finishes an existing drag and never resumes it on f
   expect(f.controller.input.mock.calls.map((call) => call[1].type)).toEqual(["down", "move", "up", "scroll"]); await f.view.unmount();
 });
 test("native cancellation releases drag; frame invalidation cannot restart held fingers", async () => {
-  const f = await touchFixture(); await fireEvent.press(f.view.getByText("スクロール中"));
+  const f = await touchFixture();
   await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75)]); await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 75, 75)]);
   await f.state("pan", State.CANCELLED, State.ACTIVE); await f.state("tap", State.CANCELLED, State.BEGAN);
   expect(f.controller.input.mock.calls.map((call) => call[1].type)).toEqual(["down", "move", "up"]); f.controller.input.mockClear();
@@ -181,4 +196,97 @@ test("a cancelled stationary native tap never clicks", async () => {
   const f = await touchFixture(); await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75)]);
   await f.state("pan", State.CANCELLED, State.BEGAN); await f.state("tap", State.CANCELLED, State.BEGAN);
   expect(f.controller.input).not.toHaveBeenCalled(); await f.view.unmount();
+});
+
+test("focus changes and clearing discard delayed native input while keys use the current focus token", async () => {
+  const f = await touchFixture();
+  await act(async () => f.emitFocus({ editable: true, multiline: false, kind: "password", focusRevision: "field-1" }));
+  const keyboard = f.view.getByTestId("browser-control-keyboard");
+  const oldInput = keyboard.props.onInput;
+  expect(keyboard.props.kind).toBe("password");
+  await act(async () => f.emitFocus({ editable: true, multiline: true, kind: "text", focusRevision: "field-2" }));
+  await act(async () => oldInput({ nativeEvent: { text: "late private commit", focusRevision: "field-1" } }));
+  expect(f.controller.input).not.toHaveBeenCalled();
+  for (const key of ["Backspace", "Enter"]) await fireEvent(f.view.getByTestId("browser-control-keyboard"), "input", { nativeEvent: { key, focusRevision: "field-2" } });
+  expect(f.controller.input.mock.calls.map(([, input]) => input)).toEqual([{ type: "key", key: "Backspace", focusRevision: "field-2" }, { type: "key", key: "Enter", focusRevision: "field-2" }]);
+  await act(async () => f.emit(null));
+  expect(f.view.getByTestId("browser-control-keyboard").props.focusRevision).toBeNull();
+  await act(async () => oldInput({ nativeEvent: { text: "late private commit", focusRevision: "field-2" } }));
+  expect(f.controller.input).toHaveBeenCalledTimes(2);
+  expect(JSON.stringify(f.view.toJSON())).not.toContain("late private commit");
+  await f.view.unmount();
+});
+
+test("finishing retains the view until queued input and the finish command settle", async () => {
+  const f = await touchFixture(); let finish: (() => void) | undefined;
+  f.controller.command.mockImplementation(async (_id: string, action: string) => { if (action === "finish") await new Promise<void>((resolve) => { finish = resolve; }); });
+  await fireEvent.press(f.view.getByText("操作を完了"));
+  expect(f.view.getByLabelText("ブラウザの画面")).toBeTruthy();
+  expect(f.controller.watch).toHaveBeenCalledTimes(1);
+  await act(async () => finish?.());
+  expect(f.view.queryByLabelText("ブラウザの画面")).toBeNull();
+  await f.view.unmount();
+});
+
+test("a reconnectable card shows the uncertainty warning before reopening", async () => {
+  const f = fixture(); const view = await render(<BrowserControlContext.Provider value={f.controller}><BrowserControlCard request={{ ...card, inputStatusUnknown: true }} /></BrowserControlContext.Provider>);
+  expect(view.getByText("接続が切れました。前の操作結果を確認してから再開してください。")).toBeTruthy();
+  expect(view.getByText("ブラウザを開く")).toBeTruthy();
+  await view.unmount();
+});
+
+
+test("the real hook drains private typing and finishes before the card releases its viewer", async () => {
+  const previous = AppState.currentState; AppState.currentState = "active";
+  jest.spyOn(AppState, "addEventListener").mockImplementation(() => ({ remove: jest.fn() }));
+  const handlers = new Map<string, (message: any) => void>();
+  let finishInput: (() => void) | undefined;
+  const request = jest.fn(async (message: any) => {
+    const action = message.payload.action;
+    if (action === "input") await new Promise<void>((resolve) => { finishInput = resolve; });
+    return { channel: "control", op: "browser.control.command.result", payload: { status: action === "finish" ? "completed" : "active" } };
+  });
+  const send = jest.fn();
+  const manager = { request, send, connect: jest.fn(async () => {}), getSnapshot: () => ({ connected: true, generation: 1, connectionOptionsGeneration: 1 }),
+    subscribe: ({ op }: { op: string }, listener: (message: any) => void) => { handlers.set(op, listener); return () => handlers.delete(op); },
+    subscribeSnapshot: () => () => {},
+  } as unknown as RunnerWebSocketManager;
+  function Chat() { const controller = useBrowserControl(manager); return <BrowserControlContext.Provider value={controller}>{controller.requests.map((entry) => <BrowserControlCard key={entry.requestId} request={entry} />)}</BrowserControlContext.Provider>; }
+  const view = await render(<Chat />);
+  const emit = (op: string, payload: unknown) => handlers.get(`browser.control.${op}`)?.({ channel: "control", op: `browser.control.${op}`, payload });
+  await act(async () => emit("request", card));
+  await fireEvent.press(view.getByText("ブラウザを開く"));
+  const controlId = request.mock.calls[0][0].payload.controlId;
+  await act(async () => emit("frame", { requestId: "one", controlId, ...frame }));
+  await fireEvent(view.getByLabelText("ブラウザの画面"), "load");
+  await act(async () => emit("focus", { requestId: "one", controlId, editable: true, multiline: false, kind: "text", focusRevision: "field-1" }));
+  await fireEvent(view.getByTestId("browser-control-keyboard"), "input", { nativeEvent: { text: "private queued text", focusRevision: "field-1" } });
+  await fireEvent.press(view.getByText("操作を完了"));
+  expect(request.mock.calls.map(([message]) => message.payload.action)).toEqual(["start", "input"]);
+  expect(view.getByLabelText("ブラウザの画面")).toBeTruthy();
+  await act(async () => finishInput?.());
+  expect(request.mock.calls.map(([message]) => message.payload.action)).toEqual(["start", "input", "finish"]);
+  expect(view.queryByLabelText("ブラウザの画面")).toBeNull();
+  expect(view.getByText("ブラウザの操作を終了しました")).toBeTruthy();
+  expect(send.mock.calls.some(([message]) => message.payload?.action === "pause")).toBe(false);
+  expect(JSON.stringify(view.toJSON())).not.toContain("private queued text");
+  await view.unmount(); AppState.currentState = previous;
+});
+
+
+test("an old finish result cannot close a newly reopened browser view", async () => {
+  const f = fixture();
+  const content = (status: BrowserControlRequest["status"]) => <BrowserControlContext.Provider value={f.controller}><BrowserControlCard request={{ ...card, status }} /></BrowserControlContext.Provider>;
+  const view = await render(content("pending")); await fireEvent.press(view.getByText("ブラウザを開く")); await view.rerender(content("active"));
+  await act(async () => f.emit(frame)); await fireEvent(view.getByLabelText("ブラウザの画面"), "load");
+  let finish: (() => void) | undefined;
+  f.controller.command.mockImplementation(async (_id: string, action: string) => { if (action === "finish") await new Promise<void>((resolve) => { finish = resolve; }); });
+  await fireEvent.press(view.getByText("操作を完了"));
+  await fireEvent.press(view.getByText("閉じる")); await view.rerender(content("pending"));
+  await fireEvent.press(view.getByText("ブラウザを開く")); await view.rerender(content("active"));
+  await act(async () => f.emit({ ...frame, frameId: 2 })); await fireEvent(view.getByLabelText("ブラウザの画面"), "load");
+  await act(async () => finish?.());
+  expect(view.getByLabelText("ブラウザの画面")).toBeTruthy();
+  expect(f.controller.watch).toHaveBeenCalledTimes(2);
+  await view.unmount();
 });

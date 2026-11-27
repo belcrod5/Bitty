@@ -1,4 +1,5 @@
 import { WebSocket } from "ws";
+import { randomUUID } from "node:crypto";
 
 const fail = () => new Error("browser_control_unavailable");
 export function validateBrowserControlTarget(input) {
@@ -18,8 +19,9 @@ export function validateBrowserControlTarget(input) {
 export function validBrowserControlInput(input) {
   if (!input || typeof input !== "object" || Array.isArray(input)) return false;
   const keys = Object.keys(input).sort().join(",");
-  if (input.type === "text") return keys === "text,type" && typeof input.text === "string" && input.text.length > 0 && input.text.length <= 4096;
-  if (input.type === "key") return keys === "key,type" && ["Backspace", "Delete", "Enter", "Tab", "Escape", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(input.key);
+  if (input.focusRevision !== undefined && (typeof input.focusRevision !== "string" || !/^[A-Za-z0-9:-]{1,120}$/.test(input.focusRevision))) return false;
+  if (input.type === "text") return ["text,type", "focusRevision,text,type"].includes(keys) && typeof input.text === "string" && input.text.length > 0 && input.text.length <= 4096;
+  if (input.type === "key") return ["key,type", "focusRevision,key,type"].includes(keys) && ["Backspace", "Delete", "Enter", "Tab", "Escape", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(input.key);
   if (!["down", "move", "up", "scroll"].includes(input.type) || !Number.isFinite(input.x) || !Number.isFinite(input.y)
     || input.x < 0 || input.x > 1 || input.y < 0 || input.y > 1) return false;
   return input.type === "scroll"
@@ -27,9 +29,10 @@ export function validBrowserControlInput(input) {
     : keys === "type,x,y";
 }
 
-// A page-only CDP session. No DOM/value reads, arbitrary JS, console/network capture, or disk recording.
+// A page-only CDP session. Only a fixed isolated focus observer reads editable metadata; never values.
+// No caller-supplied JS, console/network capture, or disk recording.
 // Images go directly to the bound user device and never enter the agent's status response.
-export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, frameTimeoutMs = 10_000, onInvalidated, onFrame, onOrigin, onViewInvalidated, onDiagnostic } = {}) {
+export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, frameTimeoutMs = 10_000, onInvalidated, onFrame, onOrigin, onViewInvalidated, onDiagnostic, onFocus } = {}) {
   target = validateBrowserControlTarget(target);
   const socket = new WebSocket(target.cdpUrl, { followRedirects: false, maxPayload: 3 * 1024 * 1024 });
   const pending = new Map();
@@ -40,13 +43,85 @@ export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, 
   let awaitingFrame = null, readingFrame = false, receivedFrame = false, frameTimer, lastViewport = null;
   let generation = 0, controlGeneration = 0, navigating = false;
   const displayedFrames = new Map();
+  const focusWorld = `bitty-browser-${randomUUID()}`, focusBinding = "__bittyBrowserFocus";
+  const focusContexts = new Map(), focusScripts = new Map(), focusSessions = new Set();
+  let focusEpoch = 0, focusClears = 0, keyboardFocus = null;
+  const focusKey = (sessionId, contextId) => `${sessionId || ""}:${contextId}`;
+  const attachIframes = { autoAttach: true, waitForDebuggerOnStart: false, flatten: true, filter: [{ type: "iframe" }, { exclude: true }] };
+  // This code runs in a private world. Only fixed editable metadata crosses the binding.
+  const focusSource = `(() => {
+    globalThis.__bittyFocusCleanup?.();
+    let last = null, lastEditable = null, revision = 0, pointerStart = null;
+    const deepActive = () => { let element = document.activeElement; while (element?.shadowRoot?.activeElement) element = element.shadowRoot.activeElement; return element; };
+    const report = (force = false) => {
+      const element = deepActive();
+      if (element?.tagName === "IFRAME" || element?.tagName === "FRAME") return;
+      const input = element?.tagName === "INPUT", multiline = element?.tagName === "TEXTAREA" || !!element?.isContentEditable;
+      const type = input ? element.type : "text";
+      const editable = document.hasFocus() && !element?.disabled && !element?.readOnly && (multiline || input && ["text", "password", "email", "number", "tel", "url", "search"].includes(type));
+      if (!force && element === last && editable === lastEditable) return;
+      last = element; lastEditable = editable;
+      globalThis.${focusBinding}(JSON.stringify({ editable: !!editable, multiline: !!editable && multiline, kind: editable && input ? type : "text", revision: ++revision }));
+    };
+    const changed = () => queueMicrotask(() => report());
+    const down = () => { pointerStart = deepActive(); };
+    const up = () => { if (deepActive() === pointerStart) report(true); };
+    document.addEventListener("focusin", changed, true); document.addEventListener("focusout", changed, true); window.addEventListener("blur", changed, true); window.addEventListener("focus", changed, true);
+    document.addEventListener("pointerdown", down, true); document.addEventListener("pointerup", up, true);
+    globalThis.__bittyFocusCleanup = () => { document.removeEventListener("focusin", changed, true); document.removeEventListener("focusout", changed, true); window.removeEventListener("blur", changed, true); window.removeEventListener("focus", changed, true); document.removeEventListener("pointerdown", down, true); document.removeEventListener("pointerup", up, true); delete globalThis.__bittyFocusCleanup; };
+    if (document.hasFocus()) report(true);
+  })()`;
+  function focusLost() {
+    keyboardFocus = null;
+    if (active) onFocus?.({ editable: false, multiline: false, kind: "text", focusRevision: `${focusWorld}:${focusEpoch}:clear:${++focusClears}` });
+  }
+  function forgetFocusContext(key) {
+    focusContexts.delete(key);
+    if (keyboardFocus?.context === key) focusLost();
+  }
+  function forgetFocusSession(sessionId) {
+    focusSessions.delete(sessionId); focusScripts.delete(sessionId);
+    for (const [key, context] of focusContexts) if (context.sessionId === sessionId) forgetFocusContext(key);
+    for (const [id, request] of pending) if (request.sessionId === sessionId) {
+      clearTimeout(request.timer); pending.delete(id); request.reject(fail());
+    }
+  }
+  async function observeFrame(frameId, sessionId) {
+    const { executionContextId } = await call("Page.createIsolatedWorld", { frameId, worldName: focusWorld }, sessionId);
+    if (!Number.isSafeInteger(executionContextId)) return;
+    focusContexts.set(focusKey(sessionId, executionContextId), { sessionId, contextId: executionContextId });
+    await call("Runtime.evaluate", { expression: focusSource, contextId: executionContextId, silent: true, returnByValue: false }, sessionId);
+  }
+  async function observeFocus(frameTree, sessionId) {
+    if (!onFocus) return;
+    const sessionKey = sessionId || "";
+    await call("Target.setAutoAttach", attachIframes, sessionId);
+    if (!focusScripts.has(sessionKey)) {
+      await call("Runtime.enable", {}, sessionId);
+      await call("Runtime.addBinding", { name: focusBinding, executionContextName: focusWorld }, sessionId);
+      const result = await call("Page.addScriptToEvaluateOnNewDocument", { source: focusSource, worldName: focusWorld }, sessionId);
+      focusScripts.set(sessionKey, result.identifier);
+    }
+    const visit = async (tree) => {
+      // Out-of-process frames are observed through their own attached page session.
+      await observeFrame(tree.frame.id, sessionId).catch(() => {});
+      for (const child of tree.childFrames || []) await visit(child);
+    };
+    await visit(frameTree);
+  }
   const close = (unexpected = false, reason = "connection_closed") => {
     if (stopped) return;
     stopped = true; active = false; controlGeneration++;
-    clearTimeout(frameTimer); awaitingFrame = null; displayedFrames.clear();
+    clearTimeout(frameTimer); awaitingFrame = null; displayedFrames.clear(); focusLost();
     // Release held buttons even when the view disappears halfway through a drag.
     if (socket.readyState === WebSocket.OPEN) {
       releaseMouse();
+      for (const { contextId, sessionId } of focusContexts.values()) socket.send(JSON.stringify({ id: ++sequence, method: "Runtime.evaluate", params: { contextId, expression: "globalThis.__bittyFocusCleanup?.()", silent: true }, ...(sessionId ? { sessionId } : {}) }));
+      for (const [sessionId, identifier] of focusScripts) {
+        if (identifier) socket.send(JSON.stringify({ id: ++sequence, method: "Page.removeScriptToEvaluateOnNewDocument", params: { identifier }, ...(sessionId ? { sessionId } : {}) }));
+        socket.send(JSON.stringify({ id: ++sequence, method: "Runtime.removeBinding", params: { name: focusBinding }, ...(sessionId ? { sessionId } : {}) }));
+      }
+      if (onFocus) socket.send(JSON.stringify({ id: ++sequence, method: "Target.setAutoAttach", params: { ...attachIframes, autoAttach: false } }));
       if (emulatingFocus) { emulatingFocus = false; socket.send(JSON.stringify({ id: ++sequence, method: "Emulation.setFocusEmulationEnabled", params: { enabled: false } })); }
       socket.send(JSON.stringify({ id: ++sequence, method: "Page.stopScreencast" }));
       socket.close();
@@ -62,12 +137,15 @@ export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, 
   signal?.addEventListener("abort", abort, { once: true });
   socket.on("error", () => close(true));
   socket.on("close", () => close(true));
-  const call = (method, params = {}) => new Promise((resolve, reject) => {
+  const call = (method, params = {}, sessionId) => new Promise((resolve, reject) => {
     if (stopped || signal?.aborted || socket.readyState !== WebSocket.OPEN) return reject(fail());
     const id = ++sequence;
-    const timer = setTimeout(() => { reject(fail()); close(true, "command_timeout"); }, timeoutMs);
-    pending.set(id, { resolve, reject, timer });
-    socket.send(JSON.stringify({ id, method, params }), (error) => { if (error) close(true); });
+    const timer = setTimeout(() => {
+      if (sessionId) forgetFocusSession(sessionId);
+      else { reject(fail()); close(true, "command_timeout"); }
+    }, timeoutMs);
+    pending.set(id, { resolve, reject, timer, sessionId });
+    socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }), (error) => { if (error) close(true); });
   });
   function releaseMouse() {
     if (!mouseDown) return;
@@ -94,8 +172,52 @@ export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, 
       if (message.error) waiting.reject(fail()); else waiting.resolve(message.result);
       return;
     }
+    const sessionId = message.sessionId;
+    if (message.method === "Target.attachedToTarget" && active && onFocus && message.params?.targetInfo?.type === "iframe") {
+      const childSession = message.params.sessionId;
+      if (typeof childSession !== "string" || focusSessions.has(childSession)) return;
+      focusSessions.add(childSession);
+      void (async () => {
+        await call("Page.enable", {}, childSession);
+        const { frameTree } = await call("Page.getFrameTree", {}, childSession);
+        if (active && frameTree) await observeFocus(frameTree, childSession);
+      })().catch(() => {});
+      return;
+    }
+    if (message.method === "Target.detachedFromTarget") {
+      const detached = message.params?.sessionId;
+      forgetFocusSession(detached);
+      return;
+    }
+    if (sessionId && !focusSessions.has(sessionId)) return;
+    if (message.method === "Runtime.executionContextCreated" && message.params?.context?.name === focusWorld) {
+      const contextId = message.params.context.id;
+      focusContexts.set(focusKey(sessionId, contextId), { sessionId, contextId });
+    }
+    if (message.method === "Runtime.executionContextDestroyed") forgetFocusContext(focusKey(sessionId, message.params?.executionContextId));
+    if (message.method === "Runtime.executionContextsCleared") for (const [key, context] of focusContexts) if (context.sessionId === sessionId) forgetFocusContext(key);
+    if (message.method === "Runtime.bindingCalled" && active && message.params?.name === focusBinding && focusContexts.has(focusKey(sessionId, message.params.executionContextId))) {
+      try {
+        if (typeof message.params.payload !== "string" || message.params.payload.length > 256) return;
+        const focus = JSON.parse(message.params.payload);
+        if (Object.keys(focus).sort().join(",") !== "editable,kind,multiline,revision" || typeof focus.editable !== "boolean" || typeof focus.multiline !== "boolean"
+          || !["text", "password", "email", "number", "tel", "url", "search"].includes(focus.kind) || !Number.isSafeInteger(focus.revision) || focus.revision < 1) return;
+        const context = focusKey(sessionId, message.params.executionContextId);
+        if (!focus.editable && keyboardFocus && keyboardFocus.context !== context) return;
+        const metadata = { editable: focus.editable, multiline: focus.multiline, kind: focus.kind, focusRevision: `${focusWorld}:${focusEpoch}:${message.params.executionContextId}:${focus.revision}` };
+        // Prefix each context with a controller-local counter, including child sessions whose context IDs overlap.
+        const prior = focusContexts.get(context);
+        prior.serial ||= ++focusClears;
+        metadata.focusRevision = `${focusWorld}:${focusEpoch}:${prior.serial}:${focus.revision}`;
+        keyboardFocus = { ...metadata, context };
+        onFocus?.(metadata);
+      } catch {}
+      return;
+    }
+    if (message.method === "Page.frameAttached" && active && onFocus) void observeFrame(message.params.frameId, sessionId).catch(() => {});
+    if (sessionId) return;
     if (message.method === "Page.frameStartedNavigating" && message.params?.frameId === rootId) {
-      resetFrames(); navigating = true; onViewInvalidated?.();
+      resetFrames(); focusLost(); navigating = true; onViewInvalidated?.();
     }
     if (message.method === "Page.frameNavigated" && message.params?.frame?.id === rootId) {
       const origin = originOf(message.params.frame.url);
@@ -135,7 +257,8 @@ export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, 
       if (![width, height].every((n) => Number.isFinite(n) && n > 0 && n <= 32768)
         || ![offsetX, offsetY].every(Number.isFinite)) { close(true); return; }
       const viewport = { width, height, offsetX, offsetY };
-      if (lastViewport && (lastViewport.width !== width || lastViewport.height !== height || lastViewport.offsetX !== offsetX || lastViewport.offsetY !== offsetY)) {
+      const viewportChanged = lastViewport && (lastViewport.width !== width || lastViewport.height !== height || lastViewport.offsetX !== offsetX || lastViewport.offsetY !== offsetY);
+      if (viewportChanged) {
         releaseMouse(); displayedFrames.clear();
         // The same invalidation also drops queued client input when only viewport offsets changed.
         onViewInvalidated?.(); if (stopped || !active) return;
@@ -144,6 +267,7 @@ export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, 
       awaitingFrame = { id: ++frameSequence, sessionId: frame.sessionId, viewport, generation };
       frameTimer = setTimeout(() => close(true, "render_ack_timeout"), frameTimeoutMs);
       onFrame?.({ frameId: awaitingFrame.id, data: frame.data, width, height });
+      if (viewportChanged && keyboardFocus) { const { context: _context, ...focus } = keyboardFocus; onFocus?.(focus); }
     }).catch(() => close(true)).finally(() => { readingFrame = false; });
   });
   try {
@@ -175,6 +299,9 @@ export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, 
         onDiagnostic?.("focus_enabled");
         await call("Page.bringToFront");
         if (!active || stopped || startGeneration !== controlGeneration) return;
+        focusEpoch++; focusLost();
+        await observeFocus(frameTree);
+        if (!active || stopped || startGeneration !== controlGeneration) return;
         await call("Page.startScreencast", { format: "jpeg", quality: 65, maxWidth: 1280, maxHeight: 960, everyNthFrame: 1 });
         if (!active || stopped || startGeneration !== controlGeneration) return;
         onDiagnostic?.("stream_started"); waitForFrame();
@@ -182,7 +309,7 @@ export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, 
       async pause() {
         if (stopped) return;
         const wasActive = active;
-        active = false; controlGeneration++; resetFrames();
+        active = false; controlGeneration++; resetFrames(); focusLost();
         if (emulatingFocus) { emulatingFocus = false; await call("Emulation.setFocusEmulationEnabled", { enabled: false }); }
         if (!wasActive) return;
         await call("Page.stopScreencast");
@@ -198,6 +325,7 @@ export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, 
         const drawnViewport = displayedFrames.get(frameId);
         if (!active || !validBrowserControlInput(input)) throw fail();
         if (navigating || !drawnViewport) throw Object.assign(fail(), { code: "stale_frame" });
+        if (input.focusRevision !== undefined && (!keyboardFocus?.editable || keyboardFocus.focusRevision !== input.focusRevision)) throw Object.assign(fail(), { code: "stale_frame" });
         if (input.type === "text") { await call("Input.insertText", { text: input.text }); return; }
         if (input.type === "key") {
           const codes = { Backspace: 8, Delete: 46, Enter: 13, Tab: 9, Escape: 27, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, Home: 36, End: 35 };

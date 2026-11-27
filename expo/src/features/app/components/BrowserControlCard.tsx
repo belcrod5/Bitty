@@ -1,7 +1,8 @@
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { Image, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { Image, Platform, StyleSheet, Text, TouchableOpacity, View, type ViewProps } from "react-native";
+import { requireNativeViewManager, requireOptionalNativeModule } from "expo-modules-core";
 import { Gesture, GestureDetector, type TouchData } from "react-native-gesture-handler";
-import type { BrowserControlFrame, BrowserControlInput, BrowserControlRequest } from "../hooks/useBrowserControl";
+import type { BrowserControlFocus, BrowserControlFrame, BrowserControlInput, BrowserControlRequest } from "../hooks/useBrowserControl";
 import { BrowserControlContext } from "../contexts/BrowserControlContext";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { formatMessageTimestampLabel } from "../utils/formatting";
@@ -10,23 +11,28 @@ const statusText = { starting: "ブラウザに接続中…", completed: "ブラ
   expired: "接続が終了しました", invalidated: "操作開始前にページが変わりました", failed: "画面を取得できませんでした。もう一度ブラウザ操作を依頼してください。",
   control_status_unknown: "画面を確認できないため操作を停止しました。操作結果はブラウザで確認してください。" };
 
+type KeyboardInput = { focusRevision: string; text?: string; key?: "Backspace" | "Enter" };
+const NativeKeyboard = Platform.OS === "ios" && requireOptionalNativeModule("BittyBrowserKeyboard")
+  ? requireNativeViewManager<ViewProps & { focusRevision: string | null; kind: string; onInput: (event: { nativeEvent: KeyboardInput }) => void }>("BittyBrowserKeyboard") : null;
+
 export function BrowserControlCard({ request }: { request: BrowserControlRequest }) {
   const controller = useContext(BrowserControlContext);
   const { theme } = useVisualTheme();
   const [opened, setOpened] = useState(false);
   const [frame, setFrame] = useState<BrowserControlFrame | null>(null);
   const [displayedId, setDisplayedId] = useState(0);
-  const [value, setValue] = useState("");
-  const [mode, setMode] = useState<"scroll" | "drag">("scroll");
-  const draft = useRef("");
+  const [focus, setFocus] = useState<BrowserControlFocus | null>(null);
+  const latestFocus = useRef<BrowserControlFocus | null>(null);
+  const updateFocus = useCallback((next: BrowserControlFocus | null) => { latestFocus.current = next; setFocus(next); }, []);
+  const [keyboardAnchor, setKeyboardAnchor] = useState({ x: 0.5, y: 0.5 });
   const displayed = useRef<BrowserControlFrame | null>(null);
   const width = useRef(0);
   const latestFrame = useRef<BrowserControlFrame | null>(null);
   const imageEpoch = useRef(0);
   const previousStatus = useRef(request.status);
   const canTap = useRef(false);
-  const gesture = useRef<{ x: number; y: number; touches: number; moved: boolean; mode: "scroll" | "drag"; twoFinger: boolean } | null>(null);
-  const clear = useCallback(() => { imageEpoch.current++; latestFrame.current = null; setFrame(null); setDisplayedId(0); displayed.current = null; draft.current = ""; setValue(""); gesture.current = null; canTap.current = false; }, []);
+  const gesture = useRef<{ x: number; y: number; touches: number; moved: boolean; twoFinger: boolean } | null>(null);
+  const clear = useCallback(() => { imageEpoch.current++; latestFrame.current = null; setFrame(null); setDisplayedId(0); displayed.current = null; latestFocus.current = null; setFocus(null); gesture.current = null; canTap.current = false; }, []);
   useEffect(() => {
     if (!opened || !controller) return;
     const stop = controller.watch(request.requestId, (next) => {
@@ -41,11 +47,11 @@ export function BrowserControlCard({ request }: { request: BrowserControlRequest
         displayed.current = null; setDisplayedId(0); gesture.current = null; canTap.current = false;
       }
       latestFrame.current = next; setFrame(next);
-    });
+    }, updateFocus);
     if (!stop) { clear(); setOpened(false); return; }
     void controller.command(request.requestId, "start");
     return stop;
-  }, [clear, controller?.command, controller?.watch, opened, request.requestId]);
+  }, [clear, controller?.command, controller?.watch, opened, request.requestId, updateFocus]);
   useEffect(() => {
     const paused = request.status === "pending" && ["starting", "active"].includes(previousStatus.current);
     previousStatus.current = request.status;
@@ -56,10 +62,6 @@ export function BrowserControlCard({ request }: { request: BrowserControlRequest
     if (request.status !== "active" || !drawn || !controller) return;
     return controller.input(request.requestId, input, drawn.frameId);
   };
-  const flush = () => {
-    if (!draft.current || !displayed.current || request.status !== "active") return;
-    const text = draft.current; draft.current = ""; setValue(""); return send({ type: "text", text });
-  };
   const point = (touches: Pick<TouchData, "x" | "y">[]) => {
     const drawn = displayed.current;
     if (!drawn || !width.current || !touches.length) return null;
@@ -69,15 +71,15 @@ export function BrowserControlCard({ request }: { request: BrowserControlRequest
     const height = width.current * drawn.height / drawn.width;
     return { x: Math.max(0, Math.min(1, x / width.current)), y: Math.max(0, Math.min(1, y / height)), touches: count };
   };
-  const current = useRef({ send, flush, point, mode, status: request.status });
-  current.current = { send, flush, point, mode, status: request.status };
+  const current = useRef({ send, point, status: request.status });
+  current.current = { send, point, status: request.status };
   const changeTouches = (p: { x: number; y: number; touches: number }) => {
     const previous = gesture.current;
     if (!previous) return false;
     if (p.touches >= 2 && !previous.twoFinger) {
       canTap.current = false;
-      if (previous.mode === "drag" && previous.moved) current.current.send({ type: "up", x: previous.x, y: previous.y });
-      gesture.current = { ...p, moved: true, mode: "scroll", twoFinger: true }; return true;
+      if (!previous.twoFinger && previous.moved) current.current.send({ type: "up", x: previous.x, y: previous.y });
+      gesture.current = { ...p, moved: true, twoFinger: true }; return true;
     }
     if (p.touches !== previous.touches) { gesture.current = { ...previous, ...p }; return true; }
     return false;
@@ -90,9 +92,9 @@ export function BrowserControlCard({ request }: { request: BrowserControlRequest
       const p = current.current.point(event.allTouches); if (!p || current.current.status !== "active") return;
       if (gesture.current) { changeTouches(p); return; }
       if (event.numberOfTouches !== event.changedTouches.length) { canTap.current = false; return; }
-      const twoFinger = p.touches >= 2, mode = twoFinger ? "scroll" : current.current.mode;
+      const twoFinger = p.touches >= 2;
       canTap.current = !twoFinger;
-      current.current.flush(); gesture.current = { ...p, moved: twoFinger, mode, twoFinger };
+      gesture.current = { ...p, moved: twoFinger, twoFinger };
     })
     .onTouchesMove((event) => {
       const p = current.current.point(event.allTouches); if (!p || changeTouches(p)) return;
@@ -101,7 +103,7 @@ export function BrowserControlCard({ request }: { request: BrowserControlRequest
       const drawn = displayed.current!;
       if (!previous.moved && Math.hypot((p.x - previous.x) * width.current, (p.y - previous.y) * width.current * drawn.height / drawn.width) < 5) return;
       canTap.current = false;
-      if (previous.mode === "drag") {
+      if (!previous.twoFinger) {
         if (!previous.moved) current.current.send({ type: "down", x: previous.x, y: previous.y });
         current.current.send({ type: "move", x: p.x, y: p.y });
       }
@@ -117,15 +119,16 @@ export function BrowserControlCard({ request }: { request: BrowserControlRequest
       if (remaining.length) { const p = current.current.point(remaining); if (p) changeTouches(p); return; }
       const p = current.current.point(event.changedTouches); const previous = gesture.current;
       gesture.current = null;
-      if (p && previous?.mode === "drag" && previous.moved && !previous.twoFinger) current.current.send({ type: "up", x: p.x, y: p.y });
+      if (p && previous?.moved && !previous.twoFinger) current.current.send({ type: "up", x: p.x, y: p.y });
     })
-    .onFinalize(() => { const previous = gesture.current; gesture.current = null; if (previous?.mode === "drag" && previous.moved && !previous.twoFinger) current.current.send({ type: "up", x: previous.x, y: previous.y }); });
+    .onFinalize(() => { const previous = gesture.current; gesture.current = null; if (previous?.moved && !previous.twoFinger) current.current.send({ type: "up", x: previous.x, y: previous.y }); });
     // A stationary pan can fail before its raw UP arrives; native Tap owns click recognition.
     const tap = Gesture.Tap().enabled(ready).maxDistance(5).runOnJS(true).withTestId(`browser-control-tap-${request.requestId}`)
       .onEnd((event, success) => {
         if (!success || !canTap.current) return;
         canTap.current = false;
         const p = current.current.point([event]); if (!p) return;
+        setKeyboardAnchor({ x: p.x, y: p.y });
         current.current.send({ type: "down", x: p.x, y: p.y }); current.current.send({ type: "up", x: p.x, y: p.y });
       }).onFinalize(() => { canTap.current = false; });
     return Gesture.Simultaneous(pan, tap);
@@ -137,6 +140,7 @@ export function BrowserControlCard({ request }: { request: BrowserControlRequest
   return <View testID={`browser-control-${request.requestId}`} style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.borderStrong }]}>
     <Text style={[styles.title, text]}>ブラウザを操作 · {formatMessageTimestampLabel(request.createdAt)}</Text>
     <Text style={text}>{request.origin}</Text><Text style={text}>{request.label}</Text>
+    {request.inputStatusUnknown && <Text style={text}>接続が切れました。前の操作結果を確認してから再開してください。</Text>}
     {request.status === "pending" && !opened && <>
       <Text style={text}>画面と入力はAIへの回答・会話履歴に送信しません。</Text>
       <View style={styles.actions}>{button("キャンセル", () => { void controller.command(request.requestId, "cancel"); })}
@@ -148,31 +152,23 @@ export function BrowserControlCard({ request }: { request: BrowserControlRequest
         {frame ? <Image key={`${imageEpoch.current}:${frame.width}x${frame.height}`} accessibilityLabel="ブラウザの画面" source={{ uri: `data:image/jpeg;base64,${frame.data}` }} style={StyleSheet.absoluteFill}
           resizeMode="stretch" onLoad={() => { if (latestFrame.current !== frame) return; displayed.current = frame; setDisplayedId(frame.frameId); controller.ack(request.requestId, frame.frameId); }}
           onError={() => { if (latestFrame.current !== frame) return; clear(); controller.failDisplay(request.requestId, "render_failed"); }} /> : <Text style={text}>{request.status === "active" ? "画面を読み込み中…" : "ブラウザに接続中…"}</Text>}
+        {NativeKeyboard && <NativeKeyboard testID="browser-control-keyboard" pointerEvents="none"
+          focusRevision={ready && focus?.editable ? focus.focusRevision : null} kind={focus?.kind || "text"}
+          onInput={({ nativeEvent: input }) => {
+            if (!latestFocus.current?.editable || input.focusRevision !== latestFocus.current.focusRevision) return;
+            if (typeof input.text === "string" && input.text.length > 0 && input.text.length <= 4096) send({ type: "text", text: input.text, focusRevision: input.focusRevision });
+            else if (input.key === "Backspace" || input.key === "Enter") send({ type: "key", key: input.key, focusRevision: input.focusRevision });
+          }} style={[styles.keyboard, { left: `${keyboardAnchor.x * 100}%`, top: `${keyboardAnchor.y * 100}%` }]} />}
       </View></GestureDetector>
-      <Text style={text}>二本指でもスクロールできます。</Text>
-      <View style={styles.keys}>{button(mode === "scroll" ? "スクロール中" : "ドラッグ中", () => { setMode(mode === "scroll" ? "drag" : "scroll"); })}
-        {button("Tab", () => { flush(); send({ type: "key", key: "Tab" }); }, !ready)}
-        {button("⌫", () => { flush(); send({ type: "key", key: "Backspace" }); }, !ready)}
-        {button("Enter", () => { flush(); send({ type: "key", key: "Enter" }); }, !ready)}
-        {button("Esc", () => { flush(); send({ type: "key", key: "Escape" }); }, !ready)}
-        {button("↑", () => { flush(); send({ type: "key", key: "ArrowUp" }); }, !ready)}
-        {button("↓", () => { flush(); send({ type: "key", key: "ArrowDown" }); }, !ready)}
-        {button("←", () => { flush(); send({ type: "key", key: "ArrowLeft" }); }, !ready)}
-        {button("→", () => { flush(); send({ type: "key", key: "ArrowRight" }); }, !ready)}
-      </View>
       {request.inputNotApplied && <Text style={text}>画面が変わったため文字・キーを送信しませんでした。画面を確認して再入力してください。</Text>}
-      <TextInput accessibilityLabel="ブラウザへ入力するテキスト" autoCorrect={false} autoCapitalize="none" textContentType="none" autoComplete="off"
-        editable={request.status === "active"} value={value} maxLength={4096} onChangeText={(next) => { draft.current = next; setValue(next); }}
-        onSubmitEditing={flush} style={[styles.input, text, { borderColor: theme.colors.borderStrong }]} />
-      <View style={styles.actions}>{button("入力", flush, !ready || !value)}
-        {button("閉じる", () => { clear(); setOpened(false); })}
-        {button("操作を完了", () => { void Promise.resolve(flush()).then(() => controller.command(request.requestId, "finish")).then(() => { clear(); setOpened(false); }); })}</View>
+      <View style={styles.actions}>{button("閉じる", () => { clear(); setOpened(false); })}
+        {button("操作を完了", () => { const epoch = imageEpoch.current; void controller.command(request.requestId, "finish").then(() => { if (imageEpoch.current === epoch) { clear(); setOpened(false); } }); })}</View>
     </>}
     {request.status !== "pending" && request.status !== "active" && <Text style={text}>{statusText[request.status]}</Text>}
   </View>;
 }
 const styles = StyleSheet.create({ card: { padding: 16, gap: 12, borderRadius: 12, borderWidth: 1, marginVertical: 8 },
-  title: { fontSize: 15, fontWeight: "700" }, input: { borderWidth: 1, borderRadius: 8, padding: 12 },
+  title: { fontSize: 15, fontWeight: "700" }, keyboard: { position: "absolute", width: 1, height: 1, opacity: 0.01 },
   screen: { width: "100%", borderWidth: 1, justifyContent: "center", alignItems: "center", overflow: "hidden" },
-  keys: { flexDirection: "row", flexWrap: "wrap", gap: 4 }, button: { paddingVertical: 8, paddingHorizontal: 6 },
+  button: { paddingVertical: 8, paddingHorizontal: 6 },
   actions: { flexDirection: "row", justifyContent: "flex-end", gap: 12, flexWrap: "wrap" } });

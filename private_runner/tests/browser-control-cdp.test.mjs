@@ -187,10 +187,13 @@ test("unexpected connection errors are fixed and intentional close does not inva
 
 for (const headed of process.platform === "darwin" ? [false, true] : [false]) test(`isolated ${headed ? "minimized headed" : "DPR 2 headless"} Chromium controls custom panel/slider/checkbox/confirmation and Japanese input`, { skip: !process.env.BITTY_TEST_CHROMIUM_EXECUTABLE, timeout: 45_000 }, async (t) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-browser-control-test-"));
-  const html = `<!doctype html><meta charset="utf-8"><style>body{margin:0}button,input{position:absolute}#open{left:40px;top:40px;width:120px;height:40px}#panel{display:none;position:absolute;left:40px;top:100px;width:400px;height:260px;background:#ddd}#slider{position:absolute;left:20px;top:20px;width:300px;height:40px;background:#aaa}#terms{left:20px;top:90px;width:30px;height:30px}#confirm{left:120px;top:90px;width:120px;height:40px}#text{left:40px;top:400px;width:300px;height:40px}</style><button id="open">Open panel</button><div id="panel"><div id="slider"></div><input id="terms" type="checkbox"><button id="confirm">Confirm</button></div><input id="text"><script>window.chosen=0;window.confirmed=false;const panel=document.getElementById('panel'),slider=document.getElementById('slider');document.getElementById('open').onclick=()=>panel.style.display='block';slider.onpointerdown=e=>{slider.setPointerCapture(e.pointerId);window.chosen=e.offsetX};slider.onpointermove=e=>{if(e.buttons)window.chosen=e.offsetX};document.getElementById('confirm').onclick=()=>window.confirmed=document.getElementById('terms').checked&&window.chosen>200;</script>`;
-  const server = createServer((_req, res) => { res.setHeader("content-type", "text/html; charset=utf-8"); res.end(html); }); await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const html = `<!doctype html><meta charset="utf-8"><style>body{margin:0}button,input{position:absolute}#open{left:40px;top:40px;width:120px;height:40px}#panel{display:none;position:absolute;left:40px;top:100px;width:400px;height:260px;background:#ddd}#slider{position:absolute;left:20px;top:20px;width:300px;height:40px;background:#aaa}#terms{left:20px;top:90px;width:30px;height:30px}#confirm{left:120px;top:90px;width:120px;height:40px}#text{left:40px;top:400px;width:300px;height:40px}</style><button id="open">Open panel</button><div id="panel"><div id="slider"></div><input id="terms" type="checkbox"><button id="confirm">Confirm</button></div><input id="text"><script>window.chosen=0;window.confirmed=false;const panel=document.getElementById('panel'),slider=document.getElementById('slider');document.getElementById('open').onclick=()=>panel.style.display='block';slider.onpointerdown=e=>{slider.setPointerCapture(e.pointerId);window.chosen=e.offsetX};slider.onpointermove=e=>{if(e.buttons)window.chosen=e.offsetX};document.getElementById('confirm').onclick=()=>window.confirmed=document.getElementById('terms').checked&&window.chosen>200;window.childInputValid=false;window.onmessage=e=>{if(e.data?.valid===true)window.childInputValid=true};</script><iframe style="position:absolute;left:300px;top:300px;width:230px;height:100px;border:0" src="__CHILD_ORIGIN__/child"></iframe>`;
+  const server = createServer((req, res) => {
+    res.setHeader("content-type", "text/html; charset=utf-8");
+    res.end(req.url === "/child" ? `<!doctype html><meta charset="utf-8"><style>body{margin:0}input{position:absolute;left:20px;top:20px;width:200px;height:40px}</style><input id="child"><script>child.oninput=()=>parent.postMessage({valid:child.value==="ダミー"},"*");</script>` : html.replace("__CHILD_ORIGIN__", `http://localhost:${server.address().port}`));
+  }); await new Promise((r) => server.listen(0, "127.0.0.1", r));
   const origin = `http://127.0.0.1:${server.address().port}`;
-  const chrome = spawn(process.env.BITTY_TEST_CHROMIUM_EXECUTABLE, [...(headed ? [] : ["--headless"]), "--no-sandbox", "--disable-gpu", "--no-first-run", "--no-default-browser-check", "--disable-crash-reporter", "--disable-breakpad", "--password-store=basic", "--remote-debugging-port=0", `--user-data-dir=${directory}`, `${origin}/form`], { stdio: "ignore" });
+  const chrome = spawn(process.env.BITTY_TEST_CHROMIUM_EXECUTABLE, [...(headed ? [] : ["--headless"]), "--no-sandbox", "--disable-gpu", "--no-proxy-server", "--site-per-process", "--no-first-run", "--no-default-browser-check", "--disable-crash-reporter", "--disable-breakpad", "--password-store=basic", "--remote-debugging-port=0", `--user-data-dir=${directory}`, `${origin}/form`], { stdio: "ignore" });
   const sockets = [];
   t.after(async () => { for (const s of sockets) s.terminate(); chrome.kill("SIGKILL"); await new Promise((r) => { if (chrome.exitCode !== null || chrome.signalCode) r(); else chrome.once("exit", r); }); await new Promise((r) => server.close(r)); await fs.rm(directory, { recursive: true, force: true }); });
   let port, tab; const deadline = Date.now() + 15000;
@@ -210,8 +213,8 @@ for (const headed of process.platform === "darwin" ? [false, true] : [false]) te
     const closed = new Promise((resolve) => socket.once("close", resolve)); socket.close(); await closed;
     await new Promise((resolve) => setTimeout(resolve, 3500));
   } else await call("Emulation.setDeviceMetricsOverride", { width: 800, height: 600, deviceScaleFactor: 2, mobile: false });
-  let currentFrame, browser, frameCount = 0;
-  browser = await prepareBrowserControl({ ...target, cdpUrl: tab.webSocketDebuggerUrl, origin }, { onFrame: (frame) => { currentFrame = frame; frameCount++; void browser.ack(frame.frameId); } }); t.after(browser.close);
+  let currentFrame, browser, frameCount = 0; const focuses = [];
+  browser = await prepareBrowserControl({ ...target, cdpUrl: tab.webSocketDebuggerUrl, origin }, { onFrame: (frame) => { currentFrame = frame; frameCount++; void browser.ack(frame.frameId); }, onFocus: (focus) => focuses.push(focus) }); t.after(browser.close);
   await browser.start(); while (!currentFrame && Date.now() < deadline) await tick(); assert.ok(currentFrame);
   if (headed) {
     socket = new WebSocket(tab.webSocketDebuggerUrl); sockets.push(socket); await new Promise((r, j) => { socket.once("open", r); socket.once("error", j); }); socket.on("message", receive);
@@ -224,6 +227,24 @@ for (const headed of process.platform === "darwin" ? [false, true] : [false]) te
   await browser.input({ type: "text", text: "日本語テスト" }, currentFrame.frameId);
   await browser.input({ type: "key", key: "Backspace" }, currentFrame.frameId);
   assert.deepEqual(await evaluate('({confirmed:window.confirmed,text:document.getElementById("text").value})'), { confirmed: true, text: "日本語テス" });
+  // Standard cross-site payment-style inputs live in a separate iframe target.
+  const mainFocus = focuses.at(-1).focusRevision;
+  await click(350, 340);
+  const focusDeadline = Date.now() + 3000;
+  while ((!focuses.at(-1)?.editable || focuses.at(-1)?.focusRevision === mainFocus) && Date.now() < focusDeadline) await tick();
+  assert.equal(focuses.at(-1)?.editable, true);
+  assert.ok((await call("Target.getTargets")).targetInfos.some((info) => info.type === "iframe"));
+  const childFocus = focuses.at(-1).focusRevision;
+  await browser.input({ type: "text", text: "ダミー", focusRevision: childFocus }, currentFrame.frameId);
+  const inputDeadline = Date.now() + 3000;
+  while (!await evaluate("window.childInputValid") && Date.now() < inputDeadline) await tick();
+  assert.equal(await evaluate("window.childInputValid"), true);
+  assert.equal(focuses.at(-1).focusRevision, childFocus, "committed typing does not invalidate its own keyboard token");
+  await click(90, 60);
+  const blurDeadline = Date.now() + 3000;
+  while (focuses.at(-1)?.editable && Date.now() < blurDeadline) await tick();
+  assert.equal(focuses.at(-1).editable, false, "leaving a child input for a parent button hides the keyboard");
+  await assert.rejects(browser.input({ type: "key", key: "Enter", focusRevision: childFocus }, currentFrame.frameId), { code: "stale_frame" });
   assert.ok(frameCount >= 1);
   const previousFrame = currentFrame.frameId;
   await evaluate('location.hash="next";document.body.style.background="blue"');
@@ -237,4 +258,93 @@ for (const headed of process.platform === "darwin" ? [false, true] : [false]) te
   assert.ok(frameCount > pausedCount, "reopening delivers a fresh frame");
   browser.close(); const closedCount = frameCount; await evaluate('document.body.style.background="green"'); await new Promise((r) => setTimeout(r, 100)); assert.equal(frameCount, closedCount);
   if (headed) assert.equal(await evaluate("document.visibilityState"), "hidden");
+});
+
+async function focusPeer(t) {
+  let width = 800, height = 600;
+  const f = await peer(t, (message) => {
+    if (message.method === "Page.getLayoutMetrics") return { cssVisualViewport: { clientWidth: width, clientHeight: height } };
+    if (message.method === "Page.createIsolatedWorld") return { executionContextId: 1 };
+    if (message.method === "Page.addScriptToEvaluateOnNewDocument") return { identifier: `observer-${message.sessionId || "root"}` };
+    if (message.method === "Page.getFrameTree" && message.sessionId) return { frameTree: { frame: { id: "CHILD", url: "https://frame.example" } } };
+  });
+  const focuses = [], frames = [];
+  const browser = await prepareBrowserControl(f.target, { onFrame: (frame) => frames.push(frame), onFocus: (focus) => focuses.push(focus) });
+  t.after(browser.close); await browser.start(); f.emit(frameMessage()); await tick(); await browser.ack(frames[0].frameId);
+  const binding = (focus, sessionId, executionContextId = 1) => f.emit({ method: "Runtime.bindingCalled", ...(sessionId ? { sessionId } : {}), params: { name: "__bittyBrowserFocus", executionContextId, payload: JSON.stringify(focus) } });
+  const focused = (revision = 1) => ({ editable: true, multiline: false, kind: "text", revision });
+  return { ...f, browser, focuses, frames, binding, focused, resize: () => { width = 1600; height = 1200; } };
+}
+
+test("only bounded focus metadata reaches the app and stale focus cannot edit another target", async (t) => {
+  const f = await focusPeer(t);
+  f.binding(f.focused()); await tick(); const focus = f.focuses.at(-1);
+  assert.equal(focus.editable, true); assert.deepEqual(Object.keys(focus).sort(), ["editable", "focusRevision", "kind", "multiline"]);
+  const count = f.focuses.length;
+  f.binding({ ...f.focused(2), value: "must-not-cross" }); f.binding(f.focused(2), undefined, 999); await tick(); assert.equal(f.focuses.length, count);
+  await f.browser.input({ type: "text", text: "日本語", focusRevision: focus.focusRevision }, f.frames[0].frameId);
+  f.binding({ editable: false, multiline: false, kind: "text", revision: 2 }); await tick();
+  assert.equal(f.focuses.at(-1).editable, false);
+  await assert.rejects(f.browser.input({ type: "key", key: "Enter", focusRevision: focus.focusRevision }, f.frames[0].frameId), { code: "stale_frame" });
+  assert.equal(f.messages.filter((m) => m.method === "Input.insertText").length, 1);
+  assert.equal(f.messages.some((m) => m.method === "DOM.getDocument" || m.method === "Runtime.getProperties"), false);
+  const script = f.messages.find((m) => m.method === "Page.addScriptToEvaluateOnNewDocument").params;
+  assert.ok(script.worldName.startsWith("bitty-browser-")); assert.doesNotMatch(script.source, /\.value\b|innerHTML|innerText|textContent|selectionStart/);
+});
+
+test("child frame blur, destruction and detach clear only its active keyboard ownership", async (t) => {
+  const f = await focusPeer(t);
+  f.emit({ method: "Target.attachedToTarget", params: { sessionId: "iframe-session", targetInfo: { type: "iframe" } } }); await tick(); await tick();
+  assert.ok(f.messages.some((m) => m.sessionId === "iframe-session" && m.method === "Runtime.addBinding"));
+  f.binding(f.focused(), "iframe-session"); await tick(); const childFocus = f.focuses.at(-1);
+  f.binding({ editable: false, multiline: false, kind: "text", revision: 2 }); await tick(); assert.equal(f.focuses.at(-1).focusRevision, childFocus.focusRevision);
+  f.binding({ editable: false, multiline: false, kind: "text", revision: 2 }, "iframe-session"); await tick(); assert.equal(f.focuses.at(-1).editable, false);
+  await assert.rejects(f.browser.input({ type: "text", text: "late", focusRevision: childFocus.focusRevision }, f.frames[0].frameId), { code: "stale_frame" });
+  f.binding(f.focused(3), "iframe-session"); await tick();
+  f.emit({ method: "Runtime.executionContextDestroyed", sessionId: "iframe-session", params: { executionContextId: 1 } }); await tick(); assert.equal(f.focuses.at(-1).editable, false);
+  f.emit({ method: "Runtime.executionContextCreated", sessionId: "iframe-session", params: { context: { id: 1, name: f.messages.find((m) => m.method === "Page.addScriptToEvaluateOnNewDocument").params.worldName } } });
+  f.binding(f.focused(4), "iframe-session"); await tick();
+  f.emit({ method: "Target.detachedFromTarget", params: { sessionId: "iframe-session" } }); await tick(); assert.equal(f.focuses.at(-1).editable, false);
+});
+
+test("new browser controllers cannot accept a native commit from the previous focus run", async (t) => {
+  const a = await focusPeer(t), b = await focusPeer(t);
+  a.binding(a.focused()); b.binding(b.focused()); await tick();
+  const first = a.focuses.at(-1).focusRevision, second = b.focuses.at(-1).focusRevision;
+  assert.notEqual(first, second);
+  await assert.rejects(b.browser.input({ type: "text", text: "old commit", focusRevision: first }, b.frames[0].frameId), { code: "stale_frame" });
+  await b.browser.input({ type: "text", text: "new commit", focusRevision: second }, b.frames[0].frameId);
+  assert.equal(b.messages.filter((m) => m.method === "Input.insertText").length, 1);
+});
+
+
+test("a resized view republishes only current keyboard metadata after invalidating old pixels", async (t) => {
+  const f = await focusPeer(t);
+  f.binding(f.focused()); await tick(); const focus = f.focuses.at(-1), count = f.focuses.length;
+  f.resize(); f.emit(frameMessage(2)); await tick();
+  assert.equal(f.frames.length, 2); assert.equal(f.focuses.length, count + 1);
+  assert.deepEqual(f.focuses.at(-1), focus);
+  assert.deepEqual(Object.keys(f.focuses.at(-1)).sort(), ["editable", "focusRevision", "kind", "multiline"]);
+});
+
+
+for (const ending of ["timeout", "detach"]) test(`a child observer ${ending} cannot stop the root page stream`, async (t) => {
+  const f = await peer(t, (message) => {
+    if (message.method === "Page.enable" && message.sessionId === "slow-frame") return false;
+    if (message.method === "Page.createIsolatedWorld") return { executionContextId: 1 };
+    if (message.method === "Page.addScriptToEvaluateOnNewDocument") return { identifier: "observer" };
+  });
+  const frames = [], focuses = [], failures = [];
+  const browser = await prepareBrowserControl(f.target, { timeoutMs: 30, onFrame: (frame) => frames.push(frame), onFocus: (focus) => focuses.push(focus), onInvalidated: (reason) => failures.push(reason) }); t.after(browser.close);
+  await browser.start(); f.emit(frameMessage()); await tick(); await browser.ack(frames[0].frameId);
+  f.emit({ method: "Target.attachedToTarget", params: { sessionId: "slow-frame", targetInfo: { type: "iframe" } } });
+  const name = f.messages.find((message) => message.method === "Page.addScriptToEvaluateOnNewDocument").params.worldName;
+  f.emit({ method: "Runtime.executionContextCreated", sessionId: "slow-frame", params: { context: { id: 2, name } } });
+  f.emit({ method: "Runtime.bindingCalled", sessionId: "slow-frame", params: { name: "__bittyBrowserFocus", executionContextId: 2, payload: JSON.stringify({ editable: true, multiline: false, kind: "text", revision: 1 }) } });
+  await tick(); assert.equal(focuses.at(-1).editable, true);
+  if (ending === "detach") f.emit({ method: "Target.detachedFromTarget", params: { sessionId: "slow-frame" } });
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(focuses.at(-1).editable, false); assert.deepEqual(failures, []);
+  f.emit(frameMessage(2)); await tick(); assert.equal(frames.length, 2);
+  await browser.ack(frames[1].frameId); await browser.input({ type: "down", x: 0.2, y: 0.2 }, frames[1].frameId); await browser.input({ type: "up", x: 0.2, y: 0.2 }, frames[1].frameId);
 });

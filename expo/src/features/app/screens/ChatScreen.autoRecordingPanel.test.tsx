@@ -581,6 +581,56 @@ describe("ChatScreen voice input", () => {
     await row.unmount(); await screen.unmount();
   });
 
+  it("keeps an opened browser card anchored through frame growth, keyboard layout and completion", async () => {
+    jest.useFakeTimers();
+    const card: BrowserControlRequest = { requestId: "browser", status: "pending", label: "Browser",
+      createdAt: "2026-11-26T00:01:00Z", origin: "https://example.com",
+      target: { kind: "session", sessionRef: { backendId: "codex", nativeSessionId: "session-1" }, cwd: "/workspace" } };
+    const controller = { requests: [card], command: jest.fn(async () => {}), input: jest.fn(async () => {}), ack: jest.fn(), failDisplay: jest.fn(), watch: jest.fn(() => () => {}) };
+    const chat = () => <BrowserControlContext.Provider value={controller}><ChatScreen panelId="panel-a" /></BrowserControlContext.Provider>;
+    const screen = await render(chat());
+    try {
+      // Start while initial bottom-settling callbacks are still queued.
+      controller.requests = [{ ...card, status: "starting" }];
+      await screen.rerender(chat());
+      mockScrollToEnd.mockClear(); mockScrollToIndex.mockClear(); mockScrollToOffset.mockClear(); mockScrollItemIntoView.mockClear();
+      await act(async () => {
+        mockLegendListProps.current?.onContentSizeChange?.(320, 1200);
+        mockLegendListProps.current?.onScroll?.({ nativeEvent: {
+          contentOffset: { y: 600 }, contentSize: { height: 1200 }, layoutMeasurement: { height: 600 },
+        } });
+        mockLegendListProps.current?.onTouchEnd?.();
+        mockLegendListProps.current?.onLayout?.({ nativeEvent: { layout: { x: 0, y: 0, width: 320, height: 300 } } });
+        jest.advanceTimersByTime(500);
+      });
+      controller.requests = [{ ...card, status: "active" }];
+      await screen.rerender(chat());
+      await act(async () => { mockLegendListProps.current?.onContentSizeChange?.(320, 1800); jest.advanceTimersByTime(500); });
+      controller.requests = [{ ...card, status: "completed" }];
+      await screen.rerender(chat());
+      await act(async () => {
+        // A native clamp after the card shrinks is not a user request to follow the tail.
+        mockLegendListProps.current?.onScroll?.({ nativeEvent: {
+          contentOffset: { y: 300 }, contentSize: { height: 600 }, layoutMeasurement: { height: 300 },
+        } });
+        mockLegendListProps.current?.onContentSizeChange?.(320, 1900);
+        jest.advanceTimersByTime(500);
+      });
+      expect(mockScrollToEnd).not.toHaveBeenCalled();
+      expect(mockScrollToIndex).not.toHaveBeenCalled();
+      expect(mockScrollToOffset).not.toHaveBeenCalled();
+      expect(mockScrollItemIntoView).not.toHaveBeenCalled();
+      await fireEvent.press(screen.getByLabelText("チャットの末尾までスクロール"));
+      await act(async () => { jest.advanceTimersByTime(20); });
+      expect(mockScrollToEnd).toHaveBeenCalledWith({ animated: true });
+      mockScrollToEnd.mockClear();
+      await act(async () => { mockLegendListProps.current?.onContentSizeChange?.(320, 2000); jest.advanceTimersByTime(20); });
+      expect(mockScrollToEnd).toHaveBeenCalledWith({ animated: true });
+    } finally {
+      await screen.unmount(); jest.clearAllTimers(); jest.useRealTimers();
+    }
+  });
+
   it("shows the shared running count and omits the raw thread status", async () => {
     const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
     expect(screen.getByLabelText("実行中のセッション 3件")).toBeTruthy();

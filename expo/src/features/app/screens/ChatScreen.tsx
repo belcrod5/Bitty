@@ -627,6 +627,7 @@ export function ChatScreen({
   const browserInputs = useBrowserControlRequests({ kind: "session", sessionRef: {
     backendId: backendIdForView, nativeSessionId: selectedSessionIdForView || null,
   }, cwd: selectedDirectoryPathForView });
+  const browserControlActive = browserInputs.some((request) => request.status === "starting" || request.status === "active");
   const timelineItems = useMemo(() => browserControlTimeline(conversationMessagesForView, browserInputs), [conversationMessagesForView, browserInputs]);
   const messageIndexById = useMemo(() => new Map(conversationMessagesForView.map((message, index) => [message.id, index])), [conversationMessagesForView]);
   const showMessagesSkeletonForView = isMiniBoardPopupMode && (showPopupMessagesSkeleton || panelHydrating);
@@ -828,9 +829,10 @@ export function ChatScreen({
     scrollChatListToMeasuredBottom,
   ]);
   const resumeChatAutoScroll = useCallback(() => {
+    if (browserControlActive) return;
     chatAutoScrollPausedRef.current = false;
     isAtBottomRef.current = true;
-  }, []);
+  }, [browserControlActive]);
   const {
     handleScrollInteractionBegin: handleChatScrollInteractionBegin,
     handleScrollInteractionEnd: handleChatScrollInteractionEnd,
@@ -1024,10 +1026,7 @@ export function ChatScreen({
     chatScrollDiagnosticRef.current.viewportHeight = viewportHeight;
     const isAtBottom = distanceToBottom <= CHAT_BOTTOM_RESUME_THRESHOLD_PX;
     isAtBottomRef.current = isAtBottom;
-    const keepAutoScrollPaused = shouldKeepAutoScrollPaused(isAtBottom);
-    if (isAtBottom && !chatScrollDragActiveRef.current && !keepAutoScrollPaused) {
-      chatAutoScrollPausedRef.current = false;
-    }
+    shouldKeepAutoScrollPaused(isAtBottom);
     if (!isMiniBoardPopupMode) {
       handleChatScroll(event);
     }
@@ -1359,6 +1358,7 @@ export function ChatScreen({
     const previousLastMessageId = previousLastMessageIdRef.current;
     previousMessageCountRef.current = currentMessageCount;
     previousLastMessageIdRef.current = currentLastMessageId;
+    if (browserControlActive) return;
     if (!didInitialScrollRef.current) return;
     if (currentMessageCount <= previousMessageCount) return;
     if (!currentLastMessageId) return;
@@ -1371,7 +1371,10 @@ export function ChatScreen({
     }
     if (chatAutoScrollPausedRef.current) return;
     scrollChatListToBottom(true);
-  }, [timelineItems.length, conversationScrollResetKey, scrollChatListToBottom]);
+  }, [browserControlActive, timelineItems.length, conversationScrollResetKey, scrollChatListToBottom]);
+  useEffect(() => {
+    if (browserControlActive) pauseChatAutoScrollForInteraction();
+  }, [browserControlActive, conversationScrollResetKey, pauseChatAutoScrollForInteraction]);
   useEffect(() => () => {
     if (initialSettleTimerRef.current !== null) {
       clearTimeout(initialSettleTimerRef.current);

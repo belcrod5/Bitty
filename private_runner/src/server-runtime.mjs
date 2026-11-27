@@ -1659,6 +1659,7 @@ const appControlService = createAppControlService({
 const appControlHttpHandler = createAppControlHttpHandler({ service: appControlService,
   json, readJsonBody, subjectId: agentOwnerSubjectId });
 const browserControlService = createBrowserControlService({ appControl: appControlService, sendEnvelope: sendRunnerWsEnvelope,
+  isSessionActive: (sessionId) => runnerLoginService.isSessionActive(sessionId),
   log: (event) => console.log(`[browser-control] ${JSON.stringify(event)}`) });
 const browserControlHttp = createBrowserControlHttp({ service: browserControlService, json, readJsonBody });
 const codexRawSessionOwnership = createCodexRawSessionOwnership({
@@ -7654,8 +7655,12 @@ runnerWsServer.on("connection", (ws, req) => {
     }
 
     const message = parsed.message;
-    if (appControlService.handleMessage(ws, message)) return;
-    if (browserControlService.handleMessage(ws, message, req[RUNNER_AUTHENTICATION]?.local === false)) return;
+    if (appControlService.handleMessage(ws, message, req[RUNNER_AUTHENTICATION])) {
+      if (message.op === "app.control.register") browserControlService.disconnect(ws);
+      else if (message.op === "app.control.update") browserControlService.refreshConnection(ws);
+      return;
+    }
+    if (browserControlService.handleMessage(ws, message, req[RUNNER_AUTHENTICATION])) return;
     if (message.channel === "control" && message.op === "orchestrator_activity_snapshot") {
       sendRunnerWsEnvelope(ws, { channel: "control", op: "orchestrator_activity_snapshot",
         requestId: message.requestId || "", payload: orchestratorActivity.snapshot() });

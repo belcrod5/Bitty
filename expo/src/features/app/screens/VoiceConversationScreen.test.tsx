@@ -6,6 +6,9 @@ import { AppState, Dimensions, Platform, ScrollView, StyleSheet, View, type AppS
 import type { RunnerWsMessage } from "../../runnerWs/types";
 import { DEFAULT_VISUAL_THEME_ID, VISUAL_THEMES } from "../theme/visualThemes";
 import { VoiceConversationScreen } from "./VoiceConversationScreen";
+import { BrowserControlContext } from "../contexts/BrowserControlContext";
+import type { BrowserControlRequest } from "../hooks/useBrowserControl";
+jest.mock("../components/BrowserControlCard", () => ({ BrowserControlCard: () => null }));
 
 const mockWithTiming = jest.fn((value: number, _config?: unknown, callback?: (finished: boolean) => void) => {
   callback?.(true);
@@ -1075,6 +1078,42 @@ test("expanding learning details and loading their metadata keep the message anc
   expect(scrollTo).not.toHaveBeenCalled();
   scrollToEnd.mockRestore();
   scrollTo.mockRestore();
+  await screen.unmount();
+});
+
+test("browser status and layout changes preserve the history position until the user scrolls again", async () => {
+  const scrollToEnd = jest.spyOn(ScrollView.prototype, "scrollToEnd").mockImplementation(() => undefined);
+  const card: BrowserControlRequest = { requestId: "browser", status: "pending", label: "Browser",
+    createdAt: "2026-11-26T00:01:00Z", origin: "https://example.com",
+    target: { kind: "orchestrator", orchestratorId: "main" } };
+  const controller = { requests: [card], command: jest.fn(async () => {}), input: jest.fn(async () => {}), ack: jest.fn(), failDisplay: jest.fn(), watch: jest.fn(() => () => {}) };
+  const content = () => <BrowserControlContext.Provider value={controller}><VoiceConversationScreen {...playback} onClose={mockOnClose} /></BrowserControlContext.Provider>;
+  const screen = await render(content());
+  await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  expect(scrollToEnd).toHaveBeenCalledTimes(1);
+  for (const status of ["starting", "active", "completed"] as const) {
+    controller.requests = [{ ...card, status }];
+    await screen.rerender(content());
+    const history = screen.getByTestId("voice-history-messages");
+    expect(history.props.onContentSizeChange).toBeUndefined();
+    await act(async () => { history.props.onScroll({ nativeEvent: {
+      contentOffset: { y: 100 }, contentSize: { height: 400 }, layoutMeasurement: { height: 300 },
+    } }); });
+  }
+  mockVoice.reply = { text: "操作後の返答", operationId: "operation-2" };
+  await screen.rerender(content());
+  expect(scrollToEnd).toHaveBeenCalledTimes(1);
+  const history = screen.getByTestId("voice-history-messages");
+  await act(async () => {
+    history.props.onScrollBeginDrag();
+    history.props.onScroll({ nativeEvent: {
+      contentOffset: { y: 100 }, contentSize: { height: 400 }, layoutMeasurement: { height: 300 },
+    } });
+    history.props.onScrollEndDrag();
+  });
+  mockVoice.reply = { text: "末尾での返答", operationId: "operation-3" };
+  await screen.rerender(content());
+  expect(scrollToEnd).toHaveBeenCalledTimes(2);
   await screen.unmount();
 });
 

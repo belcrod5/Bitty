@@ -47,11 +47,11 @@ test("status recovery is read-only; raw backend errors and invalid IDs cannot le
   let requests = 0;
   const run = await fixture(t, (req, res) => {
     requests++; assert.equal(req.method, "GET");
-    if (requests === 1) res.end(JSON.stringify({ requestId: id, status: "control_status_unknown", extra: "PRIVATE" }));
+    if (requests === 1) res.end(JSON.stringify({ requestId: id, status: "control_status_unknown", inputStatusUnknown: true, extra: "PRIVATE" }));
     else if (requests === 2) { res.statusCode = 500; res.end(JSON.stringify({ message: "PRIVATE_BACKEND_ERROR" })); }
     else res.end(JSON.stringify({ requestId: "PRIVATE_FAKE_ID", status: "completed" }));
   });
-  assert.deepEqual(JSON.parse((await run("status", "--request", id)).stdout), { requestId: id, status: "control_status_unknown" });
+  assert.deepEqual(JSON.parse((await run("status", "--request", id)).stdout), { requestId: id, status: "control_status_unknown", inputStatusUnknown: true });
   for (let n = 0; n < 2; n++) await assert.rejects(run("status", "--request", id), (error) => !error.stderr.includes("PRIVATE"));
   await assert.rejects(run("status", "--request", "../wrong"));
   await assert.rejects(run("request", "--value", "DO_NOT_ACCEPT_SECRETS"));

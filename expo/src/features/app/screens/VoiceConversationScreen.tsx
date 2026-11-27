@@ -185,6 +185,7 @@ function VoiceConversationSession({
   const footerInsetRef = useRef<View>(null);
   const historyScrollRef = useRef<ScrollView>(null);
   const historyAtBottomRef = useRef(true);
+  const historyScrollInteractionRef = useRef(false);
   const mountedRef = useRef(true);
   const voiceSurfaceIdRef = useRef("");
   const manager = useRunnerWebSocketManager();
@@ -269,6 +270,7 @@ function VoiceConversationSession({
     voice.logicalConversationId, voice.ready, voice.reply?.completedOrdinal]);
   useLayoutEffect(() => {
     historyAtBottomRef.current = true;
+    historyScrollInteractionRef.current = false;
   }, [historyExpanded, voice.logicalConversationId]);
   const replyLoading = voice.turnStatus === "accepted" || voice.turnStatus === "running";
   const playbackActive = synthesisStarting || isTtsPlaybackActive;
@@ -520,6 +522,7 @@ function VoiceConversationSession({
       : voiceStatus ? undefined
           : initialStartPending ? "録音を準備しています…" : !streamingStt.active ? "音声入力は停止しています。再開するには画面を開き直してください。" : "");
   const browserInputs = useBrowserControlRequests({ kind: "orchestrator", orchestratorId: orchestrator.id });
+  const browserControlActive = browserInputs.some((request) => request.status === "starting" || request.status === "active");
   const historyMessages = useMemo(() => {
     if (!voice.ready) return [];
     const reply = voice.reply;
@@ -531,12 +534,15 @@ function VoiceConversationSession({
   const lastHistoryMessage = historyMessages[historyMessages.length - 1];
   const historyContentKey = JSON.stringify([voice.logicalConversationId, historyMessages.length,
     lastHistoryMessage?.clientOperationId, lastHistoryMessage?.role, lastHistoryMessage?.text,
-    browserInputs.map((request) => [request.requestId, request.status])]);
+    browserInputs.map((request) => request.requestId)]);
   useLayoutEffect(() => {
-    if (historyMounted && historyExpanded && voice.ready && historyAtBottomRef.current) {
+    if (browserControlActive) historyAtBottomRef.current = false;
+  }, [browserControlActive, historyExpanded, voice.logicalConversationId]);
+  useLayoutEffect(() => {
+    if (historyMounted && historyExpanded && voice.ready && !browserControlActive && historyAtBottomRef.current) {
       historyScrollRef.current?.scrollToEnd({ animated: false });
     }
-  }, [historyMounted, historyExpanded, voice.ready, historyContentKey]);
+  }, [browserControlActive, historyMounted, historyExpanded, voice.ready, historyContentKey]);
 
   return (
     <KeyboardAvoidingView
@@ -606,9 +612,16 @@ function VoiceConversationSession({
                 </GestureDetector>
                 <View style={{ flex: 1 }}>
                 <ScrollView ref={historyScrollRef} testID="voice-history-messages" style={{ flex: 1 }}
+                  onScrollBeginDrag={() => { historyScrollInteractionRef.current = true; }}
+                  onScrollEndDrag={() => { historyScrollInteractionRef.current = false; }}
+                  onMomentumScrollBegin={() => { historyScrollInteractionRef.current = true; }}
+                  onMomentumScrollEnd={() => { historyScrollInteractionRef.current = false; }}
                   onScroll={(event) => {
                     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
-                    historyAtBottomRef.current = contentOffset.y + layoutMeasurement.height >= contentSize.height - 40;
+                    const atBottom = contentOffset.y + layoutMeasurement.height >= contentSize.height - 40;
+                    if (browserControlActive || !atBottom || historyScrollInteractionRef.current) {
+                      historyAtBottomRef.current = !browserControlActive && atBottom;
+                    }
                   }}
                   scrollEventThrottle={16}
                   contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 12, paddingBottom: 12, gap: 12 }}>

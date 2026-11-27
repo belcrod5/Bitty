@@ -41,7 +41,7 @@ async function main() {
     // Do not forward arbitrary server response fields to the model.
     if (result.requestId !== (body?.requestId || pathname.split("/").at(-1))
       || !["preparing", "pending", "starting", "active", "completed", "cancelled", "expired", "invalidated", "failed", "control_status_unknown", "not_found"].includes(result.status)) throw new Error("Invalid browser input status");
-    return { requestId: result.requestId, status: result.status };
+    return { requestId: result.requestId, status: result.status, ...(result.inputStatusUnknown === true ? { inputStatusUnknown: true } : {}) };
   };
   if (command === "status") {
     if (!/^[a-f0-9-]{36}$/i.test(options["--request"])) throw new Error("Invalid request ID");
