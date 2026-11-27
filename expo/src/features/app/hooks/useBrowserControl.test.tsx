@@ -93,3 +93,58 @@ test("stale text receives a fixed user notice while pointer drops stay silent an
   expect(JSON.stringify(view.result.current.requests)).not.toContain("PRIVATE"); expect(send).not.toHaveBeenCalled();
   await view.unmount();
 });
+test("an absent frame times out safely while diagnostics contain only fixed phases and request ID", async () => {
+  jest.useFakeTimers(); const diagnostic = jest.fn();
+  const view = await renderHook(() => useBrowserControl(manager, diagnostic)); await act(async () => emit("request", card()));
+  const frames = jest.fn(); view.result.current.watch("one", frames); await act(async () => view.result.current.command("one", "start"));
+  await act(async () => { jest.advanceTimersByTime(15_000); });
+  expect(view.result.current.requests[0].status).toBe("failed"); expect(frames).toHaveBeenLastCalledWith(null);
+  expect(send).toHaveBeenCalledWith({ channel: "control", op: "browser.control.command", payload: { requestId: "one", action: "cancel" } });
+  expect(diagnostic.mock.calls).toEqual([["browser_control", { requestId: "one", phase: "start" }], ["browser_control", { requestId: "one", phase: "frame_timeout" }]]);
+  await view.unmount(); jest.useRealTimers();
+});
+test("first receipt and rendering are logged once without private content, and stop the missing-frame timer", async () => {
+  jest.useFakeTimers(); const diagnostic = jest.fn();
+  const view = await renderHook(() => useBrowserControl(manager, diagnostic)); await act(async () => emit("request", card()));
+  view.result.current.watch("one", jest.fn()); await act(async () => view.result.current.command("one", "start"));
+  await act(async () => {
+    emit("frame", { requestId: "one", frameId: 1, data: "PRIVATE_FRAME", width: 800, height: 600 });
+    view.result.current.ack("one", 1);
+    emit("frame", { requestId: "one", frameId: 2, data: "PRIVATE_FRAME_2", width: 800, height: 600 });
+    view.result.current.ack("one", 2); jest.advanceTimersByTime(20_000);
+  });
+  expect(view.result.current.requests[0].status).toBe("active"); expect(diagnostic.mock.calls.map(([, payload]) => payload.phase)).toEqual(["start", "frame_received", "frame_rendered"]);
+  expect(JSON.stringify(diagnostic.mock.calls)).not.toContain("PRIVATE");
+  await act(async () => view.result.current.failDisplay("one", "render_failed"));
+  expect(view.result.current.requests[0].status).toBe("failed"); expect(diagnostic).toHaveBeenLastCalledWith("browser_control", { requestId: "one", phase: "render_failed" });
+  await view.unmount(); jest.useRealTimers();
+});
+test("close/reopen and late start responses cannot revive the previous viewer", async () => {
+  const view = await renderHook(() => useBrowserControl(manager)); await act(async () => emit("request", card()));
+  const stop = view.result.current.watch("one", jest.fn()); let resolveStart: ((response: unknown) => void) | undefined; let starting: Promise<void> | undefined;
+  request.mockImplementationOnce(() => new Promise((resolve) => { resolveStart = resolve as (response: unknown) => void; }));
+  await act(async () => { starting = view.result.current.command("one", "start"); });
+  await act(async () => stop?.());
+  expect(view.result.current.requests[0].status).toBe("pending");
+  await act(async () => { resolveStart?.({ payload: { status: "active" } }); await starting; });
+  expect(view.result.current.requests[0].status).toBe("pending");
+  view.result.current.watch("one", jest.fn()); await act(async () => view.result.current.command("one", "start"));
+  expect(view.result.current.requests[0].status).toBe("active"); await view.unmount();
+});
+test("effect setup/cleanup/setup discards an unstarted viewer without sending its delayed start", async () => {
+  const view = await renderHook(() => useBrowserControl(manager)); await act(async () => emit("request", card()));
+  await act(async () => {
+    const stop = view.result.current.watch("one", jest.fn()); const first = view.result.current.command("one", "start");
+    stop?.(); view.result.current.watch("one", jest.fn()); await view.result.current.command("one", "start"); await first;
+  });
+  expect(request.mock.calls.filter(([message]) => message.payload.action === "start")).toHaveLength(1);
+  expect(view.result.current.requests[0].status).toBe("active"); await view.unmount();
+});
+test("a display failure after an action preserves uncertainty and sends cancellation once", async () => {
+  const view = await renderHook(() => useBrowserControl(manager)); await act(async () => emit("request", card()));
+  view.result.current.watch("one", jest.fn()); await act(async () => view.result.current.command("one", "start"));
+  await act(async () => view.result.current.input("one", { type: "key", key: "Enter" }, 1));
+  await act(async () => view.result.current.failDisplay("one", "render_failed"));
+  expect(view.result.current.requests[0].status).toBe("control_status_unknown");
+  expect(send.mock.calls.filter(([message]) => message.payload.action === "cancel")).toHaveLength(1); await view.unmount();
+});

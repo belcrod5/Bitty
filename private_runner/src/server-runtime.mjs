@@ -1658,7 +1658,8 @@ const appControlService = createAppControlService({
 });
 const appControlHttpHandler = createAppControlHttpHandler({ service: appControlService,
   json, readJsonBody, subjectId: agentOwnerSubjectId });
-const browserControlService = createBrowserControlService({ appControl: appControlService, sendEnvelope: sendRunnerWsEnvelope });
+const browserControlService = createBrowserControlService({ appControl: appControlService, sendEnvelope: sendRunnerWsEnvelope,
+  log: (event) => console.log(`[browser-control] ${JSON.stringify(event)}`) });
 const browserControlHttp = createBrowserControlHttp({ service: browserControlService, json, readJsonBody });
 const codexRawSessionOwnership = createCodexRawSessionOwnership({
   bindSession: bindAgentSession,

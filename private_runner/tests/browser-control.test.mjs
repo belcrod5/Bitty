@@ -135,3 +135,22 @@ test("HTTP accepts local request/status only, never user action or frame retriev
   req[RUNNER_AUTHENTICATION] = { local: true, ownerSubjectId: "owner" }; await handler(req, {}, "/browser-control/requests"); assert.equal(replies.at(-1).payload.status, "pending");
   for (const suffix of ["input", "frame", "start"]) { await handler(req, {}, `/browser-control/requests/${f.body.requestId}/${suffix}`); assert.equal(replies.at(-1).status, 404); }
 });
+test("diagnostics distinguish absent frames and rendered ACKs without images, values or raw errors", async (t) => {
+  const logs = []; const f = fixture(t, { log: (event) => logs.push(event) });
+  await f.service.request("owner", f.body); await f.command("start");
+  f.callbacks().onDiagnostic("stream_started"); f.callbacks().onDiagnostic("PRIVATE_UNEXPECTED_PHASE");
+  f.callbacks().onFrame({ frameId: 1, data: "PRIVATE_FRAME", width: 800, height: 600 });
+  f.callbacks().onFrame({ frameId: 2, data: "PRIVATE_FRAME", width: 800, height: 600 });
+  await f.command("ack", { frameId: 1 }); await f.command("ack", { frameId: 2 });
+  await f.command("input", { sequence: 1, frameId: 1, input: { type: "text", text: "PRIVATE_TEXT" } });
+  f.callbacks().onInvalidated("PRIVATE_RAW_ERROR");
+  assert.deepEqual(logs.map((event) => event.phase), ["prepared", "start", "stream_started", "frame_sent", "render_ack_received", "control_status_unknown"]);
+  assert.equal(JSON.stringify(logs).includes("PRIVATE"), false);
+  assert.deepEqual(Object.keys(logs.at(-1)).sort(), ["elapsedMs", "phase", "reason", "requestId"]);
+  const g = fixture(t); await g.service.request("owner", g.body); await g.command("start"); g.callbacks().onInvalidated("frame_timeout");
+  assert.equal(g.service.getResult("owner", g.body.requestId).status, "failed");
+  const h = fixture(t); await h.service.request("owner", h.body); await h.command("start");
+  await h.command("input", { sequence: 1, frameId: 1, input: { type: "key", key: "Enter" } });
+  h.callbacks().onInvalidated("frame_timeout");
+  assert.equal(h.service.getResult("owner", h.body.requestId).status, "control_status_unknown");
+});

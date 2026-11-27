@@ -5,9 +5,12 @@ const failure = (code) => Object.assign(new Error(code), { code });
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const terminal = new Set(["completed", "cancelled", "expired", "invalidated", "failed", "control_status_unknown"]);
 
-export function createBrowserControlService({ appControl, sendEnvelope, prepare = prepareBrowserControl, now = Date.now } = {}) {
+export function createBrowserControlService({ appControl, sendEnvelope, prepare = prepareBrowserControl, now = Date.now, log } = {}) {
   const entries = new Map();
   const result = (entry) => ({ requestId: entry.id, status: entry.status });
+  function diagnose(entry, phase, reason) {
+    try { log?.({ requestId: entry.id, phase, elapsedMs: Math.max(0, now() - (entry.startedAt ?? now())), ...(reason ? { reason } : {}) }); } catch {}
+  }
   function send(entry, op, payload) {
     try {
       if ((entry.ws.bufferedAmount || 0) > 2 * 1024 * 1024 || sendEnvelope(entry.ws, { channel: "control", op, payload }) === false) {
@@ -16,9 +19,10 @@ export function createBrowserControlService({ appControl, sendEnvelope, prepare 
       return true;
     } catch { finish(entry, "expired"); return false; }
   }
-  function finish(entry, status) {
+  function finish(entry, status, reason) {
     if (terminal.has(entry.status)) return;
     entry.status = status; entry.finishedAt = now();
+    diagnose(entry, status, reason);
     entry.controller.abort(); entry.browser?.close(); entry.browser = null;
     try { sendEnvelope(entry.ws, { channel: "control", op: "browser.control.resolved", payload: result(entry) }); } catch {}
   }
@@ -50,13 +54,18 @@ export function createBrowserControlService({ appControl, sendEnvelope, prepare 
     entries.set(entry.id, entry);
     try {
       entry.browser = await prepare(target, { signal: entry.controller.signal,
-        onInvalidated: () => finish(entry, entry.status === "active" || entry.status === "starting" ? "control_status_unknown" : "invalidated"),
-        onFrame: (frame) => { if (entry.status === "active" || entry.status === "starting") send(entry, "browser.control.frame", { requestId: entry.id, ...frame }); },
+        onInvalidated: (reason) => finish(entry, reason === "frame_timeout" && entry.sequence === 0 ? "failed" : entry.status === "active" || entry.status === "starting" ? "control_status_unknown" : "invalidated",
+          ["connection_closed", "command_timeout", "frame_timeout", "render_ack_timeout"].includes(reason) ? reason : "connection_closed"),
+        onDiagnostic: (phase) => { if (["focus_enabled", "stream_started", "cdp_frame_received"].includes(phase)) diagnose(entry, phase); },
+        onFrame: (frame) => { if (entry.status === "active" || entry.status === "starting") {
+          if (send(entry, "browser.control.frame", { requestId: entry.id, ...frame }) && !entry.firstFrameSent) { entry.firstFrameSent = true; diagnose(entry, "frame_sent"); }
+        } },
         onNavigation: () => { if (entry.status === "active" || entry.status === "starting") send(entry, "browser.control.navigation", { requestId: entry.id }); },
         onOrigin: (origin) => { if (entry.status === "active" || entry.status === "starting") send(entry, "browser.control.origin", { requestId: entry.id, origin }); },
       });
       if (entry.controller.signal.aborted) { entry.browser.close(); entry.browser = null; return result(entry); }
       entry.status = "pending";
+      diagnose(entry, "prepared");
       send(entry, "browser.control.request", { ...result(entry), target: entry.conversation, origin: target.origin,
         label: target.label, createdAt: entry.createdAt });
     } catch { finish(entry, "failed"); }
@@ -73,7 +82,10 @@ export function createBrowserControlService({ appControl, sendEnvelope, prepare 
     const action = payload.action;
     if (action === "ack") {
       if (keys !== "action,frameId,requestId" || !Number.isSafeInteger(payload.frameId) || payload.frameId < 1) return Promise.resolve({ status: "invalid_command" });
-      if (entry.status === "active" || entry.status === "starting") void entry.browser?.ack(payload.frameId).catch(() => finish(entry, "control_status_unknown"));
+      if (entry.status === "active" || entry.status === "starting") {
+        if (entry.firstFrameSent && !entry.firstAck) { entry.firstAck = true; diagnose(entry, "render_ack_received"); }
+        void entry.browser?.ack(payload.frameId).catch(() => finish(entry, "control_status_unknown"));
+      }
       return Promise.resolve(result(entry));
     }
     if (action === "input") {
@@ -96,6 +108,7 @@ export function createBrowserControlService({ appControl, sendEnvelope, prepare 
       try {
         if (action === "finish") { finish(entry, "completed"); }
         else if (action === "start" && entry.status === "pending") {
+          entry.startedAt = now(); entry.firstFrameSent = false; entry.firstAck = false; diagnose(entry, "start");
           entry.status = "starting"; await entry.browser.start();
           if (!entry.controller.signal.aborted && entry.status === "starting") entry.status = "active";
         } else if (action === "input" && entry.status === "active") await entry.browser.input(payload.input, payload.frameId);

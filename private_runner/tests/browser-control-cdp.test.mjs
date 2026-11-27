@@ -47,8 +47,59 @@ test("one unrendered frame at a time, pause releases mouse and invalidates old i
   await browser.start(); f.emit(frameMessage(1)); await tick(); f.emit(frameMessage(2)); await tick(); assert.equal(frames.length, 1);
   await browser.ack(frames[0].frameId); await browser.input({ type: "down", x: 0.5, y: 0.5 }, frames[0].frameId);
   await browser.pause(); assert.equal(f.messages.at(-1).method, "Page.stopScreencast");
-  assert.equal(f.messages.at(-2).params.type, "mouseReleased");
+  assert.equal(f.messages.findLast((m) => m.method === "Input.dispatchMouseEvent").params.type, "mouseReleased");
+  assert.deepEqual(f.messages.filter((m) => m.method === "Emulation.setFocusEmulationEnabled").map((m) => m.params.enabled), [true, false]);
   await browser.start(); await assert.rejects(browser.input({ type: "text", text: "stale" }, frames[0].frameId));
+});
+test("remote focus is acquired before streaming without native window manipulation", async (t) => {
+  const f = await peer(t), phases = [];
+  const browser = await prepareBrowserControl(f.target, { onDiagnostic: (phase) => phases.push(phase) }); t.after(browser.close);
+  await browser.start();
+  const focus = f.messages.findIndex((m) => m.method === "Emulation.setFocusEmulationEnabled");
+  assert.equal(f.messages[focus].params.enabled, true);
+  assert.ok(focus < f.messages.findIndex((m) => m.method === "Page.startScreencast"));
+  assert.equal(f.messages.some((m) => m.method.startsWith("Browser.")), false);
+  assert.deepEqual(phases, ["focus_enabled", "stream_started"]);
+});
+test("missing first frames and missing render acknowledgements have bounded, distinct failures", async (t) => {
+  for (const rendered of [false, true]) {
+    const f = await peer(t), reasons = [];
+    const browser = await prepareBrowserControl(f.target, { frameTimeoutMs: 30, onInvalidated: (reason) => reasons.push(reason) }); t.after(browser.close);
+    await browser.start(); if (rendered) f.emit(frameMessage());
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    assert.deepEqual(reasons, [rendered ? "render_ack_timeout" : "frame_timeout"]);
+  }
+});
+test("pause or close during focus acquisition releases the override and cannot start a late stream", async (t) => {
+  for (const action of ["pause", "close"]) {
+    let finishFocus;
+    const f = await peer(t, (m, socket) => {
+      if (m.method !== "Emulation.setFocusEmulationEnabled" || !m.params.enabled) return;
+      finishFocus = () => socket.send(JSON.stringify({ id: m.id, result: {} })); return false;
+    });
+    const browser = await prepareBrowserControl(f.target); t.after(browser.close);
+    const starting = browser.start(); const rejected = action === "close" ? assert.rejects(starting) : null;
+    await tick();
+    if (action === "pause") { await browser.pause(); finishFocus(); await starting; }
+    else { browser.close(); await rejected; }
+    await tick();
+    assert.deepEqual(f.messages.filter((m) => m.method === "Emulation.setFocusEmulationEnabled").map((m) => m.params.enabled), [true, false]);
+    assert.equal(f.messages.some((m) => m.method === "Page.startScreencast"), false);
+  }
+});
+test("navigation during focus acquisition invalidates frames without cancelling stream startup", async (t) => {
+  let finishFocus;
+  const f = await peer(t, (m, socket) => {
+    if (m.method !== "Emulation.setFocusEmulationEnabled" || !m.params.enabled) return;
+    finishFocus = () => socket.send(JSON.stringify({ id: m.id, result: {} })); return false;
+  });
+  const frames = [], browser = await prepareBrowserControl(f.target, { onFrame: (frame) => frames.push(frame) }); t.after(browser.close);
+  const starting = browser.start(); await tick();
+  f.emit({ method: "Page.frameStartedNavigating", params: { frameId: "FRAME" } });
+  f.emit({ method: "Page.frameNavigated", params: { frame: { id: "FRAME", url: "https://login.example/" } } }); await tick();
+  finishFocus(); await starting;
+  assert.equal(f.messages.some((m) => m.method === "Page.startScreencast"), true);
+  f.emit(frameMessage()); await tick(); assert.equal(frames.length, 1);
 });
 test("navigation clears pending frame, rejects old rendered frame, and updates origin without following tabs", async (t) => {
   const f = await peer(t), frames = [], origins = []; let cleared = 0;
@@ -118,12 +169,12 @@ test("unexpected connection errors are fixed and intentional close does not inva
   }
 });
 
-test("isolated Chromium controls custom panel/slider/checkbox/confirmation and Japanese input at DPR 2", { skip: !process.env.BITTY_TEST_CHROMIUM_EXECUTABLE, timeout: 45_000 }, async (t) => {
+for (const headed of process.platform === "darwin" ? [false, true] : [false]) test(`isolated ${headed ? "minimized headed" : "DPR 2 headless"} Chromium controls custom panel/slider/checkbox/confirmation and Japanese input`, { skip: !process.env.BITTY_TEST_CHROMIUM_EXECUTABLE, timeout: 45_000 }, async (t) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-browser-control-test-"));
   const html = `<!doctype html><meta charset="utf-8"><style>body{margin:0}button,input{position:absolute}#open{left:40px;top:40px;width:120px;height:40px}#panel{display:none;position:absolute;left:40px;top:100px;width:400px;height:260px;background:#ddd}#slider{position:absolute;left:20px;top:20px;width:300px;height:40px;background:#aaa}#terms{left:20px;top:90px;width:30px;height:30px}#confirm{left:120px;top:90px;width:120px;height:40px}#text{left:40px;top:400px;width:300px;height:40px}</style><button id="open">Open panel</button><div id="panel"><div id="slider"></div><input id="terms" type="checkbox"><button id="confirm">Confirm</button></div><input id="text"><script>window.chosen=0;window.confirmed=false;const panel=document.getElementById('panel'),slider=document.getElementById('slider');document.getElementById('open').onclick=()=>panel.style.display='block';slider.onpointerdown=e=>{slider.setPointerCapture(e.pointerId);window.chosen=e.offsetX};slider.onpointermove=e=>{if(e.buttons)window.chosen=e.offsetX};document.getElementById('confirm').onclick=()=>window.confirmed=document.getElementById('terms').checked&&window.chosen>200;</script>`;
   const server = createServer((_req, res) => { res.setHeader("content-type", "text/html; charset=utf-8"); res.end(html); }); await new Promise((r) => server.listen(0, "127.0.0.1", r));
   const origin = `http://127.0.0.1:${server.address().port}`;
-  const chrome = spawn(process.env.BITTY_TEST_CHROMIUM_EXECUTABLE, ["--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--no-default-browser-check", "--disable-crash-reporter", "--disable-breakpad", "--password-store=basic", "--remote-debugging-port=0", `--user-data-dir=${directory}`, `${origin}/form`], { stdio: "ignore" });
+  const chrome = spawn(process.env.BITTY_TEST_CHROMIUM_EXECUTABLE, [...(headed ? [] : ["--headless"]), "--no-sandbox", "--disable-gpu", "--no-first-run", "--no-default-browser-check", "--disable-crash-reporter", "--disable-breakpad", "--password-store=basic", "--remote-debugging-port=0", `--user-data-dir=${directory}`, `${origin}/form`], { stdio: "ignore" });
   const sockets = [];
   t.after(async () => { for (const s of sockets) s.terminate(); chrome.kill("SIGKILL"); await new Promise((r) => { if (chrome.exitCode !== null || chrome.signalCode) r(); else chrome.once("exit", r); }); await new Promise((r) => server.close(r)); await fs.rm(directory, { recursive: true, force: true }); });
   let port, tab; const deadline = Date.now() + 15000;
@@ -131,17 +182,26 @@ test("isolated Chromium controls custom panel/slider/checkbox/confirmation and J
   assert.ok(port);
   while (Date.now() < deadline) { tab = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find((p) => p.type === "page" && p.url.startsWith(origin)); if (tab) break; await tick(); }
   assert.ok(tab);
-  const socket = new WebSocket(tab.webSocketDebuggerUrl); sockets.push(socket); await new Promise((r, j) => { socket.once("open", r); socket.once("error", j); });
-  let seq = 0; const waiting = new Map(); socket.on("message", (raw) => { const m = JSON.parse(String(raw)); waiting.get(m.id)?.(m.result); waiting.delete(m.id); });
+  let socket = new WebSocket(tab.webSocketDebuggerUrl); sockets.push(socket); await new Promise((r, j) => { socket.once("open", r); socket.once("error", j); });
+  let seq = 0; const waiting = new Map(); const receive = (raw) => { const m = JSON.parse(String(raw)); waiting.get(m.id)?.(m.result); waiting.delete(m.id); }; socket.on("message", receive);
   const call = (method, params) => new Promise((r) => { const id = ++seq; waiting.set(id, r); socket.send(JSON.stringify({ id, method, params })); });
   const evaluate = async (expression) => (await call("Runtime.evaluate", { expression, returnByValue: true })).result.value;
   while (!await evaluate('!!document.querySelector("#text")')) await tick();
-  await call("Emulation.setDeviceMetricsOverride", { width: 800, height: 600, deviceScaleFactor: 2, mobile: false });
+  if (headed) {
+    const { windowId } = await call("Browser.getWindowForTarget");
+    await call("Browser.setWindowBounds", { windowId, bounds: { width: 540, height: 900 } });
+    await call("Browser.setWindowBounds", { windowId, bounds: { windowState: "minimized" } });
+    const closed = new Promise((resolve) => socket.once("close", resolve)); socket.close(); await closed;
+    await new Promise((resolve) => setTimeout(resolve, 3500));
+  } else await call("Emulation.setDeviceMetricsOverride", { width: 800, height: 600, deviceScaleFactor: 2, mobile: false });
   let currentFrame, browser, frameCount = 0;
   browser = await prepareBrowserControl({ ...target, cdpUrl: tab.webSocketDebuggerUrl, origin }, { onFrame: (frame) => { currentFrame = frame; frameCount++; void browser.ack(frame.frameId); } }); t.after(browser.close);
   await browser.start(); while (!currentFrame && Date.now() < deadline) await tick(); assert.ok(currentFrame);
-  assert.equal(currentFrame.width, 800); assert.equal(currentFrame.height, 600);
-  const pointer = (type, x, y) => browser.input({ type, x: x / 800, y: y / 600 }, currentFrame.frameId);
+  if (headed) {
+    socket = new WebSocket(tab.webSocketDebuggerUrl); sockets.push(socket); await new Promise((r, j) => { socket.once("open", r); socket.once("error", j); }); socket.on("message", receive);
+    assert.equal(await evaluate("document.visibilityState"), "visible");
+  } else { assert.equal(currentFrame.width, 800); assert.equal(currentFrame.height, 600); }
+  const pointer = (type, x, y) => browser.input({ type, x: x / currentFrame.width, y: y / currentFrame.height }, currentFrame.frameId);
   const click = async (x, y) => { await pointer("down", x, y); await pointer("up", x, y); await tick(); };
   await click(90, 60); await pointer("down", 80, 140); await pointer("move", 320, 140); await pointer("up", 320, 140);
   await click(75, 205); await click(220, 210); await click(160, 420);
@@ -155,4 +215,10 @@ test("isolated Chromium controls custom panel/slider/checkbox/confirmation and J
   while (currentFrame.frameId === previousFrame && Date.now() < hashDeadline) await tick();
   assert.ok(currentFrame.frameId > previousFrame, "same-document navigation resumes page frames");
   await browser.pause(); const pausedCount = frameCount; await evaluate('document.body.style.background="red"'); await new Promise((r) => setTimeout(r, 100)); assert.equal(frameCount, pausedCount);
+  if (headed) assert.equal(await evaluate("document.visibilityState"), "hidden");
+  await browser.start(); const resumed = Date.now() + 3000;
+  while (frameCount === pausedCount && Date.now() < resumed) await tick();
+  assert.ok(frameCount > pausedCount, "reopening delivers a fresh frame");
+  browser.close(); const closedCount = frameCount; await evaluate('document.body.style.background="green"'); await new Promise((r) => setTimeout(r, 100)); assert.equal(frameCount, closedCount);
+  if (headed) assert.equal(await evaluate("document.visibilityState"), "hidden");
 });

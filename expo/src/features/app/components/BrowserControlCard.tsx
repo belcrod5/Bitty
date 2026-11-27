@@ -6,8 +6,8 @@ import { useVisualTheme } from "../theme/VisualThemeContext";
 import { formatMessageTimestampLabel } from "../utils/formatting";
 
 const statusText = { starting: "ブラウザに接続中…", completed: "ブラウザの操作を終了しました", cancelled: "キャンセルしました",
-  expired: "接続が終了しました", invalidated: "操作開始前にページが変わりました", failed: "ブラウザに接続できませんでした",
-  control_status_unknown: "接続が切れたため操作を停止しました。操作結果はブラウザで確認してください。" };
+  expired: "接続が終了しました", invalidated: "操作開始前にページが変わりました", failed: "画面を取得できませんでした。もう一度ブラウザ操作を依頼してください。",
+  control_status_unknown: "画面を確認できないため操作を停止しました。操作結果はブラウザで確認してください。" };
 
 export function BrowserControlCard({ request }: { request: BrowserControlRequest }) {
   const controller = useContext(BrowserControlContext);
@@ -21,15 +21,21 @@ export function BrowserControlCard({ request }: { request: BrowserControlRequest
   const displayed = useRef<BrowserControlFrame | null>(null);
   const width = useRef(0);
   const latestFrame = useRef<BrowserControlFrame | null>(null);
+  const previousStatus = useRef(request.status);
   const gesture = useRef<{ x: number; y: number; moved: boolean } | null>(null);
   const clear = useCallback(() => { latestFrame.current = null; setFrame(null); setDisplayedId(0); displayed.current = null; draft.current = ""; setValue(""); gesture.current = null; }, []);
   useEffect(() => {
     if (!opened || !controller) return;
     const stop = controller.watch(request.requestId, (next) => { if (!next) clear(); else { latestFrame.current = next; setFrame(next); } });
     if (!stop) { clear(); setOpened(false); return; }
+    void controller.command(request.requestId, "start");
     return stop;
-  }, [clear, controller?.watch, opened, request.requestId]);
-  useEffect(() => { if (!["pending", "starting", "active"].includes(request.status)) { clear(); setOpened(false); } }, [clear, request.status]);
+  }, [clear, controller?.command, controller?.watch, opened, request.requestId]);
+  useEffect(() => {
+    const paused = request.status === "pending" && ["starting", "active"].includes(previousStatus.current);
+    previousStatus.current = request.status;
+    if (paused || !["pending", "starting", "active"].includes(request.status)) { clear(); setOpened(false); }
+  }, [clear, request.status]);
   const send = (input: BrowserControlInput) => {
     const drawn = displayed.current;
     if (request.status !== "active" || !drawn || !controller) return;
@@ -90,12 +96,11 @@ export function BrowserControlCard({ request }: { request: BrowserControlRequest
         {button("ブラウザを開く", () => { setOpened(true); })}</View>
     </>}
     {opened && ["pending", "starting", "active"].includes(request.status) && <>
-      {request.status === "pending" && button("操作を開始", () => { void controller.command(request.requestId, "start"); })}
       <View testID="browser-control-screen" onLayout={(event) => { width.current = event.nativeEvent.layout.width; }}
         style={[styles.screen, { aspectRatio: frame ? frame.width / frame.height : 4 / 3, borderColor: theme.colors.borderStrong }]} {...responder.panHandlers}>
         {frame ? <Image accessibilityLabel="ブラウザの画面" source={{ uri: `data:image/jpeg;base64,${frame.data}` }} style={StyleSheet.absoluteFill}
           resizeMode="stretch" onLoad={() => { if (latestFrame.current !== frame) return; displayed.current = frame; setDisplayedId(frame.frameId); controller.ack(request.requestId, frame.frameId); }}
-          onError={() => { if (latestFrame.current !== frame) return; clear(); void controller.command(request.requestId, "cancel"); }} /> : <Text style={text}>{request.status === "active" ? "画面を読み込み中…" : "操作開始後に画面を表示します"}</Text>}
+          onError={() => { if (latestFrame.current !== frame) return; clear(); controller.failDisplay(request.requestId, "render_failed"); }} /> : <Text style={text}>{request.status === "active" ? "画面を読み込み中…" : "ブラウザに接続中…"}</Text>}
       </View>
       <View style={styles.keys}>{button(mode === "scroll" ? "スクロール中" : "ドラッグ中", () => { setMode(mode === "scroll" ? "drag" : "scroll"); })}
         {button("Tab", () => { flush(); send({ type: "key", key: "Tab" }); }, !ready)}

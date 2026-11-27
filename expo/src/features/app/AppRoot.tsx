@@ -597,9 +597,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   const [runnerWebSocketManager] = useState(() => new RunnerWebSocketManager({
     bootstrapReady: false, url: codexWsUrl, token: runnerToken,
   }));
-  const browserControl = useBrowserControl(runnerWebSocketManager);
-  const browserControlRef = useRef(browserControl);
-  browserControlRef.current = browserControl;
   // 毎レンダーの新規arrowを渡すとsaveRunnerToken経由でAppSettingsContextのmemoが
   // 全レンダーで無効化されるため、必ず安定したcallbackにする。
   const retryRunnerWsConnection = useCallback(() => {
@@ -770,6 +767,9 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   const handleSessionDiagLog = useCallback((event: string, payload?: Record<string, unknown>) => {
     logSessionDiag(event, payload, { throttleMs: 0 });
   }, [logSessionDiag]);
+  const browserControl = useBrowserControl(runnerWebSocketManager, handleSessionDiagLog);
+  const browserControlRef = useRef(browserControl);
+  browserControlRef.current = browserControl;
   // runner WSの切断理由ログ(runner_ws_closed)。フラップは分単位なので通常は全件残るが、
   // 接続不能時の再試行ストーム(1秒間隔close)ではイベント名単位で1行/秒に抑える。
   const handleRunnerWsDiagEvent = useCallback((event: string, payload: Record<string, unknown>) => {

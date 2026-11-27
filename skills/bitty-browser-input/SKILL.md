@@ -11,7 +11,7 @@ The existing browser must expose a local Chromium CDP **page** WebSocket. A brow
 
 1. Identify the page CDP URL and current top-level origin using the existing browser connection. No field selectors, option lists, DOM inspection, or private values are needed.
 2. Request a card using the **current turn's** Bitty app controlContext. BITTY_REPO_ROOT must point to the repository running the Runner (automatically discovered if you are inside it).
-3. Tell the user to open the card, start control, and operate the browser there. The command returns pending immediately. End the AI turn; do not wait, poll, or automatically resume.
+3. Tell the user to tap 「ブラウザを開く」 once and operate the browser there. The command returns pending immediately. End the AI turn; do not wait, poll, or automatically resume.
 
 ```sh
 node <skill-directory>/scripts/bitty-browser-input.mjs request \
@@ -20,7 +20,7 @@ node <skill-directory>/scripts/bitty-browser-input.mjs request \
   --origin https://example.com --label 'ログインをお願いします'
 ```
 
-The card stays in its original session/orchestrator after switching chats or ending a turn. Screen streaming starts only when the user starts control. Closing/leaving the card pauses it, and it can be opened later. Device background/disconnect or Runner restart ends the binding. One page has at most one control card. The user controls only that page; new tabs/windows, Chrome toolbar, browser-native/OS popups, file pickers, and permission dialogs are not remotely displayed/controlled. Native select menus may require Tab/arrow keys/Enter; do not promise full OS-level interaction. Touch defaults to tap/scroll; the user can switch to dragging. Text uses the iPhone's normal keyboard and dedicated input action, including committed Japanese text.
+The card stays in its original session/orchestrator after switching chats or ending a turn. Screen streaming starts only when the user opens the card; no second start tap is required. The target page holds remote focus only until control is paused or closed. Closing/leaving the card pauses it, and it can be opened later. Device background/disconnect or Runner restart ends the binding. One page has at most one control card. The user controls only that page; new tabs/windows, Chrome toolbar, browser-native/OS popups, file pickers, and permission dialogs are not remotely displayed/controlled. Native select menus may require Tab/arrow keys/Enter; do not promise full OS-level interaction. Touch defaults to tap/scroll; the user can switch to dragging. Text uses the iPhone's normal keyboard and dedicated input action, including committed Japanese text.
 
 Top-level navigation within the same page is allowed during manual control and the card displays its current origin. It never follows another tab. Navigation before control starts or while paused invalidates the request.
 

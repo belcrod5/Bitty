@@ -561,13 +561,13 @@ describe("ChatScreen voice input", () => {
     const card = (id: string, session: string): BrowserControlRequest => ({ requestId: id, status: "pending", label: "Private field",
       createdAt: "2026-11-26T00:01:00Z", origin: "https://example.com",
       target: { kind: "session", sessionRef: { backendId: "codex", nativeSessionId: session }, cwd: "/workspace" } });
-    const controller = { requests: [card("one", "session-1"), card("two", "session-2")], command: jest.fn(async () => {}), input: jest.fn(async () => {}), ack: jest.fn(), watch: jest.fn(() => () => {}) };
+    const controller = { requests: [card("one", "session-1"), card("two", "session-2")], command: jest.fn(async () => {}), input: jest.fn(async () => {}), ack: jest.fn(), failDisplay: jest.fn(), watch: jest.fn(() => () => {}) };
     const chat = () => <BrowserControlContext.Provider value={controller}><ChatScreen mode="mini_board_popup" panelId="panel-a" /></BrowserControlContext.Provider>;
     const screen = await render(chat());
     expect(mockLegendListProps.current?.data.map((item: { id: string }) => item.id)).toEqual(["before", "browser-control:one", "after"]);
     const row = await render(<BrowserControlContext.Provider value={controller}>{mockLegendListProps.current?.renderItem({ item: mockLegendListProps.current.data[1], index: 1 })}</BrowserControlContext.Provider>);
     await fireEvent.press(row.getByText("ブラウザを開く"));
-    await fireEvent.press(row.getByText("操作を開始"));
+    expect(row.queryByText("操作を開始")).toBeNull();
     expect(controller.command).toHaveBeenCalledWith("one", "start");
     expect(mockSendReplyTranscriptForPanel).not.toHaveBeenCalled();
     expect(JSON.stringify(mockPanelConversationMessages)).toBe(original);

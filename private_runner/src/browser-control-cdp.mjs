@@ -29,24 +29,25 @@ export function validBrowserControlInput(input) {
 
 // A page-only CDP session. No DOM/value reads, arbitrary JS, console/network capture, or disk recording.
 // Images go directly to the bound user device and never enter the agent's status response.
-export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, onInvalidated, onFrame, onOrigin, onNavigation } = {}) {
+export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, frameTimeoutMs = 10_000, onInvalidated, onFrame, onOrigin, onNavigation, onDiagnostic } = {}) {
   target = validateBrowserControlTarget(target);
   const socket = new WebSocket(target.cdpUrl, { followRedirects: false, maxPayload: 3 * 1024 * 1024 });
   const pending = new Map();
   let sequence = 0, frameSequence = 0;
-  let stopped = false, active = false, mouseDown = false, rootId;
+  let stopped = false, active = false, mouseDown = false, emulatingFocus = false, rootId;
   let currentOrigin = target.origin;
   let pointer = { x: 0, y: 0 };
-  let awaitingFrame = null, readingFrame = false, frameTimer;
-  let generation = 0, navigating = false;
+  let awaitingFrame = null, readingFrame = false, receivedFrame = false, frameTimer;
+  let generation = 0, controlGeneration = 0, navigating = false;
   const displayedFrames = new Map();
-  const close = (unexpected = false) => {
+  const close = (unexpected = false, reason = "connection_closed") => {
     if (stopped) return;
-    stopped = true; active = false;
+    stopped = true; active = false; controlGeneration++;
     clearTimeout(frameTimer); awaitingFrame = null; displayedFrames.clear();
     // Release held buttons even when the view disappears halfway through a drag.
     if (socket.readyState === WebSocket.OPEN) {
       releaseMouse();
+      if (emulatingFocus) { emulatingFocus = false; socket.send(JSON.stringify({ id: ++sequence, method: "Emulation.setFocusEmulationEnabled", params: { enabled: false } })); }
       socket.send(JSON.stringify({ id: ++sequence, method: "Page.stopScreencast" }));
       socket.close();
       const timer = setTimeout(() => socket.terminate(), 500); timer.unref?.();
@@ -55,7 +56,7 @@ export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, 
     for (const { reject, timer } of pending.values()) { clearTimeout(timer); reject(fail()); }
     pending.clear();
     signal?.removeEventListener("abort", abort);
-    if (unexpected === true && !signal?.aborted) onInvalidated?.();
+    if (unexpected === true && !signal?.aborted) onInvalidated?.(reason);
   };
   const abort = () => close();
   signal?.addEventListener("abort", abort, { once: true });
@@ -64,7 +65,7 @@ export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, 
   const call = (method, params = {}) => new Promise((resolve, reject) => {
     if (stopped || signal?.aborted || socket.readyState !== WebSocket.OPEN) return reject(fail());
     const id = ++sequence;
-    const timer = setTimeout(() => { reject(fail()); close(true); }, timeoutMs);
+    const timer = setTimeout(() => { reject(fail()); close(true, "command_timeout"); }, timeoutMs);
     pending.set(id, { resolve, reject, timer });
     socket.send(JSON.stringify({ id, method, params }), (error) => { if (error) close(true); });
   });
@@ -74,8 +75,13 @@ export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, 
     if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ id: ++sequence, method: "Input.dispatchMouseEvent", params: { type: "mouseReleased", ...pointer, button: "left", buttons: 0, clickCount: 0 } }));
   }
   function resetFrames() {
-    generation++; releaseMouse(); displayedFrames.clear(); clearTimeout(frameTimer);
+    generation++; releaseMouse(); displayedFrames.clear(); receivedFrame = false; clearTimeout(frameTimer);
     if (awaitingFrame) { const { sessionId } = awaitingFrame; awaitingFrame = null; void call("Page.screencastFrameAck", { sessionId }).catch(() => close(true)); }
+  }
+  function waitForFrame() {
+    if (active && !navigating && !receivedFrame && !awaitingFrame) {
+      clearTimeout(frameTimer); frameTimer = setTimeout(() => close(true, "frame_timeout"), frameTimeoutMs);
+    }
   }
   const originOf = (url) => { try { const u = new URL(url); return ["https:", "http:"].includes(u.protocol) ? u.origin : null; } catch { return null; } };
   socket.on("message", (data) => {
@@ -96,16 +102,19 @@ export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, 
       if (!active || !origin) { close(true); return; }
       resetFrames(); navigating = false; onNavigation?.();
       currentOrigin = origin; onOrigin?.(origin);
+      waitForFrame();
     }
     if (message.method === "Page.navigatedWithinDocument" && message.params?.frameId === rootId) {
       const origin = originOf(message.params.url);
       if (!active || !origin) { close(true); return; }
       resetFrames(); navigating = false; onNavigation?.();
       currentOrigin = origin; onOrigin?.(origin);
+      waitForFrame();
     }
     if (message.method === "Page.frameStoppedLoading" && message.params?.frameId === rootId && navigating) {
       // A cancelled/failed navigation may keep its old document. Refuse stale input, but resume images.
       resetFrames(); navigating = false; onNavigation?.();
+      waitForFrame();
     }
     if (["Inspector.detached", "Inspector.targetCrashed"].includes(message.method)
       || message.method === "Page.frameDetached" && message.params?.frameId === rootId) { close(true); return; }
@@ -116,6 +125,8 @@ export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, 
     // Drop surplus frames; at most one image is held by either endpoint until the app renders it.
     if (awaitingFrame || readingFrame || navigating) { void call("Page.screencastFrameAck", { sessionId: frame.sessionId }).catch(() => close(true)); return; }
     if (typeof frame.data !== "string" || frame.data.length > 2 * 1024 * 1024 || !/^[A-Za-z0-9+/]+={0,2}$/.test(frame.data)) { close(true); return; }
+    if (!receivedFrame) { receivedFrame = true; onDiagnostic?.("cdp_frame_received"); }
+    clearTimeout(frameTimer);
     const frameGeneration = generation;
     readingFrame = true;
     void call("Page.getLayoutMetrics").then(({ cssVisualViewport }) => {
@@ -125,7 +136,7 @@ export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, 
         || ![offsetX, offsetY].every(Number.isFinite)) { close(true); return; }
       const viewport = { width, height, offsetX, offsetY };
       awaitingFrame = { id: ++frameSequence, sessionId: frame.sessionId, viewport, generation };
-      frameTimer = setTimeout(() => close(true), 10_000);
+      frameTimer = setTimeout(() => close(true, "render_ack_timeout"), frameTimeoutMs);
       onFrame?.({ frameId: awaitingFrame.id, data: frame.data, width, height });
     }).catch(() => close(true)).finally(() => { readingFrame = false; });
   });
@@ -145,20 +156,28 @@ export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, 
       close,
       async start() {
         if (active || stopped) throw fail();
-        const startGeneration = generation;
+        const startGeneration = ++controlGeneration;
         // An unopened card cannot silently follow a page that changed in the meantime.
         const { frameTree } = await call("Page.getFrameTree");
-        if (stopped || startGeneration !== generation) return;
+        if (stopped || startGeneration !== controlGeneration) return;
         if (frameTree?.frame?.id !== rootId || originOf(frameTree.frame.url) !== currentOrigin) throw fail();
         active = true;
+        // Remote control owns page focus even while macOS considers Chrome hidden/occluded.
+        emulatingFocus = true;
+        await call("Emulation.setFocusEmulationEnabled", { enabled: true });
+        if (!active || stopped || startGeneration !== controlGeneration) return;
+        onDiagnostic?.("focus_enabled");
         await call("Page.bringToFront");
-        if (!active || stopped || startGeneration !== generation) return;
+        if (!active || stopped || startGeneration !== controlGeneration) return;
         await call("Page.startScreencast", { format: "jpeg", quality: 65, maxWidth: 1280, maxHeight: 960, everyNthFrame: 1 });
+        if (!active || stopped || startGeneration !== controlGeneration) return;
+        onDiagnostic?.("stream_started"); waitForFrame();
       },
       async pause() {
         if (stopped) return;
         const wasActive = active;
-        active = false; resetFrames();
+        active = false; controlGeneration++; resetFrames();
+        if (emulatingFocus) { emulatingFocus = false; await call("Emulation.setFocusEmulationEnabled", { enabled: false }); }
         if (!wasActive) return;
         await call("Page.stopScreencast");
       },

@@ -1518,6 +1518,16 @@ test("operation byte counters match the decoded socket frames once, including ma
   expect(Object.values(snapshot.runnerWsByOperation).reduce((n, value) => n + value.receivedBytes, 0)).toBe(snapshot.runnerWs.receivedBytes);
   manager.disconnect();
 });
+test("private browser frames cross JSON parsing and subscription before their rendered acknowledgement", async () => {
+  const socket = nextSocket(), manager = createManager(); await connectReady(manager, socket);
+  const received = jest.fn(); manager.subscribe({ channel: "control", op: "browser.control.frame" }, received);
+  const payload = { requestId: "private-card", frameId: 1, data: "aW1hZ2U=", width: 540, height: 760 };
+  socket.message({ channel: "control", op: "browser.control.frame", payload });
+  expect(received).toHaveBeenCalledWith({ channel: "control", op: "browser.control.frame", payload });
+  manager.send({ channel: "control", op: "browser.control.command", payload: { requestId: payload.requestId, action: "ack", frameId: payload.frameId } });
+  expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({ op: "browser.control.command", payload: { requestId: "private-card", action: "ack", frameId: 1 } });
+  expect(JSON.stringify(manager.getSnapshot())).not.toContain("aW1hZ2U="); manager.disconnect();
+});
 
 test("response consumers run once before await and callback errors reject only their request", async () => {
   const socket = nextSocket(), manager = createManager();
