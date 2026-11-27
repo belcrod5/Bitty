@@ -7,7 +7,7 @@ import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Reanimated, { cancelAnimation, FadeIn, FadeOut, runOnJS, useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
 import { useControlledStreamingStt } from "../../appControl/useControlledStreamingStt";
 import { useChatControlSurface } from "../../appControl/useChatControlSurface";
-import { useBrowserInputRequests } from "../contexts/BrowserInputContext";
+import { useBrowserControlRequests } from "../contexts/BrowserControlContext";
 import { getVoiceControl } from "../../appControl/voiceControl";
 import { StreamingSttFooter, type StreamingSttFooterHandle } from "../components/StreamingSttFooter";
 import { VoiceHistoryBackdrop, getMacVoiceBlurView } from "../components/VoiceHistoryBackdrop";
@@ -519,7 +519,7 @@ function VoiceConversationSession({
     : voice.reply && ttsUiStatus === "error" ? "音声再生に失敗しました。"
       : voiceStatus ? undefined
           : initialStartPending ? "録音を準備しています…" : !streamingStt.active ? "音声入力は停止しています。再開するには画面を開き直してください。" : "");
-  const browserInputs = useBrowserInputRequests({ kind: "orchestrator", orchestratorId: orchestrator.id });
+  const browserInputs = useBrowserControlRequests({ kind: "orchestrator", orchestratorId: orchestrator.id });
   const historyMessages = useMemo(() => {
     if (!voice.ready) return [];
     const reply = voice.reply;
