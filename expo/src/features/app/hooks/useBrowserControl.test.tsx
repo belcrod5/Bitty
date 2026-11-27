@@ -212,6 +212,40 @@ test("focus metadata is bounded, private to the viewer, and invalidated with its
   await act(async () => { emit("focus", { requestId: "one", ...meta, focusRevision: "x".repeat(129) }); emit("focus", { requestId: "one", controlId: "old-control", ...meta }); });
   expect(focus).toHaveBeenCalledTimes(count); await act(async () => emit("view_invalidated", { requestId: "one" })); expect(focus).toHaveBeenLastCalledWith(null); await view.unmount();
 });
+
+test.each(["blur", "invalidate", "stop", "pause", "disconnect", "finish", "background"] as const)("browser typing is ephemeral and clears on %s", async (end) => {
+  const view = await renderHook(() => useBrowserControl(manager)); await act(async () => emit("request", card()));
+  const stop = view.result.current.watch("one", jest.fn(), jest.fn()); await act(async () => view.result.current.command("one", "start"));
+  const meta = { requestId: "one", editable: true, multiline: false, kind: "text", focusRevision: "focus-one" };
+  await act(async () => emit("focus", { ...meta, value: "PRIVATE_VALUE" }));
+  expect(view.result.current.typingRequestId).toBe("one");
+  expect(JSON.stringify(view.result.current.requests)).not.toMatch(/focus|PRIVATE/);
+  await act(async () => {
+    if (end === "blur") emit("focus", { ...meta, editable: false });
+    if (end === "invalidate") emit("view_invalidated", { requestId: "one" });
+    if (end === "stop") stop?.();
+    if (end === "pause" || end === "finish") await view.result.current.command("one", end);
+    if (end === "disconnect") { connected = false; listeners.forEach((listener) => listener()); }
+    if (end === "background") { AppState.currentState = "background"; (AppState.addEventListener as jest.Mock).mock.calls.at(-1)[1]("background"); }
+  });
+  expect(view.result.current.typingRequestId).toBeNull();
+  await view.unmount();
+});
+
+test("an unrelated viewer blur or pause cannot restore the currently typing chat's composer", async () => {
+  const view = await renderHook(() => useBrowserControl(manager));
+  await act(async () => { emit("request", card()); emit("request", card("two", "other")); });
+  view.result.current.watch("one", jest.fn(), jest.fn()); view.result.current.watch("two", jest.fn(), jest.fn());
+  await act(async () => view.result.current.command("one", "start"));
+  const firstControl = request.mock.calls.at(-1)?.[0].payload.controlId;
+  await act(async () => view.result.current.command("two", "start"));
+  const secondControl = request.mock.calls.at(-1)?.[0].payload.controlId;
+  const meta = { editable: true, multiline: false, kind: "text", focusRevision: "focus" };
+  await act(async () => emit("focus", { ...meta, requestId: "two", controlId: secondControl }));
+  await act(async () => { emit("focus", { ...meta, requestId: "one", controlId: firstControl, editable: false }); await view.result.current.command("one", "pause"); });
+  expect(view.result.current.typingRequestId).toBe("two");
+  await view.unmount();
+});
 test("completion waits for submitted input and its own response before ending ownership", async () => {
   const view = await renderHook(() => useBrowserControl(manager)); await act(async () => emit("request", card())); view.result.current.watch("one", jest.fn());
   await act(async () => view.result.current.command("one", "start"));

@@ -2,14 +2,16 @@ import { State, PointerType, type TouchData } from "react-native-gesture-handler
 const { getByGestureTestId }: typeof import("react-native-gesture-handler/lib/typescript/jestUtils") = require("react-native-gesture-handler/lib/commonjs/jestUtils");
 const { onGestureHandlerEvent }: typeof import("react-native-gesture-handler/lib/typescript/handlers/gestures/eventReceiver") = require("react-native-gesture-handler/lib/commonjs/handlers/gestures/eventReceiver");
 const { TouchEventType }: typeof import("react-native-gesture-handler/lib/typescript/TouchEventType") = require("react-native-gesture-handler/lib/commonjs/TouchEventType");
-import { AppState } from "react-native";
+import { AppState, StyleSheet, Text } from "react-native";
 import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import { act, fireEvent, render } from "@testing-library/react-native";
-import { BrowserControlContext, useBrowserControlRequests } from "../contexts/BrowserControlContext";
+import { BrowserControlContext, useBrowserControlRequests, useBrowserControlTyping } from "../contexts/BrowserControlContext";
 import { useBrowserControl, type BrowserControlFocus, BrowserControlFrame, BrowserControlInput, BrowserControlRequest } from "../hooks/useBrowserControl";
 import { BrowserControlCard } from "./BrowserControlCard";
 import { VoiceConversationMessages } from "./VoiceConversationMessages";
 jest.mock("expo-crypto", () => ({ randomUUID: () => "00000000-0000-4000-8000-000000000001" }));
+jest.mock("../keyboardController", () => ({ KeyboardAvoidingView: require("react-native").KeyboardAvoidingView }));
+jest.mock("react-native-gesture-handler/lib/commonjs/RNGestureHandlerModule", () => require("react-native-gesture-handler/lib/commonjs/mocks/mocks"));
 jest.mock("expo-modules-core", () => ({
   requireOptionalNativeModule: (name: string) => name === "BittyBrowserKeyboard" ? {} : null,
   requireNativeViewManager: () => { const React = require("react"); const { View } = require("react-native"); return (props: unknown) => React.createElement(View, props); },
@@ -23,7 +25,7 @@ const frame = { frameId: 1, data: "aW1hZ2U=", width: 800, height: 600 };
 function fixture() {
   let listener: ((frame: BrowserControlFrame | null) => void) | undefined;
   let keyboard: ((focus: BrowserControlFocus | null) => void) | undefined;
-  const controller = { requests: [card], command: jest.fn(async (_requestId: string, _action: string) => {}), input: jest.fn(async (_requestId: string, _input: BrowserControlInput, _frameId: number) => {}), ack: jest.fn(), failDisplay: jest.fn(), watch: jest.fn((_id: string, handler: (frame: BrowserControlFrame | null) => void, onFocus?: (focus: BrowserControlFocus | null) => void) => { listener = handler; keyboard = onFocus; return () => { handler(null); keyboard?.(null); }; }) };
+  const controller = { requests: [card], typingRequestId: null as string | null, command: jest.fn(async (_requestId: string, _action: string) => {}), input: jest.fn(async (_requestId: string, _input: BrowserControlInput, _frameId: number) => {}), ack: jest.fn(), failDisplay: jest.fn(), watch: jest.fn((_id: string, handler: (frame: BrowserControlFrame | null) => void, onFocus?: (focus: BrowserControlFocus | null) => void) => { listener = handler; keyboard = onFocus; return () => { handler(null); keyboard?.(null); }; }) };
   return { controller, emit: (next: BrowserControlFrame | null) => listener?.(next), emitFocus: (next: BrowserControlFocus | null) => keyboard?.(next) };
 }
 afterEach(() => jest.restoreAllMocks());
@@ -125,10 +127,10 @@ async function touchFixture() {
     await act(async () => onGestureHandlerEvent({ handlerTag: pan().handlerTag, state: State.ACTIVE, eventType,
       numberOfTouches, allTouches, changedTouches, pointerType: PointerType.TOUCH }));
   };
-  const click = async (panFirst = true) => {
-    await state("tap", State.BEGAN, State.UNDETERMINED);
+  const click = async (panFirst = true, x = 50, y = 75) => {
+    await state("tap", State.BEGAN, State.UNDETERMINED, x, y);
     if (panFirst) await state("pan", State.FAILED, State.BEGAN);
-    await state("tap", State.ACTIVE, State.BEGAN); await state("tap", State.END, State.ACTIVE);
+    await state("tap", State.ACTIVE, State.BEGAN, x, y); await state("tap", State.END, State.ACTIVE, x, y);
     if (!panFirst) await state("pan", State.FAILED, State.BEGAN);
   };
   return { ...f, view, pan, tap, state, touch, click };
@@ -196,6 +198,111 @@ test("a cancelled stationary native tap never clicks", async () => {
   const f = await touchFixture(); await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75)]);
   await f.state("pan", State.CANCELLED, State.BEGAN); await f.state("tap", State.CANCELLED, State.BEGAN);
   expect(f.controller.input).not.toHaveBeenCalled(); await f.view.unmount();
+});
+
+test("pinch zoom is local, keeps its center, and transforms later taps without a mode switch", async () => {
+  const f = await touchFixture();
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75), finger(1, 150, 75)]);
+  await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 0, 75), finger(1, 200, 75)]);
+  expect(StyleSheet.flatten(f.view.getByLabelText("ブラウザの画面").props.style)).toMatchObject({ width: 400, height: 300, left: -100, top: -75 });
+  await f.touch(TouchEventType.TOUCHES_UP, [finger(0, 0, 75), finger(1, 200, 75)], undefined, 0);
+  await f.state("pan", State.END, State.ACTIVE); await f.click();
+  expect(f.controller.input).not.toHaveBeenCalled();
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75)]); await f.click();
+  expect(f.controller.input.mock.calls).toEqual([["one", { type: "down", x: 0.375, y: 0.5 }, 1], ["one", { type: "up", x: 0.375, y: 0.5 }, 1]]);
+  f.controller.input.mockClear();
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75), finger(1, 150, 75)]);
+  await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 75, 75), finger(1, 125, 75)]);
+  expect(StyleSheet.flatten(f.view.getByLabelText("ブラウザの画面").props.style)).toMatchObject({ width: 200, height: 150, left: 0, top: 0 });
+  expect(f.controller.input).not.toHaveBeenCalled();
+  await f.view.unmount();
+});
+
+test("pinch can move the enlarged view, clamps its edges, and does not turn into page scrolling", async () => {
+  const f = await touchFixture();
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75), finger(1, 150, 75)]);
+  await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 0, 75), finger(1, 200, 75)]);
+  await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 400, 75), finger(1, 600, 75)]);
+  expect(StyleSheet.flatten(f.view.getByLabelText("ブラウザの画面").props.style)).toMatchObject({ width: 400, left: 0 });
+  await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, -400, 75), finger(1, -200, 75)]);
+  expect(StyleSheet.flatten(f.view.getByLabelText("ブラウザの画面").props.style)).toMatchObject({ left: -200 });
+  expect(f.controller.input).not.toHaveBeenCalled(); await f.view.unmount();
+});
+
+test("parallel two-finger scrolling uses the displayed scale and keyboard layout preserves zoom", async () => {
+  const f = await touchFixture();
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75), finger(1, 150, 75)]);
+  await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 0, 75), finger(1, 200, 75)]);
+  await f.touch(TouchEventType.TOUCHES_UP, [finger(0, 0, 75), finger(1, 200, 75)], undefined, 0); await f.state("pan", State.END, State.ACTIVE);
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75), finger(1, 150, 75)]);
+  await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 50, 50), finger(1, 150, 50)]);
+  expect(f.controller.input).toHaveBeenCalledTimes(1);
+  expect(f.controller.input.mock.calls[0][1]).toMatchObject({ type: "scroll", deltaX: 0, deltaY: 50 });
+  await fireEvent(f.view.getByTestId("browser-control-screen"), "layout", { nativeEvent: { layout: { width: 200, height: 100 } } });
+  const imageStyle = StyleSheet.flatten(f.view.getByLabelText("ブラウザの画面").props.style);
+  expect(imageStyle.width).toBeCloseTo(800 / 3); expect(imageStyle.height).toBeCloseTo(200);
+  await f.view.unmount();
+});
+
+test("adding a pinching finger releases a remote drag once and never clicks or scrolls", async () => {
+  const f = await touchFixture();
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75)]); await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 75, 75)]);
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 75, 75), finger(1, 125, 75)], [finger(1, 125, 75)]);
+  await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 50, 75), finger(1, 150, 75)]);
+  await f.touch(TouchEventType.TOUCHES_UP, [finger(0, 50, 75), finger(1, 150, 75)], [finger(1, 150, 75)], 1);
+  await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 100, 75)]);
+  await f.touch(TouchEventType.TOUCHES_UP, [finger(0, 100, 75)], undefined, 0); await f.state("pan", State.END, State.ACTIVE); await f.click();
+  expect(f.controller.input.mock.calls.map((call) => call[1].type)).toEqual(["down", "move", "up"]);
+  await f.view.unmount();
+});
+
+test("fullscreen retains one controller, fences the old display, and maps the fitted image instead of letterboxing", async () => {
+  const f = await touchFixture();
+  await act(async () => f.emitFocus({ editable: true, multiline: false, kind: "text", focusRevision: "field" }));
+  const oldLoad = f.view.getByLabelText("ブラウザの画面").props.onLoad;
+  const oldError = f.view.getByLabelText("ブラウザの画面").props.onError;
+  const oldInput = f.view.getByTestId("browser-control-keyboard").props.onInput;
+  await fireEvent.press(f.view.getByText("全画面"));
+  expect(f.view.getByTestId("browser-control-fullscreen").props.presentationStyle).toBe("fullScreen");
+  expect(f.view.getAllByLabelText("ブラウザの画面")).toHaveLength(1); expect(f.view.getAllByTestId("browser-control-keyboard")).toHaveLength(1);
+  expect(f.controller.watch).toHaveBeenCalledTimes(1); expect(f.controller.command).toHaveBeenCalledTimes(1);
+  const ackCount = f.controller.ack.mock.calls.length;
+  await act(async () => { oldLoad(); oldError(); oldInput({ nativeEvent: { focusRevision: "field", text: "old private commit" } }); });
+  expect(f.controller.ack).toHaveBeenCalledTimes(ackCount); expect(f.controller.failDisplay).not.toHaveBeenCalled(); expect(f.controller.input).not.toHaveBeenCalled();
+  await fireEvent(f.view.getByTestId("browser-control-screen"), "layout", { nativeEvent: { layout: { width: 400, height: 600 } } });
+  await fireEvent(f.view.getByLabelText("ブラウザの画面"), "load");
+  expect(StyleSheet.flatten(f.view.getByLabelText("ブラウザの画面").props.style)).toMatchObject({ width: 400, height: 300, left: 0, top: 150 });
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 100, 50)]); await f.click(true, 100, 50);
+  expect(f.controller.input).not.toHaveBeenCalled();
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 100, 300)]); await f.click(true, 100, 300);
+  expect(f.controller.input.mock.calls).toEqual([["one", { type: "down", x: 0.25, y: 0.5 }, 1], ["one", { type: "up", x: 0.25, y: 0.5 }, 1]]);
+  await fireEvent.press(f.view.getByText("インラインに戻す"));
+  expect(f.view.queryByTestId("browser-control-fullscreen")).toBeNull(); expect(f.view.getAllByLabelText("ブラウザの画面")).toHaveLength(1);
+  expect(f.controller.watch).toHaveBeenCalledTimes(1); expect(f.controller.command).toHaveBeenCalledTimes(1);
+  expect(JSON.stringify(f.view.toJSON())).not.toContain("old private commit");
+  await f.view.unmount();
+});
+
+test("fullscreen switch releases a held drag and suppresses stale input until its new image loads", async () => {
+  const f = await touchFixture();
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75)]); await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 75, 75)]);
+  await fireEvent.press(f.view.getByText("全画面"));
+  expect(f.controller.input.mock.calls.map((call) => call[1].type)).toEqual(["down", "move", "up"]);
+  await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 100, 75)]); await f.click();
+  expect(f.controller.input).toHaveBeenCalledTimes(3); await f.view.unmount();
+});
+
+test("browser typing is scoped to the original conversation without exposing focus metadata", async () => {
+  const f = fixture(); f.controller.typingRequestId = "one";
+  function Composer({ selected }: { selected: string }) {
+    const requests = useBrowserControlRequests({ kind: "orchestrator", orchestratorId: selected });
+    return <Text>{useBrowserControlTyping(requests) ? "hidden" : "composer"}</Text>;
+  }
+  const content = (selected: string) => <BrowserControlContext.Provider value={f.controller}><Composer selected={selected} /></BrowserControlContext.Provider>;
+  const view = await render(content("main")); expect(view.getByText("hidden")).toBeTruthy();
+  await view.rerender(content("other")); expect(view.getByText("composer")).toBeTruthy();
+  f.controller.typingRequestId = null; await view.rerender(content("main")); expect(view.getByText("composer")).toBeTruthy();
+  await view.unmount();
 });
 
 test("focus changes and clearing discard delayed native input while keys use the current focus token", async () => {

@@ -25,7 +25,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { KeyboardAvoidingView } from "../keyboardController";
 import { WebView } from "react-native-webview";
 import type { ConversationMessage } from "../types/appTypes";
-import { useBrowserControlRequests } from "../contexts/BrowserControlContext";
+import { useBrowserControlRequests, useBrowserControlTyping } from "../contexts/BrowserControlContext";
 import { browserControlTimeline, type BrowserControlTimelineCard } from "../utils/browserControlTimeline";
 import { BrowserControlCard } from "../components/BrowserControlCard";
 import type { DirectoryMarkerColor } from "../types/directorySessions";
@@ -628,6 +628,7 @@ export function ChatScreen({
     backendId: backendIdForView, nativeSessionId: selectedSessionIdForView || null,
   }, cwd: selectedDirectoryPathForView });
   const browserControlActive = browserInputs.some((request) => request.status === "starting" || request.status === "active");
+  const browserTyping = useBrowserControlTyping(browserInputs);
   const timelineItems = useMemo(() => browserControlTimeline(conversationMessagesForView, browserInputs), [conversationMessagesForView, browserInputs]);
   const messageIndexById = useMemo(() => new Map(conversationMessagesForView.map((message, index) => [message.id, index])), [conversationMessagesForView]);
   const showMessagesSkeletonForView = isMiniBoardPopupMode && (showPopupMessagesSkeleton || panelHydrating);
@@ -2425,7 +2426,8 @@ export function ChatScreen({
           onClose={cancelChatFileEdit}
           onSave={writeChatFileContent}
         />
-        <View style={styles.chatComposer}>
+        <View testID="chat-composer" accessibilityElementsHidden={browserTyping} importantForAccessibility={browserTyping ? "no-hide-descendants" : "auto"}
+          style={[styles.chatComposer, browserTyping && { display: "none" }]}>
           <View style={styles.connectionStatusArea}>
             <View style={styles.chatScrollControls}>
               <TouchableOpacity
@@ -2573,7 +2575,8 @@ export function ChatScreen({
           </View>
           )}
         </View>
-        <View style={styles.chatFooterSettingsRow}>
+        <View accessibilityElementsHidden={browserTyping} importantForAccessibility={browserTyping ? "no-hide-descendants" : "auto"}
+          style={[styles.chatFooterSettingsRow, browserTyping && { display: "none" }]}>
           <View style={styles.chatFooterSettingsInline}>
             <View ref={modelSelectTriggerRef} collapsable={false}>
               <TouchableOpacity
@@ -2607,7 +2610,7 @@ export function ChatScreen({
           </View>
         </View>
         <ComposerFullscreenEditor
-          visible={popupComposerFullscreenOpen && !approvalDialogPending}
+          visible={popupComposerFullscreenOpen && !approvalDialogPending && !browserTyping}
           inputRef={popupComposerFullscreenInputRef}
           value={transcriptForView}
           history={composerMessageHistory}

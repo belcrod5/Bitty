@@ -22,6 +22,7 @@ function parseCard(value: unknown): BrowserControlRequest | null {
 
 export function useBrowserControl(manager: RunnerWebSocketManager, onDiagnostic?: (event: string, payload: Record<string, unknown>) => void) {
   const [requests, setRequests] = useState<BrowserControlRequest[]>([]);
+  const [typingRequestId, setTypingRequestId] = useState<string | null>(null);
   const entries = useRef(new Map<string, BrowserControlRequest>());
   // Private pixels, focus and input exist only in their mounted viewer and current connection.
   const viewers = useRef(new Map<string, { frame: (frame: BrowserControlFrame | null) => void; focus?: (focus: BrowserControlFocus | null) => void }>());
@@ -37,7 +38,10 @@ export function useBrowserControl(manager: RunnerWebSocketManager, onDiagnostic?
   const queues = useRef(new Map<string, { tail: Promise<void>; pending: QueuedInput[]; running: boolean; sequence: number }>());
   const update = useCallback((entry: BrowserControlRequest) => {
     entries.current.set(entry.requestId, entry); setRequests([...entries.current.values()]);
-    if (terminal.has(entry.status) || entry.status === "pending") { viewers.current.get(entry.requestId)?.frame(null); viewers.current.get(entry.requestId)?.focus?.(null); }
+    if (terminal.has(entry.status) || entry.status === "pending") {
+      setTypingRequestId((current) => current === entry.requestId ? null : current);
+      viewers.current.get(entry.requestId)?.frame(null); viewers.current.get(entry.requestId)?.focus?.(null);
+    }
     if (terminal.has(entry.status)) {
       clearDisplay(entry.requestId); controls.current.delete(entry.requestId); commandGenerations.current.delete(entry.requestId);
       const queue = queues.current.get(entry.requestId); if (queue) queue.pending = []; queues.current.delete(entry.requestId);
@@ -144,7 +148,7 @@ export function useBrowserControl(manager: RunnerWebSocketManager, onDiagnostic?
   const watch = useCallback((requestId: string, frame: (frame: BrowserControlFrame | null) => void, focus?: (focus: BrowserControlFocus | null) => void) => {
     if (viewers.current.has(requestId)) return null;
     const viewer = { frame, focus }; viewers.current.set(requestId, viewer);
-    return () => { if (viewers.current.get(requestId) !== viewer) return; frame(null); focus?.(null); viewers.current.delete(requestId); suspend(requestId, queues.current.get(requestId)?.running); };
+    return () => { if (viewers.current.get(requestId) !== viewer) return; frame(null); focus?.(null); setTypingRequestId((current) => current === requestId ? null : current); viewers.current.delete(requestId); suspend(requestId, queues.current.get(requestId)?.running); };
   }, [suspend]);
   useEffect(() => {
     let scope = manager.getSnapshot().connectionOptionsGeneration, socketGeneration = -1;
@@ -175,16 +179,18 @@ export function useBrowserControl(manager: RunnerWebSocketManager, onDiagnostic?
     });
     const offFocus = manager.subscribe({ channel: "control", op: "browser.control.focus" }, (message) => {
       const focus = message.payload as BrowserControlFocus & { requestId: string; controlId: string }, entry = currentRun(focus);
-      if (!entry || !["starting", "active"].includes(entry.status) || AppState.currentState !== "active") return;
+      if (!entry || !["starting", "active"].includes(entry.status) || AppState.currentState !== "active" || !viewers.current.has(entry.requestId)) return;
       if (typeof focus.editable !== "boolean" || typeof focus.multiline !== "boolean" || !["text", "password", "email", "number", "tel", "url", "search"].includes(focus.kind)
         || typeof focus.focusRevision !== "string" || !focus.focusRevision.length || focus.focusRevision.length > 128) return;
       viewers.current.get(entry.requestId)?.focus?.({ editable: focus.editable, multiline: focus.multiline, kind: focus.kind, focusRevision: focus.focusRevision });
+      setTypingRequestId((current) => focus.editable ? entry.requestId : current === entry.requestId ? null : current);
     });
     const offViewInvalidated = manager.subscribe({ channel: "control", op: "browser.control.view_invalidated" }, (message) => {
       const entry = currentRun(message.payload as { requestId?: string; controlId?: string }); if (!entry) return;
       const queue = queues.current.get(entry.requestId);
       if (queue) { if (queue.pending.some(({ input }) => input.type === "text" || input.type === "key")) update({ ...entry, inputNotApplied: true }); queue.pending = []; }
       viewers.current.get(entry.requestId)?.frame(null); viewers.current.get(entry.requestId)?.focus?.(null);
+      setTypingRequestId((current) => current === entry.requestId ? null : current);
     });
     const offOrigin = manager.subscribe({ channel: "control", op: "browser.control.origin" }, (message) => {
       const payload = message.payload as { requestId?: string; controlId?: string; origin?: string }, entry = currentRun(payload);
@@ -216,5 +222,5 @@ export function useBrowserControl(manager: RunnerWebSocketManager, onDiagnostic?
       offRequest(); offSync(); offRegistered(); offFrame(); offFocus(); offViewInvalidated(); offOrigin(); offResolved(); offSnapshot(); subscription.remove(); viewers.current.clear(); queues.current.clear();
     };
   }, [diagnose, failDisplay, manager, suspend, update]);
-  return { requests, command, input, ack, watch, failDisplay };
+  return { requests, typingRequestId, command, input, ack, watch, failDisplay };
 }

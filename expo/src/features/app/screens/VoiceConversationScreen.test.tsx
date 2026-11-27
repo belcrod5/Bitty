@@ -1086,7 +1086,7 @@ test("browser status and layout changes preserve the history position until the 
   const card: BrowserControlRequest = { requestId: "browser", status: "pending", label: "Browser",
     createdAt: "2026-11-26T00:01:00Z", origin: "https://example.com",
     target: { kind: "orchestrator", orchestratorId: "main" } };
-  const controller = { requests: [card], command: jest.fn(async () => {}), input: jest.fn(async () => {}), ack: jest.fn(), failDisplay: jest.fn(), watch: jest.fn(() => () => {}) };
+  const controller = { requests: [card], typingRequestId: null as string | null, command: jest.fn(async () => {}), input: jest.fn(async () => {}), ack: jest.fn(), failDisplay: jest.fn(), watch: jest.fn(() => () => {}) };
   const content = () => <BrowserControlContext.Provider value={controller}><VoiceConversationScreen {...playback} onClose={mockOnClose} /></BrowserControlContext.Provider>;
   const screen = await render(content());
   await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
@@ -1114,6 +1114,26 @@ test("browser status and layout changes preserve the history position until the 
   mockVoice.reply = { text: "末尾での返答", operationId: "operation-3" };
   await screen.rerender(content());
   expect(scrollToEnd).toHaveBeenCalledTimes(2);
+  await screen.unmount();
+});
+
+test("browser typing hides only the matching orchestrator footer and restores its mounted draft", async () => {
+  const card = (id: string, orchestratorId: string): BrowserControlRequest => ({ requestId: id, status: "active", label: "Browser",
+    createdAt: "2026-11-26T00:01:00Z", origin: "https://example.com", target: { kind: "orchestrator", orchestratorId } });
+  const controller = { requests: [card("one", "main"), card("two", "other")], typingRequestId: null as string | null,
+    command: jest.fn(async () => {}), input: jest.fn(async () => {}), ack: jest.fn(), failDisplay: jest.fn(), watch: jest.fn(() => () => {}) };
+  const content = () => <BrowserControlContext.Provider value={{ ...controller }}><VoiceConversationScreen {...playback} onClose={mockOnClose} /></BrowserControlContext.Provider>;
+  const screen = await render(content());
+  await act(async () => mockFooterProps?.onChangeText?.("既存の下書き"));
+  const footer = screen.getByTestId("streaming-stt-footer");
+  controller.typingRequestId = "one"; await screen.rerender(content());
+  expect(screen.queryByTestId("streaming-stt-footer")).toBeNull();
+  expect(screen.getByTestId("streaming-stt-footer", { includeHiddenElements: true })).toBe(footer);
+  expect(mockFooterProps?.draftTranscript).toBe("既存の下書き");
+  controller.typingRequestId = "two"; await screen.rerender(content());
+  expect(screen.getByTestId("streaming-stt-footer")).toBe(footer);
+  controller.typingRequestId = null; await screen.rerender(content());
+  expect(mockFooterProps?.draftTranscript).toBe("既存の下書き"); expect(mockVoice.sendTranscript).not.toHaveBeenCalled();
   await screen.unmount();
 });
 

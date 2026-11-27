@@ -32,6 +32,48 @@ final class BrowserKeyboardTextView: UITextView {
   }
 }
 
+// The IME draft stays in UIKit and is visible only above the user's keyboard.
+final class BrowserCompositionPreview: UIInputView {
+  private let label = UILabel()
+
+  init() {
+    super.init(frame: .zero, inputViewStyle: .keyboard)
+    allowsSelfSizing = true
+    autoresizingMask = .flexibleHeight
+    clipsToBounds = true
+    isUserInteractionEnabled = false
+    backgroundColor = .secondarySystemBackground
+    label.font = .systemFont(ofSize: 17)
+    label.textColor = .label
+    label.lineBreakMode = .byTruncatingHead
+    addSubview(label)
+  }
+
+  required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+  override var intrinsicContentSize: CGSize {
+    CGSize(width: UIView.noIntrinsicMetric, height: label.text?.isEmpty == false ? ceil(label.font.lineHeight) + 16 : 0)
+  }
+
+  override func systemLayoutSizeFitting(_ targetSize: CGSize) -> CGSize {
+    CGSize(width: targetSize.width, height: intrinsicContentSize.height)
+  }
+
+  override func layoutSubviews() {
+    super.layoutSubviews()
+    let left = safeAreaInsets.left + 20
+    let right = safeAreaInsets.right + 20
+    label.frame = CGRect(x: left, y: 8, width: max(0, bounds.width - left - right), height: max(0, bounds.height - 16))
+  }
+
+  func show(_ text: String?) {
+    guard label.text != text else { return }
+    label.text = text
+    invalidateIntrinsicContentSize()
+    setNeedsLayout()
+  }
+}
+
 final class BittyBrowserKeyboardView: ExpoView, UITextViewDelegate {
   let onInput = EventDispatcher()
   var nextRevision: String?
@@ -39,6 +81,7 @@ final class BittyBrowserKeyboardView: ExpoView, UITextViewDelegate {
   private var revision: String?
   private var resetting = false
   private let input = BrowserKeyboardTextView()
+  private let compositionPreview = BrowserCompositionPreview()
 
   required init(appContext: AppContext? = nil) {
     super.init(appContext: appContext)
@@ -55,6 +98,7 @@ final class BittyBrowserKeyboardView: ExpoView, UITextViewDelegate {
     input.smartInsertDeleteType = .no
     input.isScrollEnabled = false
     input.accessibilityElementsHidden = true
+    input.inputAccessoryView = compositionPreview
     input.committed = { [weak self] in self?.sendCommittedText() }
     input.emptyBackspace = { [weak self] in self?.sendKey("Backspace") }
     addSubview(input)
@@ -90,6 +134,7 @@ final class BittyBrowserKeyboardView: ExpoView, UITextViewDelegate {
 
   private func discard() {
     resetting = true
+    compositionPreview.show(nil)
     input.resignFirstResponder()
     input.text = ""
     resetting = false
@@ -101,6 +146,7 @@ final class BittyBrowserKeyboardView: ExpoView, UITextViewDelegate {
   }
 
   private func sendCommittedText() {
+    updateCompositionPreview()
     guard !resetting, let revision, input.markedTextRange == nil, !input.text.isEmpty else { return }
     let text = input.text ?? ""
     resetting = true
@@ -118,7 +164,18 @@ final class BittyBrowserKeyboardView: ExpoView, UITextViewDelegate {
     if !chunk.isEmpty { onInput(["focusRevision": revision, "text": chunk]) }
   }
 
+  private func updateCompositionPreview() {
+    guard !resetting, revision != nil, let range = input.markedTextRange,
+      let text = input.text(in: range), !text.isEmpty else {
+      compositionPreview.show(nil)
+      return
+    }
+    compositionPreview.show(input.isSecureTextEntry ? String(repeating: "•", count: text.count) : text)
+  }
+
   func textViewDidChange(_ textView: UITextView) { sendCommittedText() }
+
+  func textViewDidChangeSelection(_ textView: UITextView) { updateCompositionPreview() }
 
   func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
     if text == "\n" && textView.markedTextRange == nil {

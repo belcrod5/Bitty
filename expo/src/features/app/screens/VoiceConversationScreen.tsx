@@ -7,7 +7,7 @@ import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Reanimated, { cancelAnimation, FadeIn, FadeOut, runOnJS, useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
 import { useControlledStreamingStt } from "../../appControl/useControlledStreamingStt";
 import { useChatControlSurface } from "../../appControl/useChatControlSurface";
-import { useBrowserControlRequests } from "../contexts/BrowserControlContext";
+import { useBrowserControlRequests, useBrowserControlTyping } from "../contexts/BrowserControlContext";
 import { getVoiceControl } from "../../appControl/voiceControl";
 import { StreamingSttFooter, type StreamingSttFooterHandle } from "../components/StreamingSttFooter";
 import { VoiceHistoryBackdrop, getMacVoiceBlurView } from "../components/VoiceHistoryBackdrop";
@@ -523,6 +523,7 @@ function VoiceConversationSession({
           : initialStartPending ? "録音を準備しています…" : !streamingStt.active ? "音声入力は停止しています。再開するには画面を開き直してください。" : "");
   const browserInputs = useBrowserControlRequests({ kind: "orchestrator", orchestratorId: orchestrator.id });
   const browserControlActive = browserInputs.some((request) => request.status === "starting" || request.status === "active");
+  const browserTyping = useBrowserControlTyping(browserInputs);
   const historyMessages = useMemo(() => {
     if (!voice.ready) return [];
     const reply = voice.reply;
@@ -745,6 +746,7 @@ function VoiceConversationSession({
               </Reanimated.View>
             ) : null}
             <View testID="voice-footer-inset"
+              accessibilityElementsHidden={browserTyping} importantForAccessibility={browserTyping ? "no-hide-descendants" : "auto"}
               ref={footerInsetRef}
               onLayout={() => {
                 if (historyDragActive.value || footerDismissing.value || footerOffset.value !== 0) return;
@@ -754,7 +756,7 @@ function VoiceConversationSession({
                   }
                 });
               }}
-              style={{ paddingLeft: historyExpanded ? 20 : 12, paddingRight: 20, paddingBottom: 20 }}>
+              style={{ paddingLeft: historyExpanded ? 20 : 12, paddingRight: 20, paddingBottom: 20, display: browserTyping ? "none" : "flex" }}>
               <GestureDetector gesture={footerSwipe}>
                 <View testID="voice-history-swipe-area">
                   <StreamingSttFooter

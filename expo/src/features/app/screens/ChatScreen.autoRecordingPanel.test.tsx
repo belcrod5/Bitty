@@ -20,6 +20,7 @@ const mockDiscardCorrection = jest.fn();
 const mockSetCorrectionText = jest.fn();
 const mockPushStreamingSample = jest.fn();
 let mockStreamingSttPhase: "idle" | "connecting" | "recording" | "finalizing" = "idle";
+let mockTranscript = "";
 let mockRunnerStatusRenderCount = 0;
 const mockStreamingSttOptions: { current: Record<string, any> | null } = { current: null };
 let mockUseActualStreamingStt = false;
@@ -478,7 +479,7 @@ jest.mock("../contexts/ConversationContext", () => ({
     selectedSessionMarkerColor: "none",
     selectedSessionTitle: "Session",
     selectedDirectoryPath: "/workspace",
-    transcript: "",
+    transcript: mockTranscript,
     canSend: true,
     replyLoading: false,
     sttLoading: false,
@@ -519,6 +520,7 @@ jest.mock("../contexts/ConversationContext", () => ({
 
 describe("ChatScreen voice input", () => {
   beforeEach(() => {
+    mockTranscript = "";
     mockRunningSessionCount = 3;
     mockScheduledThreadIds = new Set();
     mockSkiaBoardSessionIds = new Set();
@@ -562,7 +564,7 @@ describe("ChatScreen voice input", () => {
     const card = (id: string, session: string): BrowserControlRequest => ({ requestId: id, status: "pending", label: "Private field",
       createdAt: "2026-11-26T00:01:00Z", origin: "https://example.com",
       target: { kind: "session", sessionRef: { backendId: "codex", nativeSessionId: session }, cwd: "/workspace" } });
-    const controller = { requests: [card("one", "session-1"), card("two", "session-2")], command: jest.fn(async () => {}), input: jest.fn(async () => {}), ack: jest.fn(), failDisplay: jest.fn(), watch: jest.fn(() => () => {}) };
+    const controller = { requests: [card("one", "session-1"), card("two", "session-2")], typingRequestId: null as string | null, command: jest.fn(async () => {}), input: jest.fn(async () => {}), ack: jest.fn(), failDisplay: jest.fn(), watch: jest.fn(() => () => {}) };
     const chat = () => <BrowserControlContext.Provider value={controller}><ChatScreen mode="mini_board_popup" panelId="panel-a" /></BrowserControlContext.Provider>;
     const screen = await render(chat());
     expect(mockLegendListProps.current?.data.map((item: { id: string }) => item.id)).toEqual(["before", "browser-control:one", "after"]);
@@ -581,12 +583,35 @@ describe("ChatScreen voice input", () => {
     await row.unmount(); await screen.unmount();
   });
 
+  it.each(["main", "mini_board_popup"] as const)("hides the %s composer only for its browser typing and restores the same draft", async (mode) => {
+    const card = (id: string, session: string): BrowserControlRequest => ({ requestId: id, status: "active", label: "Browser",
+      createdAt: "2026-11-26T00:01:00Z", origin: "https://example.com",
+      target: { kind: "session", sessionRef: { backendId: mode === "main" ? "claude" : "codex", nativeSessionId: session }, cwd: "/workspace" } });
+    const controller = { requests: [card("one", "session-1"), card("two", "session-2")], typingRequestId: null as string | null,
+      command: jest.fn(async () => {}), input: jest.fn(async () => {}), ack: jest.fn(), failDisplay: jest.fn(), watch: jest.fn(() => () => {}) };
+    mockTranscript = "既存の下書き";
+    const content = () => <BrowserControlContext.Provider value={{ ...controller }}><ChatScreen mode={mode === "main" ? undefined : mode} panelId={mode === "main" ? undefined : "panel-a"} /></BrowserControlContext.Provider>;
+    const screen = await render(content());
+    if (mode === "mini_board_popup") await fireEvent.changeText(screen.getByTestId("chat-composer-input"), "既存の下書き");
+    const input = screen.getByTestId("chat-composer-input");
+    controller.typingRequestId = "one"; await screen.rerender(content());
+    expect(screen.queryByTestId("chat-composer-input")).toBeNull(); expect(screen.queryByTestId("chat-composer-action")).toBeNull();
+    expect(screen.getByTestId("chat-composer-input", { includeHiddenElements: true })).toBe(input);
+    controller.typingRequestId = "two"; await screen.rerender(content());
+    expect(screen.getByTestId("chat-composer-input").props.value).toBe("既存の下書き");
+    controller.typingRequestId = null; await screen.rerender(content());
+    expect(screen.getByTestId("chat-composer-input")).toBe(input);
+    expect(screen.getByTestId("chat-composer-input").props.value).toBe("既存の下書き");
+    expect(mockSendReplyTranscript).not.toHaveBeenCalled(); expect(mockSendReplyTranscriptForPanel).not.toHaveBeenCalled();
+    await screen.unmount();
+  });
+
   it("keeps an opened browser card anchored through frame growth, keyboard layout and completion", async () => {
     jest.useFakeTimers();
     const card: BrowserControlRequest = { requestId: "browser", status: "pending", label: "Browser",
       createdAt: "2026-11-26T00:01:00Z", origin: "https://example.com",
       target: { kind: "session", sessionRef: { backendId: "codex", nativeSessionId: "session-1" }, cwd: "/workspace" } };
-    const controller = { requests: [card], command: jest.fn(async () => {}), input: jest.fn(async () => {}), ack: jest.fn(), failDisplay: jest.fn(), watch: jest.fn(() => () => {}) };
+    const controller = { requests: [card], typingRequestId: null as string | null, command: jest.fn(async () => {}), input: jest.fn(async () => {}), ack: jest.fn(), failDisplay: jest.fn(), watch: jest.fn(() => () => {}) };
     const chat = () => <BrowserControlContext.Provider value={controller}><ChatScreen panelId="panel-a" /></BrowserControlContext.Provider>;
     const screen = await render(chat());
     try {
