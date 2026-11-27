@@ -56,7 +56,7 @@ test("only one view owns a card; navigation clears its image and departure drops
   const view = await renderHook(() => useBrowserControl(manager)); await act(async () => emit("request", card()));
   const frames = jest.fn(); const stop = view.result.current.watch("one", frames); expect(view.result.current.watch("one", jest.fn())).toBeNull();
   await act(async () => view.result.current.command("one", "start"));
-  await act(async () => emit("navigation", { requestId: "one" })); expect(frames).toHaveBeenLastCalledWith(null);
+  await act(async () => emit("view_invalidated", { requestId: "one" })); expect(frames).toHaveBeenLastCalledWith(null);
   let release: (() => void) | undefined;
   request.mockImplementationOnce(async () => { await new Promise<void>((resolve) => { release = resolve; }); return { channel: "control", op: "browser.control.command.result", payload: { status: "active" } }; });
   await act(async () => { view.result.current.input("one", { type: "text", text: "already sent" }, 1); view.result.current.input("one", { type: "text", text: "must discard" }, 1); stop?.(); });

@@ -137,7 +137,7 @@ export function useBrowserControl(manager: RunnerWebSocketManager, onDiagnostic?
       if (display && !display.received) { display.received = true; clearTimeout(display.timer); diagnose(entry.requestId, "frame_received"); }
       viewers.current.get(entry.requestId)?.({ frameId: frame.frameId, data: frame.data, width: frame.width, height: frame.height });
     });
-    const offNavigation = manager.subscribe({ channel: "control", op: "browser.control.navigation" }, (message) => {
+    const offViewInvalidated = manager.subscribe({ channel: "control", op: "browser.control.view_invalidated" }, (message) => {
       const id = (message.payload as { requestId?: string })?.requestId;
       if (!id) return;
       const queue = queues.current.get(id); const current = entries.current.get(id);
@@ -161,7 +161,7 @@ export function useBrowserControl(manager: RunnerWebSocketManager, onDiagnostic?
       } else if (!snapshot.connected) expire();
     });
     const subscription = AppState.addEventListener("change", (state) => { if (state !== "active") expire(); });
-    return () => { expire(); offRequest(); offFrame(); offNavigation(); offOrigin(); offResolved(); offSnapshot(); subscription.remove(); viewers.current.clear(); queues.current.clear(); };
+    return () => { expire(); offRequest(); offFrame(); offViewInvalidated(); offOrigin(); offResolved(); offSnapshot(); subscription.remove(); viewers.current.clear(); queues.current.clear(); };
   }, [diagnose, manager, update]);
   return { requests, command, input, ack, watch, failDisplay };
 }

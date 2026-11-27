@@ -9,7 +9,8 @@ export function createBrowserControlService({ appControl, sendEnvelope, prepare 
   const entries = new Map();
   const result = (entry) => ({ requestId: entry.id, status: entry.status });
   function diagnose(entry, phase, reason) {
-    try { log?.({ requestId: entry.id, phase, elapsedMs: Math.max(0, now() - (entry.startedAt ?? now())), ...(reason ? { reason } : {}) }); } catch {}
+    try { log?.({ requestId: entry.id, phase, elapsedMs: Math.max(0, now() - (entry.startedAt ?? now())), ...(reason ? { reason } : {}),
+      ...(terminal.has(phase) ? { framesSent: entry.framesSent, renderAckCommands: entry.renderAckCommands } : {}) }); } catch {}
   }
   function send(entry, op, payload) {
     try {
@@ -50,7 +51,7 @@ export function createBrowserControlService({ appControl, sendEnvelope, prepare 
     if (conversation.kind === "session" && !conversation.sessionRef.nativeSessionId) throw failure("session_unresolved");
     const entry = { id: body.requestId, subjectId, canonical, page, ws: context.ws, conversation,
       status: "preparing", createdAt: new Date(now()).toISOString(), controller: new AbortController(), browser: null,
-      queue: Promise.resolve(), queued: 0, sequence: 0 };
+      queue: Promise.resolve(), queued: 0, sequence: 0, framesSent: 0, renderAckCommands: 0 };
     entries.set(entry.id, entry);
     try {
       entry.browser = await prepare(target, { signal: entry.controller.signal,
@@ -58,9 +59,12 @@ export function createBrowserControlService({ appControl, sendEnvelope, prepare 
           ["connection_closed", "command_timeout", "frame_timeout", "render_ack_timeout"].includes(reason) ? reason : "connection_closed"),
         onDiagnostic: (phase) => { if (["focus_enabled", "stream_started", "cdp_frame_received"].includes(phase)) diagnose(entry, phase); },
         onFrame: (frame) => { if (entry.status === "active" || entry.status === "starting") {
-          if (send(entry, "browser.control.frame", { requestId: entry.id, ...frame }) && !entry.firstFrameSent) { entry.firstFrameSent = true; diagnose(entry, "frame_sent"); }
+          if (send(entry, "browser.control.frame", { requestId: entry.id, ...frame })) {
+            entry.framesSent++;
+            if (!entry.firstFrameSent) { entry.firstFrameSent = true; diagnose(entry, "frame_sent"); }
+          }
         } },
-        onNavigation: () => { if (entry.status === "active" || entry.status === "starting") send(entry, "browser.control.navigation", { requestId: entry.id }); },
+        onViewInvalidated: () => { if (entry.status === "active" || entry.status === "starting") send(entry, "browser.control.view_invalidated", { requestId: entry.id }); },
         onOrigin: (origin) => { if (entry.status === "active" || entry.status === "starting") send(entry, "browser.control.origin", { requestId: entry.id, origin }); },
       });
       if (entry.controller.signal.aborted) { entry.browser.close(); entry.browser = null; return result(entry); }
@@ -83,6 +87,7 @@ export function createBrowserControlService({ appControl, sendEnvelope, prepare 
     if (action === "ack") {
       if (keys !== "action,frameId,requestId" || !Number.isSafeInteger(payload.frameId) || payload.frameId < 1) return Promise.resolve({ status: "invalid_command" });
       if (entry.status === "active" || entry.status === "starting") {
+        entry.renderAckCommands++;
         if (entry.firstFrameSent && !entry.firstAck) { entry.firstAck = true; diagnose(entry, "render_ack_received"); }
         void entry.browser?.ack(payload.frameId).catch(() => finish(entry, "control_status_unknown"));
       }

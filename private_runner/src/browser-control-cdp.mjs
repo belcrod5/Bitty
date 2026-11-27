@@ -29,7 +29,7 @@ export function validBrowserControlInput(input) {
 
 // A page-only CDP session. No DOM/value reads, arbitrary JS, console/network capture, or disk recording.
 // Images go directly to the bound user device and never enter the agent's status response.
-export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, frameTimeoutMs = 10_000, onInvalidated, onFrame, onOrigin, onNavigation, onDiagnostic } = {}) {
+export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, frameTimeoutMs = 10_000, onInvalidated, onFrame, onOrigin, onViewInvalidated, onDiagnostic } = {}) {
   target = validateBrowserControlTarget(target);
   const socket = new WebSocket(target.cdpUrl, { followRedirects: false, maxPayload: 3 * 1024 * 1024 });
   const pending = new Map();
@@ -37,7 +37,7 @@ export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, 
   let stopped = false, active = false, mouseDown = false, emulatingFocus = false, rootId;
   let currentOrigin = target.origin;
   let pointer = { x: 0, y: 0 };
-  let awaitingFrame = null, readingFrame = false, receivedFrame = false, frameTimer;
+  let awaitingFrame = null, readingFrame = false, receivedFrame = false, frameTimer, lastViewport = null;
   let generation = 0, controlGeneration = 0, navigating = false;
   const displayedFrames = new Map();
   const close = (unexpected = false, reason = "connection_closed") => {
@@ -75,7 +75,7 @@ export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, 
     if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ id: ++sequence, method: "Input.dispatchMouseEvent", params: { type: "mouseReleased", ...pointer, button: "left", buttons: 0, clickCount: 0 } }));
   }
   function resetFrames() {
-    generation++; releaseMouse(); displayedFrames.clear(); receivedFrame = false; clearTimeout(frameTimer);
+    generation++; releaseMouse(); displayedFrames.clear(); lastViewport = null; receivedFrame = false; clearTimeout(frameTimer);
     if (awaitingFrame) { const { sessionId } = awaitingFrame; awaitingFrame = null; void call("Page.screencastFrameAck", { sessionId }).catch(() => close(true)); }
   }
   function waitForFrame() {
@@ -95,25 +95,25 @@ export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, 
       return;
     }
     if (message.method === "Page.frameStartedNavigating" && message.params?.frameId === rootId) {
-      resetFrames(); navigating = true; onNavigation?.();
+      resetFrames(); navigating = true; onViewInvalidated?.();
     }
     if (message.method === "Page.frameNavigated" && message.params?.frame?.id === rootId) {
       const origin = originOf(message.params.frame.url);
       if (!active || !origin) { close(true); return; }
-      resetFrames(); navigating = false; onNavigation?.();
+      resetFrames(); navigating = false; onViewInvalidated?.();
       currentOrigin = origin; onOrigin?.(origin);
       waitForFrame();
     }
     if (message.method === "Page.navigatedWithinDocument" && message.params?.frameId === rootId) {
       const origin = originOf(message.params.url);
       if (!active || !origin) { close(true); return; }
-      resetFrames(); navigating = false; onNavigation?.();
+      resetFrames(); navigating = false; onViewInvalidated?.();
       currentOrigin = origin; onOrigin?.(origin);
       waitForFrame();
     }
     if (message.method === "Page.frameStoppedLoading" && message.params?.frameId === rootId && navigating) {
       // A cancelled/failed navigation may keep its old document. Refuse stale input, but resume images.
-      resetFrames(); navigating = false; onNavigation?.();
+      resetFrames(); navigating = false; onViewInvalidated?.();
       waitForFrame();
     }
     if (["Inspector.detached", "Inspector.targetCrashed"].includes(message.method)
@@ -135,6 +135,12 @@ export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, 
       if (![width, height].every((n) => Number.isFinite(n) && n > 0 && n <= 32768)
         || ![offsetX, offsetY].every(Number.isFinite)) { close(true); return; }
       const viewport = { width, height, offsetX, offsetY };
+      if (lastViewport && (lastViewport.width !== width || lastViewport.height !== height || lastViewport.offsetX !== offsetX || lastViewport.offsetY !== offsetY)) {
+        releaseMouse(); displayedFrames.clear();
+        // The same invalidation also drops queued client input when only viewport offsets changed.
+        onViewInvalidated?.(); if (stopped || !active) return;
+      }
+      lastViewport = viewport;
       awaitingFrame = { id: ++frameSequence, sessionId: frame.sessionId, viewport, generation };
       frameTimer = setTimeout(() => close(true, "render_ack_timeout"), frameTimeoutMs);
       onFrame?.({ frameId: awaitingFrame.id, data: frame.data, width, height });

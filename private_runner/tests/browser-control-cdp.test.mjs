@@ -61,6 +61,22 @@ test("remote focus is acquired before streaming without native window manipulati
   assert.equal(f.messages.some((m) => m.method.startsWith("Browser.")), false);
   assert.deepEqual(phases, ["focus_enabled", "stream_started"]);
 });
+test("viewport changes release a held drag and invalidate old input coordinates before the new image is drawn", async (t) => {
+  let width = 800, height = 600, offsetY = 0, invalidations = 0;
+  const f = await peer(t, (message) => message.method === "Page.getLayoutMetrics" ? { cssVisualViewport: { clientWidth: width, clientHeight: height, offsetX: 0, offsetY } } : undefined);
+  const frames = [], browser = await prepareBrowserControl(f.target, { onFrame: (frame) => frames.push(frame), onViewInvalidated: () => invalidations++ }); t.after(browser.close);
+  await browser.start(); f.emit(frameMessage(1)); await tick(); await browser.ack(frames[0].frameId);
+  await browser.input({ type: "down", x: 0.5, y: 0.5 }, frames[0].frameId);
+  width = 1600; height = 1200; f.emit(frameMessage(2)); await tick();
+  assert.equal(frames.length, 2); assert.equal(f.messages.findLast((m) => m.method === "Input.dispatchMouseEvent").params.type, "mouseReleased");
+  await assert.rejects(browser.input({ type: "up", x: 0.5, y: 0.5 }, frames[0].frameId), { code: "stale_frame" });
+  await assert.rejects(browser.input({ type: "text", text: "not displayed" }, frames[1].frameId), { code: "stale_frame" });
+  await browser.ack(frames[1].frameId); await browser.input({ type: "down", x: 0.5, y: 0.5 }, frames[1].frameId); await browser.input({ type: "up", x: 0.5, y: 0.5 }, frames[1].frameId);
+  assert.deepEqual(f.messages.filter((m) => m.method === "Input.dispatchMouseEvent").map((m) => m.params.type), ["mousePressed", "mouseReleased", "mousePressed", "mouseReleased"]);
+  await browser.input({ type: "down", x: 0.5, y: 0.5 }, frames[1].frameId); offsetY = 5; f.emit(frameMessage(3)); await tick();
+  assert.equal(invalidations, 2); await assert.rejects(browser.input({ type: "up", x: 0.5, y: 0.5 }, frames[1].frameId), { code: "stale_frame" });
+  await browser.ack(frames[2].frameId); await browser.input({ type: "down", x: 0.5, y: 0.5 }, frames[2].frameId); await browser.input({ type: "up", x: 0.5, y: 0.5 }, frames[2].frameId);
+});
 test("missing first frames and missing render acknowledgements have bounded, distinct failures", async (t) => {
   for (const rendered of [false, true]) {
     const f = await peer(t), reasons = [];
@@ -103,7 +119,7 @@ test("navigation during focus acquisition invalidates frames without cancelling 
 });
 test("navigation clears pending frame, rejects old rendered frame, and updates origin without following tabs", async (t) => {
   const f = await peer(t), frames = [], origins = []; let cleared = 0;
-  const browser = await prepareBrowserControl(f.target, { onFrame: (frame) => frames.push(frame), onOrigin: (origin) => origins.push(origin), onNavigation: () => cleared++ }); t.after(browser.close);
+  const browser = await prepareBrowserControl(f.target, { onFrame: (frame) => frames.push(frame), onOrigin: (origin) => origins.push(origin), onViewInvalidated: () => cleared++ }); t.after(browser.close);
   await browser.start(); f.emit(frameMessage(1)); await tick();
   f.emit({ method: "Page.frameStartedNavigating", params: { frameId: "FRAME" } });
   f.emit({ method: "Page.frameNavigated", params: { frame: { id: "FRAME", url: "https://login.example/private?value=must-not-forward" } } }); await tick();

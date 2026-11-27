@@ -78,7 +78,7 @@ test("page reservation prevents competing cards, while status/replay expose only
 test("images/text are device-only and command/status replies cannot echo private browser content", async (t) => {
   const f = fixture(t); await f.service.request("owner", f.body); await f.command("start");
   f.callbacks().onFrame({ frameId: 1, data: "PRIVATE_FRAME", width: 100, height: 200 });
-  f.callbacks().onOrigin("https://login.example"); f.callbacks().onNavigation();
+  f.callbacks().onOrigin("https://login.example"); f.callbacks().onViewInvalidated();
   assert.equal((await f.command("input", { sequence: 1, frameId: 1, input: { type: "text", text: "PRIVATE_TEXT" } })).status, "active");
   assert.deepEqual(f.inputs, [{ type: "text", text: "PRIVATE_TEXT" }]);
   const frames = f.sent.filter((m) => m.op === "browser.control.frame"); assert.equal(frames.length, 1); assert.equal(frames[0].ws, f.ws);
@@ -146,7 +146,8 @@ test("diagnostics distinguish absent frames and rendered ACKs without images, va
   f.callbacks().onInvalidated("PRIVATE_RAW_ERROR");
   assert.deepEqual(logs.map((event) => event.phase), ["prepared", "start", "stream_started", "frame_sent", "render_ack_received", "control_status_unknown"]);
   assert.equal(JSON.stringify(logs).includes("PRIVATE"), false);
-  assert.deepEqual(Object.keys(logs.at(-1)).sort(), ["elapsedMs", "phase", "reason", "requestId"]);
+  assert.deepEqual(Object.keys(logs.at(-1)).sort(), ["elapsedMs", "framesSent", "phase", "reason", "renderAckCommands", "requestId"]);
+  assert.equal(logs.at(-1).framesSent, 2); assert.equal(logs.at(-1).renderAckCommands, 2);
   const g = fixture(t); await g.service.request("owner", g.body); await g.command("start"); g.callbacks().onInvalidated("frame_timeout");
   assert.equal(g.service.getResult("owner", g.body.requestId).status, "failed");
   const h = fixture(t); await h.service.request("owner", h.body); await h.command("start");
