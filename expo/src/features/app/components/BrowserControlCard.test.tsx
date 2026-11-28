@@ -136,29 +136,72 @@ async function touchFixture() {
   return { ...f, view, pan, tap, state, touch, click };
 }
 const finger = (id: number, x: number, y: number): TouchData => ({ id, x, y, absoluteX: x + 100, absoluteY: y + 200 });
+async function armDrag(f: Awaited<ReturnType<typeof touchFixture>>, x = 50, y = 75) {
+  jest.spyOn(Date, "now").mockReturnValue(1000);
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, x, y)]); await f.click(true, x, y);
+  f.controller.input.mockClear();
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, x, y)]);
+}
 test.each([true, false])("native taps survive stationary pan failure before/after recognition: %s", async (panFirst) => {
   const f = await touchFixture();
   await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75)]); await f.click(panFirst);
-  expect(f.controller.input.mock.calls).toEqual([["one", { type: "down", x: 0.25, y: 0.5 }, 1], ["one", { type: "up", x: 0.25, y: 0.5 }, 1]]);
+  expect(f.controller.input.mock.calls).toEqual([["one", { type: "down", x: 0.5, y: 0.5 }, 1], ["one", { type: "up", x: 0.5, y: 0.5 }, 1]]);
   await f.view.unmount();
 });
-test("native continuous touch dispatch scrolls and drags, with one mouse release", async () => {
+test("ordinary finger motion moves the cursor without pressing a mouse button", async () => {
+  const f = await touchFixture();
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 20, 40)]);
+  await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 50, 55)]);
+  await f.touch(TouchEventType.TOUCHES_UP, [finger(0, 50, 55)], undefined, 0); await f.state("pan", State.END, State.ACTIVE); await f.click();
+  expect(f.controller.input.mock.calls).toEqual([["one", { type: "move", x: 0.65, y: 0.6 }, 1]]);
+  expect(StyleSheet.flatten(f.view.getByTestId("browser-control-cursor").props.style)).toMatchObject({ left: 130, top: 90 });
+  expect(StyleSheet.flatten(f.view.getByTestId("browser-control-keyboard").props.style)).toMatchObject({ left: 100, top: 75 });
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 150, 120)]); await f.click(true, 150, 120);
+  expect(f.controller.input.mock.calls.slice(-2)).toEqual([["one", { type: "down", x: 0.65, y: 0.6 }, 1], ["one", { type: "up", x: 0.65, y: 0.6 }, 1]]);
+  expect(StyleSheet.flatten(f.view.getByTestId("browser-control-keyboard").props.style)).toMatchObject({ left: 130, top: 90 });
+  await f.view.unmount();
+});
+test.each([{ elapsed: 301, distance: 0 }, { elapsed: 100, distance: 50 }])("a later or distant finger movement after a click remains a hover: %j", async ({ elapsed, distance }) => {
+  const f = await touchFixture(); const now = jest.spyOn(Date, "now").mockReturnValue(1000);
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75)]); await f.click(); f.controller.input.mockClear();
+  now.mockReturnValue(1000 + elapsed);
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50 + distance, 75)]);
+  await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 60 + distance, 75)]);
+  await f.touch(TouchEventType.TOUCHES_UP, [finger(0, 60 + distance, 75)], undefined, 0); await f.state("pan", State.END, State.ACTIVE);
+  expect(f.controller.input.mock.calls).toEqual([["one", { type: "move", x: 0.55, y: 0.5 }, 1]]);
+  await f.view.unmount();
+});
+test("a stationary second tap clicks without leaving a held mouse button", async () => {
+  const f = await touchFixture(); await armDrag(f);
+  expect(f.controller.input).not.toHaveBeenCalled(); await f.click();
+  expect(f.controller.input.mock.calls.map((call) => call[1].type)).toEqual(["down", "up"]);
+  await f.view.unmount();
+});
+test("adding a second finger before a double-tap drag moves does not press or release the mouse", async () => {
+  const f = await touchFixture(); await armDrag(f);
+  await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 53, 75)]); expect(f.controller.input).not.toHaveBeenCalled();
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 53, 75), finger(1, 153, 75)], [finger(1, 153, 75)]);
+  await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 53, 65), finger(1, 153, 65)]);
+  expect(f.controller.input.mock.calls.map((call) => call[1].type)).toEqual(["scroll"]);
+  await f.view.unmount();
+});
+test("native continuous touch dispatch scrolls and double-tap drags, with one mouse release", async () => {
   const f = await touchFixture(); await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 30, 75), finger(1, 70, 75)]);
   await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 30, 25), finger(1, 70, 25)]); await f.touch(TouchEventType.TOUCHES_UP, [finger(0, 30, 25), finger(1, 70, 25)], undefined, 0);
   await f.state("pan", State.END, State.ACTIVE); await f.click();
-  expect(f.controller.input).toHaveBeenCalledTimes(1); expect(f.controller.input.mock.calls[0][1]).toMatchObject({ type: "scroll", x: 0.25, y: 1 / 6, deltaX: 0 }); expect((f.controller.input.mock.calls[0][1] as { deltaY: number }).deltaY).toBeCloseTo(200);
+  expect(f.controller.input).toHaveBeenCalledTimes(1); expect(f.controller.input.mock.calls[0][1]).toMatchObject({ type: "scroll", x: 0.5, y: 0.5, deltaX: 0 }); expect((f.controller.input.mock.calls[0][1] as { deltaY: number }).deltaY).toBeCloseTo(200);
   const tag = f.pan().handlerTag;
-  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75)]); await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 150, 75)]);
+  await armDrag(f); await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 100, 75)]);
   await act(async () => f.emit({ ...frame, frameId: 2 })); expect(f.pan().handlerTag).toBe(tag);
-  await f.touch(TouchEventType.TOUCHES_UP, [finger(0, 150, 75)], undefined, 0); await f.state("pan", State.END, State.ACTIVE); await f.click();
-  expect(f.controller.input.mock.calls.slice(-3)).toEqual([["one", { type: "down", x: 0.25, y: 0.5 }, 1], ["one", { type: "move", x: 0.75, y: 0.5 }, 1], ["one", { type: "up", x: 0.75, y: 0.5 }, 2]]);
+  await f.touch(TouchEventType.TOUCHES_UP, [finger(0, 100, 75)], undefined, 0); await f.state("pan", State.END, State.ACTIVE); await f.click();
+  expect(f.controller.input.mock.calls).toEqual([["one", { type: "down", x: 0.5, y: 0.5 }, 1], ["one", { type: "move", x: 0.75, y: 0.5 }, 1], ["one", { type: "up", x: 0.75, y: 0.5 }, 2]]);
   await f.view.unmount();
 });
 test("batched two-finger touch scrolls without a mode switch or a click", async () => {
   const f = await touchFixture();
   await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 30, 75), finger(1, 70, 75)]);
   await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 30, 25), finger(1, 70, 25)]);
-  expect(f.controller.input.mock.calls[0][1]).toMatchObject({ type: "scroll", x: 0.25, deltaX: 0 }); expect((f.controller.input.mock.calls[0][1] as { deltaY: number }).deltaY).toBeCloseTo(200);
+  expect(f.controller.input.mock.calls[0][1]).toMatchObject({ type: "scroll", x: 0.5, deltaX: 0 }); expect((f.controller.input.mock.calls[0][1] as { deltaY: number }).deltaY).toBeCloseTo(200);
   // Native iOS UP retains the lifted pointer in allTouches.
   await f.touch(TouchEventType.TOUCHES_UP, [finger(0, 30, 25), finger(1, 70, 25)], [finger(1, 70, 25)], 1);
   await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 100, 100)]); await f.touch(TouchEventType.TOUCHES_UP, [finger(0, 100, 100)], undefined, 0);
@@ -166,7 +209,7 @@ test("batched two-finger touch scrolls without a mode switch or a click", async 
 });
 test("adding a second finger finishes an existing drag and never resumes it on finger lift", async () => {
   const f = await touchFixture();
-  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75)]); await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 75, 75)]);
+  await armDrag(f); await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 75, 75)]);
   await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 75, 75), finger(1, 125, 75)], [finger(1, 125, 75)]);
   await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 75, 25), finger(1, 125, 25)]);
   await f.touch(TouchEventType.TOUCHES_UP, [finger(0, 75, 25), finger(1, 125, 25)], [finger(1, 125, 25)], 1);
@@ -175,10 +218,10 @@ test("adding a second finger finishes an existing drag and never resumes it on f
 });
 test("native cancellation releases drag; frame invalidation cannot restart held fingers", async () => {
   const f = await touchFixture();
-  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75)]); await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 75, 75)]);
+  await armDrag(f); await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 75, 75)]);
   await f.state("pan", State.CANCELLED, State.ACTIVE); await f.state("tap", State.CANCELLED, State.BEGAN);
   expect(f.controller.input.mock.calls.map((call) => call[1].type)).toEqual(["down", "move", "up"]); f.controller.input.mockClear();
-  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75)]); await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 75, 75)]);
+  await armDrag(f); await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 75, 75)]);
   await act(async () => f.emit(null)); expect(f.pan().config.enabled).toBe(false);
   await act(async () => f.emit({ ...frame, frameId: 2 })); await fireEvent(f.view.getByLabelText("ブラウザの画面"), "load");
   await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 100, 75)]);
@@ -200,7 +243,7 @@ test("a cancelled stationary native tap never clicks", async () => {
   expect(f.controller.input).not.toHaveBeenCalled(); await f.view.unmount();
 });
 
-test("pinch zoom is local, keeps its center, and transforms later taps without a mode switch", async () => {
+test("pinch zoom is local, keeps its center, and scales relative pointer movement", async () => {
   const f = await touchFixture();
   await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75), finger(1, 150, 75)]);
   await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 0, 75), finger(1, 200, 75)]);
@@ -208,8 +251,10 @@ test("pinch zoom is local, keeps its center, and transforms later taps without a
   await f.touch(TouchEventType.TOUCHES_UP, [finger(0, 0, 75), finger(1, 200, 75)], undefined, 0);
   await f.state("pan", State.END, State.ACTIVE); await f.click();
   expect(f.controller.input).not.toHaveBeenCalled();
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75)]); await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 100, 75)]);
+  await f.touch(TouchEventType.TOUCHES_UP, [finger(0, 100, 75)], undefined, 0); await f.state("pan", State.END, State.ACTIVE);
   await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75)]); await f.click();
-  expect(f.controller.input.mock.calls).toEqual([["one", { type: "down", x: 0.375, y: 0.5 }, 1], ["one", { type: "up", x: 0.375, y: 0.5 }, 1]]);
+  expect(f.controller.input.mock.calls).toEqual([["one", { type: "move", x: 0.625, y: 0.5 }, 1], ["one", { type: "down", x: 0.625, y: 0.5 }, 1], ["one", { type: "up", x: 0.625, y: 0.5 }, 1]]);
   f.controller.input.mockClear();
   await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75), finger(1, 150, 75)]);
   await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 75, 75), finger(1, 125, 75)]);
@@ -268,6 +313,56 @@ test("pinch can move the enlarged view, clamps its edges, and does not turn into
   expect(f.controller.input).not.toHaveBeenCalled(); await f.view.unmount();
 });
 
+test("an off-center pinch keeps its target and moves an otherwise hidden cursor into the visible image", async () => {
+  const f = await touchFixture();
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 15, 75), finger(1, 35, 75)]);
+  await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, -15, 75), finger(1, 65, 75)]);
+  expect(StyleSheet.flatten(f.view.getByLabelText("ブラウザの画面").props.style)).toMatchObject({ width: 800, left: -75 });
+  const cursor = StyleSheet.flatten(f.view.getByTestId("browser-control-cursor").props.style);
+  expect(cursor.left).toBeCloseTo(176); expect(cursor.top).toBeCloseTo(75); expect(f.controller.input).not.toHaveBeenCalled();
+  await f.touch(TouchEventType.TOUCHES_UP, [finger(0, -15, 75), finger(1, 65, 75)], undefined, 0); await f.state("pan", State.END, State.ACTIVE);
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75)]); await f.click();
+  expect(f.controller.input.mock.calls).toEqual([["one", { type: "down", x: 251 / 800, y: 0.5 }, 1], ["one", { type: "up", x: 251 / 800, y: 0.5 }, 1]]);
+  expect(f.controller.watch).toHaveBeenCalledTimes(1); expect(f.controller.command).toHaveBeenCalledTimes(1);
+  await f.view.unmount();
+});
+
+test("relative pointer movement follows both zoomed edges while horizontal page scrolling remains a wheel", async () => {
+  const f = await touchFixture();
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75), finger(1, 150, 75)]);
+  await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 0, 75), finger(1, 200, 75)]);
+  await f.touch(TouchEventType.TOUCHES_UP, [finger(0, 0, 75), finger(1, 200, 75)], undefined, 0); await f.state("pan", State.END, State.ACTIVE);
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 40)]);
+  await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 150, 140)]);
+  expect(f.controller.input.mock.calls[0][1]).toMatchObject({ type: "move", x: 0.75 });
+  let image = StyleSheet.flatten(f.view.getByLabelText("ブラウザの画面").props.style);
+  expect(image.left).toBeCloseTo(-124); expect(image.top).toBeCloseTo(-124);
+  const cursor = StyleSheet.flatten(f.view.getByTestId("browser-control-cursor").props.style);
+  expect(cursor.left).toBeCloseTo(176); expect(cursor.top).toBeCloseTo(126);
+  await f.touch(TouchEventType.TOUCHES_UP, [finger(0, 150, 140)], undefined, 0); await f.state("pan", State.END, State.ACTIVE);
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75), finger(1, 150, 75)]);
+  await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 25, 75), finger(1, 125, 75)]);
+  expect(f.controller.input.mock.calls[1][1]).toMatchObject({ type: "scroll", x: 0.75, deltaX: 50, deltaY: 0 });
+  image = StyleSheet.flatten(f.view.getByLabelText("ブラウザの画面").props.style);
+  expect(image.left).toBeCloseTo(-124); expect(image.top).toBeCloseTo(-124);
+  expect(f.controller.watch).toHaveBeenCalledTimes(1); expect(f.controller.command).toHaveBeenCalledTimes(1);
+  await f.view.unmount();
+});
+
+test("keyboard layout changes keep the pointer visible without input or another connection", async () => {
+  const f = await touchFixture();
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75), finger(1, 150, 75)]);
+  await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 0, 75), finger(1, 200, 75)]);
+  await f.touch(TouchEventType.TOUCHES_UP, [finger(0, 0, 75), finger(1, 200, 75)], undefined, 0); await f.state("pan", State.END, State.ACTIVE);
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 40)]); await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 50, 91)]);
+  await f.touch(TouchEventType.TOUCHES_UP, [finger(0, 50, 91)], undefined, 0); await f.state("pan", State.END, State.ACTIVE); f.controller.input.mockClear();
+  await fireEvent(f.view.getByTestId("browser-control-screen"), "layout", { nativeEvent: { layout: { width: 200, height: 30 } } });
+  const cursor = StyleSheet.flatten(f.view.getByTestId("browser-control-cursor").props.style);
+  expect(cursor.top).toBeGreaterThan(0); expect(cursor.top).toBeLessThan(30); expect(f.controller.input).not.toHaveBeenCalled();
+  expect(f.controller.watch).toHaveBeenCalledTimes(1); expect(f.controller.command).toHaveBeenCalledTimes(1);
+  await f.view.unmount();
+});
+
 test("parallel two-finger scrolling uses the displayed scale and keyboard layout preserves zoom", async () => {
   const f = await touchFixture();
   await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75), finger(1, 150, 75)]);
@@ -285,7 +380,7 @@ test("parallel two-finger scrolling uses the displayed scale and keyboard layout
 
 test("adding a pinching finger releases a remote drag once and never clicks or scrolls", async () => {
   const f = await touchFixture();
-  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75)]); await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 75, 75)]);
+  await armDrag(f); await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 75, 75)]);
   await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 75, 75), finger(1, 125, 75)], [finger(1, 125, 75)]);
   await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 50, 75), finger(1, 150, 75)]);
   await f.touch(TouchEventType.TOUCHES_UP, [finger(0, 50, 75), finger(1, 150, 75)], [finger(1, 150, 75)], 1);
@@ -314,7 +409,7 @@ test("fullscreen retains one controller, fences the old display, and maps the fi
   await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 100, 50)]); await f.click(true, 100, 50);
   expect(f.controller.input).not.toHaveBeenCalled();
   await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 100, 300)]); await f.click(true, 100, 300);
-  expect(f.controller.input.mock.calls).toEqual([["one", { type: "down", x: 0.25, y: 0.5 }, 1], ["one", { type: "up", x: 0.25, y: 0.5 }, 1]]);
+  expect(f.controller.input.mock.calls).toEqual([["one", { type: "down", x: 0.5, y: 0.5 }, 1], ["one", { type: "up", x: 0.5, y: 0.5 }, 1]]);
   await fireEvent.press(f.view.getByText("インラインに戻す"));
   expect(f.view.queryByTestId("browser-control-fullscreen")).toBeNull(); expect(f.view.getAllByLabelText("ブラウザの画面")).toHaveLength(1);
   expect(f.controller.watch).toHaveBeenCalledTimes(1); expect(f.controller.command).toHaveBeenCalledTimes(1);
@@ -324,7 +419,7 @@ test("fullscreen retains one controller, fences the old display, and maps the fi
 
 test("fullscreen switch releases a held drag and suppresses stale input until its new image loads", async () => {
   const f = await touchFixture();
-  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75)]); await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 75, 75)]);
+  await armDrag(f); await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 75, 75)]);
   await fireEvent.press(f.view.getByText("全画面"));
   expect(f.controller.input.mock.calls.map((call) => call[1].type)).toEqual(["down", "move", "up"]);
   await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 100, 75)]); await f.click();

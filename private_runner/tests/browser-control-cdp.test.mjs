@@ -42,6 +42,19 @@ test("no stream until explicit start; rendered-frame CSS coordinates ignore imag
   assert.equal(f.messages.at(-1).method, "Input.insertText");
   assert.equal(f.messages.some((m) => /Runtime|DOM|Network|Console|captureScreenshot/.test(m.method)), false);
 });
+test("mouse-mode hover moves never press a button while an explicit drag keeps it held", async (t) => {
+  const f = await peer(t), frames = [];
+  const browser = await prepareBrowserControl(f.target, { onFrame: (frame) => frames.push(frame) }); t.after(browser.close);
+  await browser.start(); f.emit(frameMessage()); await tick(); await browser.ack(frames[0].frameId);
+  for (const type of ["move", "down", "move", "up", "move"]) await browser.input({ type, x: 0.5, y: 0.5 }, frames[0].frameId);
+  assert.deepEqual(f.messages.filter((m) => m.method === "Input.dispatchMouseEvent").map((m) => m.params), [
+    { type: "mouseMoved", x: 400, y: 300, button: "none", buttons: 0 },
+    { type: "mousePressed", x: 400, y: 300, button: "left", buttons: 1, clickCount: 1 },
+    { type: "mouseMoved", x: 400, y: 300, button: "left", buttons: 1 },
+    { type: "mouseReleased", x: 400, y: 300, button: "left", buttons: 0, clickCount: 1 },
+    { type: "mouseMoved", x: 400, y: 300, button: "none", buttons: 0 },
+  ]);
+});
 test("one unrendered frame at a time, pause releases mouse and invalidates old image/coordinates", async (t) => {
   const f = await peer(t), frames = []; const browser = await prepareBrowserControl(f.target, { onFrame: (frame) => frames.push(frame) }); t.after(browser.close);
   await browser.start(); f.emit(frameMessage(1)); await tick(); f.emit(frameMessage(2)); await tick(); assert.equal(frames.length, 1);

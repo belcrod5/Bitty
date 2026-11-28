@@ -2,6 +2,7 @@ import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "r
 import { Image, Platform, SafeAreaView, StyleSheet, Text, TouchableOpacity, View, type ViewProps } from "react-native";
 import { requireNativeViewManager, requireOptionalNativeModule } from "expo-modules-core";
 import { Gesture, GestureDetector, GestureHandlerRootView, type TouchData } from "react-native-gesture-handler";
+import Svg, { Path } from "react-native-svg";
 import { KeyboardAvoidingView } from "../keyboardController";
 import { AppModal } from "./AppModal";
 import type { BrowserControlFocus, BrowserControlFrame, BrowserControlInput, BrowserControlRequest } from "../hooks/useBrowserControl";
@@ -15,8 +16,9 @@ const statusText = { starting: "ブラウザに接続中…", completed: "ブラ
 
 type KeyboardInput = { focusRevision: string; text?: string; key?: "Backspace" | "Enter" };
 type ViewZoom = { scale: number; x: number; y: number };
-type BrowserPoint = { x: number; y: number; localX: number; localY: number; touches: number; distance: number; inside: boolean };
-type BrowserGesture = BrowserPoint & { moved: boolean; twoFinger: boolean; mode: "pending" | "scroll" | "pinch";
+type Cursor = { x: number; y: number };
+type BrowserPoint = { localX: number; localY: number; touches: number; distance: number; inside: boolean };
+type BrowserGesture = BrowserPoint & { moved: boolean; twoFinger: boolean; dragArmed: boolean; dragging: boolean; mode: "pending" | "scroll" | "pinch";
   startX: number; startY: number; startDistance: number; startZoom: ViewZoom };
 function browserViewGeometry(width: number, height: number, aspectRatio: number) {
   const viewportHeight = height || width / aspectRatio;
@@ -43,6 +45,9 @@ export function BrowserControlCard({ request }: { request: BrowserControlRequest
   const latestFocus = useRef<BrowserControlFocus | null>(null);
   const updateFocus = useCallback((next: BrowserControlFocus | null) => { latestFocus.current = next; setFocus(next); }, []);
   const [keyboardAnchor, setKeyboardAnchor] = useState({ x: 0.5, y: 0.5 });
+  const [cursor, setCursor] = useState<Cursor>({ x: 0.5, y: 0.5 });
+  const cursorRef = useRef(cursor);
+  const updateCursor = useCallback((next: Cursor) => { cursorRef.current = next; setCursor(next); }, []);
   const displayed = useRef<BrowserControlFrame | null>(null);
   const [viewport, setViewport] = useState({ width: 0, height: 0 });
   const [zoom, setZoom] = useState<ViewZoom>({ scale: 1, x: 0, y: 0 });
@@ -52,8 +57,9 @@ export function BrowserControlCard({ request }: { request: BrowserControlRequest
   const imageEpoch = useRef(0);
   const previousStatus = useRef(request.status);
   const canTap = useRef(false);
+  const lastTap = useRef<{ time: number; x: number; y: number } | null>(null);
   const gesture = useRef<BrowserGesture | null>(null);
-  const clear = useCallback(() => { imageEpoch.current++; latestFrame.current = null; setFrame(null); setDisplayedId(0); displayed.current = null; latestFocus.current = null; setFocus(null); gesture.current = null; canTap.current = false; updateZoom({ scale: 1, x: 0, y: 0 }); }, [updateZoom]);
+  const clear = useCallback(() => { imageEpoch.current++; latestFrame.current = null; setFrame(null); setDisplayedId(0); displayed.current = null; latestFocus.current = null; setFocus(null); gesture.current = null; canTap.current = false; lastTap.current = null; updateCursor({ x: 0.5, y: 0.5 }); updateZoom({ scale: 1, x: 0, y: 0 }); }, [updateCursor, updateZoom]);
   useEffect(() => {
     if (!opened || !controller) return;
     const stop = controller.watch(request.requestId, (next) => {
@@ -66,6 +72,7 @@ export function BrowserControlCard({ request }: { request: BrowserControlRequest
       }
       if (shown && (shown.width !== next.width || shown.height !== next.height)) {
         displayed.current = null; setDisplayedId(0); gesture.current = null; canTap.current = false;
+        lastTap.current = null; updateCursor({ x: 0.5, y: 0.5 });
         updateZoom({ scale: 1, x: 0, y: 0 });
       }
       latestFrame.current = next; setFrame(next);
@@ -73,7 +80,7 @@ export function BrowserControlCard({ request }: { request: BrowserControlRequest
     if (!stop) { clear(); setOpened(false); setFullscreen(false); return; }
     void controller.command(request.requestId, "start");
     return stop;
-  }, [clear, controller?.command, controller?.watch, opened, request.requestId, updateFocus, updateZoom]);
+  }, [clear, controller?.command, controller?.watch, opened, request.requestId, updateCursor, updateFocus, updateZoom]);
   useEffect(() => {
     const paused = request.status === "pending" && ["starting", "active"].includes(previousStatus.current);
     previousStatus.current = request.status;
@@ -96,28 +103,41 @@ export function BrowserControlCard({ request }: { request: BrowserControlRequest
     const view = zoomRef.current;
     const remoteX = (x - fittedX - view.x) / (fittedWidth * view.scale);
     const remoteY = (y - fittedY - view.y) / (fittedHeight * view.scale);
-    return { x: Math.max(0, Math.min(1, remoteX)), y: Math.max(0, Math.min(1, remoteY)), localX: x, localY: y, touches: count,
+    return { localX: x, localY: y, touches: count,
       distance: count >= 2 ? Math.hypot(touches[0].x - touches[1].x, touches[0].y - touches[1].y) : 0,
       inside: remoteX >= 0 && remoteX <= 1 && remoteY >= 0 && remoteY <= 1 };
   };
   const current = useRef({ send, point, status: request.status, geometry });
   current.current = { send, point, status: request.status, geometry };
+  const keepCursorVisible = (g: ReturnType<typeof browserViewGeometry>, view: ViewZoom) => {
+    const previous = cursorRef.current;
+    const width = g.fittedWidth * view.scale, height = g.fittedHeight * view.scale;
+    if (!width || !height) return;
+    const left = g.fittedX + view.x, top = g.fittedY + view.y;
+    const x = left + previous.x * width, y = top + previous.y * height;
+    const marginX = Math.min(24, g.width / 4), marginY = Math.min(24, g.height / 4);
+    if (x < 0 || x >= g.width || y < 0 || y >= g.height) {
+      updateCursor({ x: Math.max(0, Math.min(1, (Math.max(marginX, Math.min(g.width - marginX, x)) - left) / width)),
+        y: Math.max(0, Math.min(1, (Math.max(marginY, Math.min(g.height - marginY, y)) - top) / height)) });
+    }
+  };
   const beginGesture = (p: BrowserPoint): BrowserGesture => ({ ...p, moved: p.touches >= 2, twoFinger: p.touches >= 2,
-    mode: "pending", startX: p.localX, startY: p.localY, startDistance: p.distance, startZoom: zoomRef.current });
+    dragArmed: false, dragging: false, mode: "pending", startX: p.localX, startY: p.localY, startDistance: p.distance, startZoom: zoomRef.current });
   const changeTouches = (p: BrowserPoint) => {
     const previous = gesture.current;
     if (!previous) return false;
     if (p.touches >= 2 && !previous.twoFinger) {
       canTap.current = false;
-      if (!previous.twoFinger && previous.moved) current.current.send({ type: "up", x: previous.x, y: previous.y });
+      lastTap.current = null;
+      if (previous.dragging) current.current.send({ type: "up", ...cursorRef.current });
       gesture.current = beginGesture(p); return true;
     }
     if (p.touches !== previous.touches) { gesture.current = { ...previous, ...p, startX: p.localX, startY: p.localY, startDistance: p.distance, startZoom: zoomRef.current }; return true; }
     return false;
   };
   const cancelGesture = () => {
-    const previous = gesture.current; gesture.current = null; canTap.current = false;
-    if (previous?.moved && !previous.twoFinger) send({ type: "up", x: previous.x, y: previous.y });
+    const previous = gesture.current; gesture.current = null; canTap.current = false; lastTap.current = null;
+    if (previous?.dragging) send({ type: "up", ...cursorRef.current });
   };
   const switchFullscreen = (next: boolean) => {
     cancelGesture(); imageEpoch.current++; displayed.current = null; setDisplayedId(0);
@@ -133,7 +153,10 @@ export function BrowserControlCard({ request }: { request: BrowserControlRequest
       if (event.numberOfTouches !== event.changedTouches.length) { canTap.current = false; return; }
       if (!p.inside) { canTap.current = false; return; }
       canTap.current = p.touches === 1;
-      gesture.current = beginGesture(p);
+      const tap = lastTap.current; lastTap.current = null;
+      const elapsed = tap ? Date.now() - tap.time : Infinity;
+      gesture.current = { ...beginGesture(p), dragArmed: p.touches === 1 && !!tap && elapsed >= 0 && elapsed <= 300
+        && Math.hypot(p.localX - tap.x, p.localY - tap.y) <= 24 };
     })
     .onTouchesMove((event) => {
       const p = current.current.point(event.allTouches); if (!p || changeTouches(p)) return;
@@ -143,8 +166,21 @@ export function BrowserControlCard({ request }: { request: BrowserControlRequest
       if (!previous.moved && Math.hypot(p.localX - previous.localX, p.localY - previous.localY) < 5) return;
       canTap.current = false;
       if (!previous.twoFinger) {
-        if (!previous.moved) current.current.send({ type: "down", x: previous.x, y: previous.y });
-        current.current.send({ type: "move", x: p.x, y: p.y });
+        const g = current.current.geometry, view = zoomRef.current;
+        if (previous.dragArmed && !previous.dragging) {
+          current.current.send({ type: "down", ...cursorRef.current });
+          previous.dragging = true;
+        }
+        const next = { x: Math.max(0, Math.min(1, cursorRef.current.x + (p.localX - previous.localX) / (g.fittedWidth * view.scale))),
+          y: Math.max(0, Math.min(1, cursorRef.current.y + (p.localY - previous.localY) / (g.fittedHeight * view.scale))) };
+        updateCursor(next);
+        current.current.send({ type: "move", ...next });
+        // Keep the cursor in view; two-finger movement remains available for the website's scrollbars.
+        const left = g.fittedX + view.x, top = g.fittedY + view.y;
+        const x = left + next.x * g.fittedWidth * view.scale, y = top + next.y * g.fittedHeight * view.scale;
+        const marginX = Math.min(24, g.width / 4), marginY = Math.min(24, g.height / 4);
+        updateZoom(clampViewZoom(g, view.scale, left + Math.max(marginX - x, Math.min(0, g.width - marginX - x)),
+          top + Math.max(marginY - y, Math.min(0, g.height - marginY - y))));
       }
       else {
         const translation = Math.hypot(p.localX - previous.startX, p.localY - previous.startY);
@@ -161,10 +197,11 @@ export function BrowserControlCard({ request }: { request: BrowserControlRequest
           const scale = Math.max(1, Math.min(6, initial.scale * p.distance / Math.max(1, previous.startDistance)));
           const left = p.localX - (previous.startX - g.fittedX - initial.x) / initial.scale * scale;
           const top = p.localY - (previous.startY - g.fittedY - initial.y) / initial.scale * scale;
-          updateZoom(clampViewZoom(g, scale, left, top));
+          const next = clampViewZoom(g, scale, left, top);
+          keepCursorVisible(g, next); updateZoom(next);
         } else {
           const g = current.current.geometry, scale = zoomRef.current.scale;
-          current.current.send({ type: "scroll", x: p.x, y: p.y,
+          current.current.send({ type: "scroll", ...cursorRef.current,
             deltaX: Math.max(-2000, Math.min(2000, (previous.localX - p.localX) / (g.fittedWidth * scale) * drawn.width)),
             deltaY: Math.max(-2000, Math.min(2000, (previous.localY - p.localY) / (g.fittedHeight * scale) * drawn.height)) });
         }
@@ -176,20 +213,21 @@ export function BrowserControlCard({ request }: { request: BrowserControlRequest
       // iOS allTouches still contains the lifted pointers in an UP event.
       const remaining = event.allTouches.filter((touch) => !event.changedTouches.some((changed) => changed.id === touch.id));
       if (remaining.length) { const p = current.current.point(remaining); if (p) changeTouches(p); return; }
-      const p = current.current.point(event.changedTouches); const previous = gesture.current;
+      const previous = gesture.current;
       gesture.current = null;
-      if (p && previous?.moved && !previous.twoFinger) current.current.send({ type: "up", x: p.x, y: p.y });
+      if (previous?.dragging) { setKeyboardAnchor(cursorRef.current); current.current.send({ type: "up", ...cursorRef.current }); }
     })
-    .onFinalize(() => { const previous = gesture.current; gesture.current = null; if (previous?.moved && !previous.twoFinger) current.current.send({ type: "up", x: previous.x, y: previous.y }); });
+    .onFinalize(() => { const previous = gesture.current; gesture.current = null; if (previous?.dragging) current.current.send({ type: "up", ...cursorRef.current }); });
     // A stationary pan can fail before its raw UP arrives; native Tap owns click recognition.
     const tap = Gesture.Tap().enabled(ready).maxDistance(5).runOnJS(true).withTestId(`browser-control-tap-${request.requestId}`)
       .onEnd((event, success) => {
         if (!success || !canTap.current) return;
         canTap.current = false;
         const p = current.current.point([event]); if (!p?.inside) return;
-        setKeyboardAnchor({ x: p.x, y: p.y });
-        current.current.send({ type: "down", x: p.x, y: p.y }); current.current.send({ type: "up", x: p.x, y: p.y });
-      }).onFinalize(() => { canTap.current = false; });
+        lastTap.current = { time: Date.now(), x: p.localX, y: p.localY };
+        setKeyboardAnchor(cursorRef.current);
+        current.current.send({ type: "down", ...cursorRef.current }); current.current.send({ type: "up", ...cursorRef.current });
+      }).onFinalize((_event, success) => { canTap.current = false; if (!success) lastTap.current = null; });
     return Gesture.Simultaneous(pan, tap);
   }, [ready, request.requestId]);
   if (!controller) return null;
@@ -207,8 +245,9 @@ export function BrowserControlCard({ request }: { request: BrowserControlRequest
         // Keep the same image center and scale when the keyboard or device changes the available area.
         const centerX = fittedWidth ? (geometry.width / 2 - fittedX - previous.x) / (fittedWidth * previous.scale) : 0.5;
         const centerY = fittedHeight ? (geometry.height / 2 - fittedY - previous.y) / (fittedHeight * previous.scale) : 0.5;
-        updateZoom(clampViewZoom(next, previous.scale, next.width / 2 - centerX * next.fittedWidth * previous.scale,
-          next.height / 2 - centerY * next.fittedHeight * previous.scale));
+        const view = clampViewZoom(next, previous.scale, next.width / 2 - centerX * next.fittedWidth * previous.scale,
+          next.height / 2 - centerY * next.fittedHeight * previous.scale);
+        keepCursorVisible(next, view); updateZoom(view);
         setViewport({ width, height: height || 0 });
       }
     }} style={[styles.screen, fullscreen ? styles.fullscreenViewport : { aspectRatio }, { borderColor: theme.colors.borderStrong }]}>
@@ -221,6 +260,10 @@ export function BrowserControlCard({ request }: { request: BrowserControlRequest
           if (imageEpoch.current !== renderEpoch || latestFrame.current !== frame) return;
           clear(); controller.failDisplay(request.requestId, "render_failed");
         }} /> : <Text style={text}>{request.status === "active" ? "画面を読み込み中…" : "ブラウザに接続中…"}</Text>}
+      {ready && <View testID="browser-control-cursor" pointerEvents="none" accessible={false}
+        style={{ position: "absolute", left: imageLeft + cursor.x * fittedWidth * zoom.scale, top: imageTop + cursor.y * fittedHeight * zoom.scale }}>
+        <Svg width={20} height={26} viewBox="0 0 20 26"><Path d="M1 1 L1 20 L6 16 L10 24 L14 22 L10 14 L17 14 Z" fill="white" stroke="black" strokeWidth={1.5} strokeLinejoin="round" /></Svg>
+      </View>}
       {NativeKeyboard && <NativeKeyboard testID="browser-control-keyboard" pointerEvents="none"
         focusRevision={ready && focus?.editable ? focus.focusRevision : null} kind={focus?.kind || "text"}
         onInput={({ nativeEvent: input }) => {
