@@ -25,9 +25,9 @@ import { Ionicons } from "@expo/vector-icons";
 import { KeyboardAvoidingView } from "../keyboardController";
 import { WebView } from "react-native-webview";
 import type { ConversationMessage } from "../types/appTypes";
-import { useBrowserInputRequests } from "../contexts/BrowserInputContext";
-import { browserInputTimeline, type BrowserInputTimelineCard } from "../utils/browserInputTimeline";
-import { BrowserInputCard } from "../components/BrowserInputCard";
+import { useBrowserControlRequests, useBrowserControlTyping } from "../contexts/BrowserControlContext";
+import { browserControlTimeline, type BrowserControlTimelineCard } from "../utils/browserControlTimeline";
+import { BrowserControlCard } from "../components/BrowserControlCard";
 import type { DirectoryMarkerColor } from "../types/directorySessions";
 import { useAppStyles } from "../styles";
 import { DIRECTORY_MARKER_COLORS } from "../theme/directoryMarkerColors";
@@ -527,7 +527,7 @@ export function ChatScreen({
   const isAtBottomRef = useRef(true);
   const chatAutoScrollPausedRef = useRef(false);
   const chatScrollDragActiveRef = useRef(false);
-  const lastConversationMessageForViewRef = useRef<ConversationMessage | BrowserInputTimelineCard | null>(null);
+  const lastConversationMessageForViewRef = useRef<ConversationMessage | BrowserControlTimelineCard | null>(null);
   const lastConversationMessageIndexForViewRef = useRef(-1);
   const chatScrollDiagnosticRef = useRef<ChatScrollDiagnosticState>({
     contentHeight: 0,
@@ -624,10 +624,12 @@ export function ChatScreen({
     ].join("|")
     : "";
   const conversationMessagesForView = allConversationMessagesForView;
-  const browserInputs = useBrowserInputRequests({ kind: "session", sessionRef: {
+  const browserInputs = useBrowserControlRequests({ kind: "session", sessionRef: {
     backendId: backendIdForView, nativeSessionId: selectedSessionIdForView || null,
   }, cwd: selectedDirectoryPathForView });
-  const timelineItems = useMemo(() => browserInputTimeline(conversationMessagesForView, browserInputs), [conversationMessagesForView, browserInputs]);
+  const browserControlActive = browserInputs.some((request) => request.status === "starting" || request.status === "active");
+  const browserTyping = useBrowserControlTyping(browserInputs);
+  const timelineItems = useMemo(() => browserControlTimeline(conversationMessagesForView, browserInputs), [conversationMessagesForView, browserInputs]);
   const messageIndexById = useMemo(() => new Map(conversationMessagesForView.map((message, index) => [message.id, index])), [conversationMessagesForView]);
   const showMessagesSkeletonForView = isMiniBoardPopupMode && (showPopupMessagesSkeleton || panelHydrating);
   const connectionDataSync = useMemo<RunnerWsDataSyncStatus>(() => {
@@ -828,9 +830,10 @@ export function ChatScreen({
     scrollChatListToMeasuredBottom,
   ]);
   const resumeChatAutoScroll = useCallback(() => {
+    if (browserControlActive) return;
     chatAutoScrollPausedRef.current = false;
     isAtBottomRef.current = true;
-  }, []);
+  }, [browserControlActive]);
   const {
     handleScrollInteractionBegin: handleChatScrollInteractionBegin,
     handleScrollInteractionEnd: handleChatScrollInteractionEnd,
@@ -1024,10 +1027,7 @@ export function ChatScreen({
     chatScrollDiagnosticRef.current.viewportHeight = viewportHeight;
     const isAtBottom = distanceToBottom <= CHAT_BOTTOM_RESUME_THRESHOLD_PX;
     isAtBottomRef.current = isAtBottom;
-    const keepAutoScrollPaused = shouldKeepAutoScrollPaused(isAtBottom);
-    if (isAtBottom && !chatScrollDragActiveRef.current && !keepAutoScrollPaused) {
-      chatAutoScrollPausedRef.current = false;
-    }
+    shouldKeepAutoScrollPaused(isAtBottom);
     if (!isMiniBoardPopupMode) {
       handleChatScroll(event);
     }
@@ -1359,6 +1359,7 @@ export function ChatScreen({
     const previousLastMessageId = previousLastMessageIdRef.current;
     previousMessageCountRef.current = currentMessageCount;
     previousLastMessageIdRef.current = currentLastMessageId;
+    if (browserControlActive) return;
     if (!didInitialScrollRef.current) return;
     if (currentMessageCount <= previousMessageCount) return;
     if (!currentLastMessageId) return;
@@ -1371,7 +1372,10 @@ export function ChatScreen({
     }
     if (chatAutoScrollPausedRef.current) return;
     scrollChatListToBottom(true);
-  }, [timelineItems.length, conversationScrollResetKey, scrollChatListToBottom]);
+  }, [browserControlActive, timelineItems.length, conversationScrollResetKey, scrollChatListToBottom]);
+  useEffect(() => {
+    if (browserControlActive) pauseChatAutoScrollForInteraction();
+  }, [browserControlActive, conversationScrollResetKey, pauseChatAutoScrollForInteraction]);
   useEffect(() => () => {
     if (initialSettleTimerRef.current !== null) {
       clearTimeout(initialSettleTimerRef.current);
@@ -2179,7 +2183,7 @@ export function ChatScreen({
               ref={chatListRefForView}
               style={styles.chatScroll}
               data={timelineItems}
-              renderItem={({ item }) => "browserInput" in item ? <BrowserInputCard key={item.id} request={item.browserInput} />
+              renderItem={({ item }) => "browserInput" in item ? <BrowserControlCard key={item.id} request={item.browserInput} />
                 : renderConversationMessage({ item, index: messageIndexById.get(item.id) ?? 0 })}
               keyExtractor={(message) => message.id}
               maintainVisibleContentPosition
@@ -2422,7 +2426,8 @@ export function ChatScreen({
           onClose={cancelChatFileEdit}
           onSave={writeChatFileContent}
         />
-        <View style={styles.chatComposer}>
+        <View testID="chat-composer" accessibilityElementsHidden={browserTyping} importantForAccessibility={browserTyping ? "no-hide-descendants" : "auto"}
+          style={[styles.chatComposer, browserTyping && { display: "none" }]}>
           <View style={styles.connectionStatusArea}>
             <View style={styles.chatScrollControls}>
               <TouchableOpacity
@@ -2570,7 +2575,8 @@ export function ChatScreen({
           </View>
           )}
         </View>
-        <View style={styles.chatFooterSettingsRow}>
+        <View accessibilityElementsHidden={browserTyping} importantForAccessibility={browserTyping ? "no-hide-descendants" : "auto"}
+          style={[styles.chatFooterSettingsRow, browserTyping && { display: "none" }]}>
           <View style={styles.chatFooterSettingsInline}>
             <View ref={modelSelectTriggerRef} collapsable={false}>
               <TouchableOpacity
@@ -2604,7 +2610,7 @@ export function ChatScreen({
           </View>
         </View>
         <ComposerFullscreenEditor
-          visible={popupComposerFullscreenOpen && !approvalDialogPending}
+          visible={popupComposerFullscreenOpen && !approvalDialogPending && !browserTyping}
           inputRef={popupComposerFullscreenInputRef}
           value={transcriptForView}
           history={composerMessageHistory}

@@ -1,39 +1,59 @@
 ---
 name: bitty-browser-input
-description: Let the user enter a password, card number, or other private value in Bitty chat and fill a local Chromium browser field without passing the value through the AI conversation. Use when browser automation needs private user input and the current tab has a local CDP page connection.
+description: Hand a local Chromium browser page to the user in Bitty chat for private typing and direct page interaction, without passing screen images or user actions through the AI conversation.
 ---
 
-# Private browser input
+# Private browser control
 
-Use the dedicated Bitty form when a browser task requires a private value. Never ask the user to paste the value into ordinary chat or `request_user_input`.
+When a browser task needs private input or a complex website interaction, let the user control the actual page from a card in the originating Bitty chat. Never ask for a private value through ordinary chat or request_user_input.
 
-The browser must already expose a local Chromium CDP **page** WebSocket. The browser tool's tab ID alone is not a CDP connection. External CUA and in-app browsers without this connection are unsupported; explain the limitation and let the user complete the browser step manually. Do not start a different browser/profile to bypass this limitation.
+The existing browser must expose a local Chromium CDP **page** WebSocket. A browser-tool tab ID alone is insufficient. External CUA/in-app browsers without a page connection are unsupported. Do not switch browser/profile to bypass this limitation.
 
-1. Identify the current browser tab, destination origin, a unique CSS selector, and optional frame ID using the existing browser connection. Inspect only field metadata, never its value. Use the current turn's `Bitty app controlContext`.
-2. Run the command below with non-secret metadata. `BITTY_REPO_ROOT` must refer to the repository running the Runner. If running inside that repository it is discovered from the working directory. The CLI uses its existing private Unix control socket and token; neither is sent to the browser.
-3. The command creates a card in the originating chat timeline and returns `pending` immediately. Tell the user to enter the value on that card and press **ブラウザへ入力**. End the current response normally; do not keep the AI turn or CLI running while waiting for input.
+1. Identify the page CDP URL and current top-level origin using the existing browser connection. No field selectors, option lists, DOM inspection, or private values are needed.
+2. Request a card using the **current turn's** Bitty app controlContext. BITTY_REPO_ROOT must point to the repository running the Runner (automatically discovered if you are inside it).
+3. Tell the user to tap 「ブラウザを開く」 once and operate the browser there. The command returns pending immediately. End the AI turn; do not wait, poll, or automatically resume.
 
 ```sh
 node <skill-directory>/scripts/bitty-browser-input.mjs request \
   --context ctx_CURRENT_TURN \
   --cdp-url ws://127.0.0.1:9222/devtools/page/TAB_ID \
-  --origin https://example.com --selector '#password' --label 'パスワード'
+  --origin https://example.com --label 'ログインをお願いします'
 ```
 
-Add `--frame-id FRAME_ID` when the field is in a supported child frame; the origin must be that frame's origin. One card fills one field. Multiple cards can coexist. The card stays with its original native session/orchestrator when the user switches chats or the AI turn finishes. There is no two-minute input deadline. Navigation, element replacement, device disconnect/background, Runner restart, or cancellation can invalidate it.
+When the user explicitly asks to redisplay or replace the panel, use `replace` with the same page target and the **current turn's** context. It cancels the previous panel only if it belongs to this authenticated device and conversation, then creates a new pending card. Validation failures leave the old panel available. The replacement retains the same page's last origin approved during manual control. Browser/page state and entered values remain in place; no browser connection is opened until the user taps Open. Ordinary `request` never cancels another card automatically.
 
-Out-of-process frames (including some hosted card forms), closed shadow roots and fields that cannot be uniquely selected in the chosen frame are unsupported and fail closed. Do not claim that every payment form can be filled.
+```sh
+node <skill-directory>/scripts/bitty-browser-input.mjs replace \
+  --context ctx_CURRENT_TURN \
+  --cdp-url ws://127.0.0.1:9222/devtools/page/TAB_ID \
+  --origin https://example.com --label 'ブラウザ操作の再表示'
+```
 
-The command prints a request ID. In a later user-authorized continuation, read its status separately:
+When the user explicitly asks to close the panel, cancel that request using the current context:
+
+```sh
+node <skill-directory>/scripts/bitty-browser-input.mjs cancel \
+  --context ctx_CURRENT_TURN --request UUID
+```
+
+Cancellation ends only the private control panel and discards queued input; it does not close the browser tab or undo actions already applied. Cancellation/replacement replies remain fixed status metadata. An uncertain in-flight action stays marked uncertain on a replacement card; never replay it to check the result.
+
+The card stays in its original session/orchestrator after switching chats or ending a turn. It can be created while the originating phone is offline or in the background: creation records only card metadata and opens no browser connection. Opening or reopening the card establishes a fresh connection after checking the original authenticated login/device and mounted conversation. Wi-Fi changes and backgrounding clear the private view, keyboard and unsent input; the same card can be explicitly reopened. Input is never automatically replayed. Unopened/paused cards are retained in Runner memory for up to 24 hours from creation; Runner restart or logout ends recovery.
+
+The page uses mouse-mode touchpad controls: slide one finger to move the visible cursor relatively, tap to click at the cursor, and double-tap then drag to hold the mouse button and move an object or select text. Parallel two-finger movement scrolls the website horizontally or vertically; pinching zooms the private view locally without a mode switch. While zoomed, one-finger movement immediately pans the view to keep the cursor centered as far as page boundaries allow; at normal scale the cursor moves freely. Local zoom or layout changes keep the cursor visible without sending browser input; clicks always use the visible cursor. The inline card has a fullscreen button and can return inline without reconnecting. Tapping a supported editable element opens the iPhone keyboard and hides that chat's ordinary composer; committed text goes directly to the element, including Japanese IME commits. A padded native preview above the keyboard shows uncommitted IME text only on the device, without sending it to JavaScript, Runner or AI. Switching inline/fullscreen discards any uncommitted composition. There is no separate text-entry panel or key toolbar. The page holds remote focus only during control. Closed shadow-DOM editors and browser-native select menus/popups, new tabs/windows, Chrome toolbar, OS dialogs and file pickers are outside supported page control.
+
+Top-level navigation within the same page is allowed during manual control and the card displays its current origin. It never follows another tab. Each Open revalidates the same page target and the last origin approved during manual control.
+
+**Yield the target browser to the user. Do not run browser actions, screenshots, DOM/accessibility reads, value inspections, network/console tracing, or page dumps while the card is pending/active.** Explicit user requests to cancel or replace the panel may use the metadata-only commands above. The app's page stream is private to the user; never fetch or copy it into an AI tool result. Do not make a second CDP connection or use shell/browser tools to observe manual input. The implementation cannot block arbitrary agent shell/CDP access; this restriction is an agent behavior rule.
+
+In a later user-authorized continuation, read only the fixed status:
 
 ```sh
 node <skill-directory>/scripts/bitty-browser-input.mjs status --request UUID
 ```
 
-Continue the authorized browser task only after `completed`; it means input only and does not submit a form or payment. `pending` means the user has not submitted the card yet. Do not recreate a pending card merely because the original AI turn ended, and do not start an automatic polling/resume loop. The user can return to the card and explicitly continue later.
+Continue the authorized task only after completed (the user pressed 操作を完了). This means manual control ended, not proof that a form/payment succeeded. Pending includes a paused card. Active/starting means the user still owns the page. Do not recreate or poll a pending card merely because the AI turn ended.
 
-`input_status_unknown` means a write may have happened before cancellation or a connection failure. Do not blindly retry or read the private value to decide; tell the user the status and ask them to confirm the browser step if needed.
+control_status_unknown or inputStatusUnknown: true means actions may have happened before a connection/input failure. A pending card with that flag can be reopened by the user to check the result; reopening does not clear the uncertainty. Never blindly replay or read private values to decide. Ask the user to confirm the result if needed. Even after control ends, avoid screenshots/DOM/value/tracing while private content remains visible; resume those observations only after the private page/form is gone.
 
-While requesting/filling private input, and while it may remain on the page, do not take screenshots, DOM/accessibility snapshots, inspect `.value`, enable network/console tracing, or save page dumps that could expose it. Resume screenshots only after the private form is gone. Screenshot masking and blocking arbitrary later browser reads are not implemented; these are agent behavior rules.
-
-The private value is sent only from the app to the Runner and then the bound browser element. The AI receives status only. Do not invent an alternate shell/MCP call with the user's value as an argument, script, environment variable, or tool result.
+Frames and actions travel only over the authenticated app–Runner connection and local page CDP. They are transient and never put into chat history, agent status, response caches, or application logs. The AI gets only request ID, status and an optional fixed uncertainty flag. Keyboard-focus metadata contains only bounded editable/type/revision information and stays on the private app channel; no remote field values are returned. There is no screenshot masking or end-to-end encryption beyond the existing app–Runner TLS path; local CDP stays loopback-only. Do not pass user text via an alternate shell/MCP command, script, environment variable, or tool result.

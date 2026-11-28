@@ -29,15 +29,15 @@ async function fixture(t, handle) {
 test("CLI requests a form using non-secret metadata and returns only status through Unix socket", async (t) => {
   let body; let posts = 0; let reads = 0;
   const run = await fixture(t, (req, res, input) => {
-    if (req.method === "POST") { posts++; body = input; assert.equal(req.url, "/browser-input/requests"); }
-    else { reads++; assert.equal(req.url, `/browser-input/requests/${body.requestId}`); }
+    if (req.method === "POST") { posts++; body = input; assert.equal(req.url, "/browser-control/requests"); }
+    else { reads++; assert.equal(req.url, `/browser-control/requests/${body.requestId}`); }
     res.end(JSON.stringify({ requestId: body.requestId, status: req.method === "POST" ? "pending" : "completed", unexpected: "PRIVATE_UNEXPECTED_FIELD" }));
   });
-  const result = await run("request", "--context", "ctx_current", "--cdp-url", "ws://127.0.0.1:9222/devtools/page/TAB", "--origin", "https://example.com", "--selector", "#password", "--label", "Password");
+  const result = await run("request", "--context", "ctx_current", "--cdp-url", "ws://127.0.0.1:9222/devtools/page/TAB", "--origin", "https://example.com", "--label", "Password");
   assert.equal(posts, 1);
   assert.equal(reads, 0);
   assert.deepEqual(Object.keys(body).sort(), ["context", "requestId", "target"]);
-  assert.deepEqual(body.target, { cdpUrl: "ws://127.0.0.1:9222/devtools/page/TAB", origin: "https://example.com", selector: "#password", label: "Password" });
+  assert.deepEqual(body.target, { cdpUrl: "ws://127.0.0.1:9222/devtools/page/TAB", origin: "https://example.com", label: "Password" });
   const lines = result.stdout.trim().split("\n").map(JSON.parse);
   assert.deepEqual(lines.map((line) => line.status), ["requesting", "pending"]);
   assert.equal(result.stdout.includes("PRIVATE"), false);
@@ -47,13 +47,32 @@ test("status recovery is read-only; raw backend errors and invalid IDs cannot le
   let requests = 0;
   const run = await fixture(t, (req, res) => {
     requests++; assert.equal(req.method, "GET");
-    if (requests === 1) res.end(JSON.stringify({ requestId: id, status: "input_status_unknown", extra: "PRIVATE" }));
+    if (requests === 1) res.end(JSON.stringify({ requestId: id, status: "control_status_unknown", inputStatusUnknown: true, extra: "PRIVATE" }));
     else if (requests === 2) { res.statusCode = 500; res.end(JSON.stringify({ message: "PRIVATE_BACKEND_ERROR" })); }
     else res.end(JSON.stringify({ requestId: "PRIVATE_FAKE_ID", status: "completed" }));
   });
-  assert.deepEqual(JSON.parse((await run("status", "--request", id)).stdout), { requestId: id, status: "input_status_unknown" });
+  assert.deepEqual(JSON.parse((await run("status", "--request", id)).stdout), { requestId: id, status: "control_status_unknown", inputStatusUnknown: true });
   for (let n = 0; n < 2; n++) await assert.rejects(run("status", "--request", id), (error) => !error.stderr.includes("PRIVATE"));
   await assert.rejects(run("status", "--request", "../wrong"));
   await assert.rejects(run("request", "--value", "DO_NOT_ACCEPT_SECRETS"));
   assert.equal(requests, 3);
+});
+
+test("explicit replace and cancel carry only the current context and fixed panel metadata", async (t) => {
+  const bodies = [];
+  const run = await fixture(t, (req, res, body) => {
+    assert.equal(req.method, "POST"); bodies.push(body);
+    assert.equal(req.url, bodies.length === 1 ? "/browser-control/requests" : `/browser-control/requests/${id}/cancel`);
+    res.end(JSON.stringify({ requestId: body.requestId, status: bodies.length === 1 ? "pending" : "cancelled", inputStatusUnknown: true, extra: "PRIVATE" }));
+  });
+  const replaced = await run("replace", "--context", "ctx_current", "--cdp-url", "ws://127.0.0.1:9222/devtools/page/TAB", "--origin", "https://example.com", "--label", "Login");
+  assert.equal(bodies[0].replace, true);
+  assert.deepEqual(Object.keys(bodies[0]).sort(), ["context", "replace", "requestId", "target"]);
+  const cancelled = await run("cancel", "--context", "ctx_current", "--request", id);
+  assert.deepEqual(bodies[1], { requestId: id, context: "ctx_current" });
+  assert.deepEqual(JSON.parse(cancelled.stdout), { requestId: id, status: "cancelled", inputStatusUnknown: true });
+  assert.equal((replaced.stdout + cancelled.stdout).includes("PRIVATE"), false);
+  for (const args of [["cancel", "--request", id], ["cancel", "--context", "ctx_current", "--request", "../wrong"],
+    ["cancel", "--context", "ctx_current", "--request", id, "--value", "PRIVATE"], ["replace", "--context", "ctx_current"]]) await assert.rejects(run(...args));
+  assert.equal(bodies.length, 2);
 });

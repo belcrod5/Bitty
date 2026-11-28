@@ -8,9 +8,9 @@ import { VoiceOrchestratorIcon, type VoiceOrchestrator } from "./VoiceOrchestrat
 import { VoiceTurnTrace, type VoiceTurnTraceData } from "./VoiceTurnTrace";
 import { MarkdownText } from "./MarkdownText";
 import { AnswerLearningDetails } from "./AnswerLearningDetails";
-import { BrowserInputCard } from "./BrowserInputCard";
-import { browserInputTimeline } from "../utils/browserInputTimeline";
-import type { BrowserSecretInputRequest } from "../hooks/useBrowserSecretInput";
+import { BrowserControlCard } from "./BrowserControlCard";
+import { browserControlTimeline } from "../utils/browserControlTimeline";
+import type { BrowserControlRequest } from "../hooks/useBrowserControl";
 
 export type VoiceConversationMessage = {
   role: "user" | "assistant" | "system"; text: string; clientOperationId: string;
@@ -21,12 +21,12 @@ export type VoiceConversationMessage = {
 // Both the ordinary chat and consultation use the same transcript presentation.
 export function VoiceConversationMessages({ messages, browserInputs = [], orchestratorId, learningPaused = false, onRead, speakingMessageId, onStopReading }: {
   messages: VoiceConversationMessage[]; orchestratorId?: string; learningPaused?: boolean;
-  browserInputs?: BrowserSecretInputRequest[];
+  browserInputs?: BrowserControlRequest[];
   onRead?: (message: VoiceConversationMessage) => void; speakingMessageId?: string; onStopReading?: () => void;
 }) {
   const { theme } = useVisualTheme();
-  return <>{browserInputTimeline(messages, browserInputs).map((message, index) => {
-    if ("browserInput" in message) return <BrowserInputCard key={message.id} request={message.browserInput} />;
+  return <>{browserControlTimeline(messages, browserInputs).map((message, index) => {
+    if ("browserInput" in message) return <BrowserControlCard key={message.id} request={message.browserInput} />;
     const user = message.role === "user";
     const textColor = user ? theme.colors.textOnAccent : theme.colors.textPrimary;
     const time = formatMessageTimestampLabel(message.at);

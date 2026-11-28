@@ -39,9 +39,9 @@ jobs:
         working-directory: expo
         run: npx jest --runInBand --silent src/features/app/screens/ICloudCalendarSettingsScreen.test.tsx src/features/calendar/icloudCalendarClient.test.ts src/features/calendar/calendarToolHandler.test.ts src/features/app/utils/runnerSettingsRequest.test.ts
 
-      - name: Test private browser input UI and ownership
+      - name: Test private browser control UI and ownership
         working-directory: expo
-        run: npx jest --runInBand --silent src/features/app/hooks/useBrowserSecretInput.test.tsx src/features/app/components/BrowserInputCard.test.tsx src/features/app/utils/browserInputTimeline.test.ts src/features/app/hooks/useChatScrollNavigation.test.tsx src/features/app/screens/ChatScreen.autoRecordingPanel.test.tsx src/features/appControl/voiceControl.test.ts src/features/appControl/useChatControlSurface.test.tsx src/features/appControl/useControlledStreamingStt.test.tsx src/features/app/components/PopupChatOverlay.test.tsx src/features/app/screens/VoiceConversationScreen.test.tsx
+        run: npx jest --runInBand --silent src/features/app/hooks/useBrowserControl.test.tsx src/features/app/components/BrowserControlCard.test.tsx src/features/app/utils/browserControlTimeline.test.ts src/features/app/hooks/useChatScrollNavigation.test.tsx src/features/app/screens/ChatScreen.autoRecordingPanel.test.tsx src/features/appControl/voiceControl.test.ts src/features/appControl/useChatControlSurface.test.tsx src/features/appControl/useControlledStreamingStt.test.tsx src/features/app/components/PopupChatOverlay.test.tsx src/features/app/screens/VoiceConversationScreen.test.tsx
 
       - name: Install private runner dependencies
         working-directory: private_runner
@@ -50,8 +50,8 @@ jobs:
       - name: Test Runner authentication and local control
         run: node --test private_runner/tests/runner-login.test.mjs private_runner/tests/runner-login-cli.test.mjs private_runner/tests/runner-login-location.test.mjs private_runner/tests/runner-local-https.test.mjs private_runner/tests/runner-control-cli.test.mjs private_runner/tests/runner-websocket-upgrade.test.mjs
 
-      - name: Test private browser input boundary and skill installation
-        run: node --test private_runner/tests/browser-secret-input.test.mjs private_runner/tests/browser-secret-cdp.test.mjs private_runner/tests/browser-secret-cli.test.mjs private_runner/tests/app-control-service.test.mjs private_runner/tests/bitty-skill-install.test.mjs
+      - name: Test private browser control boundary and skill installation
+        run: node --test private_runner/tests/browser-control.test.mjs private_runner/tests/browser-control-cdp.test.mjs private_runner/tests/browser-control-cli.test.mjs private_runner/tests/app-control-service.test.mjs private_runner/tests/bitty-skill-install.test.mjs
 
       - name: Test orchestrator runtime permissions
         run: node --test private_runner/tests/codex-app-server-client.test.mjs private_runner/tests/voice-orchestrator-service.test.mjs

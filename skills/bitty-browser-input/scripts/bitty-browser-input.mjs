@@ -4,7 +4,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { requestControl, resolveControlSocket } from "../../bitty-session-orchestrator/scripts/runner-control.mjs";
 
-const usage = "bitty-browser-input.mjs request --context <ctx> --cdp-url <local page ws URL> --origin <origin> --selector <CSS> --label <label> [--frame-id <id>] | status --request <UUID>";
+const usage = "bitty-browser-input.mjs request|replace --context <ctx> --cdp-url <local page ws URL> --origin <origin> --label <label> | cancel --context <ctx> --request <UUID> | status --request <UUID>";
 async function root() {
   if (process.env.BITTY_REPO_ROOT) return path.resolve(process.env.BITTY_REPO_ROOT);
   for (let directory = process.cwd();; directory = path.dirname(directory)) {
@@ -21,9 +21,11 @@ async function main() {
     if (!key?.startsWith("--") || !value || value.startsWith("--") || Object.hasOwn(options, key)) throw new Error(usage);
     options[key] = value;
   }
-  const allowed = command === "request" ? ["--context", "--cdp-url", "--origin", "--selector", "--label", "--frame-id"] : ["--request"];
-  if (!["request", "status"].includes(command) || Object.keys(options).some((key) => !allowed.includes(key))
-    || (command === "request" ? allowed.slice(0, 5).some((key) => !options[key]) : !options["--request"])) throw new Error(usage);
+  const allowed = ["request", "replace"].includes(command) ? ["--context", "--cdp-url", "--origin", "--label"]
+    : command === "cancel" ? ["--context", "--request"] : ["--request"];
+  if (!["request", "replace", "cancel", "status"].includes(command) || Object.keys(options).some((key) => !allowed.includes(key))
+    || allowed.some((key) => !options[key])) throw new Error(usage);
+  if (options["--request"] && !/^[a-f0-9-]{36}$/i.test(options["--request"])) throw new Error("Invalid request ID");
   const repo = await root();
   const tokenPath = path.resolve(repo, process.env.BITTY_RUNNER_TOKEN_FILE || process.env.RUNNER_TOKEN_FILE || "private_runner/logs/runner-token");
   const stat = await fs.lstat(tokenPath);
@@ -40,20 +42,19 @@ async function main() {
     if (!response.ok) throw new Error("Browser input request unavailable");
     // Do not forward arbitrary server response fields to the model.
     if (result.requestId !== (body?.requestId || pathname.split("/").at(-1))
-      || !["preparing", "pending", "filling", "completed", "cancelled", "expired", "invalidated", "failed", "input_status_unknown", "not_found"].includes(result.status)) throw new Error("Invalid browser input status");
-    return { requestId: result.requestId, status: result.status };
+      || !["preparing", "pending", "starting", "active", "completed", "cancelled", "expired", "invalidated", "failed", "control_status_unknown", "not_found"].includes(result.status)) throw new Error("Invalid browser input status");
+    return { requestId: result.requestId, status: result.status, ...(result.inputStatusUnknown === true ? { inputStatusUnknown: true } : {}) };
   };
-  if (command === "status") {
-    if (!/^[a-f0-9-]{36}$/i.test(options["--request"])) throw new Error("Invalid request ID");
-    console.log(JSON.stringify(await request(`/browser-input/requests/${options["--request"]}`)));
+  if (command === "status" || command === "cancel") {
+    console.log(JSON.stringify(await request(`/browser-control/requests/${options["--request"]}${command === "cancel" ? "/cancel" : ""}`,
+      command === "cancel" ? { requestId: options["--request"], context: options["--context"] } : undefined)));
     return;
   }
   const id = randomUUID();
   console.log(JSON.stringify({ requestId: id, status: "requesting" }));
-  const result = await request("/browser-input/requests", {
-    requestId: id, context: options["--context"], target: {
-      cdpUrl: options["--cdp-url"], origin: options["--origin"], selector: options["--selector"], label: options["--label"],
-      ...(options["--frame-id"] ? { frameId: options["--frame-id"] } : {}),
+  const result = await request("/browser-control/requests", {
+    requestId: id, context: options["--context"], ...(command === "replace" ? { replace: true } : {}), target: {
+      cdpUrl: options["--cdp-url"], origin: options["--origin"], label: options["--label"],
     },
   });
   console.log(JSON.stringify(result));
