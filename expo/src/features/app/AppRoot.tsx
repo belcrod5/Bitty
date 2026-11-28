@@ -35,7 +35,7 @@ import { WebView } from "react-native-webview";
 import { useAppStyles } from "./styles";
 import { AppProviders } from "./AppProviders";
 import { AppModalHost } from "./components/AppModal";
-import { RunnerConnectionIndicator } from "../runnerWs/RunnerConnectionIndicator";
+import { RunnerConnectionIndicator, RunnerConnectionRecovery } from "../runnerWs/RunnerConnectionIndicator";
 import { AppDrawer } from "./components/AppDrawer";
 import { AppDrawerLayout } from "./components/AppDrawerLayout";
 import { AppScreenContent } from "./components/AppScreenContent";
@@ -647,7 +647,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   const effectiveCloudflareRunnerUrl = runnerHttpsOrigin(cloudflareRunnerUrl);
   const [activeScreen, setActiveScreen] = useState<AppScreen>("skia_board");
   const { onSessionInvalid, verifySession, verified: runnerSessionVerified } = useRunnerSessionLifecycle({
-    settingsLoaded, runnerUrl, runnerToken, setRunnerToken,
+    settingsLoaded, runnerUrl, runnerToken, localRunnerUrl, cloudflareRunnerUrl, setRunnerToken,
     onLoginRequired: () => setActiveScreen("settings"),
   });
   configureCloudflareAccessFetch({
@@ -6254,6 +6254,13 @@ function AppContent({ onReady }: { onReady?: () => void }) {
         ) : null}
         <PushNotificationRegistrar onUnreadCountSnapshot={sessionNotificationLifecycle.applyUnreadCountSnapshot} />
         </> : <RunnerLoginScreen onRetry={() => void verifySession()} />)}
+        <RunnerConnectionRecovery enabled={runnerSessionVerified}>
+          <RunnerLoginScreen onRetry={() => {
+            retryRunnerWsConnection();
+            runnerRouteSelection.requestRouteRecheck();
+            void verifySession();
+          }} />
+        </RunnerConnectionRecovery>
         <WidgetSnapshotPublisher ready={settingsLoaded} />
       </AppModalHost>
       </KeyboardProvider>

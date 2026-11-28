@@ -15,6 +15,7 @@ const onLoginRequired = jest.fn();
 const props = (token = SESSION_A) => ({ settingsLoaded: true, runnerUrl: "https://runner.test", runnerToken: token, setRunnerToken, onLoginRequired });
 beforeEach(() => {
   jest.clearAllMocks();
+  jest.mocked(AppState.addEventListener).mockReturnValue({ remove: jest.fn() });
   requestMock.mockResolvedValue({ sessionId: "session", ownerEmail: "owner@example.test", expiresAt: new Date(Date.now() + 86_400_000).toISOString() });
 });
 
@@ -88,4 +89,71 @@ test("returning to foreground revalidates a session used by native background cl
   await act(async () => onChange("active"));
   expect(clearMock).toHaveBeenCalledWith(SESSION_A);
   await hook.unmount(); expect(remove).toHaveBeenCalled(); spy.mockRestore();
+});
+
+const pairedProps = (runnerUrl = "https://runner.test") => ({
+  ...props(), runnerUrl, localRunnerUrl: "https://runner.local", cloudflareRunnerUrl: "https://runner.test",
+});
+
+test("switching between paired routes keeps the verified session while rechecking the new route", async () => {
+  let reject!: (reason: unknown) => void;
+  const hook = await renderHook((input: ReturnType<typeof pairedProps>) => useRunnerSessionLifecycle(input), { initialProps: pairedProps() });
+  await act(async () => {});
+  expect(hook.result.current.verified).toBe(true);
+  requestMock.mockImplementationOnce(() => new Promise((_done, fail) => { reject = fail; }));
+  await hook.rerender(pairedProps("https://runner.local"));
+  expect(hook.result.current.verified).toBe(true);
+  expect(requestMock).toHaveBeenLastCalledWith("https://runner.local", "/auth/session", { token: SESSION_A });
+  await act(async () => reject(new Error("network unavailable")));
+  expect(hook.result.current.verified).toBe(true);
+  expect(clearMock).not.toHaveBeenCalled();
+});
+
+test.each([
+  { runnerUrl: "https://other-runner.test" },
+  { localRunnerUrl: "https://new-runner.local" },
+  { cloudflareRunnerUrl: "https://new-runner.test" },
+])("a different Runner or pairing configuration requires fresh proof: %j", async (change) => {
+  const hook = await renderHook((input: ReturnType<typeof pairedProps>) => useRunnerSessionLifecycle(input), { initialProps: pairedProps() });
+  await act(async () => {});
+  expect(hook.result.current.verified).toBe(true);
+  requestMock.mockImplementationOnce(() => new Promise(() => {}));
+  await hook.rerender({ ...pairedProps(), ...change });
+  expect(hook.result.current.verified).toBe(false);
+});
+
+test("route changes do not cancel the existing session expiry when rechecking fails", async () => {
+  jest.useFakeTimers();
+  requestMock.mockResolvedValueOnce({ sessionId: "session", expiresAt: new Date(Date.now() + 5_000).toISOString() });
+  const hook = await renderHook((input: ReturnType<typeof pairedProps>) => useRunnerSessionLifecycle(input), { initialProps: pairedProps() });
+  await act(async () => {});
+  requestMock.mockRejectedValueOnce(new Error("network unavailable"));
+  await hook.rerender(pairedProps("https://runner.local"));
+  expect(hook.result.current.verified).toBe(true);
+  await act(async () => jest.advanceTimersByTime(5_000));
+  expect(hook.result.current.verified).toBe(false);
+  expect(clearMock).toHaveBeenCalledWith(SESSION_A);
+  await hook.unmount(); jest.useRealTimers();
+});
+
+test("an explicit auth rejection after a paired route switch still revokes the session", async () => {
+  const hook = await renderHook((input: ReturnType<typeof pairedProps>) => useRunnerSessionLifecycle(input), { initialProps: pairedProps() });
+  await act(async () => {});
+  requestMock.mockRejectedValueOnce(new RunnerLoginError("authentication_required", 401));
+  await hook.rerender(pairedProps("https://runner.local"));
+  await act(async () => {});
+  expect(hook.result.current.verified).toBe(false);
+  expect(clearMock).toHaveBeenCalledWith(SESSION_A);
+});
+
+test("a stale auth rejection cannot revoke a different Runner using the same saved token", async () => {
+  let reject!: (reason: unknown) => void;
+  requestMock.mockImplementationOnce(() => new Promise((_done, fail) => { reject = fail; }));
+  const hook = await renderHook((input: ReturnType<typeof pairedProps>) => useRunnerSessionLifecycle(input), { initialProps: pairedProps() });
+  await hook.rerender(pairedProps("https://other-runner.test"));
+  await act(async () => {});
+  expect(hook.result.current.verified).toBe(true);
+  await act(async () => reject(new RunnerLoginError("authentication_required", 401)));
+  expect(hook.result.current.verified).toBe(true);
+  expect(clearMock).not.toHaveBeenCalled();
 });
