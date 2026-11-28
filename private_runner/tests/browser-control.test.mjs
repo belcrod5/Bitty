@@ -377,3 +377,36 @@ test("Open waits for the original chat snapshot and cancellation during prepare 
   prepared({ start: async () => calls.push("start"), close: () => calls.push("close") }); await pending;
   assert.deepEqual(calls, ["close"]); assert.equal(g.service.getResult("owner", g.body.requestId).status, "cancelled");
 });
+
+test("extension cards remain metadata-only until Open, bind their owner and reserve the same CDP target", async (t) => {
+  const opens = [], extension = { open: (...args) => { opens.push(args); return {}; } };
+  const f = fixture(t, { extension, prepare: async (target, options) => { options.connectExtension(target); return { start: async () => {}, close() {} }; } });
+  f.body.target = { browserId: randomUUID(), targetId: "TAB", origin: target.origin, label: "Continue" };
+  assert.equal((await f.service.request("owner", f.body)).status, "pending"); assert.deepEqual(opens, []);
+  await assert.rejects(f.service.request("owner", { ...f.body, requestId: randomUUID(), target }), { code: "capacity_exceeded" });
+  assert.equal((await f.command("start")).status, "active");
+  assert.deepEqual(opens, [["owner", f.body.target]]);
+  const replacement = { ...f.body, requestId: randomUUID(), replace: true };
+  assert.equal((await f.service.request("owner", replacement)).status, "pending"); assert.equal(opens.length, 1);
+});
+
+test("extension discovery HTTP is local-only and returns fixed recovery codes instead of raw failures", async () => {
+  const replies = [], calls = [];
+  const handler = createBrowserControlHttp({ extension: { discover: async (...args) => { calls.push(args); throw Object.assign(new Error("PRIVATE"), { code: "browser_extension_not_connected" }); } },
+    json: (_res, status, body) => replies.push({ status, body }) });
+  const request = { method: "GET", url: "/browser-control/targets?origin=https%3A%2F%2Fexample.com" };
+  await handler(request, {}, "/browser-control/targets"); assert.equal(calls.length, 0); assert.equal(replies.at(-1).status, 403);
+  request[RUNNER_AUTHENTICATION] = { local: true, ownerSubjectId: "owner" };
+  await handler(request, {}, "/browser-control/targets");
+  assert.deepEqual(calls, [["owner", "https://example.com"]]);
+  assert.deepEqual(replies.at(-1), { status: 400, body: { status: "browser_extension_not_connected" } });
+});
+
+test("an authenticated user can complete a paused recovery without opening or replaying its browser", async (t) => {
+  const f = fixture(t); await f.service.request("owner", f.body);
+  const message = { channel: "control", op: "browser.control.command", requestId: randomUUID(), payload: { requestId: f.body.requestId, action: "finish" } };
+  f.service.handleMessage(f.ws, message, { ...f.auth, sessionId: "foreign" }); await tick();
+  assert.equal(f.service.getResult("owner", f.body.requestId).status, "pending");
+  f.service.handleMessage(f.ws, { ...message, requestId: randomUUID() }, f.auth); await tick();
+  assert.equal(f.service.getResult("owner", f.body.requestId).status, "completed"); assert.equal(f.prepared(), 0); assert.deepEqual(f.inputs, []);
+});

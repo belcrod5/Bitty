@@ -5,16 +5,17 @@ import { prepareBrowserControl, validBrowserControlInput, validateBrowserControl
 const failure = (code) => Object.assign(new Error(code), { code });
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const terminal = new Set(["completed", "cancelled", "expired", "invalidated", "failed", "control_status_unknown"]);
+const extensionErrors = new Set(["browser_extension_not_connected", "browser_extension_ambiguous", "browser_extension_connection_changed", "browser_extension_timeout"]);
 
-export function createBrowserControlService({ appControl, sendEnvelope, prepare = prepareBrowserControl, isSessionActive = () => true, now = Date.now, log } = {}) {
+export function createBrowserControlService({ appControl, sendEnvelope, extension, prepare = prepareBrowserControl, isSessionActive = () => true, now = Date.now, log } = {}) {
   const entries = new Map(), devices = new Map();
   const result = (entry) => ({ requestId: entry.id, status: entry.status, ...(entry.inputStatusUnknown ? { inputStatusUnknown: true } : {}) });
   const card = (entry) => ({ ...result(entry), target: entry.conversation, origin: entry.origin, label: entry.target.label, createdAt: entry.createdAt });
   const owns = (entry, auth) => auth?.local === false && auth.ownerSubjectId === entry.subjectId && auth.sessionId === entry.deviceSessionId && isSessionActive(entry.deviceSessionId);
   const matchesContext = (entry, subjectId, context) => entry.subjectId === subjectId && entry.deviceSessionId === context.deviceSessionId
     && JSON.stringify(entry.conversation) === JSON.stringify(context.origin.target);
-  function diagnose(entry, phase, reason, run = entry.run) {
-    try { log?.({ requestId: entry.id, phase, elapsedMs: Math.max(0, now() - (run?.startedAt ?? now())), ...(reason ? { reason } : {}),
+  function diagnose(entry, phase, reason, run = entry.run, command) {
+    try { log?.({ requestId: entry.id, phase, elapsedMs: Math.max(0, now() - (run?.startedAt ?? now())), ...(reason ? { reason } : {}), ...(command ? { commandMethod: command.method, commandScope: command.scope } : {}),
       ...(terminal.has(phase) || phase === "interrupted" ? { framesSent: run?.framesSent || 0, renderAckCommands: run?.renderAckCommands || 0 } : {}) }); } catch {}
   }
   function detach(entry, uncertain = false) {
@@ -57,7 +58,7 @@ export function createBrowserControlService({ appControl, sendEnvelope, prepare 
       || body.replace !== undefined && body.replace !== true
       || !uuid.test(body.requestId) || typeof body.context !== "string" || !/^ctx_[a-f0-9-]{36}$/.test(body.context)) throw failure("invalid_request");
     const target = validateBrowserControlTarget(body.target);
-    const pageUrl = new URL(target.cdpUrl), page = `${pageUrl.port}${pageUrl.pathname}`;
+    const page = target.targetId || new URL(target.cdpUrl).pathname.split("/").at(-1);
     const canonical = JSON.stringify({ context: body.context, target, ...(body.replace ? { replace: true } : {}) });
     const previous = entries.get(body.requestId);
     if (previous) {
@@ -109,11 +110,16 @@ export function createBrowserControlService({ appControl, sendEnvelope, prepare 
       }
       if (entry.run !== run) return result(entry);
       run.browser = await prepare({ ...entry.target, origin: entry.origin }, { signal: run.controller.signal,
+        connectExtension: (target) => extension.open(entry.subjectId, target),
         onInvalidated: (reason) => { if (entry.run === run) {
           diagnose(entry, "interrupted", ["connection_closed", "command_timeout", "frame_timeout", "render_ack_timeout"].includes(reason) ? reason : "connection_closed");
           detach(entry, true);
         } },
-        onDiagnostic: (phase) => { if (entry.run === run && ["focus_enabled", "stream_started", "cdp_frame_received"].includes(phase)) diagnose(entry, phase); },
+        onDiagnostic: (phase, command) => {
+          if (entry.run !== run) return;
+          if (["focus_enabled", "stream_started", "cdp_frame_received"].includes(phase)) diagnose(entry, phase);
+          if (phase === "command_timeout" && ["page", "iframe"].includes(command?.scope) && typeof command?.method === "string" && /^(Page|Runtime|Input|Target|Emulation)\.[A-Za-z]+$/.test(command.method)) diagnose(entry, phase, undefined, run, command);
+        },
         onFrame: (frame) => { if (send(entry, run, "browser.control.frame", frame)) {
           run.framesSent++; if (!run.firstFrameSent) { run.firstFrameSent = true; diagnose(entry, "frame_sent"); }
         } },
@@ -124,7 +130,7 @@ export function createBrowserControlService({ appControl, sendEnvelope, prepare 
       if (entry.run !== run) { run.browser.close(); return result(entry); }
       await run.browser.start();
       if (entry.run === run) entry.status = "active";
-    } catch { if (entry.run === run) finish(entry, "failed"); }
+    } catch (error) { if (entry.run === run) finish(entry, "failed", extensionErrors.has(error?.code) ? error.code : undefined); }
     return result(entry);
   }
   function command(ws, payload, auth) {
@@ -133,6 +139,7 @@ export function createBrowserControlService({ appControl, sendEnvelope, prepare 
     if (!entry || !owns(entry, auth) || terminal.has(entry.status)) return Promise.resolve({ status: "request_unavailable" });
     const keys = Object.keys(payload).sort().join(","), action = payload.action;
     if (action === "cancel" && keys === "action,requestId") { finish(entry, "cancelled"); return Promise.resolve(result(entry)); }
+    if (action === "finish" && keys === "action,requestId" && !entry.run) { finish(entry, "completed"); return Promise.resolve(result(entry)); }
     if (!uuid.test(payload.controlId)) return Promise.resolve({ status: "invalid_command" });
     if (action === "start" && keys === "action,controlId,requestId") return start(entry, ws, payload.controlId);
     const run = entry.run;
@@ -189,13 +196,17 @@ export function createBrowserControlService({ appControl, sendEnvelope, prepare 
 }
 
 // The local agent can request/cancel takeover and read fixed status. User actions/images have no HTTP endpoint.
-export function createBrowserControlHttp({ service, json, readJsonBody }) {
+export function createBrowserControlHttp({ service, extension, json, readJsonBody }) {
   return async (req, res, pathname) => {
     if (!pathname.startsWith("/browser-control/")) return false;
     if (!req[RUNNER_AUTHENTICATION]?.local) { json(res, 403, { status: "local_control_required" }); return true; }
     const subjectId = req[RUNNER_AUTHENTICATION].ownerSubjectId;
     try {
-      if (req.method === "POST" && pathname === "/browser-control/requests") json(res, 200, await service.request(subjectId, await readJsonBody(req, 8192)));
+      if (req.method === "GET" && pathname === "/browser-control/targets") {
+        const url = new URL(req.url, "http://runner.local");
+        json(res, 200, await extension.discover(subjectId, url.searchParams.get("origin")));
+      }
+      else if (req.method === "POST" && pathname === "/browser-control/requests") json(res, 200, await service.request(subjectId, await readJsonBody(req, 8192)));
       else if (req.method === "POST" && /^\/browser-control\/requests\/[a-f0-9-]{36}\/cancel$/.test(pathname)) {
         const body = await readJsonBody(req, 8192);
         if (body?.requestId !== pathname.split("/").at(-2)) throw failure("invalid_request");
@@ -203,7 +214,7 @@ export function createBrowserControlHttp({ service, json, readJsonBody }) {
       }
       else if (req.method === "GET" && /^\/browser-control\/requests\/[a-f0-9-]{36}$/.test(pathname)) json(res, 200, service.getResult(subjectId, pathname.split("/").at(-1)));
       else json(res, 404, { status: "not_found" });
-    } catch { json(res, 400, { status: "browser_control_unavailable" }); }
+    } catch (error) { json(res, 400, { status: extensionErrors.has(error?.code) ? error.code : "browser_control_unavailable" }); }
     return true;
   };
 }

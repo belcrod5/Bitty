@@ -19,7 +19,7 @@ async function peer(t, respond) {
     const result = respond?.(message, socket) ?? ({ "Page.enable": {}, "Page.getFrameTree": { frameTree: { frame: { id: "FRAME", url: target.origin } } },
       "Page.getLayoutMetrics": { cssVisualViewport: { clientWidth: 800, clientHeight: 600, offsetX: 0, offsetY: 0 } } }[message.method] || {});
     if (result === false) return;
-    socket.send(JSON.stringify({ id: message.id, ...result.error ? { error: result.error } : { result } }));
+    socket.send(JSON.stringify({ id: message.id, ...(message.sessionId ? { sessionId: message.sessionId } : {}), ...result.error ? { error: result.error } : { result } }));
   }); });
   return { messages, target: { ...target, cdpUrl: `ws://127.0.0.1:${server.address().port}/devtools/page/TAB` }, emit: (message) => socket.send(JSON.stringify(message)), raw: (text) => socket.send(text), close: () => socket.terminate() };
 }
@@ -360,4 +360,12 @@ for (const ending of ["timeout", "detach"]) test(`a child observer ${ending} can
   assert.equal(focuses.at(-1).editable, false); assert.deepEqual(failures, []);
   f.emit(frameMessage(2)); await tick(); assert.equal(frames.length, 2);
   await browser.ack(frames[1].frameId); await browser.input({ type: "down", x: 0.2, y: 0.2 }, frames[1].frameId); await browser.input({ type: "up", x: 0.2, y: 0.2 }, frames[1].frameId);
+});
+
+test("a root focus world timeout stays optional while stream commands still fail closed", async (t) => {
+  const f = await peer(t, (message) => message.method === "Page.createIsolatedWorld" ? false : undefined), reasons = [], diagnostics = [], frames = [];
+  const browser = await prepareBrowserControl(f.target, { timeoutMs: 35, onFocus() {}, onFrame: (frame) => frames.push(frame), onInvalidated: (reason) => reasons.push(reason), onDiagnostic: (phase, command) => diagnostics.push({ phase, command }) });
+  t.after(browser.close); await browser.start(); f.emit(frameMessage()); await tick();
+  assert.equal(frames.length, 1); await browser.ack(frames[0].frameId); assert.deepEqual(reasons, []);
+  assert.ok(diagnostics.some(({ phase, command }) => phase === "command_timeout" && command.method === "Page.createIsolatedWorld" && command.scope === "page"));
 });

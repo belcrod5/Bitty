@@ -9,7 +9,8 @@ function parseRequestUrl(req) {
   }
 }
 
-function routeFor(pathname, runnerWsPath) {
+function routeFor(pathname, runnerWsPath, browserExtensionWsServer) {
+  if (browserExtensionWsServer && pathname === "/browser-extension") return "browser-extension";
   if (pathname === runnerWsPath) return "runner-ws";
   if (pathname === "/stream-tts") return "stream-tts";
   if (pathname === "/stream-stt") return "stream-stt";
@@ -32,13 +33,15 @@ export function installRunnerWebSocketUpgradeHandler({
   runnerWsServer,
   streamTtsWsServer,
   streamSttWsServer,
+  browserExtensionWsServer,
+  authenticateBrowserExtension,
   appendDebug,
   logRequests = false,
 }) {
   server.on("upgrade", async (req, socket, head) => {
     const reqUrl = parseRequestUrl(req);
     const endpoint = reqUrl.pathname;
-    const route = routeFor(endpoint, runnerWsPath);
+    const route = routeFor(endpoint, runnerWsPath, browserExtensionWsServer);
     const remoteAddress = String(req?.socket?.remoteAddress || "unknown");
     const tokenDiag = {};
     if (logRequests) console.log(`[request] WS ${endpoint} from ${remoteAddress}`);
@@ -48,15 +51,19 @@ export function installRunnerWebSocketUpgradeHandler({
     }
     let context;
     try {
-      if (!authenticate) throw new Error("authentication_required");
-      context = await authenticate(req);
+      const authenticateConnection = route === "browser-extension" ? authenticateBrowserExtension : authenticate;
+      if (!authenticateConnection) throw new Error("authentication_required");
+      context = await authenticateConnection(req);
+      if (route === "browser-extension" && context?.local !== true) throw new Error("local_control_required");
     } catch {
       rejectUpgrade({ req, socket, appendDebug, route, endpoint, reason: "authentication_required", status: "401 Unauthorized", tokenDiag });
       return;
     }
     if (socket.destroyed) return;
     void appendDebug("upgrade_accepted", { remoteAddress, endpoint, route });
-    const wsServer = route === "runner-ws"
+    const wsServer = route === "browser-extension"
+      ? browserExtensionWsServer
+      : route === "runner-ws"
       ? runnerWsServer
       : route === "stream-stt"
         ? streamSttWsServer

@@ -4,16 +4,24 @@ import { randomUUID } from "node:crypto";
 const fail = () => new Error("browser_control_unavailable");
 export function validateBrowserControlTarget(input) {
   if (!input || typeof input !== "object" || Array.isArray(input)
-    || Object.keys(input).some((key) => !["cdpUrl", "origin", "label"].includes(key))) throw fail();
-  const url = new URL(input.cdpUrl);
-  if (url.protocol !== "ws:" || !["127.0.0.1", "[::1]"].includes(url.hostname)
-    || !url.port || url.username || url.password || url.search || url.hash
-    || !/^\/devtools\/page\/[A-Za-z0-9_-]+$/.test(url.pathname)) throw fail();
+    || Object.keys(input).some((key) => !["cdpUrl", "browserId", "targetId", "origin", "label"].includes(key))) throw fail();
+  let connection;
+  if (input.browserId !== undefined) {
+    if (input.cdpUrl !== undefined || typeof input.browserId !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(input.browserId)
+      || typeof input.targetId !== "string" || !/^[A-Za-z0-9_-]{1,200}$/.test(input.targetId)) throw fail();
+    connection = { browserId: input.browserId, targetId: input.targetId };
+  } else {
+    const url = new URL(input.cdpUrl);
+    if (input.targetId !== undefined || url.protocol !== "ws:" || !["127.0.0.1", "[::1]"].includes(url.hostname)
+      || !url.port || url.username || url.password || url.search || url.hash
+      || !/^\/devtools\/page\/[A-Za-z0-9_-]+$/.test(url.pathname)) throw fail();
+    connection = { cdpUrl: url.href };
+  }
   const origin = new URL(input.origin);
   if (!["http:", "https:"].includes(origin.protocol) || origin.origin !== input.origin
     || typeof input.label !== "string" || !input.label || input.label.length > 120
     || /[\u0000-\u001f\u007f]/.test(input.label)) throw fail();
-  return { cdpUrl: url.href, origin: origin.origin, label: input.label };
+  return { ...connection, origin: origin.origin, label: input.label };
 }
 
 export function validBrowserControlInput(input) {
@@ -32,9 +40,10 @@ export function validBrowserControlInput(input) {
 // A page-only CDP session. Only a fixed isolated focus observer reads editable metadata; never values.
 // No caller-supplied JS, console/network capture, or disk recording.
 // Images go directly to the bound user device and never enter the agent's status response.
-export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, frameTimeoutMs = 10_000, onInvalidated, onFrame, onOrigin, onViewInvalidated, onDiagnostic, onFocus } = {}) {
+export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, frameTimeoutMs = 10_000, connectExtension, onInvalidated, onFrame, onOrigin, onViewInvalidated, onDiagnostic, onFocus } = {}) {
   target = validateBrowserControlTarget(target);
-  const socket = new WebSocket(target.cdpUrl, { followRedirects: false, maxPayload: 3 * 1024 * 1024 });
+  const socket = target.browserId ? connectExtension?.(target) : new WebSocket(target.cdpUrl, { followRedirects: false, maxPayload: 3 * 1024 * 1024 });
+  if (!socket) throw fail();
   const pending = new Map();
   let sequence = 0, frameSequence = 0;
   let stopped = false, active = false, mouseDown = false, emulatingFocus = false, rootId;
@@ -141,8 +150,11 @@ export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, 
     if (stopped || signal?.aborted || socket.readyState !== WebSocket.OPEN) return reject(fail());
     const id = ++sequence;
     const timer = setTimeout(() => {
+      pending.delete(id); reject(fail());
+      onDiagnostic?.("command_timeout", { method, scope: sessionId ? "iframe" : "page" });
       if (sessionId) forgetFocusSession(sessionId);
-      else { reject(fail()); close(true, "command_timeout"); }
+      // Focus observation is optional: a renderer replacing an isolated world must not end page control.
+      else if (!["Page.createIsolatedWorld", "Runtime.evaluate"].includes(method)) close(true, "command_timeout");
     }, timeoutMs);
     pending.set(id, { resolve, reject, timer, sessionId });
     socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }), (error) => { if (error) close(true); });
@@ -169,10 +181,11 @@ export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, 
     const waiting = pending.get(message.id);
     if (waiting) {
       pending.delete(message.id); clearTimeout(waiting.timer);
-      if (message.error) waiting.reject(fail()); else waiting.resolve(message.result);
+      if (message.sessionId !== waiting.sessionId || message.error) waiting.reject(fail()); else waiting.resolve(message.result);
       return;
     }
     const sessionId = message.sessionId;
+    if (sessionId && !focusSessions.has(sessionId)) return;
     if (message.method === "Target.attachedToTarget" && active && onFocus && message.params?.targetInfo?.type === "iframe") {
       const childSession = message.params.sessionId;
       if (typeof childSession !== "string" || focusSessions.has(childSession)) return;
@@ -189,7 +202,6 @@ export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, 
       forgetFocusSession(detached);
       return;
     }
-    if (sessionId && !focusSessions.has(sessionId)) return;
     if (message.method === "Runtime.executionContextCreated" && message.params?.context?.name === focusWorld) {
       const contextId = message.params.context.id;
       focusContexts.set(focusKey(sessionId, contextId), { sessionId, contextId });

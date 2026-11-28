@@ -5,6 +5,8 @@ import { createRunnerLoginHttp, RUNNER_AUTHENTICATION, runnerBearerToken } from 
 import { startRunnerControlListener } from "./runner-control-listener.mjs";
 import { createAppControlService, createAppControlHttpHandler } from "./app-control-service.mjs";
 import { createBrowserControlService, createBrowserControlHttp } from "./browser-control.mjs";
+import { createBrowserControlExtension } from "./browser-control-extension.mjs";
+import { authenticateBrowserControlNativeKey, NATIVE_CONTROL_DIRECTORY } from "./browser-control-native-auth.mjs";
 import { createAppStatusSnapshot } from "./app-status-snapshot.mjs";
 import { createWidgetRefreshNotifier } from "./widget-refresh-notifier.mjs";
 import { createClientAppLogWriter } from "./client-app-log-writer.mjs";
@@ -1658,10 +1660,13 @@ const appControlService = createAppControlService({
 });
 const appControlHttpHandler = createAppControlHttpHandler({ service: appControlService,
   json, readJsonBody, subjectId: agentOwnerSubjectId });
-const browserControlService = createBrowserControlService({ appControl: appControlService, sendEnvelope: sendRunnerWsEnvelope,
+const browserControlExtension = createBrowserControlExtension({ sendMessage: sendWsJson });
+const browserExtensionWsServer = new WebSocketServer({ noServer: true, maxPayload: 3 * 1024 * 1024 });
+browserExtensionWsServer.on("connection", (ws, req) => browserControlExtension.connect(ws, req[RUNNER_AUTHENTICATION]));
+const browserControlService = createBrowserControlService({ appControl: appControlService, extension: browserControlExtension, sendEnvelope: sendRunnerWsEnvelope,
   isSessionActive: (sessionId) => runnerLoginService.isSessionActive(sessionId),
   log: (event) => console.log(`[browser-control] ${JSON.stringify(event)}`) });
-const browserControlHttp = createBrowserControlHttp({ service: browserControlService, json, readJsonBody });
+const browserControlHttp = createBrowserControlHttp({ service: browserControlService, extension: browserControlExtension, json, readJsonBody });
 const codexRawSessionOwnership = createCodexRawSessionOwnership({
   bindSession: bindAgentSession,
   getSessionBinding: getAgentSessionBinding,
@@ -10236,6 +10241,9 @@ if (!RUNNER_SKIP_SERVER_START) {
     if (shutdown) return shutdown;
     stopRequested = true;
     browserControlService.close();
+    browserControlExtension.close();
+    for (const ws of browserExtensionWsServer.clients) ws.terminate();
+    browserExtensionWsServer.close();
     server.close(); localHttpsServer?.close();
     server.closeAllConnections(); localHttpsServer?.closeAllConnections();
     codexScheduleService.stop(); codexAuthService.markUnready();
@@ -10331,7 +10339,13 @@ if (!RUNNER_SKIP_SERVER_START) {
       await fs.chmod(logs, 0o700);
       controlListener = await startRunnerControlListener({ directory: logs, socketPath: process.env.RUNNER_CONTROL_SOCKET,
         handler: runnerLoginHttp.wrap(handleRunnerRequest, { local: true }),
-        installWebSocket: (controlServer) => installRunnerWebSocketUpgradeHandler({ ...runnerWebSocketOptions, server: controlServer,
+        installWebSocket: (controlServer) => installRunnerWebSocketUpgradeHandler({ ...runnerWebSocketOptions, browserExtensionWsServer, server: controlServer,
+          authenticateBrowserExtension: async (req) => {
+            await authenticateBrowserControlNativeKey(runnerBearerToken(req), path.join(os.homedir(), NATIVE_CONTROL_DIRECTORY, "native-key"));
+            const context = await runnerLoginService.authenticate(RUNNER_TOKEN, { local: true });
+            req[RUNNER_AUTHENTICATION] = context;
+            return context;
+          },
           authenticate: (req) => runnerLoginHttp.authenticate(req, true) }),
       });
       controlListener.server.on("error", listenerError);

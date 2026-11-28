@@ -24,9 +24,10 @@ const card: BrowserControlRequest = { requestId: "one", origin: "https://example
 const frame = { frameId: 1, data: "aW1hZ2U=", width: 800, height: 600 };
 function fixture() {
   let listener: ((frame: BrowserControlFrame | null) => void) | undefined;
+  let invalidate: (() => void) | undefined;
   let keyboard: ((focus: BrowserControlFocus | null) => void) | undefined;
-  const controller = { requests: [card], typingRequestId: null as string | null, command: jest.fn(async (_requestId: string, _action: string) => {}), input: jest.fn(async (_requestId: string, _input: BrowserControlInput, _frameId: number) => {}), ack: jest.fn(), failDisplay: jest.fn(), watch: jest.fn((_id: string, handler: (frame: BrowserControlFrame | null) => void, onFocus?: (focus: BrowserControlFocus | null) => void) => { listener = handler; keyboard = onFocus; return () => { handler(null); keyboard?.(null); }; }) };
-  return { controller, emit: (next: BrowserControlFrame | null) => listener?.(next), emitFocus: (next: BrowserControlFocus | null) => keyboard?.(next) };
+  const controller = { requests: [card], typingRequestId: null as string | null, command: jest.fn(async (_requestId: string, _action: string) => {}), input: jest.fn(async (_requestId: string, _input: BrowserControlInput, _frameId: number) => {}), ack: jest.fn(), failDisplay: jest.fn(), watch: jest.fn((_id: string, handler: (frame: BrowserControlFrame | null) => void, onFocus?: (focus: BrowserControlFocus | null) => void, onInvalidate?: () => void) => { listener = handler; keyboard = onFocus; invalidate = onInvalidate; return () => { handler(null); keyboard?.(null); }; }) };
+  return { controller, invalidate: () => invalidate?.(), emit: (next: BrowserControlFrame | null) => listener?.(next), emitFocus: (next: BrowserControlFocus | null) => keyboard?.(next) };
 }
 afterEach(() => jest.restoreAllMocks());
 test("already displayed identical frames acknowledge new IDs without another native load", async () => {
@@ -488,7 +489,7 @@ test("finishing retains the view until queued input and the finish command settl
 
 test("a reconnectable card shows the uncertainty warning before reopening", async () => {
   const f = fixture(); const view = await render(<BrowserControlContext.Provider value={f.controller}><BrowserControlCard request={{ ...card, inputStatusUnknown: true }} /></BrowserControlContext.Provider>);
-  expect(view.getByText("接続が切れました。前の操作結果を確認してから再開してください。")).toBeTruthy();
+  expect(view.getByText("直前の操作が反映されたか確認してください。")).toBeTruthy();
   expect(view.getByText("ブラウザを開く")).toBeTruthy();
   await view.unmount();
 });
@@ -546,5 +547,50 @@ test("an old finish result cannot close a newly reopened browser view", async ()
   await act(async () => finish?.());
   expect(view.getByLabelText("ブラウザの画面")).toBeTruthy();
   expect(f.controller.watch).toHaveBeenCalledTimes(2);
+  await view.unmount();
+});
+
+test("loading retains the last image without stale ACK/input; identical recovery pixels render immediately", async () => {
+  const f = fixture();
+  const content = (request: BrowserControlRequest) => <BrowserControlContext.Provider value={f.controller}><BrowserControlCard request={request} /></BrowserControlContext.Provider>;
+  const view = await render(content(card)); await fireEvent.press(view.getByText("ブラウザを開く")); await view.rerender(content({ ...card, status: "active" }));
+  await act(async () => f.emit(frame)); await fireEvent(view.getByLabelText("ブラウザの画面"), "load");
+  const oldLoad = view.getByLabelText("ブラウザの画面").props.onLoad;
+  await act(async () => f.invalidate()); await view.rerender(content({ ...card, status: "pending", viewState: "reconnecting" }));
+  expect(view.getByLabelText("ブラウザの画面").props.source.uri).toContain(frame.data);
+  expect(view.getByTestId("browser-control-loading")).toBeTruthy(); expect(view.queryByTestId("browser-control-cursor")).toBeNull();
+  await act(async () => oldLoad()); expect(f.controller.ack).toHaveBeenCalledTimes(1);
+  await view.rerender(content({ ...card, status: "active", viewState: "reconnecting" }));
+  await act(async () => f.emit({ ...frame, frameId: 1 }));
+  expect(f.controller.ack).toHaveBeenCalledTimes(2);
+  await act(async () => oldLoad()); expect(f.controller.ack).toHaveBeenCalledTimes(2);
+  await view.rerender(content({ ...card, status: "active" })); expect(view.queryByTestId("browser-control-loading")).toBeNull();
+  expect(view.getByTestId("browser-control-cursor")).toBeTruthy();
+  await fireEvent.press(view.getByText("閉じる")); expect(view.queryByLabelText("ブラウザの画面")).toBeNull(); await view.unmount();
+});
+
+test("backgrounding during a pending recovery returns to an explicit Open instead of a stuck viewer", async () => {
+  const f = fixture(); const content = (request: BrowserControlRequest) => <BrowserControlContext.Provider value={f.controller}><BrowserControlCard request={request} /></BrowserControlContext.Provider>;
+  const view = await render(content(card)); await fireEvent.press(view.getByText("ブラウザを開く")); await view.rerender(content({ ...card, status: "active" }));
+  await act(async () => f.emit(frame)); await fireEvent(view.getByLabelText("ブラウザの画面"), "load");
+  await act(async () => f.invalidate()); await view.rerender(content({ ...card, viewState: "reconnecting" }));
+  expect(view.queryByText("ブラウザを開く")).toBeNull();
+  await act(async () => f.emit(null)); await view.rerender(content(card));
+  expect(view.getByText("ブラウザを開く")).toBeTruthy(); expect(view.queryByTestId("browser-control-screen")).toBeNull(); await view.unmount();
+});
+
+test.each([false, true])("navigation during a pending decode restores its source (early native load: %s)", async (earlyLoad) => {
+  const f = fixture(); const content = (request: BrowserControlRequest) => <BrowserControlContext.Provider value={f.controller}><BrowserControlCard request={request} /></BrowserControlContext.Provider>;
+  const view = await render(content(card)); await fireEvent.press(view.getByText("ブラウザを開く")); await view.rerender(content({ ...card, status: "active" }));
+  await act(async () => f.emit(frame)); await fireEvent(view.getByLabelText("ブラウザの画面"), "load");
+  await act(async () => f.emit({ ...frame, frameId: 2, data: "Yg==" })); const oldLoad = view.getByLabelText("ブラウザの画面").props.onLoad;
+  await act(async () => f.invalidate()); await view.rerender(content({ ...card, status: "active", viewState: "loading" }));
+  expect(view.getByLabelText("ブラウザの画面").props.source.uri).toContain(frame.data);
+  if (earlyLoad) await fireEvent(view.getByLabelText("ブラウザの画面"), "load");
+  expect(f.controller.ack).toHaveBeenCalledTimes(1);
+  await act(async () => f.emit({ ...frame, frameId: 3 })); expect(f.controller.ack).toHaveBeenCalledTimes(earlyLoad ? 2 : 1);
+  await act(async () => oldLoad()); expect(f.controller.ack).toHaveBeenCalledTimes(earlyLoad ? 2 : 1);
+  if (!earlyLoad) await fireEvent(view.getByLabelText("ブラウザの画面"), "load");
+  expect(f.controller.ack).toHaveBeenLastCalledWith("one", 3);
   await view.unmount();
 });

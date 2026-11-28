@@ -1,5 +1,5 @@
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { Image, Platform, SafeAreaView, StyleSheet, Text, TouchableOpacity, View, type ViewProps } from "react-native";
+import { ActivityIndicator, Image, Platform, SafeAreaView, StyleSheet, Text, TouchableOpacity, View, type ViewProps } from "react-native";
 import { requireNativeViewManager, requireOptionalNativeModule } from "expo-modules-core";
 import { Gesture, GestureDetector, GestureHandlerRootView, type TouchData } from "react-native-gesture-handler";
 import Svg, { Path } from "react-native-svg";
@@ -56,17 +56,26 @@ export function BrowserControlCard({ request }: { request: BrowserControlRequest
   const latestFrame = useRef<BrowserControlFrame | null>(null);
   const imageEpoch = useRef(0);
   const previousStatus = useRef(request.status);
+  const previousViewState = useRef(request.viewState);
   const canTap = useRef(false);
   const lastTap = useRef<{ time: number; x: number; y: number } | null>(null);
   const gesture = useRef<BrowserGesture | null>(null);
   const clear = useCallback(() => { imageEpoch.current++; latestFrame.current = null; setFrame(null); setDisplayedId(0); displayed.current = null; latestFocus.current = null; setFocus(null); gesture.current = null; canTap.current = false; lastTap.current = null; updateCursor({ x: 0.5, y: 0.5 }); updateZoom({ scale: 1, x: 0, y: 0 }); }, [updateCursor, updateZoom]);
+  const invalidate = useCallback(() => {
+    // Restore the last decoded source if a replacement image was still loading.
+    if (latestFrame.current && latestFrame.current !== displayed.current) {
+      imageEpoch.current++; setFrame(displayed.current); displayed.current = null;
+    }
+    latestFrame.current = null; setDisplayedId(0); latestFocus.current = null; setFocus(null);
+    gesture.current = null; canTap.current = false; lastTap.current = null;
+  }, []);
   useEffect(() => {
     if (!opened || !controller) return;
     const stop = controller.watch(request.requestId, (next) => {
       if (!next) { clear(); return; }
       const shown = displayed.current;
       // Native Image does not load an unchanged URI again. Already displayed pixels need no new decode.
-      if (shown && latestFrame.current === shown && shown.data === next.data && shown.width === next.width && shown.height === next.height) {
+      if (shown && shown.data === next.data && shown.width === next.width && shown.height === next.height) {
         latestFrame.current = next; displayed.current = next; setDisplayedId(next.frameId);
         controller.ack(request.requestId, next.frameId); return;
       }
@@ -76,19 +85,19 @@ export function BrowserControlCard({ request }: { request: BrowserControlRequest
         updateZoom({ scale: 1, x: 0, y: 0 });
       }
       latestFrame.current = next; setFrame(next);
-    }, updateFocus);
+    }, updateFocus, invalidate);
     if (!stop) { clear(); setOpened(false); setFullscreen(false); return; }
     void controller.command(request.requestId, "start");
     return stop;
-  }, [clear, controller?.command, controller?.watch, opened, request.requestId, updateCursor, updateFocus, updateZoom]);
+  }, [clear, controller?.command, controller?.watch, opened, request.requestId, updateCursor, updateFocus, updateZoom, invalidate]);
   useEffect(() => {
-    const paused = request.status === "pending" && ["starting", "active"].includes(previousStatus.current);
-    previousStatus.current = request.status;
+    const paused = request.status === "pending" && !request.viewState && (["starting", "active"].includes(previousStatus.current) || !!previousViewState.current);
+    previousStatus.current = request.status; previousViewState.current = request.viewState;
     if (paused || !["pending", "starting", "active"].includes(request.status)) { clear(); setOpened(false); setFullscreen(false); }
-  }, [clear, request.status]);
+  }, [clear, request.status, request.viewState]);
   const send = (input: BrowserControlInput) => {
     const drawn = displayed.current;
-    if (request.status !== "active" || !drawn || !controller) return;
+    if (request.status !== "active" || request.viewState || !displayedId || !drawn || !controller) return;
     return controller.input(request.requestId, input, drawn.frameId);
   };
   const aspectRatio = frame ? frame.width / frame.height : 4 / 3;
@@ -143,7 +152,7 @@ export function BrowserControlCard({ request }: { request: BrowserControlRequest
     cancelGesture(); imageEpoch.current++; displayed.current = null; setDisplayedId(0);
     updateZoom({ scale: 1, x: 0, y: 0 }); setViewport({ width: 0, height: 0 }); setFullscreen(next);
   };
-  const ready = request.status === "active" && displayedId > 0;
+  const ready = request.status === "active" && !request.viewState && displayedId > 0;
   const touchGesture = useMemo(() => {
     // A native recognizer owns the touch before the enclosing chat ScrollView starts scrolling.
     const pan = Gesture.Pan().enabled(ready).minDistance(0).runOnJS(true).withTestId(`browser-control-pan-${request.requestId}`)
@@ -252,12 +261,21 @@ export function BrowserControlCard({ request }: { request: BrowserControlRequest
       {frame ? <Image key={`${renderEpoch}:${frame.width}x${frame.height}`} accessibilityLabel="ブラウザの画面" source={{ uri: `data:image/jpeg;base64,${frame.data}` }}
         style={{ position: "absolute", left: imageLeft, top: imageTop, width: fittedWidth * zoom.scale, height: fittedHeight * zoom.scale }}
         resizeMode="stretch" onLoad={() => {
-          if (imageEpoch.current !== renderEpoch || latestFrame.current !== frame) return;
+          if (imageEpoch.current !== renderEpoch) return;
+          if (latestFrame.current !== frame) {
+            // A restored source can decode while waiting for a new remote frame. Do not ACK it yet.
+            if (!latestFrame.current && !displayed.current) displayed.current = frame;
+            return;
+          }
           displayed.current = frame; setDisplayedId(frame.frameId); controller.ack(request.requestId, frame.frameId);
         }} onError={() => {
           if (imageEpoch.current !== renderEpoch || latestFrame.current !== frame) return;
           clear(); controller.failDisplay(request.requestId, "render_failed");
         }} /> : <Text style={text}>{request.status === "active" ? "画面を読み込み中…" : "ブラウザに接続中…"}</Text>}
+      {request.viewState && request.viewState !== "retry" && <View testID="browser-control-loading" pointerEvents="none" style={styles.loading}>
+        <ActivityIndicator size="small" color={theme.colors.controlAccent} /><Text style={[text, { fontSize: 12 }]}>{request.viewState === "reconnecting" ? "再接続中…" : "読み込み中…"}</Text>
+      </View>}
+      {request.viewState === "retry" && <View style={styles.loading}>{button("再接続", () => { void controller.command(request.requestId, "start"); })}</View>}
       {ready && <View testID="browser-control-cursor" pointerEvents="none" accessible={false}
         style={{ position: "absolute", left: imageLeft + cursor.x * fittedWidth * zoom.scale, top: imageTop + cursor.y * fittedHeight * zoom.scale }}>
         <Svg width={20} height={26} viewBox="0 0 20 26"><Path d="M1 1 L1 20 L6 16 L10 24 L14 22 L10 14 L17 14 Z" fill="white" stroke="black" strokeWidth={1.5} strokeLinejoin="round" /></Svg>
@@ -283,7 +301,7 @@ export function BrowserControlCard({ request }: { request: BrowserControlRequest
   return <View testID={`browser-control-${request.requestId}`} style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.borderStrong }]}>
     <Text style={[styles.title, text]}>ブラウザを操作 · {formatMessageTimestampLabel(request.createdAt)}</Text>
     <Text style={text}>{request.origin}</Text><Text style={text}>{request.label}</Text>
-    {request.inputStatusUnknown && <Text style={text}>接続が切れました。前の操作結果を確認してから再開してください。</Text>}
+    {request.inputStatusUnknown && !request.viewState && <Text style={text}>直前の操作が反映されたか確認してください。</Text>}
     {request.status === "pending" && !opened && <>
       <Text style={text}>画面と入力はAIへの回答・会話履歴に送信しません。</Text>
       <View style={styles.actions}>{button("キャンセル", () => { void controller.command(request.requestId, "cancel"); })}
@@ -307,5 +325,6 @@ const styles = StyleSheet.create({ card: { padding: 16, gap: 12, borderRadius: 1
   title: { fontSize: 15, fontWeight: "700" }, keyboard: { position: "absolute", width: 1, height: 1, opacity: 0.01 },
   screen: { width: "100%", borderWidth: 1, justifyContent: "center", alignItems: "center", overflow: "hidden" },
   fullscreenRoot: { flex: 1 }, fullscreenBody: { flex: 1, padding: 12, gap: 12 }, fullscreenViewport: { flex: 1, minHeight: 0 },
+  loading: { position: "absolute", right: 8, top: 8, flexDirection: "row", alignItems: "center", gap: 6, borderRadius: 8, padding: 6, backgroundColor: "rgba(128,128,128,0.85)" },
   button: { paddingVertical: 8, paddingHorizontal: 6 },
   actions: { flexDirection: "row", justifyContent: "flex-end", gap: 12, flexWrap: "wrap" } });

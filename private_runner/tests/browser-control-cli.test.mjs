@@ -76,3 +76,24 @@ test("explicit replace and cancel carry only the current context and fixed panel
     ["cancel", "--context", "ctx_current", "--request", id, "--value", "PRIVATE"], ["replace", "--context", "ctx_current"]]) await assert.rejects(run(...args));
   assert.equal(bodies.length, 2);
 });
+
+test("extension discovery returns bounded origin-filtered IDs and requests the same explicit page without exposing payload extras", async (t) => {
+  const browserId = "ca06417e-159e-4929-a97d-17ca1c189e01"; let calls = 0;
+  const run = await fixture(t, (req, res, body) => {
+    calls++;
+    if (calls === 1) {
+      assert.equal(req.url, "/browser-control/targets?origin=https%3A%2F%2Fexample.com");
+      res.end(JSON.stringify({ browserId, targets: [{ targetId: "PAGE", tabId: 12, origin: "https://example.com", url: "PRIVATE", title: "PRIVATE" }], private: "PRIVATE" }));
+    } else if (calls === 2) {
+      assert.deepEqual(body.target, { browserId, targetId: "PAGE", origin: "https://example.com", label: "Continue" });
+      res.end(JSON.stringify({ requestId: body.requestId, status: "pending" }));
+    } else { res.statusCode = 400; res.end(JSON.stringify({ status: "browser_extension_not_connected", private: "PRIVATE" })); }
+  });
+  const discovery = await run("discover", "--origin", "https://example.com");
+  assert.deepEqual(JSON.parse(discovery.stdout), { browserId, targets: [{ targetId: "PAGE", tabId: 12, origin: "https://example.com" }] });
+  const requested = await run("request", "--context", "ctx_current", "--browser-id", browserId, "--target-id", "PAGE", "--origin", "https://example.com", "--label", "Continue");
+  assert.equal((discovery.stdout + requested.stdout).includes("PRIVATE"), false);
+  await assert.rejects(run("discover", "--origin", "https://example.com"), (error) => error.stderr.includes("browser_extension_not_connected") && !error.stderr.includes("PRIVATE"));
+  for (const args of [["request", "--context", "ctx_current", "--browser-id", browserId, "--origin", "https://example.com", "--label", "Continue"], ["discover", "--origin", "https://example.com", "--value", "PRIVATE"]]) await assert.rejects(run(...args));
+  assert.equal(calls, 3);
+});
