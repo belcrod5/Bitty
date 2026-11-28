@@ -175,12 +175,10 @@ export function BrowserControlCard({ request }: { request: BrowserControlRequest
           y: Math.max(0, Math.min(1, cursorRef.current.y + (p.localY - previous.localY) / (g.fittedHeight * view.scale))) };
         updateCursor(next);
         current.current.send({ type: "move", ...next });
-        // Keep the cursor in view; two-finger movement remains available for the website's scrollbars.
-        const left = g.fittedX + view.x, top = g.fittedY + view.y;
-        const x = left + next.x * g.fittedWidth * view.scale, y = top + next.y * g.fittedHeight * view.scale;
-        const marginX = Math.min(24, g.width / 4), marginY = Math.min(24, g.height / 4);
-        updateZoom(clampViewZoom(g, view.scale, left + Math.max(marginX - x, Math.min(0, g.width - marginX - x)),
-          top + Math.max(marginY - y, Math.min(0, g.height - marginY - y))));
+        // Pan immediately around the cursor when zoomed, stopping at the page boundaries.
+        if (view.scale > 1) updateZoom(clampViewZoom(g, view.scale,
+          g.width / 2 - next.x * g.fittedWidth * view.scale,
+          g.height / 2 - next.y * g.fittedHeight * view.scale));
       }
       else {
         const translation = Math.hypot(p.localX - previous.startX, p.localY - previous.startY);

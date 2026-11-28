@@ -155,6 +155,7 @@ test("ordinary finger motion moves the cursor without pressing a mouse button", 
   await f.touch(TouchEventType.TOUCHES_UP, [finger(0, 50, 55)], undefined, 0); await f.state("pan", State.END, State.ACTIVE); await f.click();
   expect(f.controller.input.mock.calls).toEqual([["one", { type: "move", x: 0.65, y: 0.6 }, 1]]);
   expect(StyleSheet.flatten(f.view.getByTestId("browser-control-cursor").props.style)).toMatchObject({ left: 130, top: 90 });
+  expect(StyleSheet.flatten(f.view.getByLabelText("ブラウザの画面").props.style)).toMatchObject({ width: 200, height: 150, left: 0, top: 0 });
   expect(StyleSheet.flatten(f.view.getByTestId("browser-control-keyboard").props.style)).toMatchObject({ left: 100, top: 75 });
   await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 150, 120)]); await f.click(true, 150, 120);
   expect(f.controller.input.mock.calls.slice(-2)).toEqual([["one", { type: "down", x: 0.65, y: 0.6 }, 1], ["one", { type: "up", x: 0.65, y: 0.6 }, 1]]);
@@ -327,7 +328,23 @@ test("an off-center pinch keeps its target and moves an otherwise hidden cursor 
   await f.view.unmount();
 });
 
-test("relative pointer movement follows both zoomed edges while horizontal page scrolling remains a wheel", async () => {
+test("small pointer movements immediately pan the zoomed view around its center", async () => {
+  const f = await touchFixture();
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75), finger(1, 150, 75)]);
+  await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 0, 75), finger(1, 200, 75)]);
+  await f.touch(TouchEventType.TOUCHES_UP, [finger(0, 0, 75), finger(1, 200, 75)], undefined, 0); await f.state("pan", State.END, State.ACTIVE);
+  await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 40)]);
+  await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 60, 55)]);
+  const image = StyleSheet.flatten(f.view.getByLabelText("ブラウザの画面").props.style);
+  const cursor = StyleSheet.flatten(f.view.getByTestId("browser-control-cursor").props.style);
+  expect(image.left).toBeCloseTo(-110); expect(image.top).toBeCloseTo(-90);
+  expect(cursor.left).toBeCloseTo(100); expect(cursor.top).toBeCloseTo(75);
+  expect(f.controller.input.mock.calls).toEqual([["one", { type: "move", x: 0.525, y: 0.55 }, 1]]);
+  expect(f.controller.watch).toHaveBeenCalledTimes(1); expect(f.controller.command).toHaveBeenCalledTimes(1);
+  await f.view.unmount();
+});
+
+test("center-follow stops at page boundaries while horizontal page scrolling remains a wheel", async () => {
   const f = await touchFixture();
   await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75), finger(1, 150, 75)]);
   await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 0, 75), finger(1, 200, 75)]);
@@ -336,15 +353,15 @@ test("relative pointer movement follows both zoomed edges while horizontal page 
   await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 150, 140)]);
   expect(f.controller.input.mock.calls[0][1]).toMatchObject({ type: "move", x: 0.75 });
   let image = StyleSheet.flatten(f.view.getByLabelText("ブラウザの画面").props.style);
-  expect(image.left).toBeCloseTo(-124); expect(image.top).toBeCloseTo(-124);
+  expect(image.left).toBeCloseTo(-200); expect(image.top).toBeCloseTo(-150);
   const cursor = StyleSheet.flatten(f.view.getByTestId("browser-control-cursor").props.style);
-  expect(cursor.left).toBeCloseTo(176); expect(cursor.top).toBeCloseTo(126);
+  expect(cursor.left).toBeCloseTo(100); expect(cursor.top).toBeCloseTo(100);
   await f.touch(TouchEventType.TOUCHES_UP, [finger(0, 150, 140)], undefined, 0); await f.state("pan", State.END, State.ACTIVE);
   await f.touch(TouchEventType.TOUCHES_DOWN, [finger(0, 50, 75), finger(1, 150, 75)]);
   await f.touch(TouchEventType.TOUCHES_MOVE, [finger(0, 25, 75), finger(1, 125, 75)]);
   expect(f.controller.input.mock.calls[1][1]).toMatchObject({ type: "scroll", x: 0.75, deltaX: 50, deltaY: 0 });
   image = StyleSheet.flatten(f.view.getByLabelText("ブラウザの画面").props.style);
-  expect(image.left).toBeCloseTo(-124); expect(image.top).toBeCloseTo(-124);
+  expect(image.left).toBeCloseTo(-200); expect(image.top).toBeCloseTo(-150);
   expect(f.controller.watch).toHaveBeenCalledTimes(1); expect(f.controller.command).toHaveBeenCalledTimes(1);
   await f.view.unmount();
 });
