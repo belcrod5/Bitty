@@ -1,11 +1,11 @@
 ---
-name: bitty-browser-input
-description: Hand a local Chromium browser page to the user in Bitty chat for private typing and direct page interaction, without passing screen images or user actions through the AI conversation.
+name: bitty-browser-control
+description: Let users remotely operate an existing local Chromium page from a Bitty chat panel by clicking, scrolling, dragging and typing, without exposing screen images or user input to the AI.
 ---
 
-# Private browser control
+# Remote browser control
 
-When a browser task needs private input or a complex website interaction, let the user control the actual page from a card in the originating Bitty chat. Never ask for a private value through ordinary chat or request_user_input.
+Use this skill when the user wants to operate a browser page from Bitty chat, or when an agent browser task needs a manual step. The user can click, scroll, drag and type on the actual page. Private input is one use case; never ask for a private value through ordinary chat or request_user_input.
 
 The existing browser must expose a local Chromium CDP **page** WebSocket. A browser-tool tab ID alone is insufficient. External CUA/in-app browsers without a page connection are unsupported. Do not switch browser/profile to bypass this limitation.
 
@@ -14,16 +14,16 @@ The existing browser must expose a local Chromium CDP **page** WebSocket. A brow
 3. Tell the user to tap 「ブラウザを開く」 once and operate the browser there. The command returns pending immediately. End the AI turn; do not wait, poll, or automatically resume.
 
 ```sh
-node <skill-directory>/scripts/bitty-browser-input.mjs request \
+node <skill-directory>/scripts/bitty-browser-control.mjs request \
   --context ctx_CURRENT_TURN \
   --cdp-url ws://127.0.0.1:9222/devtools/page/TAB_ID \
-  --origin https://example.com --label 'ログインをお願いします'
+  --origin https://example.com --label 'ブラウザを操作してください'
 ```
 
 When the user explicitly asks to redisplay or replace the panel, use `replace` with the same page target and the **current turn's** context. It cancels the previous panel only if it belongs to this authenticated device and conversation, then creates a new pending card. Validation failures leave the old panel available. The replacement retains the same page's last origin approved during manual control. Browser/page state and entered values remain in place; no browser connection is opened until the user taps Open. Ordinary `request` never cancels another card automatically.
 
 ```sh
-node <skill-directory>/scripts/bitty-browser-input.mjs replace \
+node <skill-directory>/scripts/bitty-browser-control.mjs replace \
   --context ctx_CURRENT_TURN \
   --cdp-url ws://127.0.0.1:9222/devtools/page/TAB_ID \
   --origin https://example.com --label 'ブラウザ操作の再表示'
@@ -32,7 +32,7 @@ node <skill-directory>/scripts/bitty-browser-input.mjs replace \
 When the user explicitly asks to close the panel, cancel that request using the current context:
 
 ```sh
-node <skill-directory>/scripts/bitty-browser-input.mjs cancel \
+node <skill-directory>/scripts/bitty-browser-control.mjs cancel \
   --context ctx_CURRENT_TURN --request UUID
 ```
 
@@ -49,7 +49,7 @@ Top-level navigation within the same page is allowed during manual control and t
 In a later user-authorized continuation, read only the fixed status:
 
 ```sh
-node <skill-directory>/scripts/bitty-browser-input.mjs status --request UUID
+node <skill-directory>/scripts/bitty-browser-control.mjs status --request UUID
 ```
 
 Continue the authorized task only after completed (the user pressed 操作を完了). This means manual control ended, not proof that a form/payment succeeded. Pending includes a paused card. Active/starting means the user still owns the page. Do not recreate or poll a pending card merely because the AI turn ended.

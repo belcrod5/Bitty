@@ -8,10 +8,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const execFile = promisify(callback);
-const script = fileURLToPath(new URL("../../skills/bitty-browser-input/scripts/bitty-browser-input.mjs", import.meta.url));
+const script = fileURLToPath(new URL("../../skills/bitty-browser-control/scripts/bitty-browser-control.mjs", import.meta.url));
 const id = "ed7136da-8e5a-492d-b7ef-7e8eab59188d";
 async function fixture(t, handle) {
-  const directory = await fs.realpath(await fs.mkdtemp("/tmp/bitty-input-cli-"));
+  const directory = await fs.realpath(await fs.mkdtemp("/tmp/bitty-control-cli-"));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const tokenPath = path.join(directory, "token"); await fs.writeFile(tokenPath, "local-cli-test-token", { mode: 0o600 });
   const socketPath = path.join(directory, "runner.sock");
@@ -26,7 +26,7 @@ async function fixture(t, handle) {
     env: { ...process.env, BITTY_REPO_ROOT: directory, BITTY_RUNNER_TOKEN_FILE: tokenPath, RUNNER_CONTROL_SOCKET: socketPath, BITTY_RUNNER_URL: "https://must-not-use.example" } });
 }
 
-test("CLI requests a form using non-secret metadata and returns only status through Unix socket", async (t) => {
+test("CLI requests a browser panel using non-secret metadata and returns only status through Unix socket", async (t) => {
   let body; let posts = 0; let reads = 0;
   const run = await fixture(t, (req, res, input) => {
     if (req.method === "POST") { posts++; body = input; assert.equal(req.url, "/browser-control/requests"); }

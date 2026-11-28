@@ -4,7 +4,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { requestControl, resolveControlSocket } from "../../bitty-session-orchestrator/scripts/runner-control.mjs";
 
-const usage = "bitty-browser-input.mjs request|replace --context <ctx> --cdp-url <local page ws URL> --origin <origin> --label <label> | cancel --context <ctx> --request <UUID> | status --request <UUID>";
+const usage = "bitty-browser-control.mjs request|replace --context <ctx> --cdp-url <local page ws URL> --origin <origin> --label <label> | cancel --context <ctx> --request <UUID> | status --request <UUID>";
 async function root() {
   if (process.env.BITTY_REPO_ROOT) return path.resolve(process.env.BITTY_REPO_ROOT);
   for (let directory = process.cwd();; directory = path.dirname(directory)) {
@@ -39,7 +39,7 @@ async function main() {
       ...(body ? { body: JSON.stringify(body) } : {}), timeout: 10_000,
     });
     const result = await response.json();
-    if (!response.ok) throw new Error("Browser input request unavailable");
+    if (!response.ok) throw new Error("Browser control request unavailable");
     // Do not forward arbitrary server response fields to the model.
     if (result.requestId !== (body?.requestId || pathname.split("/").at(-1))
       || !["preparing", "pending", "starting", "active", "completed", "cancelled", "expired", "invalidated", "failed", "control_status_unknown", "not_found"].includes(result.status)) throw new Error("Invalid browser input status");
@@ -59,4 +59,4 @@ async function main() {
   });
   console.log(JSON.stringify(result));
 }
-main().catch(() => { console.error("Browser input unavailable. Use --help for usage; recover an issued request with status --request UUID."); process.exitCode = 1; });
+main().catch(() => { console.error("Browser control unavailable. Use --help for usage; recover an issued request with status --request UUID."); process.exitCode = 1; });

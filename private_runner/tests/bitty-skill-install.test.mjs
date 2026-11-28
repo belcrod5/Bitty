@@ -23,7 +23,7 @@ async function fixture(t, target = 'codex', skill = name) {
   await fs.mkdir(path.dirname(installer), { recursive: true });
   await fs.copyFile(script, installer);
   await fs.cp(path.join(repoRoot, 'skills', skill), source, { recursive: true });
-  if (skill === 'bitty-browser-input') await fs.cp(path.join(repoRoot, 'skills', name), path.join(checkout, 'skills', name), { recursive: true });
+  if (skill === 'bitty-browser-control') await fs.cp(path.join(repoRoot, 'skills', name), path.join(checkout, 'skills', name), { recursive: true });
   const root = path.join(home, `.${target}`, 'skills', skill);
   const run = async (...args) => {
     try { return { code: 0, ...await execFile(process.execPath, [installer, '--target', target, '--home', home, ...(skill !== name ? ['--skill', skill] : []), ...args]) }; }
@@ -50,13 +50,13 @@ for (const target of ['codex', 'claude']) test(`${target} dry-run writes nothing
   await assert.rejects(fs.stat(path.join(f.source, marker)), { code: 'ENOENT' });
 });
 
-for (const target of ['codex', 'claude']) test(`${target} browser input skill installs independently and resolves its shared control helper`, async t => {
-  const f = await fixture(t, target, 'bitty-browser-input');
+for (const target of ['codex', 'claude']) test(`${target} browser control skill installs independently and resolves its shared control helper`, async t => {
+  const f = await fixture(t, target, 'bitty-browser-control');
   assert.equal((await f.run('--apply')).code, 0);
   assert.equal((await fs.lstat(f.root)).isSymbolicLink(), true);
-  const result = await execFile(process.execPath, [path.join(f.root, 'scripts/bitty-browser-input.mjs'), '--help'], { cwd: f.home });
+  const result = await execFile(process.execPath, [path.join(f.root, 'scripts/bitty-browser-control.mjs'), '--help'], { cwd: f.home });
   assert.match(result.stdout, /--cdp-url/);
-  assert.deepEqual(await fs.readdir(path.dirname(f.root)), ['bitty-browser-input']);
+  assert.deepEqual(await fs.readdir(path.dirname(f.root)), ['bitty-browser-control']);
   assert.notEqual((await f.run('--skill', '../other')).code, 0);
 });
 
