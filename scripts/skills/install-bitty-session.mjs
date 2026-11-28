@@ -6,10 +6,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const skillNames = ['bitty-session-orchestrator', 'bitty-browser-input'];
+const skillNames = ['bitty-session-orchestrator', 'bitty-browser-control'];
 const marker = '.bitty-skill-install.json';
 const digest = value => createHash('sha256').update(value).digest('hex');
-const usage = 'node scripts/skills/install-bitty-session.mjs --target codex|claude [--skill bitty-session-orchestrator|bitty-browser-input] [--home <directory>] [--apply] [--adopt-reviewed <digest>]';
+const usage = 'node scripts/skills/install-bitty-session.mjs --target codex|claude [--skill bitty-session-orchestrator|bitty-browser-control] [--home <directory>] [--apply] [--adopt-reviewed <digest>]';
 
 async function filesAt(root, relative = '') {
   const files = Object.create(null);
@@ -65,7 +65,7 @@ async function main() {
   for (const rel of Object.keys(sourceFiles)) {
     const supported = name === 'bitty-session-orchestrator'
       ? ['scripts/bitty-session.mjs', 'scripts/runner-control.mjs'].includes(rel) || /^references\/[a-z-]+\.md$/.test(rel)
-      : rel === 'scripts/bitty-browser-input.mjs';
+      : rel === 'scripts/bitty-browser-control.mjs';
     if (!(rel === 'SKILL.md' || supported)) {
       throw new Error(`Unexpected source file: ${rel}`);
     }
