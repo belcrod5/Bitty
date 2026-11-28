@@ -65,6 +65,19 @@ test("rejects a WebSocket upgrade with a mismatched runner token", async () => {
   assert.equal(runnerWsServer.upgrades, 0);
 });
 
+test("browser extension route is available only on explicitly configured local authenticated listeners", async () => {
+  for (const [enabled, local, authenticated, expected] of [[false, true, true, false], [true, false, true, false], [true, true, false, false], [true, true, true, true]]) {
+    const server = new EventEmitter(), native = wsServerProbe(), runner = wsServerProbe();
+    installRunnerWebSocketUpgradeHandler({ server, runnerWsPath: "/runner-ws", runnerWsServer: runner,
+      ...(enabled ? { browserExtensionWsServer: native } : {}),
+      authenticate: async () => { if (!authenticated) throw new Error(); return { local }; },
+      authenticateBrowserExtension: async () => { if (!authenticated) throw new Error(); return { local }; }, appendDebug() {} });
+    const socket = socketProbe(); server.emit("upgrade", request("fixture", "/browser-extension"), socket, Buffer.alloc(0));
+    await new Promise((r) => setImmediate(r));
+    assert.equal(native.upgrades, expected ? 1 : 0); assert.equal(socket.destroyed, !expected); assert.equal(runner.upgrades, 0);
+  }
+});
+
 test("routes an authenticated WebSocket upgrade", async () => {
   const { server, runnerWsServer } = install("expected-token");
   const socket = socketProbe();

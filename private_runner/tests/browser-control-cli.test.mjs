@@ -1,5 +1,4 @@
 import test from "node:test";
-import { WebSocketServer } from "ws";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { promises as fs } from "node:fs";
@@ -14,8 +13,6 @@ const id = "ed7136da-8e5a-492d-b7ef-7e8eab59188d";
 async function fixture(t, handle) {
   const directory = await fs.realpath(await fs.mkdtemp("/tmp/bitty-control-cli-"));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
-  await fs.mkdir(path.join(directory, "private_runner"));
-  await fs.symlink(fileURLToPath(new URL("../src", import.meta.url)), path.join(directory, "private_runner/src"));
   const tokenPath = path.join(directory, "token"); await fs.writeFile(tokenPath, "local-cli-test-token", { mode: 0o600 });
   const socketPath = path.join(directory, "runner.sock");
   const server = createServer(async (req, res) => {
@@ -80,26 +77,23 @@ test("explicit replace and cancel carry only the current context and fixed panel
   assert.equal(bodies.length, 2);
 });
 
-
-test("CLI uses origin-filtered discovery and resolves browser endpoints locally without printing capabilities", async (t) => {
-  const directory = await fs.realpath(await fs.mkdtemp("/tmp/bitty-control-discovery-cli-"));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
-  const server = new WebSocketServer({ port: 0, host: "127.0.0.1" }); await new Promise((r) => server.once("listening", r));
-  t.after(() => { for (const socket of server.clients) socket.terminate(); server.close(); });
-  let connections = 0, body;
-  server.on("connection", (socket) => {
-    connections++; socket.once("message", (raw) => {
-      assert.equal(JSON.parse(String(raw)).method, "Target.getTargets");
-      socket.send(JSON.stringify({ id: 1, result: { targetInfos: [{ type: "page", targetId: "PAGE", url: "https://example.com/private?SECRET", title: "SECRET" }] } }));
-    });
+test("extension discovery returns bounded origin-filtered IDs and requests the same explicit page without exposing payload extras", async (t) => {
+  const browserId = "ca06417e-159e-4929-a97d-17ca1c189e01"; let calls = 0;
+  const run = await fixture(t, (req, res, body) => {
+    calls++;
+    if (calls === 1) {
+      assert.equal(req.url, "/browser-control/targets?origin=https%3A%2F%2Fexample.com");
+      res.end(JSON.stringify({ browserId, targets: [{ targetId: "PAGE", tabId: 12, origin: "https://example.com", url: "PRIVATE", title: "PRIVATE" }], private: "PRIVATE" }));
+    } else if (calls === 2) {
+      assert.deepEqual(body.target, { browserId, targetId: "PAGE", origin: "https://example.com", label: "Continue" });
+      res.end(JSON.stringify({ requestId: body.requestId, status: "pending" }));
+    } else { res.statusCode = 400; res.end(JSON.stringify({ status: "browser_extension_not_connected", private: "PRIVATE" })); }
   });
-  await fs.writeFile(path.join(directory, "DevToolsActivePort"), `${server.address().port}\n/devtools/browser/PRIVATE_CAPABILITY\n`);
-  const run = await fixture(t, (req, res, input) => { body = input; res.end(JSON.stringify({ requestId: input.requestId, status: "pending" })); });
-  const found = await run("discover", "--user-data-dir", directory, "--origin", "https://example.com");
-  assert.deepEqual(JSON.parse(found.stdout), { targets: [{ targetId: "PAGE", origin: "https://example.com" }] });
-  const result = await run("request", "--context", "ctx_current", "--user-data-dir", directory, "--target-id", "PAGE", "--origin", "https://example.com", "--label", "Control");
-  assert.equal(body.target.targetId, "PAGE"); assert.equal(body.target.cdpUrl, `ws://127.0.0.1:${server.address().port}/devtools/browser/PRIVATE_CAPABILITY`);
-  assert.equal(connections, 1); assert.equal((found.stdout + result.stdout).includes("PRIVATE"), false); assert.equal(found.stdout.includes("SECRET"), false);
-  await assert.rejects(run("discover", "--user-data-dir", path.join(directory, "missing"), "--origin", "https://example.com"), (error) => error.stderr.includes("chrome_debugging_not_enabled") && !error.stderr.includes(directory));
-  for (const args of [["--user-data-dir", directory], ["--user-data-dir", directory, "--target-id", "PAGE", "--cdp-url", "ws://127.0.0.1:9222/devtools/page/P"]]) await assert.rejects(run("request", "--context", "ctx_current", "--origin", "https://example.com", "--label", "Control", ...args));
+  const discovery = await run("discover", "--origin", "https://example.com");
+  assert.deepEqual(JSON.parse(discovery.stdout), { browserId, targets: [{ targetId: "PAGE", tabId: 12, origin: "https://example.com" }] });
+  const requested = await run("request", "--context", "ctx_current", "--browser-id", browserId, "--target-id", "PAGE", "--origin", "https://example.com", "--label", "Continue");
+  assert.equal((discovery.stdout + requested.stdout).includes("PRIVATE"), false);
+  await assert.rejects(run("discover", "--origin", "https://example.com"), (error) => error.stderr.includes("browser_extension_not_connected") && !error.stderr.includes("PRIVATE"));
+  for (const args of [["request", "--context", "ctx_current", "--browser-id", browserId, "--origin", "https://example.com", "--label", "Continue"], ["discover", "--origin", "https://example.com", "--value", "PRIVATE"]]) await assert.rejects(run(...args));
+  assert.equal(calls, 3);
 });

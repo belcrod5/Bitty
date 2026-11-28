@@ -4,18 +4,24 @@ import { randomUUID } from "node:crypto";
 const fail = () => new Error("browser_control_unavailable");
 export function validateBrowserControlTarget(input) {
   if (!input || typeof input !== "object" || Array.isArray(input)
-    || Object.keys(input).some((key) => !["cdpUrl", "targetId", "origin", "label"].includes(key))) throw fail();
-  const url = new URL(input.cdpUrl);
-  if (url.protocol !== "ws:" || !["127.0.0.1", "[::1]"].includes(url.hostname)
-    || !url.port || url.username || url.password || url.search || url.hash
-    || !/^\/devtools\/(page|browser)\/[A-Za-z0-9_-]+$/.test(url.pathname)) throw fail();
-  const browser = url.pathname.startsWith("/devtools/browser/");
-  if (browser ? typeof input.targetId !== "string" || !/^[A-Za-z0-9_-]{1,200}$/.test(input.targetId) : input.targetId !== undefined) throw fail();
+    || Object.keys(input).some((key) => !["cdpUrl", "browserId", "targetId", "origin", "label"].includes(key))) throw fail();
+  let connection;
+  if (input.browserId !== undefined) {
+    if (input.cdpUrl !== undefined || typeof input.browserId !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(input.browserId)
+      || typeof input.targetId !== "string" || !/^[A-Za-z0-9_-]{1,200}$/.test(input.targetId)) throw fail();
+    connection = { browserId: input.browserId, targetId: input.targetId };
+  } else {
+    const url = new URL(input.cdpUrl);
+    if (input.targetId !== undefined || url.protocol !== "ws:" || !["127.0.0.1", "[::1]"].includes(url.hostname)
+      || !url.port || url.username || url.password || url.search || url.hash
+      || !/^\/devtools\/page\/[A-Za-z0-9_-]+$/.test(url.pathname)) throw fail();
+    connection = { cdpUrl: url.href };
+  }
   const origin = new URL(input.origin);
   if (!["http:", "https:"].includes(origin.protocol) || origin.origin !== input.origin
     || typeof input.label !== "string" || !input.label || input.label.length > 120
     || /[\u0000-\u001f\u007f]/.test(input.label)) throw fail();
-  return { cdpUrl: url.href, ...(browser ? { targetId: input.targetId } : {}), origin: origin.origin, label: input.label };
+  return { ...connection, origin: origin.origin, label: input.label };
 }
 
 export function validBrowserControlInput(input) {
@@ -31,14 +37,15 @@ export function validBrowserControlInput(input) {
     : keys === "type,x,y";
 }
 
-// A selected-page CDP session (direct or attached through Chrome's browser endpoint). Only a fixed isolated focus observer reads editable metadata; never values.
+// A page-only CDP session. Only a fixed isolated focus observer reads editable metadata; never values.
 // No caller-supplied JS, console/network capture, or disk recording.
 // Images go directly to the bound user device and never enter the agent's status response.
-export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, connectTimeoutMs = 60_000, frameTimeoutMs = 10_000, onInvalidated, onFrame, onOrigin, onViewInvalidated, onDiagnostic, onFocus } = {}) {
+export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, frameTimeoutMs = 10_000, connectExtension, onInvalidated, onFrame, onOrigin, onViewInvalidated, onDiagnostic, onFocus } = {}) {
   target = validateBrowserControlTarget(target);
-  const socket = new WebSocket(target.cdpUrl, { followRedirects: false, maxPayload: 3 * 1024 * 1024 });
+  const socket = target.browserId ? connectExtension?.(target) : new WebSocket(target.cdpUrl, { followRedirects: false, maxPayload: 3 * 1024 * 1024 });
+  if (!socket) throw fail();
   const pending = new Map();
-  let sequence = 0, frameSequence = 0, rootSession;
+  let sequence = 0, frameSequence = 0;
   let stopped = false, active = false, mouseDown = false, emulatingFocus = false, rootId;
   let currentOrigin = target.origin;
   let pointer = { x: 0, y: 0 };
@@ -117,17 +124,15 @@ export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, 
     clearTimeout(frameTimer); awaitingFrame = null; displayedFrames.clear(); focusLost();
     // Release held buttons even when the view disappears halfway through a drag.
     if (socket.readyState === WebSocket.OPEN) {
-      if (!target.targetId || rootSession) {
-        releaseMouse();
-        for (const { contextId, sessionId } of focusContexts.values()) socket.send(JSON.stringify({ id: ++sequence, method: "Runtime.evaluate", params: { contextId, expression: "globalThis.__bittyFocusCleanup?.()", silent: true }, ...(sessionId ? { sessionId } : {}) }));
-        for (const [sessionId, identifier] of focusScripts) {
-          if (identifier) socket.send(JSON.stringify({ id: ++sequence, method: "Page.removeScriptToEvaluateOnNewDocument", params: { identifier }, ...(sessionId ? { sessionId } : {}) }));
-          socket.send(JSON.stringify({ id: ++sequence, method: "Runtime.removeBinding", params: { name: focusBinding }, ...(sessionId ? { sessionId } : {}) }));
-        }
-        if (onFocus) socket.send(JSON.stringify({ id: ++sequence, method: "Target.setAutoAttach", params: { ...attachIframes, autoAttach: false }, ...(rootSession ? { sessionId: rootSession } : {}) }));
-        if (emulatingFocus) { emulatingFocus = false; socket.send(JSON.stringify({ id: ++sequence, method: "Emulation.setFocusEmulationEnabled", params: { enabled: false }, ...(rootSession ? { sessionId: rootSession } : {}) })); }
-        socket.send(JSON.stringify({ id: ++sequence, method: "Page.stopScreencast", ...(rootSession ? { sessionId: rootSession } : {}) }));
+      releaseMouse();
+      for (const { contextId, sessionId } of focusContexts.values()) socket.send(JSON.stringify({ id: ++sequence, method: "Runtime.evaluate", params: { contextId, expression: "globalThis.__bittyFocusCleanup?.()", silent: true }, ...(sessionId ? { sessionId } : {}) }));
+      for (const [sessionId, identifier] of focusScripts) {
+        if (identifier) socket.send(JSON.stringify({ id: ++sequence, method: "Page.removeScriptToEvaluateOnNewDocument", params: { identifier }, ...(sessionId ? { sessionId } : {}) }));
+        socket.send(JSON.stringify({ id: ++sequence, method: "Runtime.removeBinding", params: { name: focusBinding }, ...(sessionId ? { sessionId } : {}) }));
       }
+      if (onFocus) socket.send(JSON.stringify({ id: ++sequence, method: "Target.setAutoAttach", params: { ...attachIframes, autoAttach: false } }));
+      if (emulatingFocus) { emulatingFocus = false; socket.send(JSON.stringify({ id: ++sequence, method: "Emulation.setFocusEmulationEnabled", params: { enabled: false } })); }
+      socket.send(JSON.stringify({ id: ++sequence, method: "Page.stopScreencast" }));
       socket.close();
       const timer = setTimeout(() => socket.terminate(), 500); timer.unref?.();
     } else socket.terminate();
@@ -141,11 +146,11 @@ export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, 
   signal?.addEventListener("abort", abort, { once: true });
   socket.on("error", () => close(true));
   socket.on("close", () => close(true));
-  const call = (method, params = {}, sessionId = rootSession) => new Promise((resolve, reject) => {
+  const call = (method, params = {}, sessionId) => new Promise((resolve, reject) => {
     if (stopped || signal?.aborted || socket.readyState !== WebSocket.OPEN) return reject(fail());
     const id = ++sequence;
     const timer = setTimeout(() => {
-      if (sessionId && sessionId !== rootSession) forgetFocusSession(sessionId);
+      if (sessionId) forgetFocusSession(sessionId);
       else { reject(fail()); close(true, "command_timeout"); }
     }, timeoutMs);
     pending.set(id, { resolve, reject, timer, sessionId });
@@ -154,7 +159,7 @@ export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, 
   function releaseMouse() {
     if (!mouseDown) return;
     mouseDown = false;
-    if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ id: ++sequence, method: "Input.dispatchMouseEvent", params: { type: "mouseReleased", ...pointer, button: "left", buttons: 0, clickCount: 0 }, ...(rootSession ? { sessionId: rootSession } : {}) }));
+    if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ id: ++sequence, method: "Input.dispatchMouseEvent", params: { type: "mouseReleased", ...pointer, button: "left", buttons: 0, clickCount: 0 } }));
   }
   function resetFrames() {
     generation++; releaseMouse(); displayedFrames.clear(); lastViewport = null; receivedFrame = false; clearTimeout(frameTimer);
@@ -177,8 +182,7 @@ export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, 
       return;
     }
     const sessionId = message.sessionId;
-    if (message.method === "Target.detachedFromTarget" && !sessionId && rootSession && message.params?.sessionId === rootSession) { close(true); return; }
-    if (sessionId !== rootSession && !focusSessions.has(sessionId)) return;
+    if (sessionId && !focusSessions.has(sessionId)) return;
     if (message.method === "Target.attachedToTarget" && active && onFocus && message.params?.targetInfo?.type === "iframe") {
       const childSession = message.params.sessionId;
       if (typeof childSession !== "string" || focusSessions.has(childSession)) return;
@@ -220,7 +224,7 @@ export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, 
       return;
     }
     if (message.method === "Page.frameAttached" && active && onFocus) void observeFrame(message.params.frameId, sessionId).catch(() => {});
-    if (sessionId !== rootSession) return;
+    if (sessionId) return;
     if (message.method === "Page.frameStartedNavigating" && message.params?.frameId === rootId) {
       resetFrames(); focusLost(); navigating = true; onViewInvalidated?.();
     }
@@ -278,18 +282,11 @@ export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, 
   try {
     await new Promise((resolve, reject) => {
       if (signal?.aborted) { close(); reject(fail()); return; }
-      const timer = setTimeout(() => { close(); reject(fail()); }, target.targetId ? connectTimeoutMs : timeoutMs);
+      const timer = setTimeout(() => { close(); reject(fail()); }, timeoutMs);
       const finish = (error) => { clearTimeout(timer); socket.off("open", opened); socket.off("close", closed); error ? reject(fail()) : resolve(); };
       const opened = () => finish(); const closed = () => finish(true);
       socket.once("open", opened); socket.once("close", closed);
     });
-    if (target.targetId) {
-      const { targetInfo } = await call("Target.getTargetInfo", { targetId: target.targetId });
-      if (targetInfo?.targetId !== target.targetId || targetInfo.type !== "page" || originOf(targetInfo.url) !== target.origin) throw fail();
-      const { sessionId } = await call("Target.attachToTarget", { targetId: target.targetId, flatten: true });
-      if (typeof sessionId !== "string" || !sessionId || sessionId.length > 200) throw fail();
-      rootSession = sessionId;
-    }
     await call("Page.enable");
     const { frameTree } = await call("Page.getFrameTree");
     rootId = frameTree?.frame?.id;
@@ -312,7 +309,7 @@ export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, 
         await call("Page.bringToFront");
         if (!active || stopped || startGeneration !== controlGeneration) return;
         focusEpoch++; focusLost();
-        await observeFocus(frameTree, rootSession);
+        await observeFocus(frameTree);
         if (!active || stopped || startGeneration !== controlGeneration) return;
         await call("Page.startScreencast", { format: "jpeg", quality: 65, maxWidth: 1280, maxHeight: 960, everyNthFrame: 1 });
         if (!active || stopped || startGeneration !== controlGeneration) return;

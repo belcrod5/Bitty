@@ -32,7 +32,6 @@ test("cards are asynchronous; only the mounted viewer receives private frames an
   expect(request).not.toHaveBeenCalled();
   const frames = jest.fn(); let stop: (() => void) | null = null;
   await act(async () => { stop = view.result.current.watch("one", frames); await view.result.current.command("one", "start"); });
-  expect(request).toHaveBeenLastCalledWith(expect.objectContaining({ payload: expect.objectContaining({ action: "start" }) }), { timeoutMs: 75_000 });
   await act(async () => emit("frame", { requestId: "one", frameId: 1, data: "PRIVATE_IMAGE", width: 800, height: 600 }));
   expect(frames).toHaveBeenCalledWith({ frameId: 1, data: "PRIVATE_IMAGE", width: 800, height: 600 });
   expect(JSON.stringify(view.result.current.requests)).not.toContain("PRIVATE");

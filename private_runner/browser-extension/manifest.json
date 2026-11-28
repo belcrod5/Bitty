@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Bitty Browser Control",
+  "version": "1.0.0",
+  "description": "Operate this Chrome profile privately from Bitty.",
+  "permissions": [
+    "debugger",
+    "nativeMessaging"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvqr3b8AzSpjH1yj/XVPx4wtOa8xl0noeUbhGZiXPuyNTYAg6pA4LjC11vpDRnkLxz7f738awzgCwMDGV9wpoTV8qNM1rFzUk+QZxlyNXJwsbN7X7irQu+JJ6B0gk5baRXn4glHlhmUSMMHgZz4qpMNrHgkyX5vnxb5tJ63nHiWDQECa9hyTuq1vKGEYPi6EW43owQgJO++qptdDPYEb1je6QPD+x0w+id8MadYH+GPP+tI0OGDW96wAl0ke63YMK2ZGhadWkhlASZtahVglFirrSHnVeWlE185GAV8jCgH0x1QqdKVOhVZSN6labLLEQ2xML6SYhzCGvkOZSnGKCHwIDAQAB",
+  "minimum_chrome_version": "125"
+}

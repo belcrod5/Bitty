@@ -198,7 +198,7 @@ test("unexpected connection errors are fixed and intentional close does not inva
   }
 });
 
-for (const transport of ["page", "browser"]) for (const headed of process.platform === "darwin" ? [false, true] : [false]) test(`isolated ${transport} ${headed ? "minimized headed" : "DPR 2 headless"} Chromium controls custom panel/slider/checkbox/confirmation and Japanese input`, { skip: !process.env.BITTY_TEST_CHROMIUM_EXECUTABLE, timeout: 45_000 }, async (t) => {
+for (const headed of process.platform === "darwin" ? [false, true] : [false]) test(`isolated ${headed ? "minimized headed" : "DPR 2 headless"} Chromium controls custom panel/slider/checkbox/confirmation and Japanese input`, { skip: !process.env.BITTY_TEST_CHROMIUM_EXECUTABLE, timeout: 45_000 }, async (t) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-browser-control-test-"));
   const html = `<!doctype html><meta charset="utf-8"><style>body{margin:0}button,input{position:absolute}#open{left:40px;top:40px;width:120px;height:40px}#panel{display:none;position:absolute;left:40px;top:100px;width:400px;height:260px;background:#ddd}#slider{position:absolute;left:20px;top:20px;width:300px;height:40px;background:#aaa}#terms{left:20px;top:90px;width:30px;height:30px}#confirm{left:120px;top:90px;width:120px;height:40px}#text{left:40px;top:400px;width:300px;height:40px}</style><button id="open">Open panel</button><div id="panel"><div id="slider"></div><input id="terms" type="checkbox"><button id="confirm">Confirm</button></div><input id="text"><script>window.chosen=0;window.confirmed=false;const panel=document.getElementById('panel'),slider=document.getElementById('slider');document.getElementById('open').onclick=()=>panel.style.display='block';slider.onpointerdown=e=>{slider.setPointerCapture(e.pointerId);window.chosen=e.offsetX};slider.onpointermove=e=>{if(e.buttons)window.chosen=e.offsetX};document.getElementById('confirm').onclick=()=>window.confirmed=document.getElementById('terms').checked&&window.chosen>200;window.childInputValid=false;window.onmessage=e=>{if(e.data?.valid===true)window.childInputValid=true};</script><iframe style="position:absolute;left:300px;top:300px;width:230px;height:100px;border:0" src="__CHILD_ORIGIN__/child"></iframe>`;
   const server = createServer((req, res) => {
@@ -227,8 +227,7 @@ for (const transport of ["page", "browser"]) for (const headed of process.platfo
     await new Promise((resolve) => setTimeout(resolve, 3500));
   } else await call("Emulation.setDeviceMetricsOverride", { width: 800, height: 600, deviceScaleFactor: 2, mobile: false });
   let currentFrame, browser, frameCount = 0; const focuses = [];
-  const endpoint = (await fs.readFile(path.join(directory, "DevToolsActivePort"), "utf8")).trim().split("\n")[1];
-  browser = await prepareBrowserControl({ ...target, cdpUrl: transport === "page" ? tab.webSocketDebuggerUrl : `ws://127.0.0.1:${port}${endpoint}`, ...(transport === "browser" ? { targetId: tab.id } : {}), origin }, { onFrame: (frame) => { currentFrame = frame; frameCount++; void browser.ack(frame.frameId); }, onFocus: (focus) => focuses.push(focus) }); t.after(browser.close);
+  browser = await prepareBrowserControl({ ...target, cdpUrl: tab.webSocketDebuggerUrl, origin }, { onFrame: (frame) => { currentFrame = frame; frameCount++; void browser.ack(frame.frameId); }, onFocus: (focus) => focuses.push(focus) }); t.after(browser.close);
   await browser.start(); while (!currentFrame && Date.now() < deadline) await tick(); assert.ok(currentFrame);
   if (headed) {
     socket = new WebSocket(tab.webSocketDebuggerUrl); sockets.push(socket); await new Promise((r, j) => { socket.once("open", r); socket.once("error", j); }); socket.on("message", receive);
@@ -361,90 +360,4 @@ for (const ending of ["timeout", "detach"]) test(`a child observer ${ending} can
   assert.equal(focuses.at(-1).editable, false); assert.deepEqual(failures, []);
   f.emit(frameMessage(2)); await tick(); assert.equal(frames.length, 2);
   await browser.ack(frames[1].frameId); await browser.input({ type: "down", x: 0.2, y: 0.2 }, frames[1].frameId); await browser.input({ type: "up", x: 0.2, y: 0.2 }, frames[1].frameId);
-});
-
-test("browser endpoints require an explicit page ID and never accept page-only extra IDs", () => {
-  const browser = { ...target, cdpUrl: "ws://127.0.0.1:9222/devtools/browser/BROWSER", targetId: "TAB" };
-  assert.deepEqual(validateBrowserControlTarget(browser), browser);
-  for (const targetId of [undefined, "", "../TAB", "a".repeat(201), 3]) assert.throws(() => validateBrowserControlTarget({ ...browser, targetId }));
-  assert.throws(() => validateBrowserControlTarget({ ...target, targetId: "TAB" }));
-});
-
-test("browser transport binds only the selected page, routes root and iframe sessions, and cleans up that page", async (t) => {
-  const f = await peer(t, (m) => {
-    if (m.method === "Target.getTargetInfo") return { targetInfo: { targetId: "TAB", type: "page", url: target.origin + "/private?secret=hidden" } };
-    if (m.method === "Target.attachToTarget") return { sessionId: "root-session" };
-    if (m.method === "Page.createIsolatedWorld") return { executionContextId: 19 };
-  });
-  const frames = [], focuses = [], origins = [], reasons = [];
-  const browser = await prepareBrowserControl({ ...f.target, cdpUrl: f.target.cdpUrl.replace("/page/TAB", "/browser/BROWSER"), targetId: "TAB" },
-    { onFrame: (frame) => frames.push(frame), onFocus: (focus) => focuses.push(focus), onOrigin: (origin) => origins.push(origin), onInvalidated: (reason) => reasons.push(reason) });
-  t.after(browser.close); await browser.start();
-  assert.deepEqual(f.messages.slice(0, 2).map(({ method, params, sessionId }) => ({ method, params, sessionId })), [
-    { method: "Target.getTargetInfo", params: { targetId: "TAB" }, sessionId: undefined },
-    { method: "Target.attachToTarget", params: { targetId: "TAB", flatten: true }, sessionId: undefined },
-  ]);
-  f.emit({ ...frameMessage(), sessionId: "sibling" });
-  f.emit({ method: "Target.attachedToTarget", sessionId: "sibling", params: { sessionId: "foreign-child", targetInfo: { type: "iframe" } } });
-  f.emit({ method: "Page.frameNavigated", sessionId: "sibling", params: { frame: { id: "FRAME", url: "https://foreign.example" } } });
-  f.emit({ ...frameMessage(), sessionId: "root-session" }); await tick();
-  assert.equal(frames.length, 1); assert.deepEqual(origins, []);
-  f.emit({ method: "Target.attachedToTarget", sessionId: "root-session", params: { sessionId: "iframe-session", targetInfo: { type: "iframe" } } }); await tick();
-  assert.ok(f.messages.some((m) => m.method === "Runtime.addBinding" && m.sessionId === "iframe-session"));
-  assert.equal(f.messages.some((m) => m.sessionId === "foreign-child"), false);
-  const binding = f.messages.find((m) => m.method === "Runtime.addBinding" && m.sessionId === "iframe-session").params.name;
-  f.emit({ method: "Runtime.bindingCalled", sessionId: "iframe-session", params: { name: binding, executionContextId: 19, payload: JSON.stringify({ editable: true, multiline: false, kind: "text", revision: 1 }) } }); await tick();
-  assert.equal(focuses.at(-1).editable, true);
-  await browser.ack(frames[0].frameId); await browser.input({ type: "down", x: 0.4, y: 0.5 }, frames[0].frameId);
-  browser.close(); await tick();
-  for (const m of f.messages.filter((m) => !m.method.startsWith("Target.get") && m.method !== "Target.attachToTarget")) assert.ok(["root-session", "iframe-session"].includes(m.sessionId), m.method);
-  assert.ok(f.messages.some((m) => m.method === "Input.dispatchMouseEvent" && m.params.clickCount === 0 && m.sessionId === "root-session"));
-  assert.ok(f.messages.some((m) => m.method === "Emulation.setFocusEmulationEnabled" && !m.params.enabled && m.sessionId === "root-session"));
-  assert.ok(f.messages.some((m) => m.method === "Page.stopScreencast" && m.sessionId === "root-session"));
-  assert.deepEqual(reasons, []);
-});
-
-test("browser transport rejects missing, wrong-type or wrong-origin targets before page commands", async (t) => {
-  for (const targetInfo of [null, { targetId: "OTHER", type: "page", url: target.origin }, { targetId: "TAB", type: "iframe", url: target.origin }, { targetId: "TAB", type: "page", url: "https://other.example" }]) {
-    const f = await peer(t, (m) => m.method === "Target.getTargetInfo" ? { targetInfo } : undefined);
-    await assert.rejects(prepareBrowserControl({ ...f.target, cdpUrl: f.target.cdpUrl.replace("/page/TAB", "/browser/BROWSER"), targetId: "TAB" }));
-    await tick(); assert.equal(f.messages.length, 1);
-  }
-});
-
-test("browser page detach and root command timeout close without following another tab", async (t) => {
-  for (const mode of ["detach", "timeout"]) {
-    const reasons = [];
-    const f = await peer(t, (m) => {
-      if (m.method === "Target.getTargetInfo") return { targetInfo: { targetId: "TAB", type: "page", url: target.origin } };
-      if (m.method === "Target.attachToTarget") return { sessionId: "root-session" };
-      if (mode === "timeout" && m.method === "Emulation.setFocusEmulationEnabled" && m.params.enabled) return false;
-    });
-    const browser = await prepareBrowserControl({ ...f.target, cdpUrl: f.target.cdpUrl.replace("/page/TAB", "/browser/BROWSER"), targetId: "TAB" }, { timeoutMs: 30, onInvalidated: (reason) => reasons.push(reason) }); t.after(browser.close);
-    if (mode === "detach") f.emit({ method: "Target.detachedFromTarget", params: { sessionId: "root-session" } });
-    else await assert.rejects(browser.start());
-    await tick(); assert.deepEqual(reasons, [mode === "detach" ? "connection_closed" : "command_timeout"]);
-    assert.equal(f.messages.filter((m) => m.method === "Target.attachToTarget").length, 1);
-  }
-});
-
-test("Chrome permission can delay the browser WebSocket upgrade beyond ordinary command timeout", async (t) => {
-  const server = createServer(), ws = new WebSocketServer({ noServer: true });
-  const sockets = new Set(); server.on("connection", (socket) => { sockets.add(socket); socket.on("close", () => sockets.delete(socket)); });
-  server.on("upgrade", (req, socket, head) => setTimeout(() => { if (!socket.destroyed) ws.handleUpgrade(req, socket, head, (connection) => ws.emit("connection", connection)); }, 80));
-  ws.on("connection", (socket) => socket.on("message", (raw) => {
-    const m = JSON.parse(String(raw));
-    const result = m.method === "Target.getTargetInfo" ? { targetInfo: { targetId: "TAB", type: "page", url: target.origin } }
-      : m.method === "Target.attachToTarget" ? { sessionId: "root" }
-      : m.method === "Page.getFrameTree" ? { frameTree: { frame: { id: "FRAME", url: target.origin } } } : {};
-    socket.send(JSON.stringify({ id: m.id, ...(m.sessionId ? { sessionId: m.sessionId } : {}), result }));
-  }));
-  await new Promise((r) => server.listen(0, "127.0.0.1", r));
-  t.after(() => { for (const socket of sockets) socket.destroy(); ws.close(); server.close(); });
-  const browserTarget = { ...target, cdpUrl: `ws://127.0.0.1:${server.address().port}/devtools/browser/B`, targetId: "TAB" };
-  const browser = await prepareBrowserControl(browserTarget, { timeoutMs: 30, connectTimeoutMs: 300 }); browser.close();
-  const controller = new AbortController();
-  const preparing = prepareBrowserControl(browserTarget, { signal: controller.signal, timeoutMs: 30, connectTimeoutMs: 300 });
-  controller.abort(); await assert.rejects(preparing);
-  await assert.rejects(prepareBrowserControl(browserTarget, { timeoutMs: 30, connectTimeoutMs: 20 }));
 });
