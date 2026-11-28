@@ -57,3 +57,22 @@ test("status recovery is read-only; raw backend errors and invalid IDs cannot le
   await assert.rejects(run("request", "--value", "DO_NOT_ACCEPT_SECRETS"));
   assert.equal(requests, 3);
 });
+
+test("explicit replace and cancel carry only the current context and fixed panel metadata", async (t) => {
+  const bodies = [];
+  const run = await fixture(t, (req, res, body) => {
+    assert.equal(req.method, "POST"); bodies.push(body);
+    assert.equal(req.url, bodies.length === 1 ? "/browser-control/requests" : `/browser-control/requests/${id}/cancel`);
+    res.end(JSON.stringify({ requestId: body.requestId, status: bodies.length === 1 ? "pending" : "cancelled", inputStatusUnknown: true, extra: "PRIVATE" }));
+  });
+  const replaced = await run("replace", "--context", "ctx_current", "--cdp-url", "ws://127.0.0.1:9222/devtools/page/TAB", "--origin", "https://example.com", "--label", "Login");
+  assert.equal(bodies[0].replace, true);
+  assert.deepEqual(Object.keys(bodies[0]).sort(), ["context", "replace", "requestId", "target"]);
+  const cancelled = await run("cancel", "--context", "ctx_current", "--request", id);
+  assert.deepEqual(bodies[1], { requestId: id, context: "ctx_current" });
+  assert.deepEqual(JSON.parse(cancelled.stdout), { requestId: id, status: "cancelled", inputStatusUnknown: true });
+  assert.equal((replaced.stdout + cancelled.stdout).includes("PRIVATE"), false);
+  for (const args of [["cancel", "--request", id], ["cancel", "--context", "ctx_current", "--request", "../wrong"],
+    ["cancel", "--context", "ctx_current", "--request", id, "--value", "PRIVATE"], ["replace", "--context", "ctx_current"]]) await assert.rejects(run(...args));
+  assert.equal(bodies.length, 2);
+});

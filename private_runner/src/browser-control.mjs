@@ -11,6 +11,8 @@ export function createBrowserControlService({ appControl, sendEnvelope, prepare 
   const result = (entry) => ({ requestId: entry.id, status: entry.status, ...(entry.inputStatusUnknown ? { inputStatusUnknown: true } : {}) });
   const card = (entry) => ({ ...result(entry), target: entry.conversation, origin: entry.origin, label: entry.target.label, createdAt: entry.createdAt });
   const owns = (entry, auth) => auth?.local === false && auth.ownerSubjectId === entry.subjectId && auth.sessionId === entry.deviceSessionId && isSessionActive(entry.deviceSessionId);
+  const matchesContext = (entry, subjectId, context) => entry.subjectId === subjectId && entry.deviceSessionId === context.deviceSessionId
+    && JSON.stringify(entry.conversation) === JSON.stringify(context.origin.target);
   function diagnose(entry, phase, reason, run = entry.run) {
     try { log?.({ requestId: entry.id, phase, elapsedMs: Math.max(0, now() - (run?.startedAt ?? now())), ...(reason ? { reason } : {}),
       ...(terminal.has(phase) || phase === "interrupted" ? { framesSent: run?.framesSent || 0, renderAckCommands: run?.renderAckCommands || 0 } : {}) }); } catch {}
@@ -23,11 +25,13 @@ export function createBrowserControlService({ appControl, sendEnvelope, prepare 
     if (run && entry.status === "pending") { try { sendEnvelope(run.ws, { channel: "control", op: "browser.control.resolved", payload: { ...result(entry), controlId: run.id } }); } catch {} }
     return run;
   }
-  function finish(entry, status, reason) {
+  function finish(entry, status, reason, socket) {
     if (terminal.has(entry.status)) return;
     const run = entry.run;
+    if (status === "cancelled" && run?.queued > 0 && run.sequence > 0) entry.inputStatusUnknown = true;
     entry.status = status; entry.finishedAt = now(); diagnose(entry, status, reason, run); detach(entry);
-    try { if (run) sendEnvelope(run.ws, { channel: "control", op: "browser.control.resolved", payload: { ...result(entry), controlId: run.id } }); } catch {}
+    const sockets = new Set([socket, run?.ws, ...[...devices].filter(([, auth]) => owns(entry, auth)).map(([ws]) => ws)]);
+    for (const ws of sockets) { if (ws) { try { sendEnvelope(ws, { channel: "control", op: "browser.control.resolved", payload: result(entry) }); } catch {} } }
   }
   function send(entry, run, op, payload) {
     if (entry.run !== run) return false;
@@ -49,22 +53,26 @@ export function createBrowserControlService({ appControl, sendEnvelope, prepare 
   async function request(subjectId, body) {
     prune();
     if (!body || typeof body !== "object" || Array.isArray(body)
-      || Object.keys(body).some((key) => !["requestId", "context", "target"].includes(key))
+      || Object.keys(body).some((key) => !["requestId", "context", "target", "replace"].includes(key))
+      || body.replace !== undefined && body.replace !== true
       || !uuid.test(body.requestId) || typeof body.context !== "string" || !/^ctx_[a-f0-9-]{36}$/.test(body.context)) throw failure("invalid_request");
     const target = validateBrowserControlTarget(body.target);
     const pageUrl = new URL(target.cdpUrl), page = `${pageUrl.port}${pageUrl.pathname}`;
-    const canonical = JSON.stringify({ context: body.context, target });
+    const canonical = JSON.stringify({ context: body.context, target, ...(body.replace ? { replace: true } : {}) });
     const previous = entries.get(body.requestId);
     if (previous) {
       if (previous.subjectId !== subjectId || previous.canonical !== canonical) throw failure("request_conflict");
       return result(previous);
     }
-    if (entries.size >= 128 || [...entries.values()].filter((entry) => !terminal.has(entry.status)).length >= 8
-      || [...entries.values()].some((entry) => !terminal.has(entry.status) && entry.page === page)) throw failure("capacity_exceeded");
     const context = appControl.resolveBrowserContext(subjectId, body.context), conversation = context.origin.target;
     if (conversation.kind === "session" && !conversation.sessionRef.nativeSessionId) throw failure("session_unresolved");
+    const active = [...entries.values()].filter((entry) => !terminal.has(entry.status));
+    const replaced = active.find((entry) => entry.page === page);
+    if (replaced && body.replace && !matchesContext(replaced, subjectId, context)) throw failure("request_unavailable");
+    if (entries.size >= 128 || active.length - (replaced && body.replace ? 1 : 0) >= 8 || replaced && !body.replace) throw failure("capacity_exceeded");
+    if (replaced) finish(replaced, "cancelled", undefined, context.ws);
     const entry = { id: body.requestId, subjectId, deviceSessionId: context.deviceSessionId, canonical, page, conversation, target,
-      origin: target.origin, status: "pending", createdAt: new Date(now()).toISOString(), run: null, inputStatusUnknown: false };
+      origin: replaced?.origin ?? target.origin, status: "pending", createdAt: new Date(now()).toISOString(), run: null, inputStatusUnknown: replaced?.inputStatusUnknown === true };
     entries.set(entry.id, entry); diagnose(entry, "prepared");
     // Card metadata is independent of a live browser or socket. A reconnect sync recovers missed delivery.
     const sockets = new Set([context.ws, ...[...devices].filter(([, auth]) => owns(entry, auth)).map(([ws]) => ws)]);
@@ -74,6 +82,15 @@ export function createBrowserControlService({ appControl, sendEnvelope, prepare 
   function getResult(subjectId, id) {
     prune(); const entry = entries.get(id);
     return !entry || entry.subjectId !== subjectId ? { requestId: id, status: "not_found" } : result(entry);
+  }
+  function cancel(subjectId, body) {
+    prune();
+    if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some((key) => !["requestId", "context"].includes(key))
+      || !uuid.test(body.requestId) || typeof body.context !== "string" || !/^ctx_[a-f0-9-]{36}$/.test(body.context)) throw failure("invalid_request");
+    const context = appControl.resolveBrowserContext(subjectId, body.context), entry = entries.get(body.requestId);
+    if (!entry || !matchesContext(entry, subjectId, context)) throw failure("request_unavailable");
+    finish(entry, "cancelled", undefined, context.ws);
+    return result(entry);
   }
   async function start(entry, ws, controlId) {
     if (entry.run?.ws === ws && entry.run.id === controlId) return result(entry);
@@ -151,7 +168,7 @@ export function createBrowserControlService({ appControl, sendEnvelope, prepare 
     }).finally(() => { run.queued--; });
     run.queue = work.catch(() => {}); return work;
   }
-  return { request, getResult,
+  return { request, getResult, cancel,
     handleMessage(ws, message, auth) {
       if (message.channel !== "control" || !["browser.control.command", "browser.control.sync"].includes(message.op)) return false;
       if (message.op === "browser.control.sync") {
@@ -171,7 +188,7 @@ export function createBrowserControlService({ appControl, sendEnvelope, prepare 
   };
 }
 
-// The local agent can request takeover and read its fixed status. User actions/images have no HTTP endpoint.
+// The local agent can request/cancel takeover and read fixed status. User actions/images have no HTTP endpoint.
 export function createBrowserControlHttp({ service, json, readJsonBody }) {
   return async (req, res, pathname) => {
     if (!pathname.startsWith("/browser-control/")) return false;
@@ -179,6 +196,11 @@ export function createBrowserControlHttp({ service, json, readJsonBody }) {
     const subjectId = req[RUNNER_AUTHENTICATION].ownerSubjectId;
     try {
       if (req.method === "POST" && pathname === "/browser-control/requests") json(res, 200, await service.request(subjectId, await readJsonBody(req, 8192)));
+      else if (req.method === "POST" && /^\/browser-control\/requests\/[a-f0-9-]{36}\/cancel$/.test(pathname)) {
+        const body = await readJsonBody(req, 8192);
+        if (body?.requestId !== pathname.split("/").at(-2)) throw failure("invalid_request");
+        json(res, 200, service.cancel(subjectId, body));
+      }
       else if (req.method === "GET" && /^\/browser-control\/requests\/[a-f0-9-]{36}$/.test(pathname)) json(res, 200, service.getResult(subjectId, pathname.split("/").at(-1)));
       else json(res, 404, { status: "not_found" });
     } catch { json(res, 400, { status: "browser_control_unavailable" }); }

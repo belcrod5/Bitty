@@ -20,13 +20,31 @@ node <skill-directory>/scripts/bitty-browser-input.mjs request \
   --origin https://example.com --label 'ログインをお願いします'
 ```
 
+When the user explicitly asks to redisplay or replace the panel, use `replace` with the same page target and the **current turn's** context. It cancels the previous panel only if it belongs to this authenticated device and conversation, then creates a new pending card. Validation failures leave the old panel available. The replacement retains the same page's last origin approved during manual control. Browser/page state and entered values remain in place; no browser connection is opened until the user taps Open. Ordinary `request` never cancels another card automatically.
+
+```sh
+node <skill-directory>/scripts/bitty-browser-input.mjs replace \
+  --context ctx_CURRENT_TURN \
+  --cdp-url ws://127.0.0.1:9222/devtools/page/TAB_ID \
+  --origin https://example.com --label 'ブラウザ操作の再表示'
+```
+
+When the user explicitly asks to close the panel, cancel that request using the current context:
+
+```sh
+node <skill-directory>/scripts/bitty-browser-input.mjs cancel \
+  --context ctx_CURRENT_TURN --request UUID
+```
+
+Cancellation ends only the private control panel and discards queued input; it does not close the browser tab or undo actions already applied. Cancellation/replacement replies remain fixed status metadata. An uncertain in-flight action stays marked uncertain on a replacement card; never replay it to check the result.
+
 The card stays in its original session/orchestrator after switching chats or ending a turn. It can be created while the originating phone is offline or in the background: creation records only card metadata and opens no browser connection. Opening or reopening the card establishes a fresh connection after checking the original authenticated login/device and mounted conversation. Wi-Fi changes and backgrounding clear the private view, keyboard and unsent input; the same card can be explicitly reopened. Input is never automatically replayed. Unopened/paused cards are retained in Runner memory for up to 24 hours from creation; Runner restart or logout ends recovery.
 
 The page uses mouse-mode touchpad controls: slide one finger to move the visible cursor relatively, tap to click at the cursor, and double-tap then drag to hold the mouse button and move an object or select text. Parallel two-finger movement scrolls the website horizontally or vertically; pinching zooms the private view locally without a mode switch. While zoomed, one-finger movement immediately pans the view to keep the cursor centered as far as page boundaries allow; at normal scale the cursor moves freely. Local zoom or layout changes keep the cursor visible without sending browser input; clicks always use the visible cursor. The inline card has a fullscreen button and can return inline without reconnecting. Tapping a supported editable element opens the iPhone keyboard and hides that chat's ordinary composer; committed text goes directly to the element, including Japanese IME commits. A padded native preview above the keyboard shows uncommitted IME text only on the device, without sending it to JavaScript, Runner or AI. Switching inline/fullscreen discards any uncommitted composition. There is no separate text-entry panel or key toolbar. The page holds remote focus only during control. Closed shadow-DOM editors and browser-native select menus/popups, new tabs/windows, Chrome toolbar, OS dialogs and file pickers are outside supported page control.
 
 Top-level navigation within the same page is allowed during manual control and the card displays its current origin. It never follows another tab. Each Open revalidates the same page target and the last origin approved during manual control.
 
-**Yield the target browser to the user. Do not run browser actions, screenshots, DOM/accessibility reads, value inspections, network/console tracing, or page dumps while the card is pending/active.** The app's page stream is private to the user; never fetch or copy it into an AI tool result. Do not make a second CDP connection or use shell/browser tools to observe manual input. The implementation cannot block arbitrary agent shell/CDP access; this restriction is an agent behavior rule.
+**Yield the target browser to the user. Do not run browser actions, screenshots, DOM/accessibility reads, value inspections, network/console tracing, or page dumps while the card is pending/active.** Explicit user requests to cancel or replace the panel may use the metadata-only commands above. The app's page stream is private to the user; never fetch or copy it into an AI tool result. Do not make a second CDP connection or use shell/browser tools to observe manual input. The implementation cannot block arbitrary agent shell/CDP access; this restriction is an agent behavior rule.
 
 In a later user-authorized continuation, read only the fixed status:
 

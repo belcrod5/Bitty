@@ -102,6 +102,101 @@ test("page reservation prevents competing cards, while status/replay expose only
   assert.equal((await f.service.request("owner", { ...f.body, requestId: randomUUID() })).status, "pending");
 });
 
+test("explicit replacement closes a pending card, broadcasts its terminal state, and is idempotent", async (t) => {
+  const f = fixture(t); await f.service.request("owner", f.body);
+  const restored = {}; reconnect(f, restored); sync(f, restored);
+  const body = { ...f.body, requestId: randomUUID(), replace: true };
+  assert.deepEqual(await f.service.request("owner", body), { requestId: body.requestId, status: "pending" });
+  assert.equal(f.service.getResult("owner", f.body.requestId).status, "cancelled");
+  for (const socket of [f.ws, restored]) assert.ok(f.sent.some((m) => m.ws === socket && m.op === "browser.control.resolved"
+    && m.payload.requestId === f.body.requestId && m.payload.status === "cancelled"));
+  assert.equal(f.prepared(), 0);
+  const newest = { ...body, requestId: randomUUID() }; await f.service.request("owner", newest);
+  assert.equal((await f.service.request("owner", body)).status, "cancelled");
+  assert.equal(f.service.getResult("owner", newest.requestId).status, "pending");
+  assert.equal(f.sent.filter((m) => m.op === "browser.control.request" && m.payload.requestId === body.requestId).length, 2);
+});
+
+function newContext(f, auth = f.auth, conversation = f.session) {
+  const socket = {}; reconnect(f, socket, auth, conversation);
+  const generation = f.sent.findLast((m) => m.ws === socket && m.op === "app.control.register.result").payload.connectionGeneration;
+  const turn = f.appControl.acceptTurn(socket, { clientInstanceId: "new-app-instance", connectionGeneration: generation, surfaceId: "panel",
+    ownerGeneration: 1, target: conversation, chatId: "new-mounted-chat", chatGeneration: 1 }, { target: conversation, subjectId: auth.ownerSubjectId, callerOperationId: randomUUID() });
+  return turn.instruction.match(/ctx_[a-f0-9-]+/)[0];
+}
+test("agent cancellation and replacement require the original subject, device and canonical conversation", async (t) => {
+  const f = fixture(t); await f.service.request("owner", f.body);
+  for (const [auth, conversation] of [
+    [{ ...f.auth, ownerSubjectId: "other-owner" }, f.session],
+    [{ ...f.auth, sessionId: "other-device" }, f.session],
+    [f.auth, { ...f.session, cwd: "/other" }],
+    [f.auth, { kind: "orchestrator", orchestratorId: "another" }],
+  ]) {
+    const context = newContext(f, auth, conversation);
+    assert.throws(() => f.service.cancel(auth.ownerSubjectId, { requestId: f.body.requestId, context }), { code: "request_unavailable" });
+    await assert.rejects(f.service.request(auth.ownerSubjectId, { ...f.body, requestId: randomUUID(), context, replace: true }), { code: "request_unavailable" });
+    assert.equal(f.service.getResult("owner", f.body.requestId).status, "pending");
+  }
+  const context = newContext(f);
+  assert.equal(f.service.cancel("owner", { requestId: f.body.requestId, context }).status, "cancelled");
+  assert.equal(f.service.cancel("owner", { requestId: f.body.requestId, context }).status, "cancelled");
+  assert.equal(f.prepared(), 0);
+});
+
+test("replacement validates context, metadata and capacity before closing the old card", async (t) => {
+  const f = fixture(t); await f.service.request("owner", f.body);
+  for (const change of [{ replace: false }, { target: { ...target, unexpected: "PRIVATE" } }, { context: `ctx_${randomUUID()}` }]) {
+    await assert.rejects(f.service.request("owner", { ...f.body, requestId: randomUUID(), replace: true, ...change }));
+    assert.equal(f.service.getResult("owner", f.body.requestId).status, "pending");
+  }
+  for (let n = 0; n < 127; n++) {
+    const body = { ...f.body, requestId: randomUUID(), target: { ...target, cdpUrl: `${target.cdpUrl}-${n}` } };
+    await f.service.request("owner", body); f.service.cancel("owner", { requestId: body.requestId, context: body.context });
+  }
+  await assert.rejects(f.service.request("owner", { ...f.body, requestId: randomUUID(), replace: true }), { code: "capacity_exceeded" });
+  assert.equal(f.service.getResult("owner", f.body.requestId).status, "pending");
+});
+
+test("replacement at the active-card limit preserves uncertainty and never replays queued input or late callbacks", async (t) => {
+  let release; const inputs = []; let callbacks, closed = 0;
+  const f = fixture(t, { prepare: async (_target, cb) => { callbacks = cb; return { start: async () => {}, input: async (input) => {
+    inputs.push(input); await new Promise((resolve) => { release = resolve; });
+  }, close: () => { closed++; } }; } });
+  await f.service.request("owner", f.body); await f.command("start");
+  callbacks.onOrigin("https://approved-current.example");
+  for (let n = 0; n < 7; n++) await f.service.request("owner", { ...f.body, requestId: randomUUID(), target: { ...target, cdpUrl: `${target.cdpUrl}-${n}` } });
+  const first = f.command("input", { sequence: 1, frameId: 1, input: { type: "text", text: "PRIVATE_FIRST" } }); await tick();
+  const queued = f.command("input", { sequence: 2, frameId: 1, input: { type: "text", text: "PRIVATE_QUEUED" } }); await tick();
+  const body = { ...f.body, requestId: randomUUID(), replace: true };
+  assert.deepEqual(await f.service.request("owner", body), { requestId: body.requestId, status: "pending", inputStatusUnknown: true });
+  assert.equal(f.sent.find((m) => m.op === "browser.control.request" && m.payload.requestId === body.requestId).payload.origin, "https://approved-current.example");
+  assert.equal(closed, 1); release(); await first; await queued;
+  assert.deepEqual(inputs, [{ type: "text", text: "PRIVATE_FIRST" }]);
+  const before = f.sent.length;
+  callbacks.onFrame({ frameId: 9, data: "PRIVATE_LATE", width: 10, height: 10 }); callbacks.onOrigin("https://late.example"); callbacks.onInvalidated();
+  assert.equal(f.sent.length, before);
+  assert.equal(f.service.getResult("owner", body.requestId).status, "pending");
+  assert.equal((await f.command("start")).status, "request_unavailable");
+  assert.equal(JSON.stringify(f.sent).includes("PRIVATE"), false);
+});
+
+test("replacement during prepare cannot revive the old run, and expired contexts cannot cancel", async (t) => {
+  let prepared; const calls = [];
+  const f = fixture(t, { prepare: () => new Promise((resolve) => { prepared = resolve; }) });
+  await f.service.request("owner", f.body); const opening = f.command("start"); await tick();
+  const body = { ...f.body, requestId: randomUUID(), replace: true }; await f.service.request("owner", body);
+  prepared({ start: async () => calls.push("start"), close: () => calls.push("close") }); await opening;
+  assert.deepEqual(calls, ["close"]);
+  assert.equal(f.service.getResult("owner", body.requestId).status, "pending");
+  for (const extra of [{ context: `ctx_${randomUUID()}` }, { unexpected: "PRIVATE" }]) {
+    assert.throws(() => f.service.cancel("owner", { requestId: body.requestId, context: body.context, ...extra }));
+    assert.equal(f.service.getResult("owner", body.requestId).status, "pending");
+  }
+  f.control.finish();
+  assert.throws(() => f.service.cancel("owner", { requestId: body.requestId, context: body.context }), { code: "context_expired" });
+  assert.equal(f.service.getResult("owner", body.requestId).status, "pending");
+});
+
 test("images/text are device-only and command/status replies cannot echo private browser content", async (t) => {
   const f = fixture(t); await f.service.request("owner", f.body); await f.command("start");
   f.callbacks().onFrame({ frameId: 1, data: "PRIVATE_FRAME", width: 100, height: 200 });
@@ -155,12 +250,18 @@ test("cancel/pause interrupt a queued input and late start cannot revive control
   assert.equal(f.sent.some((m) => m.op === "browser.control.frame"), false);
 });
 
-test("HTTP accepts local request/status only, never user action or frame retrieval", async (t) => {
-  const f = fixture(t), replies = [];
-  const handler = createBrowserControlHttp({ service: f.service, readJsonBody: async () => f.body, json: (_res, status, payload) => replies.push({ status, payload }) });
+test("HTTP accepts local request/status/cancel only, never user action or frame retrieval", async (t) => {
+  const f = fixture(t), replies = []; let body = f.body;
+  const handler = createBrowserControlHttp({ service: f.service, readJsonBody: async () => body, json: (_res, status, payload) => replies.push({ status, payload }) });
   const req = { method: "POST" }; await handler(req, {}, "/browser-control/requests"); assert.equal(replies.at(-1).status, 403);
   req[RUNNER_AUTHENTICATION] = { local: true, ownerSubjectId: "owner" }; await handler(req, {}, "/browser-control/requests"); assert.equal(replies.at(-1).payload.status, "pending");
   for (const suffix of ["input", "frame", "start"]) { await handler(req, {}, `/browser-control/requests/${f.body.requestId}/${suffix}`); assert.equal(replies.at(-1).status, 404); }
+  body = { requestId: f.body.requestId, context: f.body.context };
+  delete req[RUNNER_AUTHENTICATION]; await handler(req, {}, `/browser-control/requests/${f.body.requestId}/cancel`); assert.equal(replies.at(-1).status, 403);
+  req[RUNNER_AUTHENTICATION] = { local: true, ownerSubjectId: "owner" };
+  await handler(req, {}, `/browser-control/requests/${randomUUID()}/cancel`); assert.equal(replies.at(-1).status, 400);
+  assert.equal(f.service.getResult("owner", f.body.requestId).status, "pending");
+  await handler(req, {}, `/browser-control/requests/${f.body.requestId}/cancel`); assert.equal(replies.at(-1).payload.status, "cancelled");
 });
 test("diagnostics distinguish absent frames and rendered ACKs without images, values or raw errors", async (t) => {
   const logs = []; const f = fixture(t, { log: (event) => logs.push(event) });

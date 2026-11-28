@@ -73,6 +73,34 @@ test("only one view owns a card; navigation clears its image and departure drops
   expect(view.result.current.requests[0].status).toBe("pending"); await view.unmount();
 });
 
+test("agent cancellation without a control ID clears the viewer and discards queued input before replacement", async () => {
+  const view = await renderHook(() => useBrowserControl(manager)); await act(async () => emit("request", card()));
+  const frames = jest.fn(), focus = jest.fn(); view.result.current.watch("one", frames, focus);
+  await act(async () => view.result.current.command("one", "start"));
+  await act(async () => {
+    emit("frame", { requestId: "one", frameId: 1, data: "PRIVATE_IMAGE", width: 800, height: 600 });
+    emit("focus", { requestId: "one", editable: true, multiline: false, kind: "text", focusRevision: "focus-one" });
+  });
+  expect(view.result.current.typingRequestId).toBe("one");
+  let release: (() => void) | undefined, input: Promise<void> | undefined;
+  request.mockImplementationOnce(async () => { await new Promise<void>((resolve) => { release = resolve; }); return { payload: { status: "active" } } as never; });
+  await act(async () => {
+    input = view.result.current.input("one", { type: "text", text: "PRIVATE_SENT" }, 1);
+    view.result.current.input("one", { type: "text", text: "PRIVATE_UNSENT" }, 1);
+    handlers.get("browser.control.resolved")?.({ channel: "control", op: "browser.control.resolved", payload: { requestId: "one", status: "cancelled" } });
+    emit("request", { ...card("replacement"), inputStatusUnknown: true });
+  });
+  expect(frames).toHaveBeenLastCalledWith(null); expect(focus).toHaveBeenLastCalledWith(null);
+  expect(view.result.current.typingRequestId).toBeNull();
+  await act(async () => { release?.(); await input; emit("frame", { requestId: "one", frameId: 2, data: "PRIVATE_LATE", width: 800, height: 600 }); await view.result.current.command("one", "start"); });
+  expect(frames).toHaveBeenLastCalledWith(null);
+  expect(request.mock.calls.filter(([m]) => m.payload.action === "start")).toHaveLength(1);
+  expect(JSON.stringify(request.mock.calls)).not.toContain("PRIVATE_UNSENT");
+  expect(view.result.current.requests).toMatchObject([{ requestId: "one", status: "cancelled" }, { requestId: "replacement", status: "pending", inputStatusUnknown: true }]);
+  expect(JSON.stringify(view.result.current.requests)).not.toContain("PRIVATE");
+  await view.unmount();
+});
+
 test("background/disconnect clear images, preserve cards and never forward text through ordinary chat", async () => {
   const spy = jest.spyOn(AppState, "addEventListener"); spy.mockClear();
   const view = await renderHook(() => useBrowserControl(manager)); await act(async () => { emit("request", card()); emit("request", card("two")); });
