@@ -133,3 +133,15 @@ test("metadata is filtered and cleanup never evaluates destroyed contexts or for
   assert.equal(f.calls.some(([method]) => method === "Network.enable"), false);
   assert.equal(f.calls.some(([method, , params]) => method === "Runtime.evaluate" && (params.contextId === 7 || params.contextId === 8 || params.expression === "SHOULD_NOT_RUN")), false);
 });
+
+test("a stalled iframe command never blocks page metrics, render ACKs or input", async (t) => {
+  const stalled = deferred();
+  const f = await background(t, { command: (source, method) => source.sessionId === "child" && method === "Page.getFrameTree" ? stalled.promise : undefined });
+  const run = await f.attach();
+  f.listeners.event({ tabId: 1 }, "Target.attachedToTarget", { sessionId: "child", targetInfo: { type: "iframe" } });
+  await f.cdp(run, "Page.getFrameTree", {}, "child");
+  await f.cdp(run, "Page.getLayoutMetrics"); await f.cdp(run, "Page.screencastFrameAck", { sessionId: 1 });
+  await f.cdp(run, "Input.dispatchMouseEvent", { type: "mouseMoved", x: 20, y: 30 });
+  for (const method of ["Page.getLayoutMetrics", "Page.screencastFrameAck", "Input.dispatchMouseEvent"]) assert.ok(f.calls.some(([called]) => called === method));
+  stalled.resolve(); await f.receive({ type: "detach", controlId: run });
+});

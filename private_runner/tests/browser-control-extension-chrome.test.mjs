@@ -107,4 +107,12 @@ test("isolated Chrome hands the same live tab through the installed extension an
   const companionSocket = await connect(`ws://127.0.0.1:${port}/devtools/page/${companionTarget.targetId}`);
   assert.equal((await call(companionSocket, "Runtime.evaluate", { expression: "globalThis.stillAttached===true", returnByValue: true })).result.value, true);
   assert.equal(await state(), true); assert.equal(pageSocket.readyState, WebSocket.OPEN);
+  frame = null; let navigationInvalidations = 0;
+  browser = await prepareBrowserControl({ ...target, browserId: rediscovered.browserId }, { ...options, onViewInvalidated: () => navigationInvalidations++ });
+  await browser.start(); await eventually(() => frame); const oldFrameId = frame.frameId;
+  frame = null; await call(pageSocket, "Page.navigate", { url: `${origin}/next` });
+  await eventually(() => navigationInvalidations && frame && frame.frameId !== oldFrameId);
+  await assert.rejects(browser.input({ type: "text", text: "must not replay" }, oldFrameId), { code: "stale_frame" });
+  assert.deepEqual(invalidated, ["connection_closed"], "a real document navigation must not interrupt control");
+  browser.close(); browser = null;
 });

@@ -401,3 +401,12 @@ test("extension discovery HTTP is local-only and returns fixed recovery codes in
   assert.deepEqual(calls, [["owner", "https://example.com"]]);
   assert.deepEqual(replies.at(-1), { status: 400, body: { status: "browser_extension_not_connected" } });
 });
+
+test("an authenticated user can complete a paused recovery without opening or replaying its browser", async (t) => {
+  const f = fixture(t); await f.service.request("owner", f.body);
+  const message = { channel: "control", op: "browser.control.command", requestId: randomUUID(), payload: { requestId: f.body.requestId, action: "finish" } };
+  f.service.handleMessage(f.ws, message, { ...f.auth, sessionId: "foreign" }); await tick();
+  assert.equal(f.service.getResult("owner", f.body.requestId).status, "pending");
+  f.service.handleMessage(f.ws, { ...message, requestId: randomUUID() }, f.auth); await tick();
+  assert.equal(f.service.getResult("owner", f.body.requestId).status, "completed"); assert.equal(f.prepared(), 0); assert.deepEqual(f.inputs, []);
+});

@@ -19,6 +19,7 @@ async function stop(run) {
     return run.detaching;
   };
   const cleanup = run.queue.catch(() => {}).then(async () => {
+    await Promise.allSettled([...run.commands]);
     if (run.closed) return run.detaching;
     if (!run.attached) return;
     if (!wasAttached) return detach();
@@ -56,7 +57,7 @@ async function receive(message) {
   if (!uuid.test(message.controlId)) return;
   if (message.type === "attach") {
     if (!uuid.test(message.id) || typeof message.targetId !== "string" || !/^[A-Za-z0-9_-]{1,200}$/.test(message.targetId) || originOf(message.origin) !== message.origin) return;
-    const run = { id: message.controlId, targetId: message.targetId, cancelled: false, attached: false, queue: Promise.resolve(), contexts: new Map(), worlds: new Set(), scripts: new Map(), bindings: new Set(), sessions: new Set([undefined]), pointer: null };
+    const run = { id: message.controlId, targetId: message.targetId, cancelled: false, attached: false, queue: Promise.resolve(), commands: new Set(), contexts: new Map(), worlds: new Set(), scripts: new Map(), bindings: new Set(), sessions: new Set([undefined]), pointer: null };
     const previous = [...runs.values()].filter((entry) => entry.targetId === run.targetId);
     if (runs.size >= 8 || runs.has(run.id) || previous.some((entry) => !entry.cancelled)) { post({ type: "reply", id: message.id, ok: false }); return; }
     runs.set(run.id, run);
@@ -79,7 +80,8 @@ async function receive(message) {
   if (message.type === "detach") { void stop(run); return; }
   const packet = message.message;
   if (message.type !== "cdp" || !packet || !Number.isSafeInteger(packet.id) || packet.id < 1 || !commands.has(packet.method) || !run.sessions.has(packet.sessionId)) return;
-  run.queue = run.queue.catch(() => {}).then(async () => {
+  // CDP already orders commands; a stalled iframe must not block page frames, ACKs or input.
+  const work = run.queue.catch(() => {}).then(async () => {
     if (run.cancelled) return;
     try {
       if (packet.method === "Input.dispatchMouseEvent") {
@@ -89,7 +91,7 @@ async function receive(message) {
       }
       if (["Page.createIsolatedWorld", "Page.addScriptToEvaluateOnNewDocument"].includes(packet.method) && /^bitty-browser-[a-f0-9-]{36}$/.test(packet.params?.worldName)) run.worlds.add(packet.params.worldName);
       const result = await chrome.debugger.sendCommand(debuggee(run, packet.sessionId), packet.method, packet.params || {});
-      if (run.closed) return;
+      if (run.cancelled || run.closed) return;
       const key = packet.sessionId || "";
       if (packet.method === "Page.addScriptToEvaluateOnNewDocument" && typeof result.identifier === "string") run.scripts.set(key, result.identifier);
       if (packet.method === "Page.removeScriptToEvaluateOnNewDocument") run.scripts.delete(key);
@@ -100,6 +102,8 @@ async function receive(message) {
       if (!run.cancelled) post({ type: "cdp", controlId: run.id, message: { id: packet.id, ...(packet.sessionId ? { sessionId: packet.sessionId } : {}), error: { message: "browser_control_unavailable" } } });
     }
   });
+  run.commands.add(work);
+  void work.finally(() => run.commands.delete(work));
 }
 chrome.debugger.onEvent.addListener((source, method, params) => {
   if (!allowedEvents.has(method)) return;

@@ -5,7 +5,7 @@ import type { VoiceTarget } from "../../appControl/voiceControl";
 import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 
 export type BrowserControlStatus = "pending" | "starting" | "active" | "completed" | "cancelled" | "expired" | "invalidated" | "failed" | "control_status_unknown";
-export type BrowserControlRequest = { requestId: string; target: VoiceTarget; origin: string; label: string; createdAt: string; status: BrowserControlStatus; inputNotApplied?: boolean; inputStatusUnknown?: boolean };
+export type BrowserControlRequest = { requestId: string; target: VoiceTarget; origin: string; label: string; createdAt: string; status: BrowserControlStatus; inputNotApplied?: boolean; inputStatusUnknown?: boolean; viewState?: "loading" | "reconnecting" | "retry" };
 export type BrowserControlFrame = { frameId: number; data: string; width: number; height: number };
 export type BrowserControlFocus = { editable: boolean; multiline: boolean; kind: "text" | "password" | "email" | "number" | "tel" | "url" | "search"; focusRevision: string };
 export type BrowserControlInput = { type: "text"; text: string; focusRevision?: string } | { type: "key"; key: string; focusRevision?: string }
@@ -24,8 +24,10 @@ export function useBrowserControl(manager: RunnerWebSocketManager, onDiagnostic?
   const [requests, setRequests] = useState<BrowserControlRequest[]>([]);
   const [typingRequestId, setTypingRequestId] = useState<string | null>(null);
   const entries = useRef(new Map<string, BrowserControlRequest>());
-  // Private pixels, focus and input exist only in their mounted viewer and current connection.
-  const viewers = useRef(new Map<string, { frame: (frame: BrowserControlFrame | null) => void; focus?: (focus: BrowserControlFocus | null) => void }>());
+  // Private pixels, focus and input exist only in their mounted viewer and authenticated foreground scope.
+  const viewers = useRef(new Map<string, { frame: (frame: BrowserControlFrame | null) => void; focus?: (focus: BrowserControlFocus | null) => void; invalidate?: () => void }>());
+  const recoveries = useRef(new Map<string, { attempts: number; timer?: ReturnType<typeof setTimeout> }>());
+  const startAgain = useRef<(requestId: string) => Promise<void>>(async () => {});
   const controls = useRef(new Map<string, string>());
   const commandGenerations = useRef(new Map<string, number>());
   const displays = useRef(new Map<string, { received: boolean; rendered: boolean; timer?: ReturnType<typeof setTimeout> }>());
@@ -40,20 +42,32 @@ export function useBrowserControl(manager: RunnerWebSocketManager, onDiagnostic?
     entries.current.set(entry.requestId, entry); setRequests([...entries.current.values()]);
     if (terminal.has(entry.status) || entry.status === "pending") {
       setTypingRequestId((current) => current === entry.requestId ? null : current);
-      viewers.current.get(entry.requestId)?.frame(null); viewers.current.get(entry.requestId)?.focus?.(null);
+      const viewer = viewers.current.get(entry.requestId);
+      if (entry.viewState && !terminal.has(entry.status) && viewer?.invalidate) viewer.invalidate(); else viewer?.frame(null);
+      viewer?.focus?.(null);
     }
     if (terminal.has(entry.status)) {
+      clearTimeout(recoveries.current.get(entry.requestId)?.timer); recoveries.current.delete(entry.requestId);
       clearDisplay(entry.requestId); controls.current.delete(entry.requestId); commandGenerations.current.delete(entry.requestId);
       const queue = queues.current.get(entry.requestId); if (queue) queue.pending = []; queues.current.delete(entry.requestId);
     }
   }, [clearDisplay]);
-  const suspend = useCallback((requestId: string, uncertain = false) => {
+  const suspend = useCallback((requestId: string, uncertain = false, retry = true) => {
     const entry = entries.current.get(requestId); if (!entry || terminal.has(entry.status)) return;
     const controlId = controls.current.get(requestId), queue = queues.current.get(requestId);
     commandGenerations.current.set(requestId, (commandGenerations.current.get(requestId) || 0) + 1);
     controls.current.delete(requestId); clearDisplay(requestId);
     if (queue) queue.pending = []; queues.current.delete(requestId);
-    update({ ...entry, status: "pending", inputStatusUnknown: entry.inputStatusUnknown || uncertain && (queue?.sequence || 0) > 0 });
+    const recovery = recoveries.current.get(requestId);
+    const resume = retry && recovery && viewers.current.has(requestId) && AppState.currentState === "active";
+    clearTimeout(recovery?.timer);
+    if (!resume) recoveries.current.delete(requestId);
+    const viewState = resume ? recovery.attempts < 3 ? "reconnecting" : "retry" : undefined;
+    update({ ...entry, status: "pending", viewState, inputStatusUnknown: entry.inputStatusUnknown || uncertain && (queue?.sequence || 0) > 0 });
+    if (resume && recovery.attempts < 3) {
+      const delay = [500, 1500, 4000][recovery.attempts++];
+      recovery.timer = setTimeout(() => { recovery.timer = undefined; void startAgain.current(requestId); }, delay);
+    }
     if (controlId) { try { manager.send({ channel: "control", op: "browser.control.command", payload: { requestId, controlId, action: "pause" } }); } catch {} }
   }, [clearDisplay, manager, update]);
   const failDisplay = useCallback((requestId: string, reason: "frame_timeout" | "render_failed") => {
@@ -67,11 +81,17 @@ export function useBrowserControl(manager: RunnerWebSocketManager, onDiagnostic?
   }, [diagnose, manager, suspend, update]);
   const command = useCallback(async (requestId: string, action: "start" | "pause" | "finish" | "cancel") => {
     const entry = entries.current.get(requestId); if (!entry || terminal.has(entry.status)) return;
-    if (action === "pause") { suspend(requestId, queues.current.get(requestId)?.running); return; }
+    if (action === "pause") { suspend(requestId, queues.current.get(requestId)?.running, false); return; }
     if (action === "start" && (entry.status !== "pending" || !viewers.current.has(requestId) || AppState.currentState !== "active")) return;
+    if (action === "finish" || action === "cancel") {
+      clearTimeout(recoveries.current.get(requestId)?.timer); recoveries.current.delete(requestId);
+    }
     const generation = (commandGenerations.current.get(requestId) || 0) + 1;
     commandGenerations.current.set(requestId, generation);
-    if (action === "start") update({ ...entry, status: "starting" });
+    if (action === "start") {
+      if (!recoveries.current.has(requestId) || entry.viewState === "retry") recoveries.current.set(requestId, { attempts: 0 });
+      update({ ...entry, status: "starting", viewState: entry.viewState === "retry" ? "reconnecting" : entry.viewState });
+    }
     try {
       if (action === "start") {
         await manager.connect();
@@ -82,8 +102,8 @@ export function useBrowserControl(manager: RunnerWebSocketManager, onDiagnostic?
       if (action === "finish") await (queues.current.get(requestId)?.tail || Promise.resolve());
       if (commandGenerations.current.get(requestId) !== generation || terminal.has(entries.current.get(requestId)?.status as BrowserControlStatus)) return;
       const controlId = controls.current.get(requestId);
-      if (action !== "cancel" && !controlId) { suspend(requestId); return; }
-      const response = await manager.request({ channel: "control", op: "browser.control.command", payload: { requestId, action, ...(action !== "cancel" ? { controlId } : {}) } }, { timeoutMs: 10_000 });
+      if (action === "start" && !controlId) { suspend(requestId); return; }
+      const response = await manager.request({ channel: "control", op: "browser.control.command", payload: { requestId, action, ...(action !== "cancel" && controlId ? { controlId } : {}) } }, { timeoutMs: 10_000 });
       const payload = response.payload as { status?: BrowserControlStatus; inputStatusUnknown?: boolean };
       const current = entries.current.get(requestId);
       if (commandGenerations.current.get(requestId) !== generation || !current || terminal.has(current.status)) return;
@@ -101,9 +121,10 @@ export function useBrowserControl(manager: RunnerWebSocketManager, onDiagnostic?
       }
     }
   }, [clearDisplay, diagnose, failDisplay, manager, suspend, update]);
+  startAgain.current = (requestId) => command(requestId, "start");
   const input = useCallback((requestId: string, input: BrowserControlInput, frameId: number) => {
     const entry = entries.current.get(requestId), controlId = controls.current.get(requestId);
-    if (!entry || !controlId || entry.status !== "active" || !viewers.current.has(requestId) || AppState.currentState !== "active" || !manager.getSnapshot().connected) return;
+    if (!entry || !controlId || entry.status !== "active" || entry.viewState || !viewers.current.has(requestId) || AppState.currentState !== "active" || !manager.getSnapshot().connected) return;
     let queue = queues.current.get(requestId);
     if (!queue) { queue = { tail: Promise.resolve(), pending: [], running: false, sequence: 0 }; queues.current.set(requestId, queue); }
     const last = queue.pending.at(-1);
@@ -126,7 +147,7 @@ export function useBrowserControl(manager: RunnerWebSocketManager, onDiagnostic?
           if (controls.current.get(requestId) !== controlId) return;
           const { status, inputStatus, inputStatusUnknown } = response.payload as { status?: BrowserControlStatus; inputStatus?: string; inputStatusUnknown?: boolean };
           const current = entries.current.get(requestId);
-          if (current?.status === "active" && status === "active" && (next.input.type === "text" || next.input.type === "key")) update({ ...current, inputNotApplied: inputStatus === "not_applied" });
+          if (current?.status === "active" && status === "active" && (next.input.type === "text" || next.input.type === "key")) update({ ...current, inputNotApplied: current.inputNotApplied && !!current.viewState || inputStatus === "not_applied" });
           if (current?.status === "active" && status !== "active") {
             if (status === "pending") suspend(requestId, true);
             else update({ ...current, status: status && terminal.has(status) ? status : "control_status_unknown", inputStatusUnknown: current.inputStatusUnknown || inputStatusUnknown === true });
@@ -141,14 +162,17 @@ export function useBrowserControl(manager: RunnerWebSocketManager, onDiagnostic?
   const ack = useCallback((requestId: string, frameId: number) => {
     const controlId = controls.current.get(requestId);
     if (!controlId || !viewers.current.has(requestId) || !["active", "starting"].includes(entries.current.get(requestId)?.status || "")) return;
+    const entry = entries.current.get(requestId);
+    if (entry?.viewState) update({ ...entry, viewState: undefined });
+    const recovery = recoveries.current.get(requestId); if (recovery) recovery.attempts = 0;
     const display = displays.current.get(requestId);
     if (display && !display.rendered) { display.rendered = true; diagnose(requestId, "frame_rendered"); }
     try { manager.send({ channel: "control", op: "browser.control.command", payload: { requestId, controlId, action: "ack", frameId } }); } catch {}
-  }, [diagnose, manager]);
-  const watch = useCallback((requestId: string, frame: (frame: BrowserControlFrame | null) => void, focus?: (focus: BrowserControlFocus | null) => void) => {
+  }, [diagnose, manager, update]);
+  const watch = useCallback((requestId: string, frame: (frame: BrowserControlFrame | null) => void, focus?: (focus: BrowserControlFocus | null) => void, invalidate?: () => void) => {
     if (viewers.current.has(requestId)) return null;
-    const viewer = { frame, focus }; viewers.current.set(requestId, viewer);
-    return () => { if (viewers.current.get(requestId) !== viewer) return; frame(null); focus?.(null); setTypingRequestId((current) => current === requestId ? null : current); viewers.current.delete(requestId); suspend(requestId, queues.current.get(requestId)?.running); };
+    const viewer = { frame, focus, invalidate }; viewers.current.set(requestId, viewer);
+    return () => { if (viewers.current.get(requestId) !== viewer) return; frame(null); focus?.(null); setTypingRequestId((current) => current === requestId ? null : current); viewers.current.delete(requestId); suspend(requestId, queues.current.get(requestId)?.running, false); };
   }, [suspend]);
   useEffect(() => {
     let scope = manager.getSnapshot().connectionOptionsGeneration, socketGeneration = -1;
@@ -160,7 +184,7 @@ export function useBrowserControl(manager: RunnerWebSocketManager, onDiagnostic?
       if (current && ["starting", "active"].includes(current.status) && !terminal.has(entry.status)) return;
       // The previous Wi-Fi socket may still exist. Recover its card, never its private run.
       update({ ...entry, status: ["active", "starting"].includes(entry.status) ? "pending" : entry.status,
-        inputStatusUnknown: current?.inputStatusUnknown || entry.inputStatusUnknown });
+        inputStatusUnknown: current?.inputStatusUnknown || entry.inputStatusUnknown, viewState: !terminal.has(entry.status) ? current?.viewState : undefined });
     };
     const offRequest = manager.subscribe({ channel: "control", op: "browser.control.request" }, (message) => receiveCard(message.payload));
     const offSync = manager.subscribe({ channel: "control", op: "browser.control.sync.result" }, (message) => {
@@ -188,8 +212,12 @@ export function useBrowserControl(manager: RunnerWebSocketManager, onDiagnostic?
     const offViewInvalidated = manager.subscribe({ channel: "control", op: "browser.control.view_invalidated" }, (message) => {
       const entry = currentRun(message.payload as { requestId?: string; controlId?: string }); if (!entry) return;
       const queue = queues.current.get(entry.requestId);
-      if (queue) { if (queue.pending.some(({ input }) => input.type === "text" || input.type === "key")) update({ ...entry, inputNotApplied: true }); queue.pending = []; }
-      viewers.current.get(entry.requestId)?.frame(null); viewers.current.get(entry.requestId)?.focus?.(null);
+      const droppedText = queue?.pending.some(({ input }) => input.type === "text" || input.type === "key");
+      if (queue) queue.pending = [];
+      update({ ...entry, viewState: "loading", inputNotApplied: entry.inputNotApplied || droppedText });
+      const viewer = viewers.current.get(entry.requestId);
+      if (viewer?.invalidate) viewer.invalidate(); else viewer?.frame(null);
+      viewer?.focus?.(null);
       setTypingRequestId((current) => current === entry.requestId ? null : current);
     });
     const offOrigin = manager.subscribe({ channel: "control", op: "browser.control.origin" }, (message) => {
@@ -205,7 +233,7 @@ export function useBrowserControl(manager: RunnerWebSocketManager, onDiagnostic?
     const changed = () => {
       const snapshot = manager.getSnapshot();
       if (snapshot.connectionOptionsGeneration !== scope) {
-        for (const entry of entries.current.values()) suspend(entry.requestId, true);
+        for (const entry of entries.current.values()) suspend(entry.requestId, true, false);
         scope = snapshot.connectionOptionsGeneration; entries.current.clear(); setRequests([]);
       }
       if (!snapshot.connected) { for (const id of [...controls.current.keys()]) suspend(id, true); socketGeneration = -1; }
@@ -213,12 +241,12 @@ export function useBrowserControl(manager: RunnerWebSocketManager, onDiagnostic?
     };
     const offSnapshot = manager.subscribeSnapshot(changed);
     const subscription = AppState.addEventListener("change", (state) => {
-      if (state !== "active") { for (const entry of entries.current.values()) if (!terminal.has(entry.status)) suspend(entry.requestId, true); }
+      if (state !== "active") { for (const entry of entries.current.values()) if (!terminal.has(entry.status)) suspend(entry.requestId, true, false); }
       else sync();
     });
     changed();
     return () => {
-      for (const entry of entries.current.values()) suspend(entry.requestId, true);
+      for (const entry of entries.current.values()) suspend(entry.requestId, true, false);
       offRequest(); offSync(); offRegistered(); offFrame(); offFocus(); offViewInvalidated(); offOrigin(); offResolved(); offSnapshot(); subscription.remove(); viewers.current.clear(); queues.current.clear();
     };
   }, [diagnose, failDisplay, manager, suspend, update]);

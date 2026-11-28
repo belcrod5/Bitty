@@ -150,8 +150,11 @@ export async function prepareBrowserControl(target, { signal, timeoutMs = 5000, 
     if (stopped || signal?.aborted || socket.readyState !== WebSocket.OPEN) return reject(fail());
     const id = ++sequence;
     const timer = setTimeout(() => {
+      pending.delete(id); reject(fail());
+      onDiagnostic?.("command_timeout", { method, scope: sessionId ? "iframe" : "page" });
       if (sessionId) forgetFocusSession(sessionId);
-      else { reject(fail()); close(true, "command_timeout"); }
+      // Focus observation is optional: a renderer replacing an isolated world must not end page control.
+      else if (!["Page.createIsolatedWorld", "Runtime.evaluate"].includes(method)) close(true, "command_timeout");
     }, timeoutMs);
     pending.set(id, { resolve, reject, timer, sessionId });
     socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }), (error) => { if (error) close(true); });

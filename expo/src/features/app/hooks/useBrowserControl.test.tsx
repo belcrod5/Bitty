@@ -9,8 +9,8 @@ const handlers = new Map<string, (message: RunnerWsMessage) => void>();
 const listeners = new Set<() => void>();
 const send = jest.fn();
 const request = jest.fn(async (message) => ({ channel: "control", op: "browser.control.command.result", payload: { status: message.payload.action === "pause" ? "pending" : message.payload.action === "finish" ? "completed" : message.payload.action === "cancel" ? "cancelled" : "active" } }));
-let connected = true, generation = 1;
-const manager = { request, send, connect: jest.fn(async () => {}), getSnapshot: () => ({ connected, generation, connectionOptionsGeneration: 1 }),
+let connected = true, generation = 1, optionsGeneration = 1;
+const manager = { request, send, connect: jest.fn(async () => {}), getSnapshot: () => ({ connected, generation, connectionOptionsGeneration: optionsGeneration }),
   subscribe: ({ op }: { op: string }, handler: (message: RunnerWsMessage) => void) => { handlers.set(op, handler); return () => handlers.delete(op); },
   subscribeSnapshot: (handler: () => void) => { listeners.add(handler); return () => listeners.delete(handler); },
 } as unknown as RunnerWebSocketManager;
@@ -23,7 +23,7 @@ const emit = (op: string, payload: unknown) => {
   }
   handlers.get(`browser.control.${op}`)?.({ channel: "control", op: `browser.control.${op}`, payload });
 };
-beforeEach(() => { AppState.currentState = "active"; connected = true; generation = 1; handlers.clear(); listeners.clear(); send.mockClear(); request.mockClear(); jest.spyOn(AppState, "addEventListener").mockImplementation(() => ({ remove: jest.fn() })); });
+beforeEach(() => { AppState.currentState = "active"; connected = true; generation = 1; optionsGeneration = 1; handlers.clear(); listeners.clear(); send.mockClear(); request.mockClear(); jest.spyOn(AppState, "addEventListener").mockImplementation(() => ({ remove: jest.fn() })); });
 afterEach(() => { AppState.currentState = original; jest.restoreAllMocks(); });
 
 test("cards are asynchronous; only the mounted viewer receives private frames and status remains metadata-only", async () => {
@@ -60,11 +60,12 @@ test("high-rate gestures coalesce without losing down/up or typing order", async
   await view.unmount();
 });
 
-test("only one view owns a card; navigation clears its image and departure drops unsent input", async () => {
+test("only one view owns a card; navigation invalidates input and departure drops unsent input", async () => {
   const view = await renderHook(() => useBrowserControl(manager)); await act(async () => emit("request", card()));
   const frames = jest.fn(); const stop = view.result.current.watch("one", frames); expect(view.result.current.watch("one", jest.fn())).toBeNull();
   await act(async () => view.result.current.command("one", "start"));
   await act(async () => emit("view_invalidated", { requestId: "one" })); expect(frames).toHaveBeenLastCalledWith(null);
+  await act(async () => view.result.current.ack("one", 2));
   let release: (() => void) | undefined;
   request.mockImplementationOnce(async () => { await new Promise<void>((resolve) => { release = resolve; }); return { channel: "control", op: "browser.control.command.result", payload: { status: "active" } }; });
   await act(async () => { view.result.current.input("one", { type: "text", text: "already sent" }, 1); view.result.current.input("one", { type: "text", text: "must discard" }, 1); stop?.(); });
@@ -304,4 +305,79 @@ test("a duplicate start cannot cancel the first connection attempt", async () =>
   expect(request.mock.calls.filter(([message]) => message.payload.action === "start")).toHaveLength(1);
   expect(view.result.current.requests[0].status).toBe("active");
   await view.unmount();
+});
+
+test("navigation keeps viewer pixels, blocks stale input, and clears loading only on rendering", async () => {
+  const view = await renderHook(() => useBrowserControl(manager)); await act(async () => emit("request", card()));
+  const frames = jest.fn(), invalidate = jest.fn(); view.result.current.watch("one", frames, jest.fn(), invalidate);
+  await act(async () => view.result.current.command("one", "start"));
+  await act(async () => emit("frame", { requestId: "one", frameId: 1, data: "PRIVATE_IMAGE", width: 800, height: 600 }));
+  await act(async () => { emit("view_invalidated", { requestId: "one" }); view.result.current.input("one", { type: "text", text: "PRIVATE_UNSENT" }, 1); });
+  expect(invalidate).toHaveBeenCalledTimes(1); expect(frames).not.toHaveBeenCalledWith(null);
+  expect(view.result.current.requests[0].viewState).toBe("loading"); expect(JSON.stringify(request.mock.calls)).not.toContain("PRIVATE_UNSENT");
+  await act(async () => emit("frame", { requestId: "one", frameId: 2, data: "PRIVATE_NEW", width: 800, height: 600 }));
+  expect(view.result.current.requests[0].viewState).toBe("loading");
+  await act(async () => view.result.current.ack("one", 2)); expect(view.result.current.requests[0].viewState).toBeUndefined();
+  await view.unmount();
+});
+
+test("foreground reconnect is bounded, retains only viewer pixels and never replays input", async () => {
+  jest.useFakeTimers();
+  const view = await renderHook(() => useBrowserControl(manager)); await act(async () => emit("request", card()));
+  const frames = jest.fn(), invalidate = jest.fn(); view.result.current.watch("one", frames, jest.fn(), invalidate);
+  await act(async () => view.result.current.command("one", "start"));
+  request.mockRejectedValueOnce(new Error("PRIVATE_ERROR"));
+  await act(async () => view.result.current.input("one", { type: "text", text: "PRIVATE_ONCE" }, 1));
+  expect(view.result.current.requests[0]).toMatchObject({ status: "pending", viewState: "reconnecting", inputStatusUnknown: true });
+  expect(frames).not.toHaveBeenCalledWith(null); expect(invalidate).toHaveBeenCalled();
+  for (const delay of [500, 1500, 4000]) {
+    request.mockRejectedValueOnce(new Error("connection unavailable")); await act(async () => jest.advanceTimersByTime(delay));
+  }
+  expect(view.result.current.requests[0].viewState).toBe("retry");
+  expect(request.mock.calls.filter(([m]) => m.payload.action === "start")).toHaveLength(4);
+  expect(request.mock.calls.filter(([m]) => m.payload.action === "input")).toHaveLength(1);
+  await act(async () => jest.advanceTimersByTime(60_000)); expect(request.mock.calls.filter(([m]) => m.payload.action === "start")).toHaveLength(4);
+  await act(async () => view.result.current.command("one", "finish"));
+  expect(view.result.current.requests[0].status).toBe("completed"); expect(frames).toHaveBeenLastCalledWith(null);
+  await view.unmount(); jest.useRealTimers();
+});
+
+test.each(["background", "stop", "terminal"] as const)("a pending recovery is cancelled and pixels cleared on %s", async (end) => {
+  jest.useFakeTimers(); const view = await renderHook(() => useBrowserControl(manager)); await act(async () => emit("request", card()));
+  const frames = jest.fn(), invalidate = jest.fn(); const stop = view.result.current.watch("one", frames, jest.fn(), invalidate);
+  await act(async () => view.result.current.command("one", "start"));
+  await act(async () => emit("resolved", { requestId: "one", status: "pending" }));
+  await act(async () => {
+    if (end === "stop") stop?.();
+    if (end === "terminal") handlers.get("browser.control.resolved")?.({ channel: "control", op: "browser.control.resolved", payload: { requestId: "one", status: "cancelled" } });
+    if (end === "background") { AppState.currentState = "background"; (AppState.addEventListener as jest.Mock).mock.calls.at(-1)[1]("background"); }
+    jest.advanceTimersByTime(10_000);
+  });
+  expect(frames).toHaveBeenLastCalledWith(null); expect(request.mock.calls.filter(([m]) => m.payload.action === "start")).toHaveLength(1);
+  await view.unmount(); jest.useRealTimers();
+});
+
+test("navigation drops queued typing with a fixed notice while the sent action is never replayed", async () => {
+  const view = await renderHook(() => useBrowserControl(manager)); await act(async () => emit("request", card()));
+  view.result.current.watch("one", jest.fn(), jest.fn(), jest.fn()); await act(async () => view.result.current.command("one", "start"));
+  let resolve: ((value: unknown) => void) | undefined, first: Promise<void> | undefined;
+  request.mockImplementationOnce(() => new Promise((r) => { resolve = r as (value: unknown) => void; }));
+  await act(async () => {
+    first = view.result.current.input("one", { type: "text", text: "PRIVATE_SENT" }, 1);
+    view.result.current.input("one", { type: "text", text: "PRIVATE_DROPPED" }, 1);
+    emit("view_invalidated", { requestId: "one" });
+  });
+  expect(view.result.current.requests[0]).toMatchObject({ viewState: "loading", inputNotApplied: true });
+  await act(async () => { resolve?.({ payload: { status: "active" } }); await first; });
+  expect(JSON.stringify(request.mock.calls)).not.toContain("PRIVATE_DROPPED"); expect(view.result.current.requests[0].inputNotApplied).toBe(true); await view.unmount();
+});
+
+test("a credential or Runner scope change immediately clears the retained viewer and its recovery", async () => {
+  jest.useFakeTimers(); const view = await renderHook(() => useBrowserControl(manager)); await act(async () => emit("request", card()));
+  const frames = jest.fn(); view.result.current.watch("one", frames, jest.fn(), jest.fn()); await act(async () => view.result.current.command("one", "start"));
+  await act(async () => emit("resolved", { requestId: "one", status: "pending" }));
+  await act(async () => { optionsGeneration++; listeners.forEach((fn) => fn()); jest.advanceTimersByTime(10_000); });
+  expect(frames).toHaveBeenLastCalledWith(null); expect(view.result.current.requests).toEqual([]);
+  expect(request.mock.calls.filter(([m]) => m.payload.action === "start")).toHaveLength(1);
+  await view.unmount(); jest.useRealTimers();
 });

@@ -14,8 +14,8 @@ export function createBrowserControlService({ appControl, sendEnvelope, extensio
   const owns = (entry, auth) => auth?.local === false && auth.ownerSubjectId === entry.subjectId && auth.sessionId === entry.deviceSessionId && isSessionActive(entry.deviceSessionId);
   const matchesContext = (entry, subjectId, context) => entry.subjectId === subjectId && entry.deviceSessionId === context.deviceSessionId
     && JSON.stringify(entry.conversation) === JSON.stringify(context.origin.target);
-  function diagnose(entry, phase, reason, run = entry.run) {
-    try { log?.({ requestId: entry.id, phase, elapsedMs: Math.max(0, now() - (run?.startedAt ?? now())), ...(reason ? { reason } : {}),
+  function diagnose(entry, phase, reason, run = entry.run, command) {
+    try { log?.({ requestId: entry.id, phase, elapsedMs: Math.max(0, now() - (run?.startedAt ?? now())), ...(reason ? { reason } : {}), ...(command ? { commandMethod: command.method, commandScope: command.scope } : {}),
       ...(terminal.has(phase) || phase === "interrupted" ? { framesSent: run?.framesSent || 0, renderAckCommands: run?.renderAckCommands || 0 } : {}) }); } catch {}
   }
   function detach(entry, uncertain = false) {
@@ -115,7 +115,11 @@ export function createBrowserControlService({ appControl, sendEnvelope, extensio
           diagnose(entry, "interrupted", ["connection_closed", "command_timeout", "frame_timeout", "render_ack_timeout"].includes(reason) ? reason : "connection_closed");
           detach(entry, true);
         } },
-        onDiagnostic: (phase) => { if (entry.run === run && ["focus_enabled", "stream_started", "cdp_frame_received"].includes(phase)) diagnose(entry, phase); },
+        onDiagnostic: (phase, command) => {
+          if (entry.run !== run) return;
+          if (["focus_enabled", "stream_started", "cdp_frame_received"].includes(phase)) diagnose(entry, phase);
+          if (phase === "command_timeout" && ["page", "iframe"].includes(command?.scope) && typeof command?.method === "string" && /^(Page|Runtime|Input|Target|Emulation)\.[A-Za-z]+$/.test(command.method)) diagnose(entry, phase, undefined, run, command);
+        },
         onFrame: (frame) => { if (send(entry, run, "browser.control.frame", frame)) {
           run.framesSent++; if (!run.firstFrameSent) { run.firstFrameSent = true; diagnose(entry, "frame_sent"); }
         } },
@@ -135,6 +139,7 @@ export function createBrowserControlService({ appControl, sendEnvelope, extensio
     if (!entry || !owns(entry, auth) || terminal.has(entry.status)) return Promise.resolve({ status: "request_unavailable" });
     const keys = Object.keys(payload).sort().join(","), action = payload.action;
     if (action === "cancel" && keys === "action,requestId") { finish(entry, "cancelled"); return Promise.resolve(result(entry)); }
+    if (action === "finish" && keys === "action,requestId" && !entry.run) { finish(entry, "completed"); return Promise.resolve(result(entry)); }
     if (!uuid.test(payload.controlId)) return Promise.resolve({ status: "invalid_command" });
     if (action === "start" && keys === "action,controlId,requestId") return start(entry, ws, payload.controlId);
     const run = entry.run;
