@@ -7,20 +7,39 @@ description: Let users remotely operate an existing local Chromium page from a B
 
 Use this skill when the user wants to operate a browser page from Bitty chat, or when an agent browser task needs a manual step. The user can click, scroll, drag and type on the actual page. Private input is one use case; never ask for a private value through ordinary chat or request_user_input.
 
-The existing browser must expose a local Chromium CDP **page** WebSocket. A browser-tool tab ID alone is insufficient. External CUA/in-app browsers without a page connection are unsupported. Do not switch browser/profile to bypass this limitation.
+The browser must expose local Chromium CDP. Both a direct **page** WebSocket and Chrome's user-enabled **browser** WebSocket with an explicit page target ID are supported. A browser-tool tab ID alone is insufficient unless it is the actual CDP target ID for this browser. External CUA/in-app browsers without a local CDP connection are unsupported. Do not launch a different profile or copy a profile to bypass a connection failure.
 
-1. Identify the page CDP URL and current top-level origin using the existing browser connection. No field selectors, option lists, DOM inspection, or private values are needed.
-2. Request a card using the **current turn's** Bitty app controlContext. BITTY_REPO_ROOT must point to the repository running the Runner (automatically discovered if you are inside it).
-3. Tell the user to tap 「ブラウザを開く」 once and operate the browser there. The command returns pending immediately. End the AI turn; do not wait, poll, or automatically resume.
+For ordinary Chrome, enable remote debugging at `chrome://inspect/#remote-debugging` on the Mac. This is Chrome's native permission flow: Chrome asks for approval on the Mac for each new connection, including discovery and opening/reopening a panel. It cannot be approved solely from the Bitty iPhone panel. Allow up to 60 seconds for that approval. Rejection or timeout does not justify switching profiles or retrying repeatedly.
+
+1. Identify the intended existing page and its exact HTTP(S) origin, without reading private fields. If an existing connection supplies its CDP target ID, use it. Otherwise, **before a panel exists**, run origin-filtered discovery below. It reads `DevToolsActivePort`, so Chrome's `/json/version` and `/json/list` need not work.
+2. Discovery returns only matching page IDs and origins, never titles, full URLs, images or page contents. An empty list means no matching page is open in that browser. Multiple matches can span profiles: do not guess which one is the user's intended profile/tab from origin alone. Resolve the intended tab with the user or known browser metadata before requesting a panel. Never rediscover while any panel for this browser is pending/active.
+3. Request a card using the **current turn's** Bitty app controlContext and explicit page ID. BITTY_REPO_ROOT must point to the repository running the Runner (automatically discovered if you are inside it). The user data directory is the Chrome root containing `DevToolsActivePort`, not its `Default`/`Profile N` subdirectory. No field selectors, option lists, DOM inspection, or private values are needed.
+4. Tell the user to tap 「ブラウザを開く」 once and approve Chrome's connection on the Mac if prompted. Card creation opens no browser connection. The command returns pending immediately. End the AI turn; do not wait, poll, or automatically resume.
+
+```sh
+# macOS ordinary Chrome; use the actual browser's user data directory on other systems.
+node <skill-directory>/scripts/bitty-browser-control.mjs discover \
+  --user-data-dir "$HOME/Library/Application Support/Google/Chrome" \
+  --origin https://example.com
+
+node <skill-directory>/scripts/bitty-browser-control.mjs request \
+  --context ctx_CURRENT_TURN \
+  --user-data-dir "$HOME/Library/Application Support/Google/Chrome" --target-id PAGE_ID \
+  --origin https://example.com --label 'ブラウザを操作してください（MacのChromeで接続を許可）'
+```
+
+Discovery errors contain fixed recovery instructions: enable debugging/check the data directory, reopen Chrome debugging settings if its endpoint is invalid, or approve the Mac permission and explicitly retry after a timeout. Do not print the `DevToolsActivePort` contents or raw protocol errors into chat. A stale/missing selected target or changed origin must be resolved before requesting another card; never silently select another tab.
+
+An existing direct page WebSocket remains usable without discovery. A known browser WebSocket may instead use `--cdp-url ws://127.0.0.1:9222/devtools/browser/BROWSER_ID --target-id PAGE_ID`. Browser endpoints always require an explicit page ID.
 
 ```sh
 node <skill-directory>/scripts/bitty-browser-control.mjs request \
   --context ctx_CURRENT_TURN \
-  --cdp-url ws://127.0.0.1:9222/devtools/page/TAB_ID \
+  --cdp-url ws://127.0.0.1:9222/devtools/page/PAGE_ID \
   --origin https://example.com --label 'ブラウザを操作してください'
 ```
 
-When the user explicitly asks to redisplay or replace the panel, use `replace` with the same page target and the **current turn's** context. It cancels the previous panel only if it belongs to this authenticated device and conversation, then creates a new pending card. Validation failures leave the old panel available. The replacement retains the same page's last origin approved during manual control. Browser/page state and entered values remain in place; no browser connection is opened until the user taps Open. Ordinary `request` never cancels another card automatically.
+When the user explicitly asks to redisplay or replace the panel, use `replace` with the same connection options and explicit page target and the **current turn's** context. It cancels the previous panel only if it belongs to this authenticated device and conversation, then creates a new pending card. Validation failures leave the old panel available. The replacement retains the same page's last origin approved during manual control. Browser/page state and entered values remain in place; no browser connection is opened until the user taps Open. Ordinary `request` never cancels another card automatically.
 
 ```sh
 node <skill-directory>/scripts/bitty-browser-control.mjs replace \
@@ -56,4 +75,4 @@ Continue the authorized task only after completed (the user pressed 操作を完
 
 control_status_unknown or inputStatusUnknown: true means actions may have happened before a connection/input failure. A pending card with that flag can be reopened by the user to check the result; reopening does not clear the uncertainty. Never blindly replay or read private values to decide. Ask the user to confirm the result if needed. Even after control ends, avoid screenshots/DOM/value/tracing while private content remains visible; resume those observations only after the private page/form is gone.
 
-Frames and actions travel only over the authenticated app–Runner connection and local page CDP. They are transient and never put into chat history, agent status, response caches, or application logs. The AI gets only request ID, status and an optional fixed uncertainty flag. Keyboard-focus metadata contains only bounded editable/type/revision information and stays on the private app channel; no remote field values are returned. There is no screenshot masking or end-to-end encryption beyond the existing app–Runner TLS path; local CDP stays loopback-only. Do not pass user text via an alternate shell/MCP command, script, environment variable, or tool result.
+Frames and actions travel only over the authenticated app–Runner connection and local selected-page CDP. A browser-endpoint connection attaches only the explicit page; it never follows sibling tabs. They are transient and never put into chat history, agent status, response caches, or application logs. The AI gets only request ID, status and an optional fixed uncertainty flag. Keyboard-focus metadata contains only bounded editable/type/revision information and stays on the private app channel; no remote field values are returned. There is no screenshot masking or end-to-end encryption beyond the existing app–Runner TLS path; local CDP stays loopback-only. Do not pass user text via an alternate shell/MCP command, script, environment variable, or tool result.

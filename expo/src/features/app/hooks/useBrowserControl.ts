@@ -83,7 +83,7 @@ export function useBrowserControl(manager: RunnerWebSocketManager, onDiagnostic?
       if (commandGenerations.current.get(requestId) !== generation || terminal.has(entries.current.get(requestId)?.status as BrowserControlStatus)) return;
       const controlId = controls.current.get(requestId);
       if (action !== "cancel" && !controlId) { suspend(requestId); return; }
-      const response = await manager.request({ channel: "control", op: "browser.control.command", payload: { requestId, action, ...(action !== "cancel" ? { controlId } : {}) } }, { timeoutMs: 10_000 });
+      const response = await manager.request({ channel: "control", op: "browser.control.command", payload: { requestId, action, ...(action !== "cancel" ? { controlId } : {}) } }, { timeoutMs: action === "start" ? 75_000 : 10_000 });
       const payload = response.payload as { status?: BrowserControlStatus; inputStatusUnknown?: boolean };
       const current = entries.current.get(requestId);
       if (commandGenerations.current.get(requestId) !== generation || !current || terminal.has(current.status)) return;

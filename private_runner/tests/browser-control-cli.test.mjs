@@ -1,4 +1,5 @@
 import test from "node:test";
+import { WebSocketServer } from "ws";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { promises as fs } from "node:fs";
@@ -13,6 +14,8 @@ const id = "ed7136da-8e5a-492d-b7ef-7e8eab59188d";
 async function fixture(t, handle) {
   const directory = await fs.realpath(await fs.mkdtemp("/tmp/bitty-control-cli-"));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  await fs.mkdir(path.join(directory, "private_runner"));
+  await fs.symlink(fileURLToPath(new URL("../src", import.meta.url)), path.join(directory, "private_runner/src"));
   const tokenPath = path.join(directory, "token"); await fs.writeFile(tokenPath, "local-cli-test-token", { mode: 0o600 });
   const socketPath = path.join(directory, "runner.sock");
   const server = createServer(async (req, res) => {
@@ -75,4 +78,28 @@ test("explicit replace and cancel carry only the current context and fixed panel
   for (const args of [["cancel", "--request", id], ["cancel", "--context", "ctx_current", "--request", "../wrong"],
     ["cancel", "--context", "ctx_current", "--request", id, "--value", "PRIVATE"], ["replace", "--context", "ctx_current"]]) await assert.rejects(run(...args));
   assert.equal(bodies.length, 2);
+});
+
+
+test("CLI uses origin-filtered discovery and resolves browser endpoints locally without printing capabilities", async (t) => {
+  const directory = await fs.realpath(await fs.mkdtemp("/tmp/bitty-control-discovery-cli-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const server = new WebSocketServer({ port: 0, host: "127.0.0.1" }); await new Promise((r) => server.once("listening", r));
+  t.after(() => { for (const socket of server.clients) socket.terminate(); server.close(); });
+  let connections = 0, body;
+  server.on("connection", (socket) => {
+    connections++; socket.once("message", (raw) => {
+      assert.equal(JSON.parse(String(raw)).method, "Target.getTargets");
+      socket.send(JSON.stringify({ id: 1, result: { targetInfos: [{ type: "page", targetId: "PAGE", url: "https://example.com/private?SECRET", title: "SECRET" }] } }));
+    });
+  });
+  await fs.writeFile(path.join(directory, "DevToolsActivePort"), `${server.address().port}\n/devtools/browser/PRIVATE_CAPABILITY\n`);
+  const run = await fixture(t, (req, res, input) => { body = input; res.end(JSON.stringify({ requestId: input.requestId, status: "pending" })); });
+  const found = await run("discover", "--user-data-dir", directory, "--origin", "https://example.com");
+  assert.deepEqual(JSON.parse(found.stdout), { targets: [{ targetId: "PAGE", origin: "https://example.com" }] });
+  const result = await run("request", "--context", "ctx_current", "--user-data-dir", directory, "--target-id", "PAGE", "--origin", "https://example.com", "--label", "Control");
+  assert.equal(body.target.targetId, "PAGE"); assert.equal(body.target.cdpUrl, `ws://127.0.0.1:${server.address().port}/devtools/browser/PRIVATE_CAPABILITY`);
+  assert.equal(connections, 1); assert.equal((found.stdout + result.stdout).includes("PRIVATE"), false); assert.equal(found.stdout.includes("SECRET"), false);
+  await assert.rejects(run("discover", "--user-data-dir", path.join(directory, "missing"), "--origin", "https://example.com"), (error) => error.stderr.includes("chrome_debugging_not_enabled") && !error.stderr.includes(directory));
+  for (const args of [["--user-data-dir", directory], ["--user-data-dir", directory, "--target-id", "PAGE", "--cdp-url", "ws://127.0.0.1:9222/devtools/page/P"]]) await assert.rejects(run("request", "--context", "ctx_current", "--origin", "https://example.com", "--label", "Control", ...args));
 });

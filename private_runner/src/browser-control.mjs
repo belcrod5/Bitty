@@ -57,7 +57,7 @@ export function createBrowserControlService({ appControl, sendEnvelope, prepare 
       || body.replace !== undefined && body.replace !== true
       || !uuid.test(body.requestId) || typeof body.context !== "string" || !/^ctx_[a-f0-9-]{36}$/.test(body.context)) throw failure("invalid_request");
     const target = validateBrowserControlTarget(body.target);
-    const pageUrl = new URL(target.cdpUrl), page = `${pageUrl.port}${pageUrl.pathname}`;
+    const pageUrl = new URL(target.cdpUrl), page = `${pageUrl.port}/${target.targetId || pageUrl.pathname.split("/").at(-1)}`;
     const canonical = JSON.stringify({ context: body.context, target, ...(body.replace ? { replace: true } : {}) });
     const previous = entries.get(body.requestId);
     if (previous) {

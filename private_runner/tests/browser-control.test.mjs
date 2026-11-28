@@ -377,3 +377,20 @@ test("Open waits for the original chat snapshot and cancellation during prepare 
   prepared({ start: async () => calls.push("start"), close: () => calls.push("close") }); await pending;
   assert.deepEqual(calls, ["close"]); assert.equal(g.service.getResult("owner", g.body.requestId).status, "cancelled");
 });
+
+test("browser page reservations stay lazy and share the selected target with direct page URLs", async (t) => {
+  const f = fixture(t);
+  f.body.target = { ...target, cdpUrl: "ws://127.0.0.1:9222/devtools/browser/BROWSER", targetId: "TAB" };
+  assert.equal((await f.service.request("owner", f.body)).status, "pending"); assert.equal(f.prepared(), 0);
+  await assert.rejects(f.service.request("owner", { ...f.body, requestId: randomUUID(), target }), { code: "capacity_exceeded" });
+  const sibling = { ...f.body, requestId: randomUUID(), target: { ...f.body.target, targetId: "SIBLING" } };
+  assert.equal((await f.service.request("owner", sibling)).status, "pending"); assert.equal(f.prepared(), 0);
+  assert.equal((await f.command("start")).status, "active");
+  assert.equal((await f.command("pause")).status, "pending");
+  assert.equal((await f.command("start")).status, "active");
+  assert.equal(f.prepared(), 2);
+  const replacement = { ...f.body, requestId: randomUUID(), replace: true, target };
+  assert.equal((await f.service.request("owner", replacement)).status, "pending");
+  assert.equal(f.service.getResult("owner", f.body.requestId).status, "cancelled");
+  assert.equal(f.service.getResult("owner", sibling.requestId).status, "pending");
+});
